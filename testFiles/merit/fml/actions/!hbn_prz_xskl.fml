@@ -1,0 +1,656 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !hbn_prz_xskl.fml
+:: Utworzony: 13.05.2015
+:: Autor: PJ
+::======================================================================================================================
+:: Zawartość: Formuły czynności HBN_PRZ_XSKL - grupowanie przelewów
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Grupowanie przelewów - główna formuła czynności HBN_PRZ_XSKL.
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=FJKS,HRB,HRP
+exec('f_pbskl','!hbn_prz_xskl')
+
+
+\main_r
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Rozgrupowywanie przelewów - główna formuła czynności HBN_PRZ_XSKL.
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=FJKS,HRB,HRP
+exec('f_pbrkl','!hbn_prz_xskl')
+
+
+:: === GRUPOWANIE ===
+
+
+\f_pbskl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMA] [8.40]
+:: OPIS: Formula do sklejania przelewów elektronicznych. Nie podlegaja sklejeniu przelewy do US, ZUS, typu Split payment
+::       i niezatwierdzone
+::  OLD: \f_pbskl/skid_pel.fml
+::----------------------------------------------------------------------------------------------------------------------
+_v:=0;
+_vref:=PB.ref();
+__sklejanie:=1;
+{? PB.USTYPPL<>'' & PB.RODZ='KU'
+|| {? PB.sel_size()=0
+   || FUN.emsg('Przelew do urzędu skarbowego lub celnego nie może być zgrupowany.'@)
+   || __p__us+=1
+   ?};
+   _v:=1
+|? PB.RODZ='KZ'
+|| {? PB.sel_size()=0
+   || FUN.emsg('Przelew do ZUS nie może być zgrupowany.'@)
+   || __p__zus+=1
+   ?};
+   _v:=1
+|? PB.SP='T'
+|| {? PB.sel_size()=0
+   || FUN.emsg('Przelew z obsługą podzielonej płatności nie może być zgrupowany.'@)
+   || __p__sp+=1
+   ?};
+   _v:=1
+|? PB.ZT='N'
+|| {? PB.sel_size()=0
+   || FUN.emsg('Przelew niezatwierdzony nie może być zgrupowany.'@)
+   || __p__zt+=1
+   ?};
+   _v:=1
+|| {? PB.sel_size()>0
+   || TTMP_PB.REF:=#PB.ref();
+      TTMP_PB.add()
+   || {? exec('ask_par','!hbn_prz_xskl')
+      || exec('f_pbskl2','!hbn_prz_xskl',PAR_WYDR.PAR1,1);
+         {? PB.first()
+         || __zeropb:=0;
+            {! |? {? PB.KW=0
+                  || {? PB.WSK_S='T'
+                     || _zero:=1;
+                        PB_OP.cntx_psh();
+                        PB_OP.index('PB');
+                        PB_OP.prefix(PB.ref());
+                        {? PB_OP.first()
+                        || {! |? PB_OP.del() !}
+                        ?};
+                        PB_OP.cntx_pop()
+                     || _zero:=0
+                     ?};
+                     _v:=1;
+                     {? PB.count()=0
+                     || _del:=PB.del(1,1);
+                        {? _del & _zero || __zeropb+=1 ?}
+                     || _del:=0
+                     ?};
+                     _del
+                  || PB.next()
+                  ?}
+            !};
+            {? __zeropb
+            || FUN.info('W wyniku grupowania powstał przelew na kwotę 0 zł (kwoty zgrupowanych przelewów\n'
+                        'zbilansowały się). Przelew ten został automatycznie usunięty.'@);
+              __zeropb:=0
+            ?}
+         ?}
+      || _v:=1
+      ?}
+   ?}
+?};
+VAR_DEL.delete('__sklejanie');
+{? PB.sel_size()=0
+|| {? ~_v
+   || PB.f_seek(_vref);
+      FUN.info('Brak przelewów do zgrupowania.'@)
+   || {? var_pres('vrefpb')>0 || PB.f_seek(vrefpb); &vrefpb ?};
+      FUN.info('Zakończono grupowanie przelewów.'@);
+      1
+   ?}
+?}
+
+
+\f_pbskl2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMA]
+:: OPIS: Formula skleja w jeden przelewy na ten sam rachunek.
+::       Jezeli tytul sklejonego przelewu bylby wiekszy od 140 (ograniczenie Multicash/Elixir), przerywa sklejanie.
+::       _len: maksymalna dlugosc pola Tytulem (dla przelewow z systemu KALI jest pomniejszana
+::             ze wzgledu na dodawanie znacznika czasowego przy eksporcie)
+::   WE: _a: 0 - nie sklejac tytulow przelewow; 1 - sklejac tytuly przelewow
+::       _b: 0 - wejscie w petli; 1 - pierwsze wejscie
+::  OLD: \f_pbskl2/skid_pel.fml
+::----------------------------------------------------------------------------------------------------------------------
+_len:=140;
+_v_tyt:=0;
+_licznik:=1;
+_bank:=PB.NBW().NUMER;'bank wierzyciela';
+_rachunek:=PB.RW;'rachunek wierzyciela';
+_wierz:=PB.W;
+_datap:=PB.DP;
+_wal:=PB.WAL;
+_rd:=PB.RD;
+_odd:=PB.ODD;
+_sys:=PB.KD;
+_sysxp:='FIKS,HOMEBANK,HBN: Prosty,FKS: Rozrachunki';
+{? 3+_sys<>'HBN' || _len:=_len-26-1 || _len-=1 ?};
+{? var_pres('ssort')>0
+|| _ssort:='KW^,'+ssort;
+    PB.f_clear();
+    PB.f_set(_ssort,sfrom,swhere)
+?};
+{? _b & PB.f_first()
+|| {! |?
+      ~(PB.NBW().NUMER=_bank & PB.RW=_rachunek & PB.W=_wierz & PB.WAL=_wal & PB.RD=_rd & PB.ODD=_odd
+         & (PB.KD=_sys | (_sysxp*PB.KD & _sysxp*_sys)) & PB.ZT='T' & PB.SP<>'T' & (~UNPAR.P1 | (UNPAR.P1 & PB.DP=_datap))) & PB.f_next()
+   !}
+?};
+_ref:=PB.ref();
+_kwota:=PB.KW;
+_tyt:=PB.TYT;
+PB_OP.prefix(_ref);
+{? ~PB_OP.first()
+|| PB_OP.cntx_psh();
+   PB_OP.prefix();
+   PB_OP.blank();
+   PB_OP.PB:=_ref;
+   PB_OP.WAL:=PB_OP.AN:=PB_OP.SYM:=PB_OP.SYM_ROK:='';
+   PB_OP.DP:=PB.DP;
+   PB_OP.K:=_kwota;
+   PB_OP.TYT:=_tyt;
+   PB_OP.RZ:=PB.RZ;
+   PB_OP.PG:=PB.PG;
+   PB_OP.ZAD:=PB.ZAD;
+   {? Plugin.runnable('HBN_PB') || PB_OP.ZAD:=PB.SRC_REF ?};
+   PB_OP.add();
+   PB_OP.cntx_pop()
+?};
+{? PB.f_seek(PB.ref()) & PB.f_next()
+|| {! |?
+      {? PB.NBW().NUMER=_bank & PB.RW=_rachunek & PB.W=_wierz & PB.WAL=_wal & PB.RD=_rd
+         & PB.ODD=_odd & (PB.KD=_sys | (_sysxp*PB.KD & _sysxp*_sys)) & PB.ZT='T' & PB.SP<>'T' & (~UNPAR.P1 | (UNPAR.P1 & PB.DP=_datap)) & PB.KW<>0
+      || _vk:=PB.KW;
+         {? _a
+         || {? (+PB.TYT++_tyt)<_len
+            || _kwota+=PB.KW;
+               STR.split(_tyt,', ');
+               _dokltyt:=1;
+               {! |?
+                  _wordtyt:=form(STR.get_word());
+                  {? form(PB.TYT)=_wordtyt || _dokltyt:=0; 0 || STR.next() ?}
+               !};
+               {? _dokltyt
+               || _tyt+={? +_tyt || ', ' || '' ?}+PB.TYT
+               ?};
+               _v_tyt:=1;
+               {? PB.ref()<>_ref
+               || PB.KW:=0; PB.put();
+                  _licznik+=1
+               ?}
+            || _v_tyt:=0
+            ?}
+         || _kwota+=PB.KW;
+            _v_tyt:=1; PB.KW:=0;
+            {? PB.WSK_S='T' || PB.WSK_S:='N' ?};
+            PB.put();
+            _licznik+=1
+         ?};
+         PB_OP.prefix(PB.ref());
+         {? _v_tyt & PB.ref()<>_ref
+         || {? PB_OP.first()
+            || {! |?
+                  PB_OP.cntx_psh();
+                  PB_OP.prefix();
+                  PB_OP.PB:=_ref;
+                  PB_OP.put();
+                  PB_OP.cntx_pop();
+                  PB_OP.first()
+               !}
+            || PB_OP.cntx_psh();
+               PB_OP.prefix();
+               PB_OP.blank();
+               PB_OP.PB:=_ref;
+               PB_OP.WAL:=PB_OP.AN:=PB_OP.SYM:=PB_OP.SYM_ROK:='';
+               PB_OP.ODD:=null;
+               PB_OP.DP:=PB.DP;
+               PB_OP.K:=_vk;
+               PB_OP.TYT:=PB.TYT;
+               PB_OP.RZ:=PB.RZ;
+               PB_OP.PG:=PB.PG;
+               PB_OP.ZAD:=PB.ZAD;
+               {? Plugin.runnable('HBN_PB') || PB_OP.ZAD:=PB.SRC_REF ?};
+               PB_OP.add();
+               PB_OP.cntx_pop()
+            ?}
+         |? _v_tyt & PB.ref()=_ref & ~PB_OP.size()
+         || PB_OP.prefix();
+            PB_OP.blank();
+            PB_OP.PB:=_ref;
+            PB_OP.WAL:=PB_OP.AN:=PB_OP.SYM:=PB_OP.SYM_ROK:='';
+            PB_OP.DP:=PB.DP;
+            PB_OP.K:=_kwota;
+            PB_OP.TYT:=_tyt;
+            PB_OP.RZ:=PB.RZ;
+            PB_OP.PG:=PB.PG;
+            PB_OP.ZAD:=PB.ZAD;
+            {? Plugin.runnable('HBN_PB') || PB_OP.ZAD:=PB.SRC_REF ?};
+            PB_OP.add()
+         ?}
+      || _v_tyt:=1
+      ?};
+      {? ~_v_tyt
+      || {? _licznik>1
+         || _ref2:=PB.ref();
+            PB.seek(_ref);
+            {? _a
+            || PB.TYT:=_tyt
+            || _v:=2-tm_form(PB.tm_stamp());
+               _id:='';
+               {! _i:=1..6 |! _id+=2+_v; _v:=3-_v !};
+               _id+=_v;
+               PB.TYT:='przelew zbiorczy - '+_id;
+               PB.IPS:=_id
+            ?};
+            PB.KW:=_kwota;
+            PB.SYM:=PB.SYM_ROK:=PB.SYM_ZEW:=PB.AN:='';
+            {? ~UNPAR.P1 || PB.DP:=PB.DZ:=UNPAR.P4 ?}; PB.WSK_S:='T';
+            PB.cntx_psh();
+            PB.prefix();
+            PB.put();
+            PB.cntx_pop();
+            _tyt:='';
+            _kwota:=0;
+            _licznik:=1;
+            _ref:=_ref2;
+            PB.seek(_ref); 1
+         || _vnext:=0;
+            PB.cntx_psh();
+            {? _a & ~PB.next()
+            || PB.seek(_ref);
+               {? PB.next() & PB.NBW().NUMER=_bank & PB.RW=_rachunek & PB.W=_wierz & PB.WAL=_wal
+                  & PB.RD=_rd & PB.ODD=_odd & PB.KD=_sys & PB.ZT='T' & PB.SP<>'T'
+                  & (~UNPAR.P1 | (UNPAR.P1 & PB.DP=_datap)) & PB.KW<>0
+               || _ref:=PB.ref();
+                  _kwota:=PB.KW;
+                  _tyt:=PB.TYT;
+                  PB_OP.prefix(_ref);
+                  {? ~PB_OP.first()
+                  || PB_OP.cntx_psh();
+                     PB_OP.prefix();
+                     PB_OP.blank();
+                     PB_OP.PB:=_ref;
+                     PB_OP.WAL:=PB_OP.AN:=PB_OP.SYM:=PB_OP.SYM_ROK:='';
+                     PB_OP.DP:=PB.DP; PB_OP.K:=_kwota; PB_OP.TYT:=_tyt;
+                     PB_OP.RZ:=PB.RZ;
+                     PB_OP.PG:=PB.PG;
+                     PB_OP.ZAD:=PB.ZAD;
+                     {? Plugin.runnable('HBN_PB') || PB_OP.ZAD:=PB.SRC_REF ?};
+                     PB_OP.add();
+                     PB_OP.cntx_pop()
+                  ?};
+                  _vnext:=1
+               ?}
+            ?};
+            PB.cntx_pop();
+            {? _vnext || PB.f_seek(_ref) ?};
+            PB.f_next()
+         ?}
+      |? PB.f_next()
+      || 1
+      || {? _licznik>1
+         || PB.seek(_ref);
+            {? _a
+            || PB.TYT:=_tyt
+            || _v:=2-tm_form(PB.tm_stamp());
+               _id:='';
+               {! _i:=1..6 |! _id+=2+_v; _v:=3-_v !};
+               _id+=_v;
+               PB.TYT:='przelew zbiorczy - '+_id;
+               PB.IPS:=_id
+            ?};
+            PB.KW:=_kwota;
+            PB.SYM:=PB.SYM_ROK:=PB.SYM_ZEW:=PB.AN:='';
+            {? ~UNPAR.P1 || PB.DP:=PB.DZ:=UNPAR.P4 ?};
+            PB_OP.prefix(PB.ref());
+            {? ~(~PB_OP.first() | (PB_OP.first() & PB_OP.size()=1)) || PB.WSK_S:='T' ?};
+            PB.cntx_psh(); PB.prefix(); PB.put();
+            PB.cntx_pop();
+            vrefpb:=PB.ref(); 0
+         ?}
+      ?}
+   !}
+|| 0
+?};
+PB_OP.cntx_psh();
+PB_OP.index('PB'); PB_OP.prefix(_ref);
+{? PB_OP.first() & PB_OP.next()
+|| {? PB_OP.first()
+   || _brutto:=0;
+      _set:=exec('create_set','#array','STRING[255]');
+      {!
+      |? _key:=$PB.ODD+'|'+PB_OP.AN+'|'+PB_OP.SYM_ROK;
+         {? _set.addIfNotExists(_key)
+         || _brutto+=PB_OP.BRUTTO
+         ?};
+         PB_OP.next()
+      !};
+      PB.cntx_psh();
+      PB.prefix();
+      {? PB.seek(_ref)
+      || PB.BRUTTO:=_brutto;
+         PB.put()
+      ?};
+      PB.cntx_pop()
+   ?}
+?};
+PB_OP.cntx_pop();
+{? var_pres('ssort')>0
+|| PB.f_clear(); PB.f_set(ssort,sfrom,swhere)
+?}
+
+
+\isnxtprz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMA] [2008]
+:: OPIS: Sprawdza istnienie nastepnego przelewu do sklejania
+::   WY: ref() lub null
+::  OLD: \isnxtprz/skid_pel.fml
+::----------------------------------------------------------------------------------------------------------------------
+_rach:=PB.RW;
+_wierz:=PB.W;
+_datap:=PB.DP;
+_wal:=PB.WAL;
+_rd:=PB.RD;
+_odd:=PB.ODD;
+_sys:=PB.KD;
+_ret:=null;
+PB.cntx_psh();
+{! |?
+   {? PB.KW<>0 & PB.WSK_S='N' & PB.ZT='T' & PB.SP<>'T'
+   || {? PB.RW=_rach & PB.W=_wierz & PB.WAL=_wal & PB.RD=_rd & PB.ODD=_odd
+         & PB.KD=_sys & (~UNPAR.P1 | (UNPAR.P1 & PB.DP=_datap))
+      || PB.f_next()
+      || {? PB.f_seek(PB.ref()) || _ret:=PB.ref(); 0 || PB.f_next() ?}
+      ?}
+   || PB.f_next()
+   ?}
+!};
+PB.cntx_pop();
+_ret
+
+
+\ask_par
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła ustala parametry grupowania przelewów
+::   WY: 1 - grupuj, 0 - rezygnacja
+::----------------------------------------------------------------------------------------------------------------------
+PAR_WYDR.win_edit('PB_SKL');
+UNPAR.P1_BE:='';
+UNPAR.P1_AE:='UNPAR.P4:={? UNPAR.P1 || date(0,0,0) || PB.DP ?}';
+UNPAR.P4_BE:='{? UNPAR.P1 || 0 || 1 ?}';
+UNPAR.P4_AE:='{? ~UNPAR.P1 & UNPAR.P4=date(0,0,0) || FUN.emsg(\'Nie podano daty przelewu!\'); 0 || 1 ?}';
+UNPAR.P4:=PB.DP;
+{? PAR_WYDR.edit()
+|| PB_OP.index('PB');
+   SKID_RBK.index('TAB');
+   SKID_RBK.prefix(null,REF.INFO,REF.INFO);
+   ODD.index('ODDZIALY');
+   ODD.prefix(REF.FIRMA);
+   SLO.index('SL');
+   1
+|| 0
+?}
+
+
+\gf_pbsklb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Grupa przed dla akcji Grupuj w PB
+::----------------------------------------------------------------------------------------------------------------------
+PB.cntx_psh();
+__p__us:=__p__zus:=__p__sp:=__p__zt:=0;
+_tab:=PB.sel_aget();
+{? ~_tab.first() || PB.cntx_pop(); return(0) ?};
+_not:=0; _size:=PB.sel_size();
+{! |?
+   {? PB.seek(_tab.REF,) & (PB.RODZ='KU' | PB.RODZ='KZ' | PB.WSK_S='T' | PB.SP='T') || _not+=1 ?};
+   _tab.next()
+!};
+PB.cntx_pop();
+{? _not=_size
+|| FUN.emsg('Wśród zaznaczonych przelewów nie ma takich, które mogłyby zostać zgrupowane.'@);
+   return(0)
+?};
+{? exec('ask_par','!hbn_prz_xskl')
+|| VAR_DEL.delete('TTMP_PB');
+   TTMP_PB:=tab_tmp(1,'REF','REAL','REF');
+   1
+|| 0
+?}
+
+
+\gfa_pbsklb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Grupa po dla akcji Grupuj w PB
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=PB.ref();
+{? TTMP_PB.first()
+|| __zeropb:=0; __sklejanie:=1;
+   _size:=TTMP_PB.size(); _akt:=1;
+   {! |?
+      echo('Grupowanie przelewów. Wykonano ...  %1 %% '@[form((100*_akt)/_size,6,2)]);
+      {? PB.f_seek(TTMP_PB.REF,PB.name())
+      || _cont:=0;
+         {! |?
+            {? PB.KW<>0 & PB.ZT='T' & PB.WSK_S='N' & PB.SP<>'T'
+            || _cont:=1; 0
+            || TTMP_PB.next() & PB.f_seek(TTMP_PB.REF,PB.name())
+            ?}
+         !};
+         {? _cont
+         || _vrefn:=exec('isnxtprz','!hbn_prz_xskl');
+            exec('f_pbskl2','!hbn_prz_xskl',PAR_WYDR.PAR1,1)
+         ?}
+      ?};
+      _akt+=1;
+      TTMP_PB.next()
+   !};
+   echo('Kończenie operacji grupowania przelewów'@);
+   PB.cntx_psh(); PB.prefix();
+   {? PB.first()
+   || {! |?
+         {? PB.KW=0
+         || {? PB.WSK_S='T'
+            || PB_OP.cntx_psh();
+               PB_OP.index('PB'); PB_OP.prefix(PB.ref());
+               {? PB_OP.first() || {! |? PB_OP.del() !} ?};
+               PB_OP.cntx_pop()
+            ?};
+            {? PB.count()=0
+            || {? PB.WSK_S='T' || _licz:=1 || _licz:=0 ?};
+               _delr:=PB.del(1,1);
+               {? _delr || {? _licz || __zeropb+=1 ?} ?};
+               {? _delr=1 | _delr=0 || 0 || 1 ?}
+            ?}
+         || PB.next()
+         ?}
+      !}
+   ?};
+   PB.cntx_pop();
+   echo();
+   {? __zeropb
+   ||  FUN.info('W wyniku grupowania powstał przelew (lub przelewy) na kwotę 0 zł (kwoty zgrupowanych przelewów\n'
+                'zbilansowały się). Przelewy te zostały automatycznie usunięte.'@);
+      __zeropb:=0
+   ?};
+   VAR_DEL.delete('__sklejanie')
+?};
+VAR_DEL.delete('TTMP_PB');
+PB.f_rfresh(); PB.f_seek(_ref);
+_txt:='';
+{? __p__us | __p__zus | __p__sp | __p__zt
+|| _txt:=' Pominięto przelewy: '@;
+   {? __p__zt || _txt+='niezatwierdzone'@ ?};
+   {? __p__zt & (__p__us | __p__zus | __p__sp) || _txt+=' oraz przelewy: '@ ?};
+   {? __p__us || _txt+='do Urzędów skarbowych, '@ ?};
+   {? __p__zus || _txt+='do ZUS, '@ ?};
+   {? __p__sp || _txt+='typu Split payment, '@ ?};
+   {? (__p__us | __p__zus | __p__sp) & _txt+2<>', ' || _txt+=', ' ?};
+   {? (__p__us | __p__zus | __p__sp) || _txt+='które nie podlegają grupowaniu.'@ || _txt+='.' ?}
+?};
+VAR_DEL.delete('__p__us','__p__zus','__p__sp','__p__zt','__zeropb');
+{? _txt=''
+|| FUN.info('Zakończono procedurę grupowania przelewów.'@)
+|| FUN.info('Zakończono procedurę grupowania przelewów. %1'@[_txt])
+?};
+1
+
+
+:: === ROZGRUPOWYWANIE ===
+
+\f_pbrkl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMA] [8.40]
+:: OPIS: Formula do rozklejania przelewów elektronicznych.
+::   WE: _a: tryb pracy: 0 - rozkleja biezacy przelew; 1 - rozkleja jeden z zaznaczonych przelewów
+::  OLD: \f_pbrkl/skid_pel.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=PB.ref();
+__rozklej:=1;
+PB_OP.index('PB');
+{? PB.sel_size()>0
+|| {? PB.WSK_S='T' & PB.SP<>'T'
+   || TTMP_PB.REF:=#PB.ref();
+      TTMP_PB.add()
+   ?}
+|| _ok:=exec('f_pbrkl1','!hbn_prz_xskl',1);
+   PB.f_rfresh();
+   PB.f_seek(_ref);
+   {? _ok & PB.sel_size()=0 || FUN.info('Zakończono procedurę rozgrupowywania przelewu.'@) ?}
+?};
+VAR_DEL.delete('__rozklej')
+
+
+\f_pbrkl1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMA] [8.40]
+:: OPIS: Formula rozkleja konkretny przelew.
+::   WE: _a: tryb pracy: 0 - bez komunikatu; 1 - z komunikatem.
+::   WY: 0 - nie rozklejono; 1 - rozklejono
+::  OLD: \f_pbrkl1/skid_pel.fml
+::  OLD: \f_pbrkl1/homebank.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? PB.SP='T' & PB.WSK_S='T'
+|| {? _a
+   || FUN.info('Przelew zbiorczy split payment nie może być rozklejony.'@)
+   ?};
+   return(0)
+?};
+_vc:=0;
+_ref:=PB.ref();
+PB_OP.prefix(PB.ref());
+{? PB_OP.first() & PB_OP.size()>1
+|| {? PB.r_lock(1,1,1)
+   || {!
+      |? {? _vc || PB_OP.next() ?};
+         PB.KW:=PB_OP.K;
+         PB.TYT:=PB_OP.TYT;
+         PB.DP:=PB.DZ:=PB_OP.DP;
+         PB.SYM:=PB_OP.SYM;
+         PB.SYM_ZEW:=PB_OP.SYM_ZEW;
+         PB.SYM_ROK:=PB_OP.SYM_ROK;
+         PB.AN:=PB_OP.AN;
+         PB.BRUTTO:=PB_OP.BRUTTO;
+::Poczatek modyfikacji dla Maclex
+         PB.RZ:=PB_OP.RZ;
+         PB.PG:=PB_OP.PG;
+         PB.ZAD:=PB_OP.ZAD;
+:: Koniec modyfikacji dla Maclex
+         {? Plugin.runnable('HBN_PB') || PB.SRC_REF:=PB_OP.ZAD ?};
+         {? _vc
+         || {? PB.add()
+            || {? PB.AN='' & PB.SYM<>''
+               || PB_OP.cntx_psh();
+                  PB_OP.prefix(); PB_OP.PB:=PB.ref();
+                  PB_OP.put();
+                  PB_OP.cntx_pop()
+               |? PB.AN<>'' & PB.SYM<>''
+               || PB_OP.cntx_psh();
+                  PB_OP.prefix(); PB_OP.PB:=PB.ref();
+                  PB_OP.put();
+                  PB_OP.cntx_pop()
+               |? PB_OP.AN='' & PB_OP.SYM=''
+               || PB_OP.del()
+               ?}
+            ?}
+         || PB.WSK_S:='N';
+            PB.put();
+            _vc:=1; PB_OP.next()
+         ?};
+         PB_OP.first() & PB_OP.size()>1
+      !};
+      {? PB_OP.first()
+      || {! |?
+            {? PB_OP.AN='' & PB_OP.SYM=''
+            || PB_OP.del()
+            || PB_OP.next()
+            ?}
+         !}
+      ?};
+      {? _ref
+      || PB.cntx_psh();
+         PB.prefix();
+         {? PB.seek(_ref)
+         || PB.r_unlock()
+         ?};
+         PB.cntx_pop()
+      ?};
+      1
+   |? PB.sel_size()=0
+   || FUN.info('Przelew obsługuje inny użytkownik.'@);
+      0
+   ?}
+|| {? _a
+   || FUN.info('Przelew nie jest zbiorczy.\nNie można rozkleić.'@)
+   ?};
+   0
+?}
+
+
+\gf_pbrklb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Grupa przed dla akcji rozgrupuj w PB
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('TTMP_PB');
+TTMP_PB:=tab_tmp(1,'REF','REAL','REF');
+1
+
+
+\gfa_pbrklb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Grupa po dla akcji rozgrupuj w PB
+::----------------------------------------------------------------------------------------------------------------------
+_vmask:=PB.name();
+{? TTMP_PB.first()
+|| {! |?
+      {? PB.seek(TTMP_PB.REF,_vmask)
+      || exec('f_pbrkl1','!hbn_prz_xskl',0)
+      ?};
+      TTMP_PB.next()
+   !}
+?};
+VAR_DEL.delete('TTMP_PB');
+PB.f_rfresh();
+FUN.info('Zakończono procedurę rozgrupowywania przelewów.'@);
+1
+
+:Sign Version 2.0 jowisz:1045 2023/09/08 13:48:28 9524e68fa2196f993b1171dada728e3a5fb284d061919f8d0abc63c0658c66d43f4c3256fa0805801ee64c9c1330643fd409ecfec5a0036d18505ad15fe8f4c5b7338ebde3f88783c41a364075723b5f6f77fcf3ca7d8ff0c9e0da745abfb99ebd4443c365e8fbb206322c5ead284f4ae78336d86286765fee33170dac2e6bdd

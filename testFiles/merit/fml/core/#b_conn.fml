@@ -1,0 +1,1473 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #b_conn.fml
+:: Utworzony: 30.12.2014 [17.00]
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi tabeli B_CONN
+::======================================================================================================================
+
+
+\buffer
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Zwraca obiekt nazwany - bufor tabeli B_CONN
+::   WY: obj_new()
+::----------------------------------------------------------------------------------------------------------------------
+exec('B_CONN','#buffer')
+
+
+\add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Dodaje do tabeli B_CONN jeden rekord
+::   WE: _a - obj_new - tablica nazwana bedaca buforem tabeli exec('buffer','#b_conn')
+::   WY: B_CONN.ref() lub null
+::----------------------------------------------------------------------------------------------------------------------
+_buffer:={? var_pres('_a')>100
+         || _a
+         || exec('buffer','#b_conn')
+         ?};
+_result:=null();
+
+B_CONN.cntx_psh(); B_CONN.clear();
+B_CONN.blank();
+{? _buffer.ORDER=0
+|| _buffer.ORDER:=exec('bl_order','#b_conn',_buffer.B_PROC,_buffer.FROM)
+?};
+_buffer.set();
+{? B_CONN.add()>0
+|| _result:=B_CONN.ref()
+?};
+B_CONN.cntx_pop();
+_result
+
+
+\put
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Aktualizuje w tabeli B_CONN jeden rekord
+::   WE: _a - obj_new - tablica nazwana bedąca buforem tabeli exec('buffer','#b_conn')
+::       _b - B_CONN.ref - rekord ktory zmodyfikować
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_buffer:={? var_pres('_a')>100
+         || _a
+         || exec('buffer','#b_conn')
+         ?};
+_ref:=_b;
+
+B_CONN.cntx_psh(); B_CONN.clear();
+{? B_CONN.seek(_ref)
+|| _buffer.set();
+   _result:=B_CONN.put()
+?};
+B_CONN.cntx_pop();
+_result
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Kasuje podany rekord tabeli B_CONN (wykonywane w transakcji!!!)
+::   WE: _a - B_CONN.ref()
+::       [_b] - INTEGER - czy dodawać komunikaty do KOMMa o nieprawidlowościach: [0] - nie
+::                                                                                1  - tak
+::   WY: >0 -wyczyszczone,
+::      <=0 -niewyczyszczone
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystapić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+:: jeżeli transakcja została zerwana, to nie ma sensu przetwarzać formuły
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_komm:=0;
+{? var_pres('_b')=type_of(0)
+|| _komm:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+:: sprawdzam, czy to w tej formule będę zakładał transakcję, czy już jest założona
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+B_CONN.cntx_psh(); B_CONN.clear();
+{? B_CONN.seek(_ref)
+|| {? exec('clean','#b_conn',_ref,_komm)>0
+   ||
+::    Zapamietuje to co chce usunąć
+      _buffer:=exec('buffer','#b_conn');
+      _buffer.get();
+::    Usunięcie tras przebiegających przez usuwane połączenie
+      _b_poconns:=exec('route_delete4bconn','#b_proute',B_CONN.ref());
+      {? B_CONN.del(,1)>0
+      ||
+::       Odtworzenie usuniętych tras lub usunięcie połączeń portów jeśli trasy już nie istnieją
+         exec('route_refresh','#b_proute',_b_poconns,_komm);
+
+         _result:=1;
+         exec('renumOrder','#b_conn',_buffer.B_PROC,_buffer.FROM);
+
+         ~~
+      || _result:=-3
+      ?}
+   || _result:=-2
+   ?}
+|| _result:=0
+?};
+
+{? _result<0
+|| undo()
+?};
+
+B_CONN.cntx_pop();
+{? _mydo || end() ?};
+_result
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+:: UTW: WH [17.00]
+:: OPIS: Czyści powiązania do rekordu tabeli B_CONN
+::   WE: _a - B_CONN.ref()
+::       [_b] - INTEGER - czy dodawać komunikaty do KOMMa o nieprawidłowościach: [0] - nie
+::                                                                                1  - tak
+:: WY:  >0 -wyczyszczone,
+::     <=0 -niewyczyszczone
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystapić błąd
+::----------------------------------------------------------------------------------------------------------------------
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_komm:=0;
+{? var_pres('_b')=type_of(0)
+|| _komm:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+:: --- powiązania do ---
+
+:: 1. Usuwam powiązania do B_POCONN
+B_PREL.cntx_psh();
+B_PORT.cntx_psh();
+B_POCONN.cntx_psh();
+B_POCONN.index('B_CONN');
+B_POCONN.prefix(_ref);
+{? B_POCONN.first()
+|| {!
+   |?
+      _b_poconn:=B_POCONN.ref();
+
+      B_CHOICE.cntx_psh();
+      B_CHOICE.index('PREL_SRC');
+      B_CHOICE.prefix(B_POCONN.PREL_SRC);
+      {? B_CHOICE.first()
+      || {!
+::       Iteracja po warunkach odwołujących się do źródła połączenia pośredniego
+         |? {? B_CHOICE.B_PREL=B_POCONN.PREL_DST
+::          Usunięcie warunku na bramie wraz z połączeniem pośrednim jeśli cel tego połączenia jest bramą
+            || _can_continue:=exec('delete','#b_choice',B_CHOICE.ref());
+               B_CHOICE.first() & _can_continue>0
+            || B_CHOICE.next()
+            ?}
+         !}
+      ?};
+      B_CHOICE.index('PREL_DST');
+      B_CHOICE.cntx_pop();
+
+      {? ~B_POCONN.seek(_b_poconn)
+::    _b_poconn usunięty w wyniku analizy warunków dlatego szukamy czy są inne B_POCONN'y
+      || B_POCONN.first()
+::    Usuwamy powiązanie pośrednie jeśli nie dotyczy bramy
+      ||
+         _b_proc:=B_POCONN.B_PROC;
+         _to:=B_POCONN.TO;
+         _prel_dst:=B_POCONN.PREL_DST;
+         _nam_from:=B_POCONN.FROM().NAME;
+         _nam_to:=B_POCONN.TO().NAME;
+         _sym_src:=B_POCONN.PREL_SRC().SYMBOL;
+         _sym_dst:=B_POCONN.PREL_DST().SYMBOL;
+::       Usunięcie tras połączenia B_POCONN
+         exec('route_delete4bpoconn','#b_proute',B_POCONN.ref());
+         _can_continue:=exec('delete','#b_poconn',B_POCONN.ref());
+         B_POCONN.cntx_psh();
+         B_POCONN.index('TO');
+         B_POCONN.prefix(_to,_b_proc,_prel_dst);
+::       pominięcie koumnikatu o usunię powiązania argumentów jeśli istnieje inne powiązanie
+::       dotyczy przypadku usnięcia strzałki i ponownego dodania przed zapisem procesu
+         _msg_on:=~B_POCONN.first();
+         B_POCONN.cntx_pop();
+         {? _komm>0 & _msg_on
+         ||
+            {? _can_continue>0
+            || _msg:='Automatycznie usunięto nieprawidłowe powiązanie argumentów: \'';
+               _msg+=' \''+_nam_from+' -> '+_nam_to+'\'';
+               _msg+=' (źródło: '+_sym_src;
+               _msg+=' , cel: '+_sym_dst+').';
+               KOMM.add(_msg,'xwin16.png:7',,1)
+            || _msg:='Nie udało się automatycznie usunąć nieprawidłowego powiązania argumentów: \'';
+               _msg+=' \''+_nam_from+' -> '+_nam_to+'\'';
+               _msg+=' (źródło: '+_sym_src;
+               _msg+=' , cel: '+_sym_dst+').';
+               KOMM.add(_msg,'xwin16.png:14',,1)
+            ?}
+         ?};
+         B_POCONN.first() & _can_continue>0
+      ?}
+   !}
+?};
+B_POCONN.cntx_pop();
+B_PORT.cntx_pop();
+B_PREL.cntx_pop();
+
+:: 2. Usuwam powiazania z wyborami bram B_CHOICE
+B_CHOICE.cntx_psh();
+B_CHOICE.index('B_CONN');
+B_CHOICE.prefix(_ref);
+{? B_CHOICE.first()
+|| {!
+   |? _can_continue:=exec('delete','#b_choice',B_CHOICE.ref());
+      B_CHOICE.first() & _can_continue>0
+   !}
+?};
+B_CHOICE.cntx_pop();
+
+:: 3. Usuwam powiazania z polaczeniami miedzy instancjami elementow
+BI_CONN.cntx_psh(); {? BI_CONN.name()='' || BI_CONN.use('bi_c____') ?};
+BI_CONN.index('B_CONN');
+BI_CONN.prefix(_ref);
+{? BI_CONN.first()
+|| {!
+   |? _can_continue:=exec('delete','#bi_conn',BI_CONN.ref());
+      BI_CONN.first() & _can_continue>0
+   !}
+?};
+BI_CONN.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+:: --- wszystkie powiazania usuniete? ---
+{? _mydo || end()?};
+
+_result
+
+
+\builder_bl
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Wartość początkowa dla pól tabeli B_CONN
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_fld:=cur_afld();
+_result:=~~;
+{? _fld='B_PROC'
+|| _result:=BPMN.B_PROC
+|? _fld='DEFAULT'
+|| _result:='N'
+?};
+_result
+
+
+\builder_bd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Przed wyświetl dla pól tabeli B_CONN
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\builder_be
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Przed edycją dla pól tabeli B_CONN
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\builder_ae
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Po redagowaniu dla pól tabeli B_CONN
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\builder_fd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Format wyświetlania dla pól tabeli B_CONN
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+''
+
+
+\builder_fe
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Format redagowania dla pól tabeli B_CONN
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+''
+
+
+\add_next_act_af
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Akcja po 'Dołącz' w oknie WER_FROM - dołączanie następników
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\add_prev_act_af
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Akcja po 'Dołącz' w oknie WER_FROM - dołączanie następników
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+
+~~
+
+
+\getNext
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Pobiera następne elementy w procesie
+::   WE: _a - [REFERENCE] - wskazanie na proces
+::       _b - [REFERENCE] - wskazanie na element w procesie
+::   WY:      [obj_new]   - obiekt z refami B_CONN lub obiekt z jednym elementwm null w przypadku ich braku
+::----------------------------------------------------------------------------------------------------------------------
+_next:=obj_new(1); _next[1]:=null();
+_b_proc:={? var_pres('_a')=type_of(null) || _a || return(_next) ?};
+_b_prel:={? var_pres('_b')=type_of(null) || _b || return(_next) ?};
+
+B_CONN.cntx_psh();
+B_CONN.index('ORDER');
+B_CONN.prefix(_b_proc,_b_prel);
+{? B_CONN.first()
+|| _size:=B_CONN.size();
+   {? _size
+   || {? var_pres('_next')>100 || obj_del(_next) ?};
+      _next:=obj_new(_size);
+      _ind:=1;
+      {!
+      |? _next[_ind]:=B_CONN.ref();
+         _ind+=1;
+         B_CONN.next()
+      !}
+   ?}
+?};
+B_CONN.cntx_pop();
+_next
+
+
+\getPrev
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Pobiera poprzednie elementy w procesie
+::   WE: _a - [REFERENCE] - wskazanie na proces
+::       _b - [REFERENCE] - wskazanie na element w procesie
+::   WY:      [obj_new]   - obiekt z refami poprzedników (B_PREL)
+::                          lub obiekt z jednym elementwm null w przypadku ich braku
+::----------------------------------------------------------------------------------------------------------------------
+_prev:=obj_new(1); _prev[1]:=null();
+_b_proc:={? var_pres('_a')=type_of(null) || _a || return(_prev) ?};
+_b_prel:={? var_pres('_b')=type_of(null) || _b || return(_prev) ?};
+
+B_CONN.cntx_psh();
+B_CONN.index('TO');
+B_CONN.prefix(_b_proc,_b_prel);
+{? B_CONN.first()
+|| _size:=B_CONN.size();
+   {? _size
+   || {? var_pres('_prev')>100 || obj_del(_prev) ?};
+      _prev:=obj_new(_size);
+      _ind:=1;
+      {!
+      |? _prev[_ind]:=B_CONN.FROM;
+         _ind+=1;
+         B_CONN.next()
+      !}
+   ?}
+?};
+B_CONN.cntx_pop();
+_prev
+
+
+\can_connect
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Sprawdza, czy elementy można połączyć w procesie
+::   WE: _a - B_PREL.ref() - z elementu
+::       _b - B_PREL.ref() - do elementu
+::       _c - INTEGER - 0/[1]/2 - sposób wyświetlania komunikatów o błędach:  0  - brak
+::                                                                           [1] - na ekran
+::                                                                            2  - do KOMMa
+::   WY: 0 / 1 - czy ok
+::----------------------------------------------------------------------------------------------------------------------
+_from:=_a;
+_to:=_b;
+_display:=_c;
+
+_result:=1;
+
+_b_from:=exec('buffer','#b_prel');
+_b_from.cntx_get(_from);
+
+_b_to:=exec('buffer','#b_prel');
+_b_to.cntx_get(_to);
+
+{? _b_from.CLASS='B_LANE'
+|| _msg:='Tor \''+_b_from.SYMBOL+'\' nie może być poprzednikiem w procesie.';
+   {? _display=1
+   || FUN.info(_msg)
+   |? _display=2
+   || KOMM.add(_msg,2,,1)
+   ?};
+   _result:=0
+|? _b_to.CLASS='B_LANE'
+|| _msg:='Tor \''+_b_to.SYMBOL+'\' nie może być następnikiem w procesie.';
+   {? _display=1
+   || FUN.info(_msg)
+   |? _display=2
+   || KOMM.add(_msg,2,,1)
+   ?};
+   _result:=0
+?};
+
+{? _b_to.CLASS='B_EVENT'
+||
+:: Zdarzenie początkowe nie może być następnikiem
+   {? exec('is_event','#b_event',_b_to.B_ELE,exec('type_start','#b_event'))>0
+   || _msg:='Zdarzenie początkowe: \''+_b_to.SYMBOL+'\' nie może być następnikiem.';
+      {? _display=1
+      || FUN.info(_msg)
+      |? _display=2
+      || KOMM.add(_msg,2,,1)
+      ?};
+      _result:=0
+   ?}
+?};
+
+{? _b_from.CLASS='B_EVENT'
+||
+:: Zdarzenie końcowe nie może być poprzednikiem
+   {? exec('is_event','#b_event',_b_from.B_ELE,exec('type_end','#b_event'))>0
+   || _msg:='Zdarzenie końcowe:'+_b_from.SYMBOL+' nie może być poprzednikiem.';
+      {? _display=1
+      || FUN.info(_msg)
+      |? _display=2
+      || KOMM.add(_msg,2,,1)
+      ?};
+      _result:=0
+   ?}
+?};
+
+{? _b_from.CLASS='B_GATE'
+||
+:: Brama zbierająca nie może mieć więcej niż jednego wyjścia, czyli sprawdzamy czy już coś jest
+   {? exec('is_gate','#b_gate',_b_from.B_ELE,,exec('kind_merge','#b_gate'))>0
+   || B_CONN.cntx_psh();
+      B_CONN.index('FROM');
+      B_CONN.prefix(_b_from.B_PROC,_b_from.ref());
+      {? B_CONN.first()
+      || _msg:='Brama zbierająca: \''+_b_from.SYMBOL+'\' nie może mieć więcej niż jednego następnika.';
+         {? _display=1
+         || FUN.info(_msg)
+         |? _display=2
+         || KOMM.add(_msg,2,,1)
+         ?};
+         _result:=0
+      ?};
+      B_CONN.cntx_pop()
+   ?}
+?};
+
+{? _b_to.CLASS='B_GATE'
+||
+:: Brama rozdzielająca nie może mieć więcej niż jednego wejścia, czyli sprawdzamy czy już coś jest
+   {? exec('is_gate','#b_gate',_b_to.B_ELE,,exec('kind_split','#b_gate'))>0
+   || B_CONN.cntx_psh();
+      B_CONN.index('TO');
+      B_CONN.prefix(_b_to.B_PROC,_b_to.ref());
+      {? B_CONN.first()
+      || _msg:='Brama rozdzielająca: \''+_b_to.SYMBOL+'\' nie może mieć więcej niż jednego poprzednika.';
+         {? _display=1
+         || FUN.info(_msg)
+         |? _display=2
+         || KOMM.add(_msg,2,,1)
+         ?};
+         _result:=0
+      ?};
+      B_CONN.cntx_pop()
+   ?}
+?};
+
+:: Następnik nie może się powtarzać
+B_CONN.cntx_psh();
+B_CONN.index('FROM');
+B_CONN.prefix(_b_from.B_PROC,_b_from.ref());
+{? B_CONN.first()
+|| {!
+   |?
+      {? B_CONN.TO=_b_to.ref()
+      || _msg:='Nie można dodać wielokrotnie tego samego następnika: '+_b_to.SYMBOL;
+         {? _display=1
+         || FUN.info(_msg)
+         |? _display=2
+         || KOMM.add(_msg,2,,1)
+         ?};
+         _result:=0
+      ?};
+      B_CONN.next()
+   !}
+?};
+B_CONN.cntx_pop();
+_result
+
+
+\default_action
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Akcja 'domyslny' w oknie nastepników czynności oraz w oknie wiązania wyjść bramy
+::   WE: [_a] - B_CONN.ref(), wpp bieżący rekord
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('FindAndGet','#table',B_PROC,$D_ENV.SEL_PROC,,"B_PROC.ACCEPTED='T'")
+|| exec('akc_info','#b_design',exec('FindAndGet','#table',B_PROC,$D_ENV.SEL_PROC,,"B_PROC.SYMBOL"));
+   return(~~)
+?};
+
+{? var_pres('_a')=type_of(null()) || _b_conn:=_a || _b_conn:=B_CONN.ref() ?};
+
+Cntx.psh(B_CONN,B_CHOICE);
+B_CONN.clear();
+
+{? B_CONN.seek(_b_conn)
+||
+   {? exec('is_gate','#b_gate',B_CONN.FROM().B_ELE,,exec('kind_split','#b_gate'))>0
+         &
+      (exec('is_gate','#b_gate',B_CONN.FROM().B_ELE,exec('type_or','#b_gate'))>0 |
+       exec('is_gate','#b_gate',B_CONN.FROM().B_ELE,exec('type_xor','#b_gate'))>0
+      )
+   ||
+      {? B_CONN.DEFAULT='N'
+      ||
+::       Zapalanie tylko jak nic nie zapalone
+         _default:=0;
+         B_CONN.cntx_psh();
+         B_CONN.index('FROM');
+         B_CONN.prefix(B_CONN.B_PROC,B_CONN.FROM);
+         {? B_CONN.first()
+         || {!
+            |?
+               {? B_CONN.DEFAULT='T' || _default+=1 ?};
+               B_CONN.next()
+            !}
+         ?};
+         B_CONN.cntx_pop();
+         {? _default=0
+         || B_CHOICE.index('B_CONN');
+            B_CHOICE.prefix(B_CONN.ref());
+            {? B_CHOICE.first()
+            || FUN.info('Utworzone są warunki — nie można zaznaczyć wyjścia jako domyślnego.'@)
+            || B_CONN.DEFAULT:='T';
+               B_CONN.put()
+            ?}
+         || FUN.info('Nie można zaznaczyć kilku wyjść z bramy jako domyślnych.'@)
+         ?}
+      ||
+::       Gaszenie bezwarunkowe
+         B_CONN.DEFAULT:='N';
+         B_CONN.put()
+      ?}
+   ||
+      FUN.info('Funkcja dostępna tylko dla połączeń z bram rozdzielających OR i XOR.'@)
+   ?}
+?};
+
+Cntx.pop(B_CONN,B_CHOICE);
+~~
+
+
+\default_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.28]
+:: OPIS: Usuwa znacznik domyślności ze wszystkich połączeń danego elementu
+::   WE: [_a] - B_PREL.ref
+::       [_b] - tab_tmp - tabelka zawierająca refy B_CONNów którym usunięto domyślność
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(B_PREL.ref())
+|| _ref:=_a
+?};
+_tab:=~~;
+{? var_pres('_b')>100
+|| _tab:=_b
+?};
+
+_result:=1;
+_can_continue:=1;
+
+B_PREL.cntx_psh();
+{? _ref<>null()
+|| B_PREL.prefix();
+   {? B_PREL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| B_CONN.cntx_psh();
+   B_CONN.index('FROM');
+   B_CONN.prefix(B_PREL.B_PROC,B_PREL.ref(),'T');
+   {? B_CONN.first()
+   || {!
+      |? B_CONN.cntx_psh();
+         B_CONN.prefix();
+         B_CONN.DEFAULT:='N';
+         _can_continue:=B_CONN.put();
+
+         {? _can_continue>0
+         || {? type_of(_tab)>100
+            || _tab.prefix();
+               _tab.blank();
+               _tab.B_CONN:=$B_CONN.ref();
+               _tab.DEFAULT:='N';
+               _tab.add()
+            ?}
+         ?};
+
+         B_CONN.cntx_pop();
+         B_CONN.first() & _can_continue>0
+      !}
+   || _result:=0
+   ?};
+   B_CONN.cntx_pop()
+?};
+B_PREL.cntx_pop();
+{? _can_continue<=0
+|| _result:=0
+?};
+_result
+
+
+\delete_action
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Akcja 'Usuń' dla połączeń
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('FindAndGet','#table',B_PROC,$D_ENV.SEL_PROC,,"B_PROC.ACCEPTED='T'")
+|| exec('akc_info','#b_design',exec('FindAndGet','#table',B_PROC,$D_ENV.SEL_PROC,,"B_PROC.SYMBOL"));
+   return(~~)
+?};
+
+_can_continue:=FUN.ask('Czy na pewno usunąć powiązanie?'@);
+{? _can_continue>0
+|| _start:=exec('is_event','#b_event',B_CONN.FROM().B_ELE,exec('type_start','#b_event'))>0;
+   _to:=B_CONN.TO;
+   KOMM.init(250,,'Kasowanie połączeń między elementami procesu');
+   {? exec('delete','#b_conn',B_CONN.ref(),1)>0
+   ||
+      {? _start
+      ||
+         B_PREL.cntx_psh();
+         B_PREL.clear();
+         {? B_PREL.seek(_to)
+         || B_PREL.START:='N';
+            B_PREL.put()
+         ?};
+         B_PREL.cntx_pop()
+      ?}
+   || FUN.emsg('Usunięcie powiązania zakończone niepowodzeniem.'@)
+   ?};
+   KOMM.select()
+?};
+~~
+
+
+\is_path_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Tablica parametrów dla \is_path
+::   WY: _args
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new(
+       'PREL_SRC',
+       'PREL_DST',
+       'DIR',
+::     Uzywac do przejscia tylko elementow podanych klas - mozna podac kilka np 'B_ACTION;B_GATE'
+       'CLASS',
+       'VISITED'
+              );
+:: - - - - ponizej ustawienie wartosci domyslnych
+_args.PREL_SRC:=null();
+_args.PREL_DST:=null();
+_args.DIR=1;
+_args.CLASS:='';
+
+_args.VISITED:=tab_tmp(1,
+   'REF','STRING[16]','$B_PREL.ref()'
+);
+
+:: - - - - koniec ustalania wartosci domyslnych
+_args
+
+
+\is_path
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy istnieje droga przejścia pomiędzy dwoma podanymi elementami procesu
+::   WE: _args - tablica nazwana parametrów
+::   WY: 0 - brak drogi pomiedzy elementami
+::       1 - istnieje droga pomiędzy elementami
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('is_path_a','#b_conn')
+?};
+
+_result:=0;
+
+B_PREL.cntx_psh();
+B_PREL.clear();
+B_CONN.cntx_psh();
+
+{? _args.PREL_SRC=_args.PREL_DST
+|| _result:=1
+?};
+
+
+_args.VISITED.cntx_psh();
+
+{? _result=0
+||
+   {? _args.DIR>0
+   ||
+::    Analizuje w przód od elementu początkowego
+      {? B_PREL.seek(_args.PREL_SRC)
+      ||
+         _args.VISITED.prefix($B_PREL.ref());
+         {? _args.VISITED.size()=0
+         || _args.VISITED.blank();
+            _args.VISITED.REF:=$B_PREL.ref();
+            _args.VISITED.add()
+         ?};
+         _args.VISITED.clear();
+
+         B_CONN.index('FROM');
+         B_CONN.prefix(B_PREL.B_PROC,_args.PREL_SRC);
+         {? B_CONN.first()
+         ||
+::          Iteruje po następnikach
+            {!
+            |?
+               {? B_CONN.TO=_args.PREL_DST
+               || _result:=1
+               || _args.VISITED.prefix($B_CONN.TO);
+                  {? _args.VISITED.size()=0
+                  ||
+                     _can_continue:=1;
+
+::                   Sprawdzam czy mogę pójść tą droga - czy klasa elementu prawdziwa
+                     {? _args.CLASS<>''
+                     || {? B_CONN.TO().CLASS*_args.CLASS>0
+                        || _can_continue:=1
+                        || _can_continue:=0
+                        ?}
+                     ?};
+                     {? _can_continue>0
+                     ||
+::                      !!! REKURENCJA !!!
+                        _args.PREL_SRC:=B_CONN.TO;
+                        _result:=exec('is_path','#b_conn',_args)
+                     ?}
+                  ?}
+               ?};
+               B_CONN.next() & _result=0
+            !}
+         ?}
+      ?}
+   |? _args.DIR<0
+   ||
+::    Analizuje wstecz od elementu końcowego
+      {? B_PREL.seek(_args.PREL_DST)
+      ||
+         _args.VISITED.prefix($B_PREL.ref());
+         {? _args.VISITED.size()=0
+         || _args.VISITED.blank();
+            _args.VISITED.REF:=$B_PREL.ref();
+            _args.VISITED.add()
+         ?};
+         _args.VISITED.clear();
+
+         B_CONN.index('TO');
+         B_CONN.prefix(B_PREL.B_PROC,_args.PREL_DST);
+         {? B_CONN.first()
+         ||
+::          Iteruje po poprzednikach
+            {!
+            |?
+               {? B_CONN.FROM=_args.PREL_SRC
+               || _result:=1
+               || _args.VISITED.prefix($B_CONN.FROM);
+                  {? _args.VISITED.size()=0
+                  ||
+                     _can_continue:=1;
+
+::                   Sprawdzam czy moge pójsc tą drogą - czy klasa elementu prawdziwa
+                     {? _args.CLASS<>''
+                     || {? B_CONN.FROM().CLASS*_args.CLASS>0
+                        || _can_continue:=1
+                        || _can_continue:=0
+                        ?}
+                     ?};
+                     {? _can_continue>0
+                     ||
+::                      !!! REKURENCJA !!!
+                        _args.PREL_DST:=B_CONN.FROM;
+                        _result:=exec('is_path','#b_conn',_args)
+                     ?}
+                  ?}
+               ?};
+               B_CONN.next() & _result=0
+            !}
+         ?}
+      ?}
+   ?}
+?};
+B_CONN.cntx_pop();
+B_PREL.cntx_pop();
+_args.VISITED.cntx_pop();
+_result
+
+
+\chk_between_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Tablica parametrów dla \chk_between
+::   WY: _args
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new(
+        'PREL_SRC'
+       ,'PREL_DST'
+       ,'PREL_CUR'
+
+::       Klasa elementu która zliczać
+       ,'CLASS'
+
+::       Klasa elementów po których moge przechodzić - jeśli trafie na element innej klasy
+::       to nie ide ta ściezka
+       ,'CL_JUMP'
+
+::       Kierunek analizy procesu
+       ,'DIR'
+::       Odwiedzone elementy
+       ,'VISITED'
+::       Czy zbierać elementy do tablicy (.MODE=2) czy tylko liczyc (.MODE=1)
+       ,'MODE'
+::       Tutaj zbieram elementy które napotkałem na drodze
+       ,'COLLECTED'
+::       Czy dana ściezka prowadzi do PREL_DST
+       ,'VALIDWAY'
+::       Dla pierwszego wywołania - ktorym B_CONNEm podazyc
+       ,'B_CONN'
+::       Ilość elementów danej klasy na sciezce
+       ,'NUM'
+
+::       B_CONN którym tu przyszedłem (dla wywołań rekurencyjnych)
+       ,'ENTERED'
+
+::       Formuła która wykonać dla każdego elementu przez który przechodzę
+       ,'FORMULA'
+::       Argumenty dla formuły
+       ,'ARGS1'
+       ,'ARGS2'
+       ,'ARGS3'
+
+::       Tylko dla bram - rodzaj i typ bramy
+       ,'TYPE'
+       ,'KIND'
+              );
+:: - - - - poniżej ustawienie wartości domyślnych
+_args.PREL_SRC:=null();
+_args.PREL_CUR:=null();
+_args.PREL_DST:=null();
+_args.B_CONN:=null();
+_args.ENTERED:=null();
+_args.CLASS:='';
+_args.CL_JUMP:='';
+_args.VISITED:=tab_tmp(1,
+   'REF','STRING[16]','$B_PREL.ref()'
+);
+_args.COLLECTED:=exec('actions_tab','#b_gate');
+_args.VALIDWAY:=0;
+_args.DIR:=1;
+_args.NUM:=0;
+_args.TYPE:='';
+_args.KIND:='';
+_args.MODE:=1;
+_args.FORMULA:='';
+_args.ARGS1:=~~;
+_args.ARGS2:=~~;
+_args.ARGS3:=~~;
+:: - - - - koniec ustalania wartosci domyslnych
+_args
+
+
+\chk_between
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy pomiędzy dwoma elementami procesu znajdują sie jakieś elementy podanej klasy
+::       Wynik dzialania jest trzymany w _args.NUM
+::       Opcjonalnie - zbiera elementy podanej klasy do tabeli .
+::   WE: _a - _args
+::       _b - tab_tmp() - tabela tymczasowa odwiedzonych miejsc
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('chk_between_a','#b_conn')
+?};
+
+{? var_pres('_b')>100
+|| _visited:=_b
+|| _visited:=tab_tmp(1,'REF','STRING[16]','$B_PREL.ref()')
+?};
+
+_can_continue:=1;
+
+_visited.cntx_psh();
+_args.VISITED.cntx_psh();
+
+{? _args.PREL_CUR=_args.PREL_DST
+||
+:: Dodarłem do końca
+   _args.VALIDWAY:=1;
+   _can_continue:=0
+?};
+
+{? _can_continue>0
+||
+   B_PREL.cntx_psh(); B_PREL.clear();
+   {? B_PREL.seek(_args.PREL_CUR)
+   ||
+      {? _args.PREL_CUR<>_args.PREL_SRC
+      ||
+::       Zliczam tylko jeżeli jeszcze nie odwiedzilem
+         _visited.prefix($_args.PREL_CUR);
+         {? _visited.size()=0
+         ||
+::          Źródłowego elementu nie licze
+            {? B_PREL.CLASS=_args.CLASS
+            ||
+               _found:=1;
+               {? B_PREL.CLASS='B_GATE'
+               ||
+::                Jeśli brama to dodatkowo sprawdzam rodzaj i typ bramy
+                  {? exec('is_gate_prel','#b_gate',B_PREL.ref(),_args.TYPE,_args.KIND)>0
+                  || _found:=1
+                  || _found:=0
+                  ?}
+               ?};
+               {? _found>0
+               ||
+                  _args.NUM+=1;
+                  {? _args.MODE=2
+                  ||
+::                   Dodaje element do kolekcji
+                     _args.COLLECTED.cntx_psh();
+                     _args.COLLECTED.prefix($B_PREL.ref());
+                     {? _args.COLLECTED.size()=0
+                     || _args.COLLECTED.blank();
+                        _args.COLLECTED.B_PREL:=$B_PREL.ref();
+                        _args.COLLECTED.SYMBOL:=B_PREL.SYMBOL;
+                        _args.COLLECTED.add()
+                     ?};
+                     _args.COLLECTED.cntx_pop();
+                     ~~
+                  ?}
+               ?}
+            ?}
+         ?}
+      ?};
+
+      _visited.prefix($_args.PREL_CUR);
+      {? _visited.size()=0
+      || _visited.blank();
+         _visited.REF:=$_args.PREL_CUR;
+         _visited.add()
+      ?};
+      _visited.clear();
+
+      _args.VISITED.prefix($_args.PREL_CUR);
+      {? _args.VISITED.size()=0
+      || _args.VISITED.blank();
+         _args.VISITED.REF:=$_args.PREL_CUR;
+         _args.VISITED.add()
+      ?};
+      _args.VISITED.clear();
+
+      {? _args.DIR=1
+      ||
+         B_CONN.cntx_psh();
+         B_CONN.index('FROM');
+         B_CONN.prefix(B_PREL.B_PROC,B_PREL.ref());
+         {? B_CONN.first()
+         || {!
+            |?
+               _can_continue:=1;
+
+::             Jeśli podana dozwolona ściezka to sprawdzam czy B_CONN sie zgadza
+               {? _args.B_CONN<>null()
+               || {? _args.B_CONN<>B_CONN.ref()
+                  || _can_continue:=0
+                  ?}
+               ?};
+
+::             Jeśli podana jest klasa elementów przez które moge przeskakiwać
+::             to sprawdzam czy moge przejść przez dany element
+               {? _args.CL_JUMP<>''
+               || _next_class:=exec('FindAndGet','#table','B_PREL',#B_CONN.TO,ref_name(B_CONN.TO),"CLASS",'');
+                  {? _next_class<>_args.CL_JUMP
+                  || _can_continue:=0
+                  ?}
+               ?};
+
+               {? _can_continue>0
+               ||
+                  _args.VISITED.prefix($B_CONN.TO);
+                  {? _args.VISITED.size()=0
+                  ||
+                     {? var_pres('_args_rec')>100
+                     || obj_del(_args_rec)
+                     ?};
+                     _args_rec:=exec('chk_between_a','#b_conn');
+                     _args_rec.PREL_SRC:=_args.PREL_SRC;
+                     _args_rec.PREL_DST:=_args.PREL_DST;
+                     _args_rec.PREL_CUR:=B_CONN.TO;
+                     _args_rec.NUM:=0;
+                     _args_rec.DIR:=_args.DIR;
+                     _args_rec.CLASS:=_args.CLASS;
+                     _args_rec.CL_JUMP:=_args.CL_JUMP;
+                     _args_rec.MODE:=_args.MODE;
+                     _args_rec.TYPE:=_args.TYPE;
+                     _args_rec.KIND:=_args.KIND;
+                     _args_rec.ENTERED:=B_CONN.ref();
+                     _args_rec.FORMULA:=_args.FORMULA;
+                     _args_rec.ARGS1:=_args.ARGS1;
+                     _args_rec.ARGS2:=_args.ARGS2;
+                     _args_rec.ARGS3:=_args.ARGS3;
+
+                     _args.VISITED.cntx_psh();
+                     _args.VISITED.clear();
+                     {? _args.VISITED.first()
+                     || {!
+                        |? _args_rec.VISITED.blank();
+                           _args_rec.VISITED.REF:=_args.VISITED.REF;
+                           _args_rec.VISITED.add();
+                           _args.VISITED.next()
+                        !}
+                     ?};
+                     _args.VISITED.cntx_pop();
+
+::                   !!! REKURENCJA !!!
+                     exec('chk_between','#b_conn',_args_rec,_visited);
+
+                     {? _args_rec.VALIDWAY>0
+                     ||
+::                      Jeśli ścieżka dojechala do końca, to przepisuje z niej liczbe policzonych
+::                      elementow
+                        _args.VALIDWAY:=1;
+                        _args.NUM+=_args_rec.NUM;
+
+                        {? _args.FORMULA<>''
+                        ||
+::                         Jeśli formuła podana to ją wykonuje
+                           ($(_args.FORMULA))(_args.ARGS1,_args.ARGS2,_args.ARGS3)
+                        ?};
+
+                        {? _args.MODE=2
+                        ||
+::                         Jeśli ściezka dojechała do końca to przepisuje zebrane elementy
+                           _args.COLLECTED.cntx_psh();
+                           _args_rec.COLLECTED.cntx_psh();
+                           _args_rec.COLLECTED.clear();
+                           {? _args_rec.COLLECTED.first()
+                           || {!
+                              |? _args.COLLECTED.prefix(_args_rec.COLLECTED.B_PREL);
+                                 {? _args.COLLECTED.size()=0
+                                 || _args.COLLECTED.blank();
+                                    _args.COLLECTED.B_PREL:=_args_rec.COLLECTED.B_PREL;
+                                    _args.COLLECTED.SYMBOL:=_args_rec.COLLECTED.SYMBOL;
+                                    _args.COLLECTED.add()
+                                 ?};
+                                 _args_rec.COLLECTED.next()
+                              !}
+                           ?};
+                           _args_rec.COLLECTED.cntx_pop();
+                           _args.COLLECTED.cntx_pop();
+                           ~~
+                        ?}
+                     ?}
+                  ?}
+               ?};
+               B_CONN.next()
+            !}
+         ?}
+      |? _args.DIR<0
+      ||
+         B_CONN.cntx_psh();
+         B_CONN.index('TO');
+         B_CONN.prefix(B_PREL.B_PROC,B_PREL.ref());
+         {? B_CONN.first()
+         || {!
+            |?
+               _can_continue:=1;
+
+::             Jeśli podana dozwolona ściezka to sprawdzam czy B_CONN sie zgadza
+               {? _args.B_CONN<>null()
+               || {? _args.B_CONN<>B_CONN.ref()
+                  || _can_continue:=0
+                  ?}
+               ?};
+
+::             Jeśli podana jest klasa elementów przez ktore mogę przeskakiwać
+::             to sprawdzam czy moge przejść przez dany element
+               {? _args.CL_JUMP<>''
+               || _prev_class:=exec('FindAndGet','#table','B_PREL',#B_CONN.FROM,ref_name(B_CONN.FROM),"CLASS",'');
+                  {? _prev_class<>_args.CL_JUMP
+                  || _can_continue:=0
+                  ?}
+               ?};
+
+               {? _can_continue>0
+               ||
+                  _args.VISITED.prefix($B_CONN.FROM);
+                  {? _args.VISITED.size()=0
+                  ||
+                     {? var_pres('_args_rec')>100
+                     || obj_del(_args_rec)
+                     ?};
+                     _args_rec:=exec('chk_between_a','#b_conn');
+                     _args_rec.PREL_SRC:=_args.PREL_SRC;
+                     _args_rec.PREL_DST:=_args.PREL_DST;
+                     _args_rec.PREL_CUR:=B_CONN.FROM;
+                     _args_rec.NUM:=0;
+                     _args_rec.DIR:=_args.DIR;
+                     _args_rec.CLASS:=_args.CLASS;
+                     _args_rec.CL_JUMP:=_args.CL_JUMP;
+                     _args_rec.MODE:=_args.MODE;
+                     _args_rec.TYPE:=_args.TYPE;
+                     _args_rec.KIND:=_args.KIND;
+                     _args_rec.ENTERED:=B_CONN.ref();
+                     _args_rec.FORMULA:=_args.FORMULA;
+                     _args_rec.ARGS1:=_args.ARGS1;
+                     _args_rec.ARGS2:=_args.ARGS2;
+                     _args_rec.ARGS3:=_args.ARGS3;
+
+                     _args.VISITED.cntx_psh();
+                     _args.VISITED.clear();
+                     {? _args.VISITED.first()
+                     || {!
+                        |? _args_rec.VISITED.blank();
+                           _args_rec.VISITED.REF:=_args.VISITED.REF;
+                           _args_rec.VISITED.add();
+                           _args.VISITED.next()
+                        !}
+                     ?};
+                     _args.VISITED.cntx_pop();
+
+::                   !!! REKURENCJA !!!
+                     exec('chk_between','#b_conn',_args_rec,_visited);
+
+                     {? _args_rec.VALIDWAY>0
+                     ||
+::                      Jesli ściezka dojechała do końca, to przepisuje z niej liczbe policzonych
+::                      elementow
+                        _args.VALIDWAY:=1;
+                        _args.NUM+=_args_rec.NUM;
+
+                        {? _args.FORMULA<>''
+                        ||
+::                         Jesli formula podana to ja wykonuje
+                           ($(_args.FORMULA))(_args.ARGS1,_args.ARGS2,_args.ARGS3)
+                        ?};
+
+                        {? _args.MODE=2
+                        ||
+::                         Jesli sciezka dojechala do konca to przepisuje zebrane elementy
+                           _args.COLLECTED.cntx_psh();
+                           _args_rec.COLLECTED.cntx_psh();
+                           _args_rec.COLLECTED.clear();
+                           {? _args_rec.COLLECTED.first()
+                           || {!
+                              |? _args.COLLECTED.prefix(_args_rec.COLLECTED.B_PREL);
+                                 {? _args.COLLECTED.size()=0
+                                 || _args.COLLECTED.blank();
+                                    _args.COLLECTED.B_PREL:=_args_rec.COLLECTED.B_PREL;
+                                    _args.COLLECTED.SYMBOL:=_args_rec.COLLECTED.SYMBOL;
+                                    _args.COLLECTED.add()
+                                 ?};
+                                 _args_rec.COLLECTED.next()
+                              !}
+                           ?};
+                           _args_rec.COLLECTED.cntx_pop();
+                           _args.COLLECTED.cntx_pop();
+                           ~~
+                        ?}
+                     ?}
+                  ?}
+               ?};
+               B_CONN.next()
+            !}
+         ?}
+
+      ?};
+      B_CONN.cntx_pop()
+   ?};
+   B_PREL.cntx_pop()
+?};
+_visited.cntx_pop();
+_args.VISITED.cntx_pop();
+~~
+
+
+\bl_order
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: wartość początkowa pola ORDER
+::   WE: [_a] - B_PROC.ref
+::       [_b] - B_PREL.ref()
+::   WY: kolejny numer
+::----------------------------------------------------------------------------------------------------------------------
+
+{? _>=1 || {? type_of(_a)<>7 || _a:=null() ?} || _a:=null() ?};
+{? _>=2 || {? type_of(_b)<>7 || _b:=null() ?} || _b:=null() ?};
+
+_res:=0;
+_b_proc:={? _a<>null() || _a || B_CONN.B_PROC ?};
+_b_prel:={? _b<>null() || _b || B_CONN.FROM ?};
+
+B_CONN.cntx_psh();
+B_CONN.index('ORDER');
+B_CONN.prefix(_b_proc,_b_prel);
+_res:={? B_CONN.last() || B_CONN.ORDER || 0 ?}+1;
+B_CONN.cntx_pop();
+_res
+
+
+\renumOrder
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: przenumerowuje pole ORDER po usunięciu rekordu
+::   WE: [_a] - B_PROC.ref
+::       [_b] - B_PREL.ref()
+::----------------------------------------------------------------------------------------------------------------------
+
+B_CONN.cntx_psh();
+B_CONN.index('ORDER');
+B_CONN.prefix(_a,_b);
+{? B_CONN.first()
+|| _i:=0;
+   {!
+   |? _i+=1;
+      B_CONN.ORDER:=_i;
+      B_CONN.put(1);
+      B_CONN.next()
+   !}
+?};
+B_CONN.cntx_pop();
+~~
+
+
+\goDndOrder
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: włączenie renumeracji Drag&Drop dla pola ORDER tabeli B_CONN
+::---------------------------------------------------------------------------------------------------------------------
+
+B_CONN.cntx_psh();
+{? exec('FindAndGet','#table',B_PROC,$B_CONN.B_PROC,,"B_PROC.ACCEPTED")='T'
+|| exec('akc_info','#b_design',exec('FindAndGet','#table',B_PROC,$B_CONN.B_PROC,,"B_PROC.SYMBOL"))
+|| _ref:=dnd_info('dest_record');
+   {? B_CONN.seek(_ref)
+   || _b_proc:=B_CONN.B_PROC;
+      _from:=B_CONN.FROM;
+      B_CONN.index('ORDER');
+      B_CONN.prefix(_b_proc,_from);
+      exec('zmien_lp','#dragdrop','ORDER','ORDER')
+   ?}
+?};
+B_CONN.cntx_pop()
+
+
+\b_poconn_sel
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [17.00]
+:: OPIS: Dla bieżącego rekordu B_CONN wyswietla powiązania międzyargumentowe
+::----------------------------------------------------------------------------------------------------------------------
+
+{? exec('FindAndGet','#table',B_PROC,$D_ENV.SEL_PROC,,"B_PROC.ACCEPTED='T'")
+|| exec('akc_info','#b_design',exec('FindAndGet','#table',B_PROC,$D_ENV.SEL_PROC,,"B_PROC.SYMBOL"));
+   return(~~)
+?};
+
+{? exec('editable_poconn','#b_poconn')
+|| exec('select4conn','#b_poconn',B_CONN.ref(),2)
+|| _msg:='Funkcja dostępna tylko dla połączeń, które zaczynają się w elemencie typu: brama/czynność, a kończą się w elemencie typu: czynność.';
+   FUN.emsg(_msg)
+?};
+~~
+
+
+\fix_uid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Nawija pole B_CONN.UID wszystkim rekordom
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+B_CONN.cntx_psh();
+B_CONN.index('PROC');
+B_CONN.prefix();
+{? B_CONN.first()
+|| {!
+   |? B_CONN.UID:=exec('uid','#blank');
+      B_CONN.put();
+      B_CONN.next()
+   !}
+?};
+B_CONN.cntx_pop();
+~~
+
+
+\name_mod_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Nanosi na przekazany bufor pole NAME_MOD.
+::       Sprawdza czy połączenie wychodzące z bramy miało modyfikowaną przez użytkownika
+::       nazwę, jeśli tak to nanoszę to do bazy po to by nie nadpisać w przyszłości tej nazwy
+::       podczas automatycznego synchronizowania nazw dla połączeń wychodzących z bram
+::   WE: _a - obj_new - bufor tabeli B_CONN
+::   WY: 0/1 - czy nastąpiła modyfikacja pola NAME_MOD i opłaca się robić puta na B_CONN
+::  TAG: <PUBLICZNA>
+::  OLD: \name_mod_update/#b_choice.fml
+::----------------------------------------------------------------------------------------------------------------------
+_buffer:=_a;
+
+_result:=0;
+B_CHOICE.cntx_psh();
+B_CHOICE.index('B_CONN');
+B_CHOICE.prefix(_buffer.Ref);
+{? B_CHOICE.first()
+|| {? B_CHOICE.size()=1
+   ||
+::    Połączenie ma tylko jeden warunek, więc jeśli nazwa połączenia i warunku jest różna
+::    to znaczy że było modyfikowane
+      {? form(B_CHOICE.NAME)<>form(_buffer.NAME)
+      || {? _buffer.NAME_MOD<>'T'
+         || _result:=1
+         ?};
+         _buffer.NAME_MOD:='T'
+      ?}
+   ||
+::    Połączenie ma wiele warunków więc sprawdzam czy nazwa każdego warunku zawiera się
+::    w nazwie połączenia
+      {!
+      |? {? form(_buffer.NAME)*form(B_CHOICE.NAME)=0
+         ||
+            {? _buffer.NAME_MOD<>'T'
+            || _result:=1
+            ?};
+            _buffer.NAME_MOD:='T'
+         ?};
+         B_CHOICE.next() & _buffer.NAME_MOD='N'
+      !}
+   ?}
+||
+:: Brak warunków na bramie, sprawdzam czy połączenie wychodzi z bramy
+   {? exec('chk_out_names','#b_gate',_buffer.FROM)
+   || {? _buffer.NAME<>''
+      ||
+         {? _buffer.NAME_MOD<>'T'
+         || _result:=1
+         ?};
+::       Jeśli wychodzi z bramy i nazwa niepusta, to znaczy że była ręcznie modyfikowana
+         _buffer.NAME_MOD:='T'
+      ?}
+   ?}
+?};
+B_CHOICE.cntx_pop();
+_result
+
+
+\proc_name_mod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Odtwarza pole B_CONN.NAME_MOD dla wszystkich połączeń w podanym procesie
+::   WE: _a - B_PROC.ref
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+
+_b_proc:=_a;
+
+_can_continue:=1;
+_result:=0;
+
+B_CHOICE.cntx_psh();
+B_CHOICE.index('B_PROC');
+B_CHOICE.prefix(_b_proc);
+{? B_CHOICE.first()
+|| _buf_conn:=exec('B_CONN','#buffer');
+   {!
+   |? {? B_CHOICE.B_CONN<>null() & B_CHOICE.AUTO<>'T'
+      || _buf_conn.cntx_get(B_CHOICE.B_CONN);
+         {? exec('name_mod_update','#b_conn',_buf_conn)>0
+         || _can_continue:=exec('put','#b_conn',_buf_conn,B_CHOICE.B_CONN)
+         ?}
+      ?};
+      B_CHOICE.next() & _can_continue>0
+   !}
+?};
+B_CHOICE.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:08 8662e2a828f947a8c4544430fb072c147ad6bfe56eb267bf56fb5aba83fc4af833a35f5c63d501cefca104fa84b4901249618d893595a1856ac72af49df9ade5362c524b8a02511d8bfd992963338084d64a4e4b66694ec1b2442afcd567315ec467bf3c4e4eeee87f8fad97a9b231f60336e47bb37e8ccda63b2c0e7dda7cb8

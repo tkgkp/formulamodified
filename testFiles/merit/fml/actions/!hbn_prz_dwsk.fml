@@ -1,0 +1,817 @@
+﻿:!UTF-8
+:: (c) Asseco Business Solutions S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !hbn_prz_dwsk.fml
+:: Utworzony: 09.12.2020
+:: Autor: jaws
+::======================================================================================================================
+:: Zawartość: Obsługa czynności HBN_PRZ_DWSK - Utw. przelewów składnika listy
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Utw. przelewów składnika listy - główna formuła czynności.
+::----------------------------------------------------------------------------------------------------------------------
+::# kind=WE, symbol=O, type=_O, name=Wskazanie listy płac, required=T, keyref=T
+::
+::# kind=WEW, symbol=SKID_RBK, type=_SKID_RBK, name=Rachunek, required=N, keyref=N
+::# kind=WEW, symbol=P_ZLEC,   type=DATE,      name=Data zlecenia, required=N, keyref=N
+::# kind=WEW, symbol=P_DATA,   type=DATE,      name=Data przelewu, required=N, keyref=N
+::# kind=WEW, symbol=P_ADRES,  type=_ADRES,    name=Odbiorca przelewu, required=N, keyref=N
+::# kind=WEW, symbol=P_WYBSK,  type=STRING,    name=Wybrane składniki, required=N, keyref=N
+::# kind=WEW, symbol=P_SUMSK,  type=STRING,    name=Suma składników, required=N, keyref=N
+::# kind=WEW, symbol=P_WGMSC,  type=STRING,    name=Według miesiąca, required=N, keyref=N
+::# kind=WEW, symbol=P_GIODO,  type=STRING,    name=Przekazanie danych osobowych, required=N, keyref=N
+::
+::# kind=WEW, symbol=DONE, type=NUMBER, name=Koniec działania, required=N
+::
+::# kind=WY, symbol=O,   type=_O,     name=Wskazanie listy płac, required=N, keyref=N
+::# kind=WY, symbol=SID, type=STRING, name=Sufiks identyfikatora przelewów, required=N, keyref=N
+::
+::# permissions=F_ZATR,UD_SKL,HRB,HRP,FJKS
+
+_par:=params_get();
+_mp:=_par.mp;
+_in:=_par.in;
+_ib:=_par.int;
+_rv:=_par.out;
+
+_id:=exec('ref2uid','#table',_in.O);
+_result:='';
+
+{? _id=''
+|| _result:=params_exec('error','!hbn_prz_dwsk')
+
+|| _mp.keyRef(_id,0,0);
+   {? params_exec('init','!hbn_prz_dwsk')
+   || _value:=0;
+      {? _mp.isMicro() | _ib.DONE=1
+      || _value:=params_exec('send','!hbn_prz_dwsk')
+      ?};
+      {? type_of(_value)=type_of(0)
+      || {? _mp.isMicro()
+         || _mp.cancel()
+         |? _ib.DONE
+         || _mp.done()
+         || _mp.keep()
+         ?}
+      |? type_of(_value)=type_of('')
+      || _result:=_value
+      ?}
+   || {? _mp.isMicro()
+      || _mp.cancel()
+      || _mp.keep()
+      ?}
+   ?}
+?};
+
+{? _result<>''
+:  obsługa błędów
+|| _mp.error(_result);
+   FUN.emsg(_result)
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Utw. przelewów składnika listy - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().mp.load(exec('kind_in','#b_port'));
+_desc:='Przelewy wybranego składnika listy płac'@@;
+
+SEEK.O:=_in.O;
+{? SEEK.O<>null
+|| O.cntx_psh();
+   _desc:='Przelewy wybranego składnika listy płac %1'@@[(~-SEEK.O().LT)];
+   O.cntx_pop()
+?};
+
+_desc
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Zwraca treść komunikatu błędu.
+::   WE:
+::   WY: treść komunikatu
+::----------------------------------------------------------------------------------------------------------------------
+'Utworzenie przelewów składnika z listy płac niemożliwe.'@
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przywróć zapamiętane wartości parametrów raportu.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+params_set(_par);
+_mp:=_par.mp;
+_in:=_par.in;
+_ib:=_par.int;
+_rv:=_par.out;
+
+: wskaż rachunek, z którego realizowany będzie przelew
+{? exec('rachunki_banki','rachunki',exec('desc','!hbn_prz_dwsk'))
+|| _ib.SKID_RBK:=SKID_RBK.ref()
+|| return(0)
+?};
+
+ADRES.cntx_psh();
+ADRES.clear();
+O.cntx_psh();
+SEEK.O:=_in.O;
+SEEK.O();
+
+_epilog:="
+   ADRES.cntx_pop();
+   O.cntx_pop();
+   ~~
+";
+
+_data:=date(O.R,O.M,0);
+_osum:=(-O.T().T='sum');
+
+_rv.O:=_in.O;
+_rv.SID:=(8+$_data)+O.T().T;
+
+exec('czytaj','#stalesys',_data,KST_PAR);
+
+exec('__F_ZATR','object');
+exec('wybierz','lista_plac',O.ref());
+
+_TMP:=tab_tmp(1,
+   'O','INTEGER','Lista płac'@,
+   'R','INTEGER','Rok'@,
+   'M','INTEGER','Miesiąc'@,
+   'P_ADRES','STRING[16]','Odbiorca przelewu'@,
+   'P_NAZWA','STRING[%1]'[$MS.fld_len(ADRES,'NAZWA')],'Odbiorca przelewu'@,
+   'P_KONTO','STRING[%1]'[$MS.fld_len(ADRES,'KONTO')],'Rachunek odbiorcy'@,
+   'ZAKRES','STRING[40]','Zakres danych'@,
+   'P_ZLEC','DATE','Data zlecenia'@,
+   'P_DATA','DATE','Data przelewu'@,
+   'P_WYBSK','STRING[255]','Wybrane składniki'@,
+   'P_SKNFO','SYS_MEMO','Wybrane składniki'@,
+   'P_SUMSK','STRING[1]','Rodzaj przelewu'@,
+   'P_WGMSC','STRING[1]','Według miesiąca'@,
+   'P_LSMSC','SYS_MEMO','Listy w miesiącu'@
+);
+
+:: dodaj obsługę pól na etapie edycji parametrów przelewu
+_TMP.fld_fml('P_NAZWA','BEFORE_DISPLAY',"exec('dlg_p_nazwa_bd','!hbn_prz_dwsk')");
+_TMP.fld_fml('P_KONTO','BEFORE_DISPLAY',"exec('dlg_p_konto_bd','!hbn_prz_dwsk')");
+_TMP.fld_fml('P_SKNFO','BEFORE_DISPLAY',"exec('dlg_p_sknfo_bd','!hbn_prz_dwsk')");
+_TMP.fld_fml('P_WGMSC','AFTER_EDIT',"exec('dlg_update_l','!hbn_prz_dwsk',cur_tab())");
+
+:: utwórz okienko parametrów przelewu
+_wnd:=_TMP.mk_edit('Przelew składnika',0,'#hbn_prz_dwsk');
+_max:=50;
+_TMP.win_esep(_wnd,'Dane podstawowe');
+_TMP.win_efld(_wnd,,'P_NAZWA',,,_max,,1);
+_TMP.win_efld(_wnd,,'P_KONTO',,,_max,,1);
+_TMP.win_efld(_wnd,,'ZAKRES',,,_max,,1);
+_TMP.win_efld(_wnd,,'P_ZLEC',,,,,,,,'Data zlecenia'@);
+_TMP.win_efld(_wnd,,'P_DATA',,,,,,,,'Data przelewu'@);
+_TMP.win_efld(_wnd,,'P_SKNFO',,,_max,-5,1);
+_TMP.win_efld(_wnd,,'P_SUMSK',,,,,,,,'Sposób agregacji danych'@,'radio-buttons',,
+   'Przelewy imienne poszczególnych składników'@,"'B'",
+   'Przelewy imienne podsumowanych składników'@,"'P'",
+   'Przelewy zbiorcze wybranych składników'@,"'S'",
+   'Przelew zbiorczy'@,"'Z'"
+);
+{? _osum
+|| _TMP.win_ecol(_wnd);
+   _TMP.win_esep(_wnd,'Listy płac za %1'@[_data$8]);
+   _TMP.win_efld(_wnd,,'P_WGMSC',,,,,,,,'Sposób wyboru list płac'@,'radio-buttons',,
+      'Kosztowego'@,"'K'",
+      'Podatkowego'@,"'P'",
+      'Ubezpieczeniowego'@,"'U'"
+   );
+   _TMP.win_efld(_wnd,,'P_LSMSC',,,40,-11,1)
+?};
+:: ustaw opcje pól
+_TMP.efld_opt(_wnd,'mark=1',,'P_NAZWA');
+_TMP.efld_opt(_wnd,'mark=1',,'P_KONTO');
+_TMP.efld_opt(_wnd,'mark=1',,'P_ZLEC');
+_TMP.efld_opt(_wnd,'mark=1',,'P_DATA');
+_TMP.efld_opt(_wnd,'mark=1',,'P_SKNFO');
+
+:: dodaj przycisk "Odbiorca"
+_btn:=_TMP.win_ebtn(_wnd,'text=%1,align=begin'[exec('dlg_text_receiver','!hbn_prz_dwsk')],"
+   exec('dlg_choose_a','!hbn_prz_dwsk',cur_tab());
+   ''
+");
+_TMP.btn_eopt(_wnd,_btn,'tooltip=%1'['Wybór odbiorcy przelewu'@]);
+:: dodaj przycisk "Składniki"
+_btn:=_TMP.win_ebtn(_wnd,'text=%1,align=begin'[exec('dlg_text_positions','!hbn_prz_dwsk')],"
+   exec('dlg_choose_r','!hbn_prz_dwsk',cur_tab());
+   ''
+");
+_TMP.btn_eopt(_wnd,_btn,'tooltip=%1'['Wybór składników do przelewu'@]);
+:: dodaj przycisk "Zakończ"
+_btn:=_TMP.win_ebtn(_wnd,'text=%1'['Zakończ przelew'@],"
+   params_get().int.DONE:=1;
+   'key:F2'
+");
+_TMP.btn_eopt(_wnd,_btn,
+   {? _mp.isMicro()
+   || 'tooltip=%1,state=grayed'[exec('help_red_zakoncz','#window','H')]
+   || 'tooltip=%1,state=normal'[exec('help_act_zakoncz','#window')]
+   ?}
+);
+:: dodaj przycisk "OK"
+_btn:=_TMP.win_ebtn(_wnd,'text=%1'['Zapisz'@],"
+   params_get().int.DONE:=0;
+   'key:F2'
+");
+_TMP.btn_eopt(_wnd,_btn,'tooltip=%1'[
+   {? _mp.isMicro()
+   || exec('help_red_ok','#window','Z')
+   || exec('help_act_ok','#window')
+   ?}
+]);
+:: dodaj przycisk "Anuluj"
+_btn:=_TMP.win_ebtn(_wnd,'text=%1'['Anuluj'@],"'key:Esc'");
+_TMP.btn_eopt(_wnd,_btn,'tooltip=%1'[
+   {? _mp.isMicro()
+   || exec('help_red_esc','#window','A')
+   || exec('help_act_esc','#window')
+   ?}
+]);
+
+:: ustaw wartości w buforze edycji
+_TMP.O:=#O.ref();
+_TMP.R:=O.R;
+_TMP.M:=O.M;
+{? type_of(_ib.P_ADRES)=type_of(null) & ADRES.seek(_ib.P_ADRES,,1)
+|| _TMP.P_ADRES:=$ADRES.ref();
+   _TMP.P_NAZWA:=ADRES.NAZWA;
+   _TMP.P_KONTO:=ADRES.KONTO
+?};
+_TMP.ZAKRES:=
+   {? -O.T().T='sum'
+   || 'listy płac za %1'@[_data$8]
+   || 'lista płac %1 za %2'@[O.T().T,_data$8]
+   ?};
+{? type_of(_ib.P_ZLEC)=type_of(_TMP.P_ZLEC)
+|| _TMP.P_ZLEC:=_ib.P_ZLEC
+|| _TMP.P_ZLEC:=date()
+?};
+{? type_of(_ib.P_DATA)=type_of(_TMP.P_DATA)
+|| _TMP.P_DATA:=_ib.P_DATA
+|| _TMP.P_DATA:=date()
+?};
+{? type_of(_ib.P_WYBSK)=type_of(_TMP.P_WYBSK)
+|| exec('dlg_update_r','!hbn_prz_dwsk',_TMP,_ib.P_WYBSK)
+?};
+{? type_of(_ib.P_SUMSK)=type_of(_TMP.P_SUMSK)
+|| _TMP.P_SUMSK:=_ib.P_SUMSK
+|| _TMP.P_SUMSK:='N'
+?};
+{? type_of(_ib.P_WGMSC)=type_of(_TMP.P_WGMSC)
+|| _TMP.P_WGMSC:=_ib.P_WGMSC
+|| _TMP.P_WGMSC:='K'
+?};
+exec('dlg_update_l','!hbn_prz_dwsk',_TMP);
+_ib.DONE:=0;
+
+_TMP.win_edit(_wnd);
+:: pobierz dane od użytkownika
+{? ~_TMP.edit("exec('dlg_validate','!hbn_prz_dwsk',cur_tab())")
+|| _epilog();
+   return(0)
+?};
+
+:: zapamiętaj parametry
+{? ADRES.seek(_TMP.P_ADRES,,1)
+|| _ib.P_ADRES:=ADRES.ref()
+?};
+_ib.P_ZLEC:=_TMP.P_ZLEC;
+_ib.P_DATA:=_TMP.P_DATA;
+_ib.P_WYBSK:=_TMP.P_WYBSK;
+_ib.P_SUMSK:=_TMP.P_SUMSK;
+_ib.P_WGMSC:=_TMP.P_WGMSC;
+
+_mp.save(_ib,_rv);
+
+O.index(
+   {? _ib.P_WGMSC='P' || 'LISTYPOD'
+   |? _ib.P_WGMSC='U' || 'LISTYUBZ'
+   || 'LISTYMIE'
+   ?}
+);
+{? -O.T().T='sum'
+|| O.prefix(O.FIRMA,O.R,O.M)
+|| O.prefix(O.FIRMA,O.R,O.M,O.T().T,)
+?};
+
+O.cntx_psh();
+_test:=O.find_tab(1,'Z',,'=','N');
+O.cntx_pop();
+{? _test
+|| {? ~FUN.ask('%1\n%2'[
+         {? -O.T().T='sum'
+         || 'Znaleziono otwarte listy płac.'@
+         || 'Lista płac %1 jest otwarta.'@[~-O.LT]
+         ?},
+         'Czy kontynuować działanie?'@
+      ])
+   || _epilog();
+      return(0)
+   ?}
+?};
+
+_epilog();
+
+params_exec('send','!hbn_prz_dwsk');
+1
+
+
+\dlg_validate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Weryfikuje poprawność danych w dialogu parametrów przelewów.
+::   WE: _a TABLE - alias tabeli dialogu czynności
+::   WY: wynik kontroli wiersza
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_TAB:=_a;
+
+{? _TAB.P_NAZWA=exec('dlg_p_nazwa_txt','!hbn_prz_dwsk')
+|| _TAB.P_NAZWA:=''
+?};
+{? _TAB.P_KONTO=exec('dlg_p_konto_txt','!hbn_prz_dwsk')
+|| _TAB.P_KONTO:=''
+?};
+
+{? (_chk:=__CHK.record(_TAB,,'P_ZLEC','P_DATA'))<>''
+|| return(_chk)
+?};
+
+{? (_chk:=__CHK.record(_TAB,1,'P_ADRES','P_KONTO'))<>''
+|| __CHK.err_fld(_TAB,_chk);
+   exec('dlg_choose_a','!hbn_prz_dwsk',_TAB);
+   win_disp();
+   return(0)
+?};
+
+{? (_chk:=__CHK.record(_TAB,1,'P_WYBSK'))<>''
+|| __CHK.err_fld(_TAB,_chk);
+   exec('dlg_choose_r','!hbn_prz_dwsk',_TAB);
+   win_disp();
+   return(0)
+?};
+
+1
+
+
+\dlg_text_receiver
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Zwraca tekst przycisku "Odbiorca"
+::   WE:
+::   WY: tekst przycisku
+::----------------------------------------------------------------------------------------------------------------------
+'Odbiorca'@
+
+
+\dlg_text_positions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Zwraca tekst przycisku "Składniki"
+::   WE:
+::   WY: tekst przycisku
+::----------------------------------------------------------------------------------------------------------------------
+'Składniki'@
+
+
+\dlg_p_nazwa_txt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Tworzy tekst podpowiedzi w polu P_NAZWA tabeli parametrów.
+::   WE:
+::   WY: tekst podpowiedzi
+::----------------------------------------------------------------------------------------------------------------------
+'Aby wskazać odbiorcę użyj przycisku "%1".'@[exec('dlg_text_receiver','!hbn_prz_dwsk')]
+
+
+\dlg_p_konto_txt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Tworzy tekst podpowiedzi w polu P_KONTO tabeli parametrów.
+::   WE:
+::   WY: tekst podpowiedzi
+::----------------------------------------------------------------------------------------------------------------------
+'Aby określić rachunek użyj przycisku "%1".'@[exec('dlg_text_receiver','!hbn_prz_dwsk')]
+
+
+\dlg_p_sknfo_txt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Tworzy tekst podpowiedzi w polu P_SKNFO tabeli parametrów.
+::   WE:
+::   WY: tekst podpowiedzi
+::----------------------------------------------------------------------------------------------------------------------
+'Aby wybrać składniki listy użyj przyciku "%1".'@[exec('dlg_text_positions','!hbn_prz_dwsk')]
+
+
+\dlg_p_nazwa_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed wyświetleniem pola P_NAZWA tabeli parametrów.
+::   WE:
+::   WY: zgodny ze specyfikacją narzędzi
+::----------------------------------------------------------------------------------------------------------------------
+_txt:=exec('dlg_p_nazwa_txt','!hbn_prz_dwsk');
+{? fld()='' | fld()=_txt
+|| fld(_txt);
+   exec('place_holder','color')
+|| 1
+?}
+
+
+\dlg_p_konto_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed wyświetleniem pola P_KONTO tabeli parametrów.
+::   WE:
+::   WY: zgodny ze specyfikacją narzędzi
+::----------------------------------------------------------------------------------------------------------------------
+_txt:=exec('dlg_p_konto_txt','!hbn_prz_dwsk');
+{? fld()='' | fld()=_txt
+|| fld(_txt);
+   exec('place_holder','color')
+|| 1
+?}
+
+
+\dlg_p_sknfo_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed wyświetleniem pola P_SKNFO tabeli parametrów.
+::   WE:
+::   WY: zgodny ze specyfikacją narzędzi
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=cur_tab();
+_txt:=exec('dlg_p_sknfo_txt','!hbn_prz_dwsk');
+_skl:=_TAB.memo_txt(,0,'P_SKNFO');
+{? _skl='' | _skl=_txt
+|| _TAB.memo_set(_txt,'P_SKNFO');
+   exec('place_holder','color')
+|| 1
+?}
+
+
+\dlg_choose_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Obsługa klawisza "Odbiorca".
+::   WE: _a TABLE - alias tabeli dialogu czynności
+::   WY: wskazanie wiersza tabeli ADRES
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_TAB:=_a;
+
+{? (_ref:=exec('wybierz_adres','ext_slo'))<>null & ADRES.seek(_ref,,1)
+|| _TAB.P_ADRES:=$ADRES.ref();
+   _TAB.P_NAZWA:=ADRES.NAZWA;
+   _TAB.P_KONTO:=ADRES.KONTO
+?};
+
+_ref
+
+
+\dlg_choose_r
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Obsługa klawisza "Składniki".
+::   WE: _a TABLE - alias tabeli dialogu czynności
+::   WY: lista wybranych składników
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_TAB:=_a;
+
+_res:=exec('code_grp','profile',,'hbn_prz_dwsk',,,,'SEL');
+exec('dlg_update_r','!hbn_prz_dwsk',_TAB,_res);
+_res
+
+
+\dlg_update_r
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Aktualizuje informacje o wybranych składnikach.
+::   WE: _a TABLE - alias tabeli dialogu czynności
+::       _b STRING - lista wybranych składników
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_TAB:=_a;
+_sel:=_b;
+
+_nfo:='';
+R.cntx_psh();
+R.index('RUBKOD');
+_skl:=spli_str(_sel,',');
+_len:=obj_len(_skl);
+{! _ii:=1.._len
+|! {? R.find_key(#_skl[_ii])
+   || _nfo+='%1 - %2\n'[$R.RN,R.RT]
+   ?}
+!};
+R.cntx_pop();
+
+_TAB.P_WYBSK:=_sel;
+_TAB.memo_set(_nfo,'P_SKNFO');
+~~
+
+
+\dlg_update_l
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Aktualizuje informacje o listach w miesiącu.
+::   WE: _a TABLE - alias tabeli dialogu czynności
+::       _b INTEGER - rok
+::       _c INTEGER - miesiąc
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_TAB:=_a;
+
+_omc:='';
+O.cntx_psh();
+O.index(
+   {? _TAB.P_WGMSC='P' || 'LISTYPOD'
+   |? _TAB.P_WGMSC='U' || 'LISTYUBZ'
+   || 'LISTYMIE'
+   ?}
+);
+O.prefix(exec('ref_firma','ustawienia'),_TAB.R,_TAB.M);
+_loop:=O.first();
+{!
+|? _loop
+|! _omc+='%1 %2\n'[O.T().T,date(O.R,O.M,1)$8];
+   _loop:=O.next()
+!};
+O.cntx_pop();
+
+_TAB.memo_set(_omc,'P_LSMSC');
+~~
+
+
+\query
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Pobiera kwoty składników do przelewu.
+::   WE:
+::   WY: alias tabeli z danymi
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_in:=_par.in;
+_ib:=_par.int;
+
+:: przygotuj tablicę kodów rubtyk
+_wyb:=spli_str(_ib.P_WYBSK,',');
+_len:=obj_len(_wyb);
+_skl:=obj_new(_len);
+{! _ii:=1.._len
+|! _skl[_ii]:=#_wyb[_ii]
+!};
+
+:: składniki
+_BUF:=tab_tmp(2,
+   'P','STRING[16]','Pracownik'@,
+   'R','STRING[16]','Składnik'@,
+   'KW','REAL','Kwota'@
+);
+
+O.cntx_psh();
+P.cntx_psh();
+P.clear();
+LS.cntx_psh();
+
+:: ustal listę
+SEEK.O:=_in.O;
+SEEK.O();
+
+O.index(
+   {? _ib.P_WGMSC='P' || 'LISTYPOD'
+   |? _ib.P_WGMSC='U' || 'LISTYUBZ'
+   || 'LISTYMIE'
+   ?}
+);
+{? -O.T().T='sum'
+|| O.prefix(O.FIRMA,O.R,O.M)
+|| O.prefix(O.FIRMA,O.R,O.M,O.T().T,)
+?};
+
+_loop:=O.first();
+{!
+|? _loop
+|! LS.use(-O.LT);
+   LS.index('LISTPRAC');
+:  przeglądaj tylko dostępnych współpracowników
+   exec('filtruj_p','schemat',
+      'PPL',
+      exec('szukaj_ud_def_root','schemat',exec('domyslny','schemat','PODZORG'),O.WYDZIAL),
+      O.F_ZATR().KOD,,
+      'W'
+   );
+   _loop:=P.f_first();
+   {!
+   |? _loop
+   |! {! _ii:=1.._len
+      |! LS.prefix(O.ref(),P.ref(),_skl[_ii]);
+         _loop:=LS.first();
+         {!
+         |? _loop
+         |! _BUF.P:=$LS.P;
+            _BUF.R:=$LS.RB;
+            _BUF.KW:=LS.KW;
+            _BUF.add();
+            _loop:=LS.next()
+         !}
+      !};
+      _loop:=P.f_next()
+   !};
+   _loop:=O.next()
+!};
+
+P.f_clear();
+LS.cntx_pop();
+P.cntx_pop();
+O.cntx_pop();
+
+_BUF
+
+
+\send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przelew wybranego składnika listy płac.
+::   WE:
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_mp:=_par.mp;
+_in:=_par.in;
+_ib:=_par.int;
+_rv:=_par.out;
+
+O.cntx_psh();
+O.prefix();
+P.cntx_psh();
+P.prefix();
+R.cntx_psh();
+R.prefix();
+PB.cntx_psh();
+ADRES.cntx_psh();
+ADRES.prefix();
+OSOBA.cntx_psh();
+OSOBA.prefix();
+SKID_RBK.cntx_psh();
+SKID_RBK.prefix();
+
+_epilog:="
+   SKID_RBK.cntx_pop();
+   OSOBA.cntx_pop();
+   ADRES.cntx_pop();
+   PB.cntx_pop();
+   R.cntx_pop();
+   P.cntx_pop();
+   O.cntx_pop();
+   ~~
+";
+
+{? ~SKID_RBK.seek(_ib.SKID_RBK)
+|| _epilog();
+   return('Ustalenie rachunku nie powiodło się.'@)
+
+|? ~O.seek(_in.O)
+|| _epilog();
+   return('Ustalenie listy płac nie powiodło się.'@)
+
+|? ~ADRES.seek(_ib.P_ADRES)
+|| _epilog();
+   return('Ustalenie wierzyciela nie powiodło się.'@)
+?};
+
+:: pobierz kwoty składników  z list płac
+_BUF:=params_exec('query','!hbn_prz_dwsk');
+
+_SUM:=
+   {? _ib.P_SUMSK='B'
+::    przelewy imienne poszczególnych składników
+   || sql('select P, R, sum(KW) as KW from :_a group by P, R',_BUF)
+
+   |? _ib.P_SUMSK='P'
+::    przelewy imienne podsumowanych składników
+   || sql('select P, sum(KW) as KW from :_a group by P',_BUF)
+
+   |? _ib.P_SUMSK='S'
+::    przelewy zbiorcze wybranych składników
+   || sql('select R, sum(KW) as KW from :_a group by R',_BUF)
+
+   |? _ib.P_SUMSK='Z'
+::    przelew zbiorczy
+   || sql('select sum(KW) as KW from :_a',_BUF)
+
+   || ~~
+   ?};
+{? type_of(_SUM)<>type_of(SYSLOG)
+|| _epilog();
+   return('Pobranie kwot nie powiodło się.'@)
+?};
+
+PB.use('pbxxxx');
+PB.index('PBKO');
+PB.prefix();
+
+_mdbs:=exec('tab_names','#table',PB);
+_loop:=_SUM.first();
+{!
+|? _loop
+|! _prac:=
+      {? (_ib.P_SUMSK='B' | _ib.P_SUMSK='P') & P.seek(_SUM.P)
+      || P.OSOBA();
+         P.ref()
+      || null
+      ?};
+   _rub:=
+      {? (_ib.P_SUMSK='B' | _ib.P_SUMSK='S') & R.seek(_SUM.R)
+      || R.ref()
+      || null
+      ?};
+   _txt:=
+      {? _ib.P_SUMSK='B' || '%1%2%3'[$_in.O,$_prac,$_rub]
+      |? _ib.P_SUMSK='P' || '%1%2%3'[$_in.O,$_prac,_ib.P_WYBSK]
+      |? _ib.P_SUMSK='S' || '%1%2'[$_in.O,$_rub]
+      |? _ib.P_SUMSK='Z' || '%1%2'[$_in.O,_ib.P_WYBSK]
+      ?};
+
+   _kid:=hash(_txt,'md5');
+   _pb:=exec('get_pb_by_id','hbn',_kid);
+
+   {? _pb.ACTION<>'none'
+   || {? _pb.ACTION='put'
+      || PB.seek(_pb.REF)
+      || PB.blank()
+      ?};
+      exec('ustaw_pb','rachunki','F');
+      PB.NR:=0;
+      PB.NBD:=SKID_RBK.BANK;
+      PB.RD:=gsub(ROZNE.KONBAN,' ','');
+
+      PB.W:=ADRES.NAZWA;
+      PB.NBW:=ADRES.BANK;
+      PB.RW:=gsub(ADRES.KONTO,' ','');
+      PB.KP:=ADRES.KOD_POCZ;
+      PB.M:=ADRES.MIASTO;
+      PB.UL:=ADRES.ULICA;
+
+      _tyt:=Plugin.run('HBN_PRZ_DWSK_TYT',_ib.P_SUMSK,_in.O,_prac,_rub);
+      {? type_of(_tyt)<>type_of('') | _tyt=''
+::       ustal tytuł przelewu
+      || _tyt:=
+            {? _ib.P_SUMSK='B' || '%1 %2 za miesiąc %3.%4 (%5)'[OSOBA.NAZWISKO,OSOBA.PIERWSZE,$O.M,$O.R,R.RT]
+            |? _ib.P_SUMSK='P' || '%1 %2 za miesiąc %3.%4'[OSOBA.NAZWISKO,OSOBA.PIERWSZE,$O.M,$O.R]
+            |? _ib.P_SUMSK='S' || 'Przelew za miesiąc %1.%2 (%3)'[$O.M,$O.R,R.RT]
+            |? _ib.P_SUMSK='Z' || 'Przelew za miesiąc %1.%2'[$O.M,$O.R]
+            ?}
+      ?};
+
+      PB.DZ:=_ib.P_ZLEC;
+      PB.DP:=_ib.P_DATA;
+      PB.TYT:=_tyt;
+      PB.KW:=_SUM.KW;
+      PB.KD:='PPL: Płace';
+      PB.PR:='N';
+      PB.KID:=_kid;
+      PB.WAL:=KST_PAR.NAROD;
+      PB.RODZ:='K';
+      {? _pb.ACTION='put'
+      || {? PB.KW<>0
+         || PB.put()
+         || PB.del()
+         ?}
+      || {? PB.KW<>0
+         || PB.add()
+         ?}
+      ?}
+   ?};
+   obj_del(_pb);
+   _loop:=_SUM.next()
+!};
+
+:: porządki
+_epilog();
+1
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:38 e0959f70c116c1d186c35bd70a3422d51c62bda395f7f96f4d782811d52cd992126775389b515936583b0f9498f975f8cfc1f1cb2a78a92f35e2b8cd54065a4d4a75d3ee5fa05d6ab3d83a4c905c59cf418e8e34743df0dac2f37ec569c5bf8ce38868147b9c6fa026d6d01e9bf5fcaaab7e441854ed638436887e327c2d6b05

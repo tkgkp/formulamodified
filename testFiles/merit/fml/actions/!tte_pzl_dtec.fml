@@ -1,0 +1,623 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_dtec.fml
+:: Utworzony: 09.09.2015
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_DTEC - Rejestracja technologii zlecenia
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła główna czynności rejestracji technologii zlecenia (TTE_PZL_DTEC)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+::# permissions=ODDZ
+::# properties=SERVICE
+::# parses=exec('parses','!tte_pzl_dtec')
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=T, keyref=T
+{? var_pres('ZL',_in)<>type_of(~~) & var_pres('ZL',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZL',_in)=type_of(~~) || return() ?};
+::# kind=WE, symbol=EDIT_PARAM, type=STRING, name=Czy redagować wartości parametrów?, required=N, keyref=N, fml_val="exec('edit_boolean','#edit',_a,'Czy redagować wartości parametrów?')"
+{? var_pres('EDIT_PARAM',_in)=type_of(~~)
+|| _tpar_ask:=1
+|? var_pres('EDIT_PARAM',_in)=type_of('')
+|| _tpar_ask:=(-(1+_in.EDIT_PARAM)='t')
+|| return()
+?};
+_ok:=1;
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=TKTL_ZL, type=_TKTL, name=Wskazanie na kartę technologiczną, required=N
+{? var_pres('TKTL_ZL',_out)<>type_of(~~) & var_pres('TKTL_ZL',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=POLFABRYKATY, type=STRING, name=Czy karta technologiczna zawiera półfabrykaty?, required=N
+{? var_pres('POLFABRYKATY',_out)<>type_of('') || _out.POLFABRYKATY:='N' ?};
+::# kind=WY, symbol=OPERACJE, type=STRING, name=Redagowanie listy operacji, required=N
+{? var_pres('OPERACJE',_out)<>type_of('') || _out.OPERACJE:='N' ?};
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik działania (OK, BŁĄD)", required=N
+
+_result:=~~;
+
+_torw:=VAR.A_TORW:='Z';
+_akcja:=_mp.akcja();
+
+_clean_result:=params_exec('clean','!tte_pzl_dtec',_mp,_in);
+_can_continue:=_clean_result.RESULT;
+_zl:=_clean_result.ZL;
+
+{? _can_continue>0
+||
+:: WSTĘPNE WALIDACJE
+   {? _mp.isService() & _zl=null()
+   || _msg:='Błędna konfiguracja procesu — nie przekazano zlecenia.'@;
+      _mp.error(_msg);
+      return()
+   ?};
+
+   ZL.cntx_psh();
+   ZL.prefix();
+   {? ZL.seek(_zl)
+   ||
+      {? ZL.TYP().WP<>'P'
+      || _msg:='Niezgodność wywołania czynności.\nNie można redagować technologii dla zlecenia warsztatowego.';
+         {? ~_mp.isService()
+         || FUN.emsg(_msg)
+         ?};
+         _mp.error(_msg)
+
+      |? ZL.RODZAJ<>'P'
+      || _msg:='Niezgodność wywołania czynności.\nTechnologię można redagować tylko dla zlecenia prostego.';
+         {? ~_mp.isService()
+         || FUN.emsg(_msg)
+         ?};
+         _mp.error(_msg)
+
+      |? ZL.STAT_N<>'T'
+      || _msg:='Nie można uruchomić czynności.\nRejestrowanie nagłówka zlecenia nie zostało zakończone.'@;
+         _result:=0;
+         {? _mp.isService()
+         || _out.RESULT:='BŁĄD';
+            _mp.save(,_out);
+            _mp.done()
+         || FUN.info(_msg);
+            _mp.cancel()
+         ?}
+
+      |? ZL.STAN='Z'
+      || {? ~_mp.isService()
+         || FUN.info('Zlecenie jest zamknięte — czynność rejestrowania technologii zostaje zakończona.'@)
+         ?};
+         _out.RESULT:='OK';
+         _mp.save(,_out);
+         _mp.done()
+
+      |? ZL.TYP().TECH<>'T'
+      || {? ~_mp.isAutoRun() & ~_mp.isService()
+         || _msg:='Zlecenie bez własnej technologii.\nCzynność zostanie zakończona.'@;
+            FUN.emsg(_msg)
+         ?};
+         _tktl:=exec('FindAndGet','#table',TKTL,ZL.RKTL,,"ref()",null());
+         {? _tktl
+         || ZL.STAT_T:='T';
+            {? ZL.put()
+            || _out.TKTL_ZL:=_tktl;
+               _out.OPERACJE:=exec('FindAndGet','#table',TKTL,_tktl,,"TYP().OPER",'N');
+               _out.POLFABRYKATY:={? exec('czy_pf','tech_mater',_tktl) || 'T' || 'N' ?};
+               _out.RESULT:='OK';
+               _mp.save(,_out);
+               _mp.done()
+            ?}
+         ?}
+
+      ||
+         VAR.A_ZLEC:=_in.ZL;
+
+::       Czynność uruchamiana automatycznie - generuje i zatwierdza technologię
+::       Kompletność technologii nie jest sprawdzana, gdyż powinna być ok technologia źródłowa
+::       Jeżeli pojawi się pytanie o parametry, a operator z niego zrezygnuje - zadanie pozostaje na ToDo
+         {? _mp.isAutoRun() | _mp.isService()
+         || _args:=exec('showzktl_a','tech_head');
+            _args.ZL:=ZL.ref();
+            _args.SHOW:=0;
+            _args.TPAR_ASK:={? _mp.isService() || 0 || _tpar_ask ?};
+            {? exec('showzktl','tech_head',_args,~_mp.isService()) & _args.TPAR_EDITED
+            || VAR.A_KTL:=_args.TKTL;
+               _out.TKTL_ZL:=VAR.A_KTL;
+               _out.OPERACJE:=VAR.A_KTL().TYP().OPER;
+               _out.POLFABRYKATY:={? exec('czy_pf','tech_mater',_args.TKTL) || 'T' || 'N' ?};
+               {? _out.POLFABRYKATY='T' & ZL.NRNZL<>null()
+               || _ok:=exec('tktl_check','tech_structure',VAR.A_ZLEC,~_mp.isService())
+               ?};
+               {? _ok
+               || {? _args.SHOW=1
+                  || _out.RESULT:='OK';
+                     _mp.save(,_out);
+                     {? VAR.A_KTL().STAN='T'
+                     || ZL.get();
+                        ZL.STAT_T:='T';
+                        ZL.put();
+                        _mp.done()
+                     ?}
+                  || _out.RESULT:='OK';
+                     _mp.save(,_out);
+                     TKTL.STAT_N:='T'; TKTL.STAT_O:='T'; TKTL.STAT_S:='T'; TKTL.STAT_P:='T'; TKTL.STAN:='T';
+                     {? TKTL.put()
+                     || ZL.get();
+                        ZL.STAT_T:='T';
+                        ZL.put();
+                        _mp.done()
+                     ?}
+                  ?}
+               || {? _mp.isService()
+                  || _out.RESULT:='BŁĄD';
+                     _mp.save(,_out);
+                     _mp.done()
+                  || _mp.cancel()
+                  ?}
+               ?}
+            || {? _mp.isService()
+               || _out.RESULT:='BŁĄD';
+                  _mp.save(,_out);
+                  _mp.done()
+               ?}
+            ?}
+
+::       Uruchomienie redagowania z obszaru roboczego albo z ToDo
+         |? _akcja='REDAGUJ' | _mp.pathTodo()
+         || VAR.GRUPA:='N';
+            _args:=exec('showzktl_a','tech_head');
+            _args.ZL:=ZL.ref();
+            _args.SHOW:=1;
+            _args.TPAR_ASK:=_tpar_ask;
+            _mp.keyRef(ZL.uidref());
+            {? _akcja='REDAGUJ' || params_set('env',_context.env) ?};
+            {? exec('showzktl','tech_head',_args)
+            || VAR.A_KTL:=_args.TKTL;
+               _out.TKTL_ZL:=VAR.A_KTL;
+               _out.OPERACJE:=VAR.A_KTL().TYP().OPER;
+               _out.POLFABRYKATY:={? exec('czy_pf','tech_mater',_args.TKTL) || 'T' || 'N' ?};
+               {? _out.POLFABRYKATY='T' & ZL.NRNZL<>null()
+               || _ok:=exec('tktl_check','tech_structure',VAR.A_ZLEC)
+               ?};
+               {? _ok
+               || {? _mp.isMicro()
+                  || _mp.cancel()
+                  || _out.RESULT:='OK';
+                     _mp.save(,_out)
+                  ?};
+::                Jeżeli stan karty ustawiony, to ustawiana jest również flaga na zleceniu oraz czynność jest kończona
+                  {? VAR.A_KTL().STAN='T'
+                  || ZL.get();
+                     ZL.STAT_T:='T';
+                     ZL.put();
+                     _mp.done()
+                  ?}
+               || _mp.cancel()
+               ?}
+            ?}
+
+::       Obsługa funkcji 'Generuj' z zakładki 'Technologia' obszaru roboczego zleceń
+         |? _akcja='GENERUJ'
+         || VAR.GRUPA:='N';
+            _args:=exec('showzktl_a','tech_head');
+            _args.ZL:=ZL.ref();
+            _args.SHOW:=0;
+            _args.TPAR_ASK:=_tpar_ask;
+            {? exec('showzktl','tech_head',_args)
+            || VAR.A_KTL:=_args.TKTL;
+               _result:=1
+            || _result:=0
+            ?};
+::          Po wygenerowaniu technologii pozostaję w zakładce, więc ją ponownie blokuję
+            _mp.lock()
+
+::       Wejście do okienka w ramach obszaru roboczego - uruchomienie czynności
+         |? _akcja='START'
+         || _mp.keyRef(ZL.uidref());
+            _mp.lock();
+            ~~
+
+::       Wyjście z okienka w ramach obszaru roboczego - anulowanie czynności
+         |? _akcja='STOP'
+         || {? _mp.isMicro()
+            || _mp.delRef(ZL.uidref());
+               _mp.cancel()
+            ?};
+            _mp.unlock()
+
+::       Obsługa funkcji 'Zakończ' z poziomu obszaru roboczego zleceń
+         |? _akcja='ZAKOŃCZ'
+         || {? ZL.RTKTL=''
+            || {? FUN.ask(
+                     'Brak technologii zlecenia.\n\n'
+                     'Czy wygenerować i zakończyć rejestrację technologii zlecenia?'@
+                  )
+               || _args:=exec('showzktl_a','tech_head');
+                  _args.ZL:=ZL.ref();
+                  _args.SHOW:=0;
+                  _args.TPAR_ASK:=_tpar_ask;
+                  {? exec('showzktl','tech_head',_args)
+                  || VAR.A_KTL:=_args.TKTL;
+                     _out.TKTL_ZL:=VAR.A_KTL;
+                     _out.OPERACJE:=VAR.A_KTL().TYP().OPER;
+                     _out.POLFABRYKATY:={? exec('czy_pf','tech_mater',_args.TKTL) || 'T' || 'N' ?};
+                     {?  _out.POLFABRYKATY='T' & ZL.NRNZL<>null
+                     || _ok:=exec('tktl_check','tech_structure',VAR.A_ZLEC)
+                     ?};
+                     {? _ok
+                     || _out.RESULT:='OK';
+                        _mp.save(,_out);
+                        TKTL.STAT_N:='T'; TKTL.STAT_O:='T'; TKTL.STAT_S:='T'; TKTL.STAT_P:='T'; TKTL.STAN:='T';
+                        {? TKTL.put()
+                        || ZL.get();
+                           ZL.STAT_T:='T';
+                           ZL.put();
+                           _mp.done()
+                        ?}
+                     || _mp.cancel()
+                     ?}
+                  ?}
+               ?}
+            || {? FUN.ask('Czy zakończyć rejestrację technologii zlecenia?'@)
+               || _tktl:=exec('FindAndGet','#table',TKTL,ZL.RTKTL,,
+                     "{? exec('finish','!tte_pzl_dtec')
+                      || STAT_N:='T'; STAT_O:='T'; STAT_S:='T'; STAT_P:='T'; STAN:='T'; put(); ref()
+                      || null()
+                      ?}",null()
+                  );
+                  {? _tktl
+                  || _out.TKTL_ZL:=_tktl;
+                     _out.OPERACJE:=exec('FindAndGet','#table',TKTL,_tktl,,"TYP().OPER",'N');
+                     _out.POLFABRYKATY:={? exec('czy_pf','tech_mater',_tktl) || 'T' || 'N' ?};
+                     {?  _out.POLFABRYKATY='T' & ZL.NRNZL<>null
+                     || _ok:=exec('tktl_check','tech_structure',VAR.A_ZLEC)
+                     ?};
+                     {? _ok
+                     || _out.RESULT:='OK';
+                        _mp.save(,_out);
+                        ZL.STAT_T:='T';
+                        ZL.put();
+                        _mp.done()
+                     || _mp.cancel()
+                     ?}
+
+                  ?}
+               ?}
+            ?}
+         ?};
+         {? ZL.STAT_T='T'
+         ||
+::          Wtyczka - generowanie produktów zlecenia
+            {? ZL.RP='T'
+            || {? Plugin.runnable('ZL_WYR_GEN_001')
+               || _json:=Plugin.run('ZL_WYR_GEN_001',2,ZL.ref());
+                  {? type_of(_json)=type_of('') & _json<>''
+                  || _tab_plugin:=json_parse(_json);
+                     {? type_of(_tab_plugin)>100 & obj_len(_tab_plugin)>0
+                     || exec('zl_wyr_from_tab','zl_wyr',_tab_plugin)
+                     ?}
+                  ?}
+               ?}
+            ?}
+         ?}
+      ?}
+   ?};
+   ZL.cntx_pop()
+?};
+_result
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Opis dla czynności rejestracji technologii zlecenia (TTE_PZL_DTEC)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+:: jest rekord kluczowy to ustawiam odpowiedniego ZL
+{? var_pres('[1]',_keyRefs)
+|| _tmp:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"SYM",'');
+   _desc:={? _tmp<>'' || 'Zredaguj technologię zlecenia %1'@@[_tmp] || '' ?}
+::|| _desc:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"'Zredaguj technologię zlecenia %1'[SYM]",'')
+
+:: jest parametr wejściowy to ustawiam odpowiedniego ZL
+|? var_pres('ZL',_in)
+|| _tmp:=exec('FindAndGet','#table',ZL,_in.ZL,,"SYM",'');
+   _desc:={? _tmp<>'' || 'Zredaguj technologię zlecenia %1'@@[_tmp] || '' ?}
+::|| _desc:=exec('FindAndGet','#table',ZL,_in.ZL,,"'Zredaguj technologię zlecenia %1'[SYM]",'')
+
+?};
+_desc
+
+
+\action_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa akcji Definicje->Technologia w obszarze roboczym zleceń
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+
+{? ZL.STAN='Z' & ZL.RTKTL=''
+|| FUN.info('Funkcja niedostępna — zlecenie zamknięte bez utworzonej technologii.'@)
+
+|? ZL.STAT_T='T' | ZL.STAN='Z' | exec('chk_role','#b__box',OPERATOR.USER,'TTE_PZL_DTEC')=0
+|| set_help(exec('set_help','#help','TTE_PZL_DTEC'));
+   _args:=exec('showzktl_a','tech_head');
+   _args.ZL:=ZL.ref();
+   _args.SHOW:=1;
+   _args.TPAR_ASK:=0;
+   exec('showzktl','tech_head',_args)
+
+|| _args:=exec('mp_run_a','#b__box');
+   _args.ACT_UID:='TTE_PZL_DTEC';
+   _args.UIDREF:=ZL.uidref();
+   _args.AKCJA:='REDAGUJ';
+   _args.CONTEXT:=obj_new('env'); _args.CONTEXT.env:=params_get().env;
+   _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+   exec('mp_run','#b__box',_args)
+?}
+
+
+\action_end
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa akcji Zakończ w obszarze roboczym zleceń
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='TTE_PZL_DTEC';
+_args.UIDREF:=ZL.uidref();
+_args.AKCJA:='ZAKOŃCZ';
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+exec('mp_run','#b__box',_args);
+'key:Esc'
+
+
+:: puty i stemplowanie zlecenia tylko gdy pierwsze dołącz, potem już nie...
+
+\action_oper_button
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przycisku 'Operacje' w oknie redagowania technologii zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+
+_acronim:=exec('tktl_arec','tech_head',1);
+{? _acronim=''
+|| TKTL.put();
+   ZL.TKTL:=TKTL.ref();
+   ZL.put();
+   _used:=params_get().used;
+   exec('toper_main','tech_oper',TKTL.ref(),~_used);
+
+:: Oznaczenie karty jako 'Ulepszenie'
+   {? ~_used
+::      & TKTL.TYP().SUR='O'
+   || {? exec('is_improvement','tech_head',TKTL.ref())
+      || TKTL.IMPROVE:='T'
+      || TKTL.IMPROVE:='N'
+      ?}
+   ?};
+   ''
+|| 'edit:'+_acronim
+?}
+
+
+\action_material_button
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przycisku 'Surowce' w oknie redagowania technologii zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+
+_acronim:=exec('tktl_arec','tech_head',1);
+{? _acronim=''
+|| TKTL.put();
+   ZL.TKTL:=TKTL.ref();
+   ZL.put();
+   _used:=params_get().used;
+:: Wyświetlane zawsze wszystkie (bez prefixu)
+   {? 1
+::      TKTL.TYP().SUR='K'
+   || exec('tmat_main','tech_mater',TKTL.ref(),null(),1,1,_used,0)
+   || exec('menu_start','tech_head');
+      exec('tree','tech_oper',4,~_used);
+
+      exec('menu_stop','tech_head')
+   ?};
+
+:: Oznaczenie karty jako 'Ulepszenie'
+   {? ~_used
+   || {? exec('is_improvement','tech_head',TKTL.ref())
+      || TKTL.IMPROVE:='T'
+      || TKTL.IMPROVE:='N'
+      ?}
+   ?};
+   ''
+|| 'edit:'+_acronim
+?}
+
+
+\action_tools_button
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przyciku 'NPU' w oknie redagowania technologii zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_acronim:=exec('tktl_arec','tech_head',1);
+{? _acronim=''
+|| TKTL.put();
+   ZL.TKTL:=TKTL.ref();
+   ZL.put();
+   _used:=params_get().used;
+:: Wyświetlane zawsze wszystkie (bez prefixu na operację)
+   {? 1
+::      TKTL.TYP().UTIL='K'
+   || _res:=exec('tools_main','tech_tool',TKTL.ref(),null(),'',1,_used)
+   || exec('menu_start','tech_head');
+      exec('tree','tech_oper',5,~_used);
+      exec('menu_stop','tech_head')
+   ?};
+   ''
+|| 'edit:'+_acronim
+?}
+
+
+\action_params_button
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przycisku 'Parametry' w oknie redagowania technologii zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_acronim:=exec('tktl_arec','tech_head',1);
+{? _acronim=''
+|| TKTL.put();
+   ZL.TKTL:=TKTL.ref();
+   ZL.put();
+   _used:=params_get().used;
+   exec('show_tpart','tech_param',TKTL.ref(),_used);
+   ''
+|| 'edit:'+_acronim
+?}
+
+
+\action_attrib_button
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przycisku 'Atrybuty' w oknie wertowania technologii zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_acronim:=exec('tktl_arec','tech_head',1);
+{? _acronim=''
+|| TKTL.put();
+   ZL.TKTL:=TKTL.ref();
+   ZL.put();
+   _used:=params_get().used;
+   exec('TKTL','tech_atr',TKTL.ref(),_used);
+   ''
+|| 'edit:'+_acronim
+?}
+
+
+\action_docum_button
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przycisku 'Dokumentacja' w oknie redagowania technologii zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_acronim:=exec('tktl_arec','tech_head',1);
+{? _acronim=''
+|| TKTL.put();
+   ZL.TKTL:=TKTL.ref();
+   ZL.put();
+   _used:=params_get().used;
+   exec('TKTL','tech_doc',TKTL.ref(),_used);
+   ''
+|| 'edit:'+_acronim
+?}
+
+
+\tktl_dalej
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przycisku 'Zakończ' w oknie redagowania nagłówka karty technologicznej zlecenia.
+::       Zatwierdza kartę (wszystkie flagi).
+::----------------------------------------------------------------------------------------------------------------------
+TKTL.put();
+{? exec('finish','!tte_pzl_dtec')
+|| TKTL.STAT_N:='T';
+   TKTL.STAT_O:='T';
+   TKTL.STAT_S:='T';
+   TKTL.STAT_P:='T';
+   'key:F2'
+|| ''
+?}
+
+
+\finish
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Funkcje finalizujące i sprawdzające kartę technologiczną zlecenia przed akceptacją
+::       Kontekst wywołania - rekord TKTL
+::----------------------------------------------------------------------------------------------------------------------
+{? TKTL.TYP().OPER='T'
+||
+:: Generuje następniki, jeżeli brak
+   NASTOPER.cntx_psh();
+   NASTOPER.index('OPER');
+   NASTOPER.prefix('T',TKTL.ref());
+   {? ~NASTOPER.first()
+   || exec('er_tab','tech_oper',TKTL.ref());
+      exec('gen_pow','tech_oper',TKTL.ref());
+      exec('graph_oper','tech_oper',0)
+   ?};
+   NASTOPER.cntx_pop();
+
+   _res:=exec('valid_op1','tech_oper',TKTL.ref())
+         &
+      exec('valid_op','tech_oper',TKTL.ref(),0,1)
+         &
+      exec('valid_str','tech_oper',TKTL.ref())
+         &
+      exec('spr_pdok','magdok_prod','TOPER','DOK',TKTL.ref(),'',1,1)
+         &
+      exec('valid_mat','tech_mater',TKTL.ref())
+
+|| _res:=exec('valid_mat','tech_mater',TKTL.ref())
+?};
+_res
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.22]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+params_exec('zl_clean','zl_common',_mp,_in,'ERROR')
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [23.25]
+:: OPIS: Formuła ustalająca PARSES
+::   WE:
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('zl_parses','zl_common')
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:39 d96aaae7e74c3c41e4fcbbf9b6833a23c1ba70e5872587901c5eac89abf31f77e79548b53381ebc580a09a1d355eb524c0796498d18f010555008543321aef643867e8bd8a0d64a73d7500d7689a42d56266aa6f834066e74ffdbd4006366693118c421ae78728b7793fb0fcf6284bd6267bd0e924c943d75e5dafb808dca3a7

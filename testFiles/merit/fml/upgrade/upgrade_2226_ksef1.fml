@@ -1,0 +1,408 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2226_KSEF1.fml
+:: Utworzony: 14.04.2023
+:: Autor: [RS]
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 22.26 na 22.26_KSEF1
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::
+::            Programowe wyłączenie zadania transferowego.
+::             W plikach upgrade_rrxx.fml korzystamy z metody
+::               __UPG.off_task(<task>,[<operator>],[<value>])
+::                 - dodaje do listy zadanie,
+::                   które ma zostać wyłączone wg warunku porównania wg operatora porównania i wartości, gdzie:
+::                <task> - symbol zadania do wyłączenia;
+::                [<operator>] - operator porównania - domyślnie operator '<'; dostępne opcje:
+::                                   '<' - wartość mniejsza;
+::                                   '<=' - wartość mniejsza lub równa;
+::                                   '=' - wartość równa;
+::                [<value>] - wersja systemu lub aktualizacji do porównania z wersją zadania
+::                            - domyślnie aktualna wersja aktualizacji (wg pliku).
+::            W pliku upgrade.fml NALEŻY umieścić wywołanie poniższej metody na końcu formuły \init
+::               (po wywołaniach __UPG.add_head()):
+::              __UPG.act_off() - wyłączenie wszystkich zadań wskazanych do wyłączenia.
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [TS] [22.26_KSEF1]
+:: OPIS: Główna formuła upgrade-ów RR.xx
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania wykonywane raz dla całego systemu
+__UPG.add_task('DOKUM',,,'ZWS',,,,,'T');
+__UPG.add_task('DOK',,,'FKS',,,,,'T');
+__UPG.add_task('sync_mwa',,,'ZBL',,,,,'T');
+
+:: Zadania wykonywane dla każdej firmy osobno
+__UPG.add_task('FAKS',,'N','LSP',,,,1,'T');
+__UPG.add_task('przenies_add',,'N','FKS',,,,1,'T');
+__UPG.add_task('FO_DEF',,'N','ZWS',,,,,'T');
+
+:: Zadania manualne wykonywane raz dla całego systemu
+
+:: Zadania manualne wykonywane dla każdej firmy osobno
+
+~~
+
+
+\DOKUM
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_KSEF1]
+:: OPIS: Uzupełnienie nowych pól w tabeli DOKUM oraz brakujących wartości DOKUM.DOKUMI
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+_msk:=DOKUM.names();
+_msk.clear();
+DOKUM.cntx_psh(); DOKUMZ.cntx_psh(); DOKUMZA.cntx_psh();
+DOKUM.trig_off('*','*');
+{? _msk.first()
+|| {!
+   |? DOKUM.use(_msk.NAME);
+      DOKUM.index('DOKUM');
+      DOKUM.prefix();
+      {? DOKUM.first()
+      || {!
+         |? __lrec+=1;
+            _put:=0;
+            {? DOKUM.KSEFUPOG=''
+            || {? DOKUM.BL_GUID<>''
+               || DOKUMZ.index('GUID');
+                  DOKUMZ.prefix(DOKUM.ref(),DOKUM.BL_GUID);
+                  {? DOKUMZ.first()
+                  || DOKUM.KSEFUPOG:='T'
+                  || {? DOKUM.KSEFUPO=''
+                     || DOKUM.KSEFUPOG:='N'
+                     || DOKUM.KSEFUPOG:='P'
+                     ?}
+                  ?}
+               || DOKUM.KSEFUPOG:='N'
+               ?};
+               _put:=1
+            ?};
+            {? DOKUM.name()='dokum' & DOKUM.DOKUMI=null()
+            || DOKUMZ.index('DISP');
+               DOKUMZ.prefix(DOKUM.ref());
+               _ok:=0;
+               {? DOKUMZ.first()
+               || {!
+                  |? {? DOKUMZ.DOKUM<>null() & DOKUMZ.bl_info('DOKUM','EXTENSION')='pdf'
+                     || DOKUM.DOKUMI:=DOKUMZ.DOKUM;
+                        _put:=1; _ok:=1
+                     ?};
+                     _ok=0 & DOKUMZ.next()
+                  !}
+               ?}
+            ?};
+            {? DOKUM.INFO_END=''
+            || DOKUM.INFO_END:='N';
+               _put:=1
+            ?};
+            {? _put
+            || __lmod+=1;
+               DOKUM.put()
+            ?};
+            DOKUM.next()
+         !}
+      ?};
+      _msk.next()
+   !}
+?};
+DOKUM.trig_on('*','*');
+DOKUM.cntx_pop(); DOKUMZ.cntx_pop(); DOKUMZA.cntx_pop();
+__UPG.msg('Zaktualizowano załączniki.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_result
+
+
+\DOKUM_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_KSEF1]
+:: OPIS: Uzupełnienie nowych pól w tabeli DOKUM oraz brakujących wartości DOKUM.DOKUMI - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja załączników, danych dokumentów Businesslink.'
+
+
+\DOK
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_KSEF1]
+:: OPIS: Uzupełnienie pola DOK.KSEF_ERR
+::----------------------------------------------------------------------------------------------------------------------
+_lpoz:=_lvpoz:=_ldok:=_lpozf:=0;
+_dok_put:=_sum_vpoz:=_sum_poz:=0;
+DOK.cntx_psh(); DOK.trig_off('*','*');
+ROK_F.index('KOD'); ROK_F.prefix();
+OKRO_F.index('ROK');
+{? ROK_F.first()
+|| {!
+   |? SSTALE.AR:=ROK_F.ref();
+      OKRO_F.prefix(ROK_F.ref());
+      {? OKRO_F.first()
+      || {!
+         |? SSTALE.AO:=OKRO_F.ref();
+            _maska:=ROK_F.KOD+form(OKRO_F.NR,-2);
+            DOK.use('doku'+_maska); DOK.index('O_REJ'); DOK.prefix();
+            {? DOK.first()
+            || {!
+               |? {? DOK.KSEF_ERR=''
+                  || DOK.KSEF_ERR:='N';
+                     _dok_put:=1
+                  ?};
+                  {? _dok_put & DOK.put() || _ldok+=1 ?};
+                  DOK.next()
+               !}
+            ?};
+            OKRO_F.next()
+         !}
+      ?};
+      ROK_F.next()
+   !}
+?};
+DOK.cntx_pop(); DOK.trig_on('*','*');
+{? _ldok
+|| __UPG.msg('Zaktualizowano nagłówki dokumentów źródłowych. %1 zmodyfikowany(ch) rekord(ów).'[$_ldok])
+|| __UPG.msg('Nie stwierdzono potrzeby aktualizacji danych dla dokumentów księgowych.')
+?};
+1
+
+
+\DOK_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_KSEF1]
+:: OPIS: Uzupełnienie pola DOK.KSEF_ERR - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie pól w nagłówku dokumentu.'
+
+
+\FAKS
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_KSEF1]
+:: OPIS: Aktualizuje pole FAKS.KSEF_ERR
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+_msk:=FAKS.names();
+FAKS.cntx_psh();
+_msk.clear();
+{? _msk.first()
+||
+   {!
+   |? FAKS.use(_msk.NAME);
+      FAKS.prefix();
+      FAKS.for_each("
+         __lrec+=1;
+         _put:=0;
+         {? FAKS.KSEF_ERR=''
+         || FAKS.KSEF_ERR:='N';
+            _put:=1
+         ?};
+         {? _put & FAKS.put() || __lmod+=1 ?}
+      ");
+      _msk.next()
+   !}
+?};
+FAKS.cntx_pop();
+
+__UPG.msg('Zaktualizowano pola w nagłówku dokumentów sprzedaży i zakupu.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'[$__lrec,$__lmod]);
+
+obj_del(_msk);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\FAKS_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_KSEF1]
+:: OPIS: Aktualizuje pola FAKS.KSEF_ERR
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja pola w nagłówku dokumentów sprzedaży i zakupu.'
+
+
+\sync_mwa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_KSEF1]
+:: OPIS: Dopisuje definicję nowych metod
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+
+_pd_sym:='BLMT';
+_method1:='BLMT_DOCUMENT_SEND';
+_method2:='BLMT_DOCUMENT_GETINFO';
+
+SYNC_MWA.cntx_psh();
+SYNC_MWA.index('PD_METH');
+SYNC_MWA.prefix(_pd_sym,_method2,);
+{? ~SYNC_MWA.first()
+|| SYNC_MWA.prefix(_pd_sym,_method1,);
+   {? SYNC_MWA.first()
+   || _lp:=SYNC_MWA.LP;
+::    Przenumerowanie z pozostawieniem dziury na nową metodę
+      SYNC_MWA.cntx_psh();
+      SYNC_MWA.index('TREE1');
+      SYNC_MWA.prefix(SYNC_MWA.PARENT);
+      {? SYNC_MWA.last()
+      || {!
+         |? {? SYNC_MWA.LP>_lp
+            || SYNC_MWA.LP+=1;
+               SYNC_MWA.put()
+            ?};
+            SYNC_MWA.prev()
+         !}
+      ?};
+      SYNC_MWA.cntx_pop();
+::    Dodanie nowej metody
+      SYNC_MWA.LP+=1;
+      SYNC_MWA.METHOD:=_method2;
+      SYNC_MWA.prefix();
+      {? SYNC_MWA.add()
+      || __UPG.msg('Dopisano metodę %1.'[_method2])
+      || __UPG.msg('Nie dopisano metody %1.'[_method2]);
+         _res:=0
+      ?}
+   || __UPG.msg('Brak metody %1, nie można dopisać metody %2.'[_method1,_method2]);
+      _res:=-1
+   ?}
+|| __UPG.msg('Metoda %1 była już dopisana.'[_method2])
+?};
+SYNC_MWA.cntx_pop();
+
+_res
+
+
+\sync_mwa_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_KSEF1]
+:: OPIS: Dopisuje definicję nowych metod - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dopisanie definicji metod:\n'
+'BLMT_DOCUMENT_GETINFO'
+
+
+\przenies_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MP [22.26]
+:: OPIS: Dodanie formuły rejestrowania automatycznego PRZENIES
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_naz:='PRZENIES';
+_opis:='Przeniesienie dokumentu do innego okresu';
+_formpocz:='exec(\'wyb_dok\',\'fks_auto\',,1)';
+exec('szuk_okr','okresy',date());
+_rokf:=ROZNE.UT_OKROD().ROK;
+AUTOKSIE.index('NAZ'); AUTOKSIE.prefix(_rokf,_naz,);
+{? _rokf & ~AUTOKSIE.first()
+|| AUTOKSIE.blank(0);
+   AUTOKSIE.NAZ:=_naz;
+   AUTOKSIE.OP:=_opis;
+   AUTOKSIE.ROK_F:=_rokf;
+   AUTOKSIE.FORMPOCZ:=_formpocz;
+   AUTOKSIE.TYP:='N';
+   {? AUTOKSIE.add()
+   || FORM.blank();
+      FORM.AUTOKSIE:=AUTOKSIE.ref();
+      FORM.POZ:=1;
+      {? FORM.add() || FORM.memo_set('exec(\'storno\',\'fks_auto\',3)'); FORM.memo_put() ?};
+      __UPG.msg('Dodano formułę rejestrowania automatycznego PRZENIES.')
+   || _result:=0;
+      __UPG.msg('Błąd podczas dodawania formuły rejestrowania automatycznego PRZENIES.')
+   ?}
+|| __UPG.msg('Aktualizacja formuł rejestrowania automatycznego nie jest wymagana.')
+?};
+_result
+
+
+\przenies_add_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MP [22.26]
+:: OPIS: Dodanie formuły rejestrowania automatycznego PRZENIES
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie formuły rejestrowania automatycznego PRZENIES'
+
+
+\FO_DEF
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Aktualizacja parametrów FO aplikacyjnych
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+
+_res:=exec('upgrade_apl','#params');
+
+__UPG.msg('Zaktualizowano parametry aplikacyjne');
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\FO_DEF_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Aktualizacja parametrów FO aplikacyjnych - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja parametów aplikacyjnych'
+
+:Sign Version 2.0 jowisz:1045 2023/07/20 14:59:24 661896e28239d3bdd4123156c75fbd4c60abcf836eaeac7dce47d58b8b9fa5f3395535cfce632bfa65f360c9b3619abf1bcf0b0d1ac500afd06809662c13f675390feab4897caf17ac8d7680865f65b66eef206c501a0033043121e24351d05d7f225a7d75fb470f6239cba8083125765b8b9250cf7b725b66c5930ccda957b6

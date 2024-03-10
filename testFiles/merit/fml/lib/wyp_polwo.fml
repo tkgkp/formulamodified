@@ -1,0 +1,499 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: wyp_polwo.fml
+:: Utworzony: 04.09.2017
+:: Autor: WH
+::======================================================================================================================
+:: Zawartość: Obsługa poleceń wydania dla wyposażenia
+::======================================================================================================================
+
+
+\env_polwo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Środowisko selektora poleceń wydania
+::----------------------------------------------------------------------------------------------------------------------
+_env_polwo:=obj_new('WYCOFAJ');
+_env_polwo.WYCOFAJ:=0;
+_env_polwo
+
+
+\select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Selekcja POLWO - obszar roboczy WYP_LWP
+::  OLD: \polwo_sel/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+_env_polwo:=exec('env_polwo','wyp_polwo');
+params_set('env_polwo',_env_polwo);
+
+POLWO.cntx_psh();
+POLWO.index('SYM'); POLWO.clear();
+POLWO.win_sel('WER_G'); POLWO.win_edit('RED'); POLWO.actions('WER',,'?:?');
+PWOPOZ.win_edit('RED'); PWOPOZ.win_patt('SZUK'); PWOPOZ.actions('WER',,'?:?');
+
+_icon:="
+   {? POLWO.AKCEPT='T'
+   || exec('zaakceptowany','icon')
+   |? POLWO.STAT_REJ='T'
+   || exec('zarejestrowany','icon')
+   || exec('pusta','#icon')
+   ?}
+";
+POLWO.win_fml('WER',,'SYM',,'ICON_BEFORE',_icon);
+
+AreaTitle.setTabWin(POLWO);
+AreaTitle.setTitle();
+
+POLWO.select();
+POLWO.cntx_pop();
+~~
+
+
+\prep_ctril
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Przygotowanie danych do kontroli ilosci dla biezacego naglowka polecenia
+::   WY: liczba rekordow w tabeli kontrolnej
+::  OLD: \prep_ctril/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+_norm:=exec('prep_norm','normatyw',POLWO.P,POLWO.DATA_W);
+_stan:=exec('prep_stan','wyp_head',1,POLWO.P,POLWO.DATA_W,1);
+exec('cr_tzap','wyp_zaopatrz');
+::ladowanie tylko gdy istnieje nortmatyw pracownika inaczej nie ma sensu
+{? (_norm=1) | (_norm=3)
+||
+   exec('kop_nor','wyp_zaopatrz',1);
+   exec('kopdnor','wyp_zaopatrz');
+:: dolozenie informacji o stanach
+   {? __TMPZAP.first() & (_stan>0)
+   ||
+      {!
+      |?
+         _stan:=exec('find_stan','wyp_head',__TMPZAP.REF);
+         {? _stan>0
+         ||
+            {? (_stan=1) | (_stan=3)
+            || __TMPZAP.ILP1MIN:=__TMPZAP.ILP1MAX:=__TMPZAP.ILP2MAX:=__KARRSP.IL
+            ?};
+            {? _stan=2 || __TMPZAP.ILO1MIN:=__TMPZAP.ILO1MAX:=__TMPZAP.ILO2MAX:=__KARRSO.IL ?}
+         ?};
+         __TMPZAP.put();
+         __TMPZAP.next()
+      !}
+   ?};
+:: obliczenie ilosci wymaganej
+   {? __TMPZAP.first()
+   ||
+::    odjecie od odpowiednich normatywow ilosci na stanie
+      {!
+      |?
+         __TMPZAP.ILWYN:=__TMPZAP.ILNP1-__TMPZAP.ILP1MIN;
+         {? __TMPZAP.CTRLIL='O'
+         ||
+            _il:=__TMPZAP.ILNO1-__TMPZAP.ILO1MIN;
+            {? _il<__TMPZAP.ILWYN || __TMPZAP.ILWYN:=_il ?}
+         ?};
+         __TMPZAP.put();
+         __TMPZAP.next()
+      !}
+   ?}
+?};
+__TMPZAP.size()
+
+
+\drop_ctril
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Usuniecei zasobow tymczasowych kontroli ilosci polecenia
+::  OLD: \drop_ctril/nadzor.fml
+::  OLD: \drop_ctril/!wyp_lwp_gpwy.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('drop_norm','normatyw');
+exec('drop_stan','wyp_head');
+exec('drop_tzap','wyp_zaopatrz');
+~~
+
+
+\czy_poz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Czy POLWO podany refem ma dopisane pozycje (PWOPOZ)
+::   WE: _a - POLWO.ref() (gdy brak to biezacy)
+::   WY: 1/0 tak/nie
+::  OLD: \czy_poz/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) || _a:=POLWO.ref() ?};
+{? ref_name(_a)=POLWO.name()
+||
+   PWOPOZ.cntx_psh(); PWOPOZ.index('PRODZO'); PWOPOZ.prefix(_a);
+   _odp:=PWOPOZ.size();
+   PWOPOZ.cntx_pop();
+   _odp
+|| 0
+?}
+
+
+\polp_fga
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Generacja pozycji polecenia wydania do pustej dziedziny pozycji biezacego polecenia
+::       Zaklada sie, ze sa utworzone tabele normatywow pracownika i osoby dla P w naglowku polecenia
+::       Generacja odbywa sie wylacznie na podstawie zawartosci normatywu pracownika
+::       Dla pozycji gdzie wymagana jest kontrola na poziomie osoby dodatkowo kontrola ilosci na poziomie osoby
+::       Wyznaczona ilosc uwzglednia stan w dniu wydania (w przyszlosci uzaleznic od parametru)
+::   WE: [_a] - MGRP.ref() - podgrupa materiałowa do ktorej jest ograniczenie generacji
+::       [_b] - MGR.ref() - grupa materiałowa do ktorej jest ograniczenie generacji
+::   WY: obj_new - obiekt z rezultatem: RESULT - czy wszystko ok
+::                                      ILEGEN - ile pozycji zostalo wygenerowane
+::  OLD: \polp_fga/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+::walidacja parametru jezeli bledny to powstrzymanie generacji
+_mgrp:=null();
+{? var_pres('_a')=type_of(MGRP.ref())
+|| _mgrp:=_a
+?};
+_mgr:=null();
+{? var_pres('_b')=type_of(MGR.ref())
+|| _mgr:=_b
+?};
+
+_ilgen:=0;
+
+_result:=obj_new('RESULT','ILEGEN');
+_result.RESULT:=0;
+_result.ILEGEN:=0;
+_can_continue:=1;
+
+{? (~exec('czy_poz','wyp_polwo')) & __WYNNOP.first()
+||
+   MGRP.cntx_psh(); MGRP.clear();
+   __WYNORO.clear();
+   {!
+   |?
+::       eliminacja pozycji "blokujacych" - gdy __WYNNOP.IL=0 i zabezpieczenie na usuniecie MGRP
+::       ewentualne uwzglenienie ograniczenia narzuconego parametrem
+      {? __WYNNOP.IL>0 & MGRP.seek(__WYNNOP.REF,) & (_mgrp=null() | MGRP.ref()=_mgrp) & (_mgr=null() | MGRP.MGR=_mgr)
+      ||
+::       zaladowanie wszystkich danych z normatywu pracownika
+         PWOPOZ.blank();
+         PWOPOZ.MGRP:=MGRP.ref();
+         PWOPOZ.ZWROT:=__WYNNOP.ZWROT;
+         PWOPOZ.IL:=__WYNNOP.IL;
+         {? PWOPOZ.ZWROT<>'B'
+         ||
+            PWOPOZ.CZAS:=__WYNNOP.CZAS;
+            PWOPOZ.TOLER:=__WYNNOP.TOLER
+         ?};
+::       jezeli wymagana jest kontrola normatywu osoby to ewentualnna korekta ilosci lub odwolanie zapisu
+         {? (PWOPOZ.MGRP().CTRLIL='O')
+         ||
+            {? __WYNORO.find_key(__WYNNOP.REF) & (__WYNORO.IL>0)
+            ||
+               {? __WYNORO.IL<__WYNNOP.IL || PWOPOZ.IL:=__WYNORO.IL ?}
+            ?}
+         ?};
+::       jezeli kontrola ilosci i uwzglednianie stanow wlaczone to dodatkowo odjecie stanow u pracownika
+         {? exec('get','#params',700510)='T' & exec('get','#params',700511)='T'
+         ||
+::          pobranie ilosci wynikowej z uwzglednieniem stanu w dniu wydania
+            _wyn:=exec('ilwyn_tzap','wyp_zaopatrz',__WYNNOP.REF);
+            {? _wyn<PWOPOZ.IL
+            || PWOPOZ.IL:=_wyn
+            ?}
+         ?};
+::          warunkowe utworzenie rekordu
+         {? PWOPOZ.IL>0
+         || _can_continue:=PWOPOZ.add();
+            {? _can_continue>0
+            || _result.ILEGEN+=1
+            ?}
+         ?}
+      ?};
+      __WYNNOP.next() & _can_continue>0
+   !};
+   MGRP.cntx_pop()
+?};
+PWOPOZ.first();
+{? _can_continue>0
+|| _result.RESULT:=1
+?};
+_result
+
+
+\pwopoz_chk_il
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Sprawdzenie czy PWOPOZ.IL biezacego rekordu nie przekracza normatywu
+::       Przy redakcji recznej program pozwala polecic ilosc do wysokosci normatywu bez wzgledu na stan w dniu wydania
+::   WE: _a - wyswietlac komunikaty [1]
+::       _b - korygowac automatycznie do wartosci dopuszczalnych [1]
+::   WY: 1/0 - 1 - nie przekracza (OK), 0 przekracza
+::  OLD: \pwopoz_chk_il/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) || _a:=1 ?};
+{? (_<2) | (_b=~~) || _b:=1 ?};
+{? type_of(_a)<>type_of(0) || &_a;_a:=1 ?};
+{? type_of(_b)<>type_of(0) || &_b;_b:=1 ?};
+
+{? (PWOPOZ.MGRP().CTRLIL='N') | (exec('get','#params',700510,2,null())='N')
+|| {? PWOPOZ.IL<=0
+   || FUN.emsg('Ilość musi być nieujemna.'@);
+      0
+   || 1
+   ?}
+||
+   _uzukom:={? _b || '\n'+'Program skorygował do wartości dopuszczalnej.'@ || '' ?};
+:: wymagana kontrola iloaci
+   _norm:=exec('find_norm','normatyw',#PWOPOZ.MGRP);
+:: zawsze musi byc spelniony normatyw pracownika
+   {? (_norm=0) | (_norm=2)
+   || _msg:='Wyposażenie z grupy %1 — brak w normatywie pracownika.'@
+            [PWOPOZ.MGRP().KOD];
+      {? _a
+      || FUN.emsg(_msg)
+      || KOMM.add(_msg)
+      ?};
+      0
+   ||
+      {? PWOPOZ.IL<=__WYNNOP.IL
+      ||
+::       sprawdzenie nie jest wymagana kontrola normatywu osoby
+         {? PWOPOZ.MGRP().CTRLIL='O'
+         ||
+            {? _norm=3
+            ||
+               {? PWOPOZ.IL>__WYNORO.IL
+               || _msg:='Wyposażenie z grupy %1 — ilość %2 przekracza normatyw osoby (%3).'@
+                        [PWOPOZ.MGRP().KOD,$PWOPOZ.IL,$__WYNORO.IL]+_uzukom;
+                  {? _a
+                  || FUN.emsg(_msg)
+                  || KOMM.add(gsub(_msg,'\n',' '))
+                  ?};
+                  {? _b || PWOPOZ.IL:=__WYNORO.IL ?};
+                  0
+               || 1
+               ?}
+            || _msg:='Wyposażenie z grupy %1 — brak w normatywie osoby.'@
+                     [PWOPOZ.MGRP().KOD];
+               {? _a
+               || FUN.emsg(_msg)
+               || KOMM.add(_msg)
+               ?};
+               0
+            ?}
+         || 1
+         ?}
+      || _msg:='Wyposażenie z grupy %1 — ilość %2 przekracza normatyw pracownika (%3).'@
+               [PWOPOZ.MGRP().KOD,$PWOPOZ.IL,$__WYNNOP.IL]+_uzukom;
+         {? _a
+         || FUN.emsg(_msg)
+         || KOMM.add(gsub(_msg,'\n',' '))
+         ?};
+         PWOPOZ.IL:=__WYNNOP.IL;
+         0
+      ?}
+   ?}
+?}
+
+
+\pwopoz_licz_lg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Policzenie ilosci wygenerowanej z biezacej pozycji PWOPOZ
+::   WY: ilosc wygeberiwana w KARO z danej pozycji lub 0 gdy niezaakceptowane
+::  OLD: \pwopoz_licz_lg/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ilg:=0;
+::jak niezaakceptowane to nie powinno byc nic wygenerowane
+{? PWOPOZ.POLWO().AKCEPT='T'
+||
+   KARO.cntx_psh();
+   KARO.index('PWOPOZ'); KARO.prefix(PWOPOZ.ref());
+   {? KARO.first() || {! |? _ilg+=KARO.IL; KARO.next() !} ?};
+   KARO.cntx_pop()
+?};
+_ilg
+
+
+\polwo_cl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: kolorowanie rekordow POLWO
+::   WY: kod koloru
+::  OLD: \polwo_cl/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+::wyroznienie niezatwierdzonych i niegenerowanych
+{? POLWO.AKCEPT='N'
+|| 'POLWO#01#01'
+|| {? #POLWO.DATA_G || '' || 'POLWO#01#02' ?}
+?}
+
+
+\pwopoz_cl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Kolorowanie PWOPOZ
+::  OLD: \pwopoz_cl/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? PWOPOZ.IL=ZNADZOR.ILG
+|| 'PWOPOZ#01#00'
+|| 'PWOPOZ#01#01'
+?}
+
+
+\licz_wyd_pwopoz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Policzenie ilosci wygenerowanej dla PWOPOZ podanej parametrem
+::  OLD: \licz_wyd_pwopoz/nadzor.fml
+::   WE: _a - PWOPOZ.ref [biezacy]
+::   WY: ilosc wygeberiwana w KARO z danej pozycji lub 0 gdy niezaakceptowane lub bledny parametr
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) || _a:=PWOPOZ.ref() ?};
+{? (type_of(_a)<>type_of(null())) | (ref_name(_a)<>PWOPOZ.name()) || return(0) ?};
+_ilg:=0;
+PWOPOZ.cntx_psh(); PWOPOZ.clear();
+{? PWOPOZ.seek(_a) || _ilg:=exec('pwopoz_licz_lg','wyp_polwo') ?};
+PWOPOZ.cntx_pop();
+_ilg
+
+
+\polwo_deleted_in_proc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Obsługa sytuacji że jest czynność na liście todo ale POLWO zostało usunięte
+::   WE: _a - obj_new - obiekt Menadżera Procesów
+::       [_b] - INTEGER - 0/[1] - czy errorować proces, jeżeli 0 to jest robiony .done()
+::   WY: ~~
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=_a;
+
+_error:=1;
+{? var_pres('_b')=type_of(0)
+|| _error:=_b
+?};
+
+_msg:=exec('polwo_deleted_msg','wyp_polwo');
+{? _mp.isService()=0
+|| FUN.emsg(_msg)
+?};
+{? _error>0
+|| _mp.error(_msg)
+|| _mp.done()
+?};
+~~
+
+
+\polwo_deleted_msg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Komunikat o usunięciu POLWO
+::----------------------------------------------------------------------------------------------------------------------
+'Polecenie wydania wyposażenia nie zostało odnalezione, prawdopodobnie zostało usunięte.'@@
+
+
+\polwo_af
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Po odświeżeniu POLWO w oknie SEL_G
+::----------------------------------------------------------------------------------------------------------------------
+PWOPOZ.prefix(POLWO.ref());
+PWOPOZ.first();
+grp_disp(PWOPOZ,'SEL',1);
+~~
+
+
+\pwopoz_mb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: przed obsługą PWOPOZ
+::   WE: _a  (standard dla formuły przed obsługą)
+::----------------------------------------------------------------------------------------------------------------------
+{? grp_empty(POLWO,'SEL')
+|| '#disable'
+|| 1
+?}
+
+
+\pwopoz_ma
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: przed obsługą PWOPOZ
+::   WE: _a  (standard dla formuły po obsłudze)
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\pwopoz_af
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Po odswiez PWOPOZ
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\select_polwo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Uruchamia selektor POLWO do wybrania polecenia wydania na podstawie którego będzie generowanie
+::   WE: [_a] - P.ref - pracownik
+::   WY: POLWO.ref lub null
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_pracownik:=_a;
+_result:=null();
+POLWO.cntx_psh();
+POLWO.win_sel('SEL_G');
+{? _pracownik<>null()
+|| POLWO.index('PAGDWSYM');
+   POLWO.prefix(_pracownik,'T',date(0,0,0));
+   _nazwisko:=exec('FindAndGet','#table',P,_pracownik,,"exec(\'osoba_npd\',\'wyp\',P.OSOBA)",'');
+   POLWO.hdr_sel('Polecenia wydania wyposażenia dla pracownika: %1'@[_nazwisko])
+|| POLWO.index('AKCEPT');
+   POLWO.prefix('T',date(0,0,0));
+   POLWO.hdr_sel('Polecenia wydania wyposażenia'@)
+?};
+
+_icon:="
+   {? POLWO.AKCEPT='T'
+   || exec('zaakceptowany','icon')
+   |? POLWO.STAT_REJ='T'
+   || exec('zarejestrowany','icon')
+   || exec('pusta','#icon')
+   ?}
+";
+POLWO.win_fml('SEL',,'SYM',,'ICON_BEFORE',_icon);
+
+{? POLWO.select()
+|| _result:=POLWO.ref()
+?};
+POLWO.cntx_pop();
+_result
+
+
+\polwo_grayed
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Wyszarzanie akcji w oknie wertowania tabeli POLWO
+::----------------------------------------------------------------------------------------------------------------------
+_upr_dpwy:=exec('chk_role','#b__box',OPERATOR.USER,'WYP_LWP_DPWY');
+_grayed:=':';
+_selected:=(POLWO.sel_size()>0);
+{? POLWO.STAT_REJ='T'
+|| _grayed:={? _selected || 'P' || 'PUZ' ?}+_grayed
+|| _grayed:={? _selected || '' || 'AW' ?}+_grayed
+?};
+{? POLWO.AKCEPT='T'
+|| _grayed:={? _selected || '' || 'A' ?}+_grayed
+|| _grayed:={? _selected || '' || '' ?}+_grayed
+?};
+{? POLWO.AKCEPT='N' & ~_upr_dpwy
+|| _grayed:={? _selected || '' || 'W' ?}+_grayed
+?};
+POLWO.actions_grayed(cur_win(1,1),_grayed);
+~~
+
+:Sign Version 2.0 jowisz:1028 2019/06/07 16:00:04 4c9d9bca4750b59c4db696628a616463e43a1483e47c69f7670e34040516c4bce411ede3772162be424e5867ff85e9f44ca8170b4addc7c4c5ebc3627507e4d82ca2cbf482eabd23fe472c6eab42e3410aafca0d31c815423950b18d35a0163ea2a97073dd61ded3b815cb9f24e3796d7d5ce0becc2ec2963bef91a960f10df2

@@ -1,0 +1,498 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2114_05.fml
+:: Utworzony: 27.10.2020
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 20.42 na 21.14
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Główna formuła aktualizacji 21.14_05
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania wykonywane raz dla całego systemu
+__UPG.add_task('upgrade_act',,,'ZPR',3,,,,'T');
+__UPG.add_task('bipkat',,,'POR',,,,,'T');
+__UPG.add_task('stalesys_ini',,,'ZWS');
+__UPG.add_task('USERS',,,'ZWS');
+__UPG.add_task('kart_url_21110024',,,'POR',,,,1,'T');
+
+:: Zadania wykonywane dla każdej firmy osobno
+__UPG.add_task('role',,'N','ZWS',3,,,1,'T');
+__UPG.add_task('por_role',,'N','ZWS',2,,,1,'T');
+__UPG.add_task('build_etypy_p',,'N','POR',2,,,1,'T');
+
+:: Zadania manualne
+__UPG.add_task('wnioski_portal','N',,'POR',1,,,1,'T');
+~~
+
+
+\upgrade_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Aktualizacja typów danych oraz czynności dla wskazanych obszarów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+:: Poniżej wpisać domeny, których dotyczą nowe lub aktualizowane czynności
+_dom:=spli_str('POR.ZPR','.');
+_len:=obj_len(_dom);
+
+{? _len & _dom[1]<>''
+|| FUN.prg_start(_len+2,'Aktualizacja czynności.',,,1);
+
+:: Uzupełnienie domen (zawsze)
+   FUN.prg_next();
+   exec('add_domain','#b_action');
+   __UPG.msg('Zaktualizowano dziedziny.');
+
+:: Uzupełnienie typów (zawsze)
+   FUN.prg_next();
+   exec('fill_tab','#b_type',0);
+   __UPG.msg('Zaktualizowano typy danych.');
+
+   {! _i.._len
+   |! FUN.prg_next();
+      _domain:=exec('FindInSet','#table','B_DOMAIN','SYMBOL',_dom[_i]);
+      {? _domain<>null()
+      || exec('import_needed_dom','#b_design',_domain,0);
+         __UPG.msg('Zaktualizowano czynności dziedziny: %1.'[_dom[_i]])
+      ?}
+   !};
+   FUN.prg_stop()
+?};
+obj_del(_dom);
+_res
+
+
+\upgrade_act_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Aktualizacja typy danych oraz czynności dla wskazanych obszarów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja typów danych oraz czynności dla modelera'
+
+
+\role
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami portalowymi.
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('roleActionsDel','upgrade',
+      'Pracownik',
+      'POR_PRA_DPAP,POR_PRA_LINK,POR_PRA_OGUL,POR_PRA_PAWY,POR_PRA_PBAD,POR_PRA_PBEN,POR_PRA_PBWI,POR_PRA_PDNA,'
+      'POR_PRA_PFIR,POR_PRA_PGSL,POR_PRA_PINF,POR_PRA_PJEZ,POR_PRA_PKAL,POR_PRA_PKAR,POR_PRA_PKFI,POR_PRA_PKON,'
+      'POR_PRA_PLIS,POR_PRA_PNIE,POR_PRA_PNZB,POR_PRA_POWY,POR_PRA_PPOD,POR_PRA_PPOM,POR_PRA_PPOW,POR_PRA_PPOZ,'
+      'POR_PRA_PPPK,POR_PRA_PPRD,POR_PRA_PPYT,POR_PRA_PROD,POR_PRA_PSAK,POR_PRA_PSWY,POR_PRA_PSZK,POR_PRA_PURL,'
+      'POR_PRA_PURZ,POR_PRA_PWYK,POR_PRA_PWYN,POR_PRA_PZAT,POR_PRA_PZLE,OBE_FAW_ZAMK,OBE_FAW_WYCO,POR_PRA_PSTA,'
+      'POR_PRA_PWNA,POR_PRA_PWYP'
+   ) &
+   exec('roleActionsDel','upgrade',
+      'Przełożony',
+      'POR_KIE_CAKC,POR_KIE_DARP,POR_KIE_EAKP,POR_KIE_PAWY,POR_KIE_PAWZ,POR_KIE_PBAD,POR_KIE_PBEN,POR_KIE_PGSL,'
+      'POR_KIE_PHZA,POR_KIE_PINF,POR_KIE_PJEZ,POR_KIE_PKAL,POR_KIE_PKNI,POR_KIE_PKON,POR_KIE_PLOS,POR_KIE_PMAS,'
+      'POR_KIE_PNIE,POR_KIE_PNME,POR_KIE_POPS,POR_KIE_PPOD,POR_KIE_PPOW,POR_KIE_PPPR,POR_KIE_PPRA,POR_KIE_PPRE,'
+      'POR_KIE_PPST,POR_KIE_PSPR,POR_KIE_PSWN,POR_KIE_PSWY,POR_KIE_PSZK,POR_KIE_PULI,POR_KIE_PURL,POR_KIE_PWKO,'
+      'POR_KIE_PWNA,POR_KIE_PWPL,POR_KIE_PWYD,POR_KIE_PWYK,POR_KIE_PWYN,POR_KIE_PZAT,POR_KIE_PZLE,POR_KIE_PZSL,'
+      'POR_KIE_WYCO,POR_KIE_ZDAR,POR_KIE_PWNA,POR_KIE_ZAMK,POR_KIE_PSTA,POR_KIE_PWRO,POR_KIE_PWUZ,POR_KIE_PWYP,'
+      'POR_KIE_POOS'
+   )
+|| 1
+|| -1
+?}
+
+
+\role_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami portalowymi - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ról/uprawnień związana z czynnościami portalowymi.'
+
+
+\bipkat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.14]
+:: OPIS: Uzupełnienie nowego pola w tabeli BIPKAT.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+BIPKAT.cntx_psh();
+BIPKAT.index('KOD');
+BIPKAT.prefix();
+{? BIPKAT.first()
+|| _stat:=obj_new('ok','poprawiono','niepoprawiono');
+   {! _lp:=1 .. obj_len(_stat)
+   |! _stat[_lp]:=0
+   !};
+   BIPKAT.trig_off('*','*');
+   {!
+   |? {? BIPKAT.SAMOUCZ=''
+      || BIPKAT.SAMOUCZ:='N';
+         {? BIPKAT.put()
+         || _stat.poprawiono+=1
+         || _stat.niepoprawiono+=1
+         ?}
+      || _stat.ok+=1
+      ?};
+      BIPKAT.next()
+   !};
+   BIPKAT.trig_on('*','*');
+   {? _stat.niepoprawiono
+   || _ret:=-1
+   ?};
+   __UPG.msg('Liczba zapisów poprawnych (niewymagających uzupełnienia): %1' [$_stat.ok]);
+   __UPG.msg('Liczba zapisów, które udało się uzupełnić: %1' [$_stat.poprawiono]);
+   __UPG.msg('Liczba zapisów, których NIE udało się uzupełnić: %1' [$_stat.niepoprawiono])
+
+|| __UPG.msg('Brak definicji kategorii portalowych (BIKAT).')
+?};
+BIPKAT.cntx_pop();
+_ret
+
+
+\bipkat_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.14]
+:: OPIS: Uzupełnienie nowego pola w tabeli BIPKAT - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie nowego pola w tabeli BIPKAT.'
+
+
+\wnioski_portal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.14]
+:: OPIS: Import definicji wniosków z Portalu HR.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('import_init','#excel_imex',obj_ntab_names(obj_new('ZWS_PAR_PTYP')));
+_result:=0;
+{? FUN.ask('Czy oznaczyć zadanie: \'%1\' jako wykonane?'@['wnioski_portal'])
+|| __UPG.msg('Zaktualizowano definicje wniosków z Portalu HR.');
+   _result:=1
+|| _result:=-1
+?};
+_result
+
+
+\wnioski_portal_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.14]
+:: OPIS: Import definicji wniosków z Portalu HR - opis.
+::   WE:
+::   WY: opis zadania potransferowego
+::----------------------------------------------------------------------------------------------------------------------
+'Portal HR - Import definicji wniosków.'
+
+
+\stalesys_ini
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Aktualizacja stałych systemu
+::----------------------------------------------------------------------------------------------------------------------
+exec('init_wer','#stalesys');
+__UPG.msg('Zaktualizowano stałe systemu.');
+1
+
+
+\stalesys_ini_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Aktualizacja stałych systemu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja stałych systemu'
+
+
+\USERS
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14_05]
+:: OPIS: Aktualizacja użytkowników
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+USERS.cntx_psh();
+USERS.prefix();
+USERS.for_each("
+   __lrec+=1;
+   {? USERS.PORTAL2E=''
+   || USERS.PORTAL2E:='N';
+      {? USERS.put(1) || __lmod+=1 ?}
+   ?}",
+   1
+);
+USERS.cntx_pop();
+__UPG.msg('Zaktualizowano użytkowników.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\USERS_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14_05]
+:: OPIS: Aktualizacja użytkowników - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja użytkowników'
+
+
+\por_role
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.14]
+:: OPIS: Dodanie/aktualizacja ról/czynności związanych z POR
+::----------------------------------------------------------------------------------------------------------------------
+_status:=1;
+
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_add:="
+   _rola:=_a;
+   _lista:=_b;
+
+   _ok:=1;
+   _uid:=spli_str(_lista,',');
+   {! _lp:=1 .. obj_len(_uid)
+   |! {? exec('add_actrol_one','#b_role',_rola,_uid[_lp])
+      || __UPG.msg('Roli ''%1'' nadano uprawnienia do czynności ''%2''.' [_rola,_uid[_lp]])
+      || __UPG.msg('Nadanie roli ''%1'' uprawnień do czynności ''%2'' nie powiodło się.' [_rola,_uid[_lp]]);
+         _ok:=0
+      ?}
+   !};
+   _ok
+";
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_rola:='Portal HR - Pracownik';
+_ref:=exec('ref','#b_role',_rola);
+{? _ref<>null()
+|| __UPG.msg('Rola ''%1'' już istnieje.' [_rola])
+|? (_ref:=exec('ref','#b_role',_rola,,1))<>null()
+|| __UPG.msg('Rola ''%1'' została utworzona.' [_rola])
+?};
+{? _ref=null()
+|| __UPG.msg('Roli ''%1'' nie udało się utworzyć.' [_rola]);
+   _status*=0
+|| {? ~_add(_rola,
+         'POR_PRA_DPAP,POR_PRA_EXTR,POR_PRA_LINK,POR_PRA_OGUL,POR_PRA_PAWY,POR_PRA_PBAD,POR_PRA_PBEN,POR_PRA_PBWI,'
+         'POR_PRA_PDNA,POR_PRA_PFIR,POR_PRA_PGSL,POR_PRA_PINF,POR_PRA_PJEZ,POR_PRA_PKAL,POR_PRA_PKAR,POR_PRA_PKFI,'
+         'POR_PRA_PKON,POR_PRA_PLIS,POR_PRA_PNIE,POR_PRA_PNZB,POR_PRA_POWY,POR_PRA_PPOD,POR_PRA_PPOM,POR_PRA_PPOW,'
+         'POR_PRA_PPOZ,POR_PRA_PPPK,POR_PRA_PPRD,POR_PRA_PPYT,POR_PRA_PROD,POR_PRA_PSAK,POR_PRA_PSTA,POR_PRA_PSWY,'
+         'POR_PRA_PSZK,POR_PRA_PURL,POR_PRA_PURZ,POR_PRA_PWNA,POR_PRA_PWYK,POR_PRA_PWYN,POR_PRA_PWYP,POR_PRA_PZAT,'
+         'POR_PRA_PZLE,POR_PRA_TUTO'
+      )
+   || _status*=0
+   ?}
+?};
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_rola:='Portal HR - Przełożony (bez wynagrodzeń)';
+_ref:=exec('ref','#b_role',_rola);
+{? _ref<>null()
+|| __UPG.msg('Rola ''%1'' już istnieje.' [_rola])
+|? (_ref:=exec('ref','#b_role',_rola,,1))<>null()
+|| __UPG.msg('Rola ''%1'' została utworzona.' [_rola])
+?};
+{? _ref=null()
+|| __UPG.msg('Roli ''%1'' nie udało się utworzyć.' [_rola]);
+   _status*=0
+|| {? ~_add(_rola,
+         'POR_KIB_PAWZ,POR_KIB_PPPR,POR_KIB_PZAT,POR_KIB_PZSL,POR_KIE_PBAD,POR_KIE_PGSL,POR_KIE_PHZA,POR_KIE_PINF,'
+         'POR_KIE_PJEZ,POR_KIE_PKAL,POR_KIE_PKNI,POR_KIE_PKON,POR_KIE_PLOS,POR_KIE_PMAS,POR_KIE_PNIE,POR_KIE_PNME,'
+         'POR_KIE_POOS,POR_KIE_POPS,POR_KIE_PPOD,POR_KIE_PPOW,POR_KIE_PPRA,POR_KIE_PPST,POR_KIE_PSPR,POR_KIE_PSTA,'
+         'POR_KIE_PSZK,POR_KIE_PULI,POR_KIE_PURL,POR_KIE_PWKO,POR_KIE_PWRO,POR_KIE_PWUZ,POR_KIE_PWYD,POR_KIE_PWYK,'
+         'POR_KIE_PWYN,POR_KIE_PWYP,POR_KIE_PZLE,POR_KIE_ZAMK,POR_KIE_ZDAR'
+      )
+   || _status*=0
+   ?}
+?};
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_rola:='Portal HR - Przełożony (z wynagrodzeniami)';
+_ref:=exec('ref','#b_role',_rola);
+{? _ref<>null()
+|| __UPG.msg('Rola ''%1'' już istnieje.' [_rola])
+|? (_ref:=exec('ref','#b_role',_rola,,1))<>null()
+|| __UPG.msg('Rola ''%1'' została utworzona.' [_rola])
+?};
+{? _ref=null()
+|| __UPG.msg('Roli ''%1'' nie udało się utworzyć.' [_rola]);
+   _status*=0
+|| {? ~_add(_rola,
+         'POR_KIE_PAWZ,POR_KIE_PPPR,POR_KIE_PZAT,POR_KIE_PZSL,POR_KIE_PAWY,POR_KIE_PBAD,POR_KIE_PGSL,POR_KIE_PHZA,'
+         'POR_KIE_PINF,POR_KIE_PJEZ,POR_KIE_PKAL,POR_KIE_PKNI,POR_KIE_PKON,POR_KIE_PLOS,POR_KIE_PMAS,POR_KIE_PNIE,'
+         'POR_KIE_PNME,POR_KIE_POOS,POR_KIE_POPS,POR_KIE_PPOD,POR_KIE_PPOW,POR_KIE_PPRA,POR_KIE_PPRE,POR_KIE_PPST,'
+         'POR_KIE_PSPR,POR_KIE_PSTA,POR_KIE_PSWY,POR_KIE_PSZK,POR_KIE_PULI,POR_KIE_PURL,POR_KIE_PWKO,POR_KIE_PWPL,'
+         'POR_KIE_PWRO,POR_KIE_PWUZ,POR_KIE_PWYD,POR_KIE_PWYK,POR_KIE_PWYN,POR_KIE_PWYP,POR_KIE_PZLE,POR_KIE_ZAMK,'
+         'POR_KIE_ZDAR'
+      )
+   || _status*=0
+   ?}
+?};
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_rola:='Portal HR - Przełożony akceptujący (wnioski bez wynagrodzeń)';
+_ref:=exec('ref','#b_role',_rola);
+{? _ref<>null()
+|| __UPG.msg('Rola ''%1'' już istnieje.' [_rola])
+|? (_ref:=exec('ref','#b_role',_rola,,1))<>null()
+|| __UPG.msg('Rola ''%1'' została utworzona.' [_rola])
+?};
+{? _ref=null()
+|| __UPG.msg('Roli ''%1'' nie udało się utworzyć.' [_rola]);
+   _status*=0
+|| {? ~_add(_rola,
+         'POR_KIB_DARP,POR_KIE_CAKC,POR_KIE_EAKP,POR_KIE_PSWN,POR_KIE_PWNA,POR_KIE_WYCO'
+      )
+   || _status*=0
+   ?}
+?};
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_rola:='Portal HR - Przełożony akceptujący (wnioski z wynagrodzeniami)';
+_ref:=exec('ref','#b_role',_rola);
+{? _ref<>null()
+|| __UPG.msg('Rola ''%1'' już istnieje.' [_rola])
+|? (_ref:=exec('ref','#b_role',_rola,,1))<>null()
+|| __UPG.msg('Rola ''%1'' została utworzona.' [_rola])
+?};
+{? _ref=null()
+|| __UPG.msg('Roli ''%1'' nie udało się utworzyć.' [_rola]);
+   _status*=0
+|| {? ~_add(_rola,
+         'POR_KIE_DARP,POR_KIE_CAKC,POR_KIE_EAKP,POR_KIE_PSWN,POR_KIE_PWNA,POR_KIE_WYCO'
+      )
+   || _status*=0
+   ?}
+?};
+
+_status
+
+
+\por_role_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.14]
+:: OPIS: Dodanie/aktualizacja ról/czynności związanych z POR - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie/aktualizacja ról/czynności związanych z POR'
+
+
+\build_etypy_p
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.14]
+:: OPIS: Zbudowanie uprawnień do wierszy na portalu po dodaniu nowych ról do systemu
+::----------------------------------------------------------------------------------------------------------------------
+exec('build_etyp_p','obiegi2',1);
+__UPG.msg('Zaktualizowano uprawnienia do typów wniosków na Portalu HR.');
+1
+
+
+\build_etypy_p_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.14]
+:: OPIS: Zbudowanie uprawnień do wierszy na portalu po dodaniu nowych ról do systemu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja uprawnień do typów wniosków na Portalu HR.'
+
+
+\kart_url_21110024
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.14]
+:: OPIS: Poprawka błędu ER/WRT/XP/21.14/2111/0024 - brak zgodności w zaokrągleniach wykorzystania urlopów między
+::       kartą urlopową a Portalem HR.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_br:=date()~1;
+KART_URL.cntx_psh();
+KART_URL.index('ROK_PRAC');
+KART_URL.trig_off('*','*');
+{! _rok:=_br .. _br+1
+|! KART_URL.prefix(_rok);
+   __UPG.msg('Rok %1'[$_rok]);
+   __UPG.msg(' - Liczba zapisów do aktualizacji: %1' [$KART_URL.size()]);
+   _put0:=_put1:=0;
+   {? KART_URL.first()
+   || {!
+      |? {? KART_URL.put(,1)
+         || _put1+=1
+         || _put0+=1
+         ?};
+         KART_URL.next()
+      !}
+   ?};
+   __UPG.msg(' - Liczba zapisów zaktualizowanych: %1' [$_put1]);
+   __UPG.msg(' - Liczba zapisów niezaktualizowanych: %1' [$_put0])
+!};
+KART_URL.trig_on('*','*');
+KART_URL.cntx_pop();
+1
+
+
+\kart_url_21110024_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.14]
+:: OPIS: Poprawka błędu ER/WRT/XP/21.14/2111/0024 - brak zgodności w zaokrągleniach wykorzystania urlopów między
+::       kartą urlopową a Portalem HR - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Brak zgodności w zaokrągleniach wykorzystania urlopów między kartą urlopową a Portalem HR.\n'
+'Poprawka błędu ER/WRT/XP/21.14/2111/0024'
+
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:25 a92786f825559e42fd9a22b8c880ccb78ed8606d649b67aee424d8d6d1d84c83edc0c2fd9ac0e1883dbe67d3b6e04206525cdd5f9093a1dbe32cca4d387d266c08ba5c0981ab4d9e101b7abf1bf7cbaeeac36e5c29b09dfc3f529c4f8702b0d8e497bfdab84933f74a42da62a5578eab67e6c94e7d1861bc06412b88e0679e9e

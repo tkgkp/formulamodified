@@ -1,0 +1,499 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: zl_nlimit.fml
+:: Utworzony: 11.03.2021
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Obsługa zapotrzebowań do zlecenia - dedykowane TYLKO dla surowców nielimitowanych i odpadów
+::            Plik biblioteczny - wspólna obsługa dla czynności obszaru roboczego TTE_PZL
+::======================================================================================================================
+
+
+\utwdok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.30]
+:: OPIS: Tworzy dokumenty rozchodowe dla surowców nielimitowanych zlecenia, przychodowe odpadów zlecenia
+::       albo zwrotów surowca.
+::       Powstaje tyle dokumentów ile jest różnych magazynów zdefiniowanych na pozycjach.
+::       Dotyczy automatycznego generowania dokumentów rozchodowych w czynności:
+::       TTE_WYK_DGRW, TTE_WYK_DGRO i TTE_WYK_DGZW.
+::       Formuła działa w kontekście aktywnego dokumentu ND (raportu produkcji) albo aktywnego zlecenia (ZL dla zwrotów)
+::       UWAGA: Na podstawie formuły powstała: utwdok_zgp/!tte_wyk_dgrw.fml (w razie poprawek modyfikować obie).
+::   WE: _a - TYPYDOK.ref() - jeżeli nie określony,
+::            to wg pametrów 500707 i 500708 albo 500705 i 500706 albo 500709 i 500710
+::       _b - 'NLI' rozliczanie surowców nielimitowanych, 'ODP' - rozliczanie odpadów, 'ZWR' - zwroty surowców
+::       [_c] - NUMBER - Czy uwzględniać tylko surowce nieoznaczone jako "rozliczane z operacją":
+::            1 - tak, [0] - nie (uwzględniać wszystkie surowce)
+::   WY: STRING[15] - tm_stamp którym zostały osteplowane utworzone dokumenty rozliczające
+::                  - '' dokumenty nie powstały
+::                  - 'y' dokumenty nie powstały, ponieważ nie było pozycji do rozliczenia
+::  OLD: \utwdok/sur_nlim.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_b')=type_of('')
+|| _mode:=_b
+|| FUN.wdrerror('Błędny parametr _b wywołania formuły \\utwdok/zl_nlimit.fml.');
+   return()
+?};
+{? var_pres('_a')=type_of(null()) & _a<>null()
+|| _typydok:=_a
+|| _typydok:=exec('Get_TYPYDOK','magdok_wspolne',_mode)
+?};
+{? _typydok=null()
+|| {? _mode='ODP'
+   || _msg:='Brak określonego domyślnego typu dokumentu przychodu odpadu/koproduktu ze zlecenia (parametry %1, %2). '
+            'Dokument przyjęcia odpadów/koproduktów nie został utworzony.'@['500705','500706']
+   |? _mode='NLI'
+   || _msg:='Brak określonego domyślnego typu dokumentu rozchodowego na zlecenie (parametry %1, %2). '
+            'Dokument rozchodujący surowce nielimitowane nie został utworzony.'@['500707','500708']
+   || _msg:='Brak określonego domyślnego typu dokumentu zwrotu surowców ze zlecenia (parametry %1, %2). '
+            'Dokument przyjęcia zwracanych surowców nie został utworzony.'@['500709','500710']
+   ?};
+   KOMM.add(_msg,7,,1);
+   return('')
+?};
+_mrdok:=exec('FindAndGet','#table',TYPYDOK,_typydok,,"T",'');
+_typ:={? var_pres('_c')=type_of(0) || _c || 0 ?};
+
+_result:='';
+_ok:=1;
+_first:=1;
+_lim:=0;
+_ref:=-1;
+_buf_matr:={? _mode<>'ODP' || ~~ || exec('buffer','mat_atr') ?};
+
+_mags:=tab_tmp(1,
+:: 'POLE','TYP','Nazwa w oknie',
+   'REF','STRING[16]','Sql ref magazynu',
+   'SYM','STRING[10]','Symbol magazynu',
+   'NAZ','STRING[60]','Nazwa magazynu',
+   'TYP','STRING[8]' ,'Typ magazynu'
+);
+
+_can_continue:=1;
+_tm_stamp:=tm_stamp();
+_ilosc_nd:=0;
+
+:: Tabele przechowująca ilość zarazerwowaną dla konkretnych dostaw
+:: Wykorzystywna w przypadku rozliczania nielimitów z przypisaną dostawą
+{? var_pres('_tab_rez')>100 || obj_del(_tab_rez) ?};
+_tab_rez:=exec('tab_rez_create','zl_nlimit');
+_ndx1:=_tab_rez.index('?');
+_ndx2:=_tab_rez.ndx_tmp(,,'TYP',,,'ZLREF',,,'MREF',,,'ZLIM',,,'REF',,);
+_ndx3:=_tab_rez.ndx_tmp(,,'SCEAN',,,'TYP',,1);
+:: Tabela przechowująca refy pozycji dokumentów utworzonych na podstawie dedykowanych rezerwacji do nielimitów
+{? var_pres('_dk_rez')>100 || obj_del(_dk_rez) ?};
+_dk_rez:=tab_tmp(1,
+   'REF','STRING[16]','Ref pozycji $DK.ref()'
+);
+
+
+:: Iteracja po pozycjach dokumentu raportującego
+DK.prefix(ND.ref());
+{? DK.first()
+|| ND.cntx_psh();
+   {!
+   |?
+      {? exec('FindAndGet','#table',ZL,DK.ZL,,"
+         (ZL.RP='T' & ZL.TREE_TYP='F') | exec('top_rodzaj','zl_link',ZL.ref())='N'",0)
+      || _zl:=DK.ZL
+      || _zl:=exec('top_level','zl_link',DK.ZL)
+      ?};
+      _zgh:=DK.ZGH;
+      _ilosc:=DK.IL;
+      _data:=ND.D;
+      _dalej:=1;
+      DK.cntx_psh();
+      ZL.cntx_psh(); ZL.clear();
+      ZLIM.cntx_psh();
+      {? _zl<>null() & ZL.seek(_zl)
+      || VAR.cntx_psh();
+         VAR.A_ZLEC:=_zl;
+         _nadzl_il:=ZL.IL;
+         exec('openmask','zl_common',VAR.A_ZLEC);
+         exec('s_nlim','zl_common');
+
+::       1. W tabeli _mags zbieram listę magazynów
+::          - to mi określi ile nagłówków dokumentów należy utworzyć (dla każdego zlecenia)
+         MG.cntx_psh(); MG.clear();
+         M.cntx_psh();
+         _mags.clear();
+::         _mags.erase();
+         {? _mags.first() || {! |? _mags.del() !} ?};
+
+         ZL.cntx_psh();
+         {? ZL.RODZAJ='P'
+         || ZL.index('UNRZL');
+            ZL.prefix(ZL.UNRZL)
+         || ZL.index('NRNZL');
+            ZL.prefix(ZL.UNRZL)
+         ?};
+::       Zbieram ilość pozycji do wygenerowania
+         _count:=0;
+         {? ZL.first()
+         || {!
+            |? _zl_il:=ZL.IL;
+               ZLIM.index('ZNR');
+               {? _mode='ODP'
+               || ZLIM.prefix(ZL.ref(),'T')
+               || {? _typ
+                  || ZLIM.prefix(ZL.ref(),'N','N')
+                  || ZLIM.prefix(ZL.ref(),'N')
+                  ?}
+               ?};
+               {? ZLIM.first()
+               || {!
+                  |? {? (ZLIM.LIMIT='N' | ZLIM.LIMIT='T' & ZLIM.SO='O')
+                        & (ZLIM.ZGP().NRZLP=_zgh | ZLIM.ZGP().NRZLP().UID_SRC=exec('FindAndGet','#table',ZGH,_zgh,,"UID",''))
+                        & (ZLIM.PODZL='' | (ZLIM.PODZL='T' & ZL.ref()=_zl) | (ZLIM.PODZL='N' & ZL.ref()<>_zl))
+                     ||
+                        _count+=1;
+                        _zgh_il:=ZLIM.ZGP().NRZLP().ILNPRZ;
+                        {? ZLIM.MG<>null()
+                        ||
+::                         Podczytuję magazyn
+                           ZLIM.MG();
+
+::                         Wyliczam dostępny stan magazynowy dla podanej pozycji
+                           {? _mode='NLI'
+                           || {? ZLIM.DK_C<>null()
+                              || exec('obl_stan','magazyn_stan',ZLIM.KTM,1,ZLIM.MG,,,_data,-2,,,,ZLIM.DK_C)
+                              || exec('obl_stan','magazyn_stan',ZLIM.KTM,1,ZLIM.MG,,,_data,-2)
+                              ?}
+                           ?};
+::                         Doliczenie stanu dedykowanych rezerwacji dla surowców nielimitowanych
+                           {? ZLIM.LIMIT='N'
+                           || BEER.SD+=exec('zlim_il_rez','zl_nlimit',$ZLIM.ref());
+::                            Wypełnienie tabeli z ilościami zarezerowowanymi (tylko raz dla pary materiał/zlecenie)
+                              {? ~_tab_rez.find_tab('first','MREF',,'=',$ZLIM.KTM,'ZLREF',,'=',$ZL.ref(),'TYP',,'=','D')
+                              || exec('tab_rez_fill','zl_nlimit',_tab_rez,ZL.ref(),ZLIM.KTM)
+                              ?}
+                           ?};                           
+:: NUCO - PK -  zaokraglanie do pelnych dla jednostek szt ipt.
+                           _q_lista_jm:=exec('get_w','#params',999006,type_of(''));
+                           {? _q_lista_jm<>''
+                           || {? _q_lista_jm*(','+ZLIM.KTM().J().KOD+',')>0
+                              || _dokl:=0
+                              || _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM)
+                              ?}
+                           || _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM)
+                           ?};
+                           _lil:=exec('sum_il','zl_limit',ZLIM.ref());
+                           _il:={? _dokl>0
+                                || ((_lil*_ilosc)/_zgh_il*_zl_il/_nadzl_il)$ _dokl
+                                || ceil(((_lil*_ilosc)/_zgh_il*_zl_il/_nadzl_il))
+                                ?};
+
+::                         Sprawdzam dostępny stan magazynowy
+                           {? _mode='NLI' & BEER.SD<_il
+                           || {? ZLIM.DK_C<>null()
+                              || _msg:='Brak surowca: %1 w magazynie: %2 o wymaganych wartościach atrybutów. '
+                                       'Dokumenty %3 nie zostały utworzone.'@
+                                       [ZLIM.KTM().KTM,MG.SYM,form(_mrdok)]
+                              || _msg:='Brak surowca: %1 w magazynie: %2. '
+                                       'Dokumenty %3 nie zostały utworzone.'@
+                                       [ZLIM.KTM().KTM,MG.SYM,form(_mrdok)]
+                              ?};
+                              KOMM.add(_msg,4,,1);
+                              _can_continue:=0
+                           ?};
+
+                           {? _can_continue>0
+                           || _mags.cntx_psh();
+                              _mags.prefix($ZLIM.MG);
+                              {? _mags.size()=0
+                              || _mags.blank();
+                                 _mags.REF:=$MG.ref();
+                                 _mags.SYM:=MG.SYM;
+                                 _mags.NAZ:=MG.NAZ;
+                                 _mags.TYP:=MG.TYP;
+                                 _mags.add()
+                              ?};
+                              _mags.cntx_pop()
+                           ?}
+                        ||
+                           KOMM.add('Nie przypisano magazynu do surowca %1. Dokumenty %2 nie zostały utworzone.'@
+                                    [ZLIM.KTM().KTM,form(_mrdok)],4,,1);
+                           _can_continue:=0
+                        ?}
+                     ?};
+                     ZLIM.next()
+                  !}
+               ?};
+               ZL.next()
+            !}
+         ?};
+         ZL.cntx_pop();
+
+         {? _count=0
+         || KOMM.add(
+               {? _mode='NLI'
+               || 'Zlecenie %1 nie ma zdefiniowanych surowców nielimitowanych.'@[VAR.A_ZLEC().SYM]
+               || 'Zlecenie %1 nie ma zdefiniowanych odpadów/koproduktów.'@[VAR.A_ZLEC().SYM]
+               ?}+' '+
+               'Dokumenty %1 nie zostały utworzone.'@[form(_mrdok)],4,,1
+            );
+            _can_continue:=-3
+         ?};
+
+::       Pętla po magazynach - sprawdzenie dostępności typów dokumentów
+         MG.clear();
+         {? _mags.first()
+         || {!
+            |? {? MG.seek(_mags.REF,)
+               || _magtab:=obj_new(1); _magtab[1]:=MG.ref();
+                  _typydok_sym:=exec('FindAndGet','#table',TYPYDOK,_typydok,,"T",'');
+                  _typy_ok:=exec('typ_dok','lmg','"TYPYDOK".T=\''+_typydok_sym+'\'',,,1,_magtab,,,0);
+                  {? _typy_ok=''
+                  || _msg:='Brak dostępu do dokumentu: %1 na magazynie: %2.'@[_typydok_sym,MG.SYM];
+                     KOMM.add(_msg,4,,1);
+                     _can_continue:=0
+                  ?};
+                  obj_del(_magtab)
+               ?};
+               _mags.next()
+            !}
+         ?};
+
+::       2. W pętli po magazynach tworzę nagłówki dokumentów, a do nich pozycje na podstawie nielimitów, odpadów
+         {? _can_continue>0
+         ||
+            {? _mags.first()
+            ||
+               ZLIM.index('MAG');
+               {!
+               |? _mg:=exec('FindAndGet','#table',MG,_mags.REF,,,null());
+
+::                TWORZĘ NAGŁÓWEK DOKUMENTU MAGAZYNOWEGO (zawsze bez wykorzystywania wolnych numerów)
+                  _nd:=exec('addnag','magdok_nag',
+                     _mg,ST.AR,ST.AM,_typydok,'N',,_data,,,,#ND.ref(),ND.name(),ND.O,_zl,,,,,0
+                  );
+
+                  {? _nd<>null()
+                  ||
+::                   Ostemplowanie nagłówka GRP_KEY
+::                   - jedna paczka dokumentów w ramach czynności TTE_WYK_DGRW, TTE_WYK_DGRO
+                     ND.cntx_psh();
+                     ND.prefix();
+                     {? ND.seek(_nd) || ND.GRP_KEY:=_tm_stamp+'1'; ND.put() ?};
+                     ND.cntx_pop();
+
+                     ZL.cntx_psh();
+                     {? ZL.RODZAJ='P'
+                     || ZL.index('UNRZL');
+                        ZL.prefix(ZL.UNRZL)
+                     || ZL.index('NRNZL');
+                        ZL.prefix(ZL.UNRZL)
+                     ?};
+
+                     {? ZL.first()
+                     || {!
+                        |? _zl_il:=ZL.IL;
+                           {? _typ &  _mode='NLI'
+                           || ZLIM.prefix(ZL.ref(),_mg,'N','S','N')
+                           || ZLIM.prefix(ZL.ref(),_mg,{? _mode='NLI' || 'N' || 'T' ?},{? _mode='NLI' || 'S' || 'O' ?})
+                           ?};
+                           {? ZLIM.first()
+                           || {!
+                              |? {? (ZLIM.ZGP().NRZLP=_zgh | ZLIM.ZGP().NRZLP().UID_SRC=exec('FindAndGet','#table',ZGH,_zgh,,"UID",''))
+                                    & (ZLIM.PODZL='' | (ZLIM.PODZL='T' & ZL.ref()=_zl) | (ZLIM.PODZL='N' & ZL.ref()<>_zl))
+                                 ||
+                                    _zgh_il:=ZLIM.ZGP().NRZLP().ILNPRZ;
+:: NUCO - PK -  zaokraglanie do pelnych dla jednostek szt ipt.
+                                    _q_lista_jm:=exec('get_w','#params',999006,type_of(''));
+                                    {? _q_lista_jm<>''
+                                    || {? _q_lista_jm*(','+ZLIM.KTM().J().KOD+',')>0
+                                       || _dokl:=0
+                                       || _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM)
+                                       ?}
+                                    || _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM)
+                                    ?};
+                                    _lil:=exec('sum_il','zl_limit',ZLIM.ref());
+                                    _il:={? _dokl>0
+                                         || ((_lil*_ilosc)/_zgh_il*_zl_il/_nadzl_il)$ _dokl
+                                         || ceil(((_lil*_ilosc)/_zgh_il*_zl_il/_nadzl_il))
+                                         ?};
+                                    {? _il>0
+                                    || _zparn:=DK.PARTIA;
+                                       _dk_c:=ZLIM.DK_C;
+::                                     Obsługa cech dostaw dla odpadów (uzupełnienie atrybutu partii)
+                                       {? _mode='ODP' & ZLIM.KTM().M_ATR & _zparn<>null()
+                                       || _buf_matr.blank();
+::                                        Sprawdzenie czy wzorzec posiada atrybut typu partia
+                                          _dalej:=exec('partia_num_matr','mat_atr',ZLIM.KTM().M_ATR);
+                                          {? _dalej>0
+                                          || M_ATR.cntx_psh();
+                                             ZLIM.KTM().M_ATR();
+                                             _buf_matr.get_matr();
+                                             M_ATR.cntx_pop()
+                                          ?};
+                                          {? _dalej>0
+                                          || {? ZLIM.DK_C<>null()
+                                             || DK_C.cntx_psh();
+                                                DK_C.use(ref_name(ZLIM.DK_C));
+                                                DK_C.clear();
+                                                {? DK_C.seek(ZLIM.DK_C)
+                                                || _buf_matr.get_dkc()
+                                                ?};
+                                                DK_C.cntx_pop()
+                                             ?};
+                                             {? _buf_matr.has_part()=0
+                                             || _buf_matr.set_part(_zparn);
+::                                                 Zakładam nową ceche tylko, gdy wszystkie atrybuty uzupełnione
+                                                {? _buf_matr.all_set()>0
+                                                || _dk_c:=exec('m_atr_sprdod','mat_atr'
+                                                      ,_buf_matr.WAR01
+                                                      ,_buf_matr.WAR02
+                                                      ,_buf_matr.WAR03
+                                                      ,_buf_matr.WAR04
+                                                      ,_buf_matr.WAR05
+                                                      ,_buf_matr.WAR06
+                                                      ,_buf_matr.WAR07
+                                                      ,_buf_matr.WAR08
+                                                      ,_buf_matr.WAR09
+                                                      ,_buf_matr.WAR10
+                                                      ,_buf_matr.M_ATR
+                                                      ,_zparn
+                                                   )
+                                                ?}
+                                             ?}
+                                          ?}
+                                       ?};
+                                       _czy_rez:=0;
+::                                     Sprawdzenie, czy do surowca istnieją rezerwacje dedykowane do nielimitów
+                                       {? ZLIM.LIMIT='N' & exec('zlim_il_rez','zl_nlimit',$ZLIM.ref())>0
+                                       || _czy_rez:=1
+                                       ?};
+                                       _dorozp:=_il;
+::                                     Jeżeli istnieją rezerwacje dedykowane do nielimitów (zlecenia utworzone
+::                                     na podst. stanów mag.),  to na początku tworzone pozycje dokumentów na
+::                                     podstawie zarezerwowanych wcześniej dostaw
+                                       {? _czy_rez>0
+                                       || _tab_rez.index(_ndx2);
+                                          _tab_rez.prefix('D',$ZL.ref(),$ZLIM.KTM,$ZLIM.ref())
+                                       ?};
+                                       _first:=1;
+                                       {!
+                                       |?
+                                          {? _czy_rez>0
+                                          || {? _first>0
+                                             || _loop:=_tab_rez.first();
+                                                _first:=0
+                                             || _loop:=_tab_rez.next()
+                                             ?}
+                                          || _loop:=0
+                                          ?};
+                                          {? _loop>0
+                                          || _ilr:=exec('sc_il_rez','zl_nlimit',_tab_rez.SRDK,$ZLIM.ref());
+                                             _il:={? _dorozp>_ilr || _ilr || _dorozp ?};
+                                             _sc:=_tab_rez.REF
+                                          || _il:=_dorozp;
+                                             _sc:=''
+                                          ?};
+                                          {? _il>0
+                                          ||
+::                                           TWORZĘ POZYCJĘ DOKUMENTU MAGAZYNOWEGO
+                                             {? var_pres('_res_dk')>100
+                                             || obj_del(_res_dk)
+                                             ?};
+                                             _res_dk:=exec('adddk4zl','magdok_prod',  ZL.ref()
+                                                                                    ,ZLIM.WYD
+                                                                                    ,_il
+                                                                                    ,ZLIM.KTM
+                                                                                    ,_nd
+                                                                                    ,_mg
+                                                                                    ,
+                                                                                    ,_dk_c
+                                                                                    ,ZLIM.ref()
+                                                                                    ,_tm_stamp
+                                                                                    ,ZLIM.ZGP().NRPRZ
+                                                                                    ,_zparn
+                                                                                    ,ZLIM.ZGP
+                                                                                    ,,,,,
+                                                                                    ,_sc
+                                                                                    ,_dk_rez);
+                                             _can_continue:=_res_dk.RESULT;
+::                                           zapis o wymiarach o ile istnieją
+                                             {? _res_dk.RESULT>0
+                                             || _dorozp-=_il;
+                                                DK.cntx_psh();
+                                                DK.prefix();
+                                                {? DK.seek(_res_dk.DK) & DK.PLUS='T' & DK.N().MAG().SL='T'
+                                                || _pal:=null();
+                                                   _eanl:=DK.N().MAG().EANL;
+                                                   _tw:={? DK.TW<>date(0,0,0) || DK.TW || DK.PARTIA().TW ?};
+                                                   exec('add2dk_l','magdok_wspolne',DK.ref(),null(),_eanl,null()
+                                                    ,_tw,date(0,0,0),DK.IL,ND.MAG,DK.M,,,_pal)
+                                                ?};
+                                                DK.cntx_pop()
+                                             ?}
+                                          ?};
+                                          _loop>0 & _dorozp>0
+                                       !};
+                                       {? _can_continue=0
+                                       || _msg:=
+                                             'Nie udało się utworzenie pozycji dokumentu magazynowego dla surowca: %1'@
+                                             [ZLIM.KTM().KTM];
+                                          KOMM.add(_msg,2,,1)
+                                       ||
+::                                        Określam sposób rozliczania nielimitu/odpadu
+                                          _zl_type:=exec('FindAndGet','#table',ZL,_zl,,"ZL.TREE_TYP",'');
+                                          {? _zl_type<>'P'
+                                          || ZLIM.PODZL:={? _zl_type='F' || 'T' || 'N' ?};
+                                             ZLIM.put()
+                                          ?}
+                                       ?}
+                                    ?}
+                                 ?};
+                                 _can_continue>0 & ZLIM.next()
+                              !}
+                           ?};
+                           _can_continue>0 & ZL.next()
+                        !}
+                     ?};
+                     ZL.cntx_pop()
+
+                  || _can_continue:=0
+                  ?};
+
+                  {? _can_continue>0
+                  || _nd_sym:=exec('FindAndGet','#table',ND,_nd,,"SYM",'');
+                     _msg:='Utworzono dokument o symbolu: %1 na magazynie: %2'@[_nd_sym,_mags.SYM];
+                     KOMM.add(_msg,7,,1);
+                     _ilosc_nd+=1
+                  || _msg:='Nie udało się utworzyć dokumentu: %1 na magazynie: %2'@[form(_mrdok),_mags.SYM];
+                     KOMM.add(_msg,2,,1);
+                     {? _nd<>null()
+                     ||
+::                      Jeśli nagłówek powstał to go usuwam
+                        ND.cntx_psh(); ND.clear();
+                        {? ND.seek(_nd)
+                        || exec('n_usun','magdok_nag',0,0,,,,,,_dk_rez)
+                        ?};
+                        ND.cntx_pop();
+                        ~~
+                     ?}
+                  ?};
+                  _can_continue>0 & _mags.next()
+               !}
+            ?}
+         ?};
+         M.cntx_pop();
+         MG.cntx_pop();
+         VAR.cntx_pop()
+      ?};
+      ZL.cntx_pop();
+      ZLIM.cntx_pop();
+      DK.cntx_pop();
+      _can_continue>0 & DK.next()
+   !};
+   ND.cntx_pop()
+?};
+
+{? _can_continue>0
+|| _result:=_tm_stamp
+|? _can_continue=-3
+|| _result:='y'
+?};
+_result
+

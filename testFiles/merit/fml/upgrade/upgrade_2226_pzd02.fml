@@ -1,0 +1,639 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2226_pzd02.fml
+:: Utworzony: 10.05.2023
+:: Autor: MicKoc [22.26]
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 21.37 na 22.26
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Główna formuła aktualizacji 22.26_pzd02
+::----------------------------------------------------------------------------------------------------------------------
+:: Informacja o dacie i czasie aktualizacji
+__UPG.id_ver(date(2023,6,27),time(0,0,0));
+:: Zadania wykonywane raz dla całego systemu
+__UPG.add_task('upgrade_act',,,'ZPR',,,,,'T');
+__UPG.add_task('f_zatra_add',,'N','ZWS',,,,1,'T');
+__UPG.add_task('rep_tran',,,'PKD',1,,,,'T');
+__UPG.add_task('sch_imp',,,'OBE',,,,,'T');
+__UPG.add_task('ppsf_adr_hash',,,'PRC',,,,,'T');
+:: Zadania automatyczne, wykonywane dla każdej firmy
+__UPG.add_task('role',,'N','ZWS',,,,1,'T');
+__UPG.add_task('pola_pzd02',,'N','PRC',,,,1,'T');
+__UPG.add_task('R_POR_WW',,'N','PRC',,,,1,'T');
+:: Zadania manualne
+__UPG.add_task('szablony','N',,'ZWS',,,,1,'T');
+__UPG.add_task('procesy_pzd02','N','N','PKD',,,,1,'T');
+~~
+
+
+\upgrade_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [22.26]
+:: OPIS: Aktualizacja typów danych oraz czynności dla wskazanych obszarów
+::   WE: [_a] - dziedziny
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+:: Poniżej wpisać domeny, których dotyczą nowe lub aktualizowane czynności (ciekawe, czy uda się alfabetycznie ...)
+::_dom:=spli_str('LMG.LSP.LZK.LUM.LOD.PKD.POR.PPK.PKW.PPL.TPP.TTE.TRE.WYP.ZWS.FST.FKS.KON.OBE.OBG.PBA.BIQ','.');
+_dom_str:={? var_pres('_a')=type_of('')
+          || _a
+          || 'PKD.ZWS.PKW.PPL'
+          ?};
+_dom:=spli_str(_dom_str,'.');
+_len:=obj_len(_dom);
+
+{? _len & _dom[1]<>''
+|| FUN.prg_start(_len+2,'Aktualizacja czynności.',,,1);
+
+:: Uzupełnienie domen (zawsze)
+   FUN.prg_next();
+   exec('add_domain','#b_action');
+   __UPG.msg('Zaktualizowano dziedziny.');
+
+:: Uzupełnienie typów (zawsze)
+   FUN.prg_next();
+   exec('fill_tab','#b_type',0);
+   __UPG.msg('Zaktualizowano typy danych.');
+
+   {! _i.._len
+   |! FUN.prg_next();
+      _domain:=exec('FindInSet','#table','B_DOMAIN','SYMBOL',_dom[_i]);
+      {? _domain<>null()
+      || exec('import_needed_dom','#b_design',_domain,0);
+         __UPG.msg('Zaktualizowano czynności dziedziny: %1.'[_dom[_i]])
+      ?}
+   !};
+   FUN.prg_stop()
+?};
+obj_del(_dom);
+_res
+
+
+\upgrade_act_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [22.26]
+:: OPIS: Aktualizacja typy danych oraz czynności dla wskazanych obszarów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja typów danych oraz czynności dla modelera'
+
+
+\role
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami.
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('roleActionsDel','upgrade',
+      'Przeglądający Kadry,Przeglądający PPK,Przeglądający Płace,Przeglądający Zleceniobiorców',
+      'PKD_GRP_BTGB,PKD_GRP_BTWY'
+   ) &
+   exec('roleActions','upgrade',
+      'Pracownik',
+      'PKW_POR_IRSS,PKW_POR_IPZD'
+   ) &
+   exec('roleActions','upgrade',
+      'Przełożony',
+      'PKW_POR_PRSS,PKW_POR_PPZD'
+   ) &
+   exec('roleActions','upgrade',
+      'Specjalista ds. planowania czasu pracy,'
+      'Specjalista ds. rozliczania czasu pracy,'
+      'Specjalista ds. płac',
+      'PPL_PLL_RPHW'
+   ) &
+   exec('roleActions','upgrade',
+      'Przeglądający Płace',
+      'PPL_PLL_PPHW'
+   )
+|| 1
+|| -1
+?}
+
+
+\role_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ról/uprawnień związana z czynnościami.\n'
+'Dodanie uprawnień do czynności:\n'
+' ● PKW_POR_IRSS - Rejestracja Start / Stop dla roli Pracownik\n'
+' ● PKW_POR_PRSS - Rej. Start / Stop - podwładny dla roli Przełożony\n'
+' ● PKW_POR_IPZD - Przeglądanie pracy zdalnej stałej dla roli Pracownik\n'
+' ● PKW_POR_PPZD - Przeglądanie pracy zdalnej stałej podwładnego dla roli Przełożony\n'
+' ● PPL_PLL_RPHW - Redakcja zapisów Portal HR dla ról:\n'
+' ● ● Specjalista ds. planowania czasu pracy\n'
+' ● ● Specjalista ds. rozliczania czasu pracy\n'
+' ● ● Specjalista ds. płac\n'
+' ● PPL_PLL_PPHW - Podgląd zapisów Portal HR dla roli Przeglądający Płace\n'
+'Odebranie uprawnień do czynności:\n'
+' ● PKD_GRP_BTGB - Generowanie badań k.t. rolom:\n'
+' ● ● Przeglądający Kadry\n'
+' ● ● Przeglądający PPK\n'
+' ● ● Przeglądający Płace\n'
+' ● ● Przeglądający Zleceniobiorców\n'
+' ● PKD_GRP_BTWY - Wyniki kontroli trzeźwości rolom:\n'
+' ● ● Przeglądający Kadry\n'
+' ● ● Przeglądający PPK\n'
+' ● ● Przeglądający Płace\n'
+' ● ● Przeglądający Zleceniobiorców'
+
+
+\rep_tran
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Kompilacja wydruków.
+::----------------------------------------------------------------------------------------------------------------------
+{? rep_tran('pkd*')<>0
+|| __UPG.msg('Zaktualizowano wydruki dziedziny PKD.');
+   1
+|| __UPG.msg('Aktualizacja wydruków dziedziny PKD nie powiodła się.');
+   -1
+?}
+
+
+\rep_tran_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Kompilacja wydruków dziedziny PPL - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Kompilacja wydruków dziedziny PKD.'
+
+
+\szablony
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Import zestawów danych i definicji szablonów.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('import_init','#excel_imex',spli_str('ZWS_PAR_ASDZ,ZWS_PAR_ASDD',','));
+_result:=0;
+{? FUN.ask('Czy oznaczyć zadanie: \'%1\' jako wykonane?'@['szablony'])
+|| __UPG.msg('Zaktualizowano zestawy danych i definicje szablonów.');
+   _result:=1
+|| _result:=-1
+?};
+_result
+
+
+\szablony_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Import zestawów danych i definicji szablonów - opis.
+::   WE:
+::   WY: opis zadania potransferowego
+::----------------------------------------------------------------------------------------------------------------------
+'Import zestawów danych dla dokumentów Word i definicji szablonów dokumentów Word.'
+
+
+\f_zatra_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [22.26]
+:: OPIS: Nadanie czynnościom uprawnień do form współpracy.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Lista czynności, dla których przypisane zostaną formy współpracy. Założenia:
+:: 1. Czynności są oddzielone przecinkami.
+:: 2. W ramach czynności przekazywana jest również informacja o kodach form współpracy (oddzielonych znakiem dwukropka).
+::    Zakładamy, że duże litery dotyczą form docelowych.
+_lista:=spli_str(
+   'PKW_POR_IRSS:P,'
+   'PKW_POR_PRSS:P,'
+   'PKW_POR_IPZD:P,'
+   'PKW_POR_PPZD:P,'
+   'PKD_EZK_OPZD:P:p,'
+   'PKD_EZK_ORZD:P:p,'
+   'PKD_EZK_OPAD:P:p,'
+   'PKD_EZK_ORAD:P:p,'
+   'PKD_EZK_OPPO:P:p,'
+   'PKD_EZK_ORPO:P:p,'
+   'PPL_PLL_RPHW:P,'
+   'PPL_PLL_PPHW:P'
+   ,','
+);
+
+_ret:=1;
+B_ACTION.cntx_psh();
+B_ACTION.f_clear();
+B_ACTION.index('UNIK');
+B_ACTION.prefix();
+_lenl:=obj_len(_lista);
+{! _lp:=1 .. _lenl
+|! _acz:=spli_str(_lista[_lp],':');
+   _uid:=_acz[1];
+   {? B_ACTION.find_key(_uid,)
+   || _lena:=obj_len(_acz);
+      {! _lf:=2 .. _lena
+      |! _fz:=_acz[_lf];
+         __UPG.msg('Forma współpracy: %1 | Czynność: %2 - %3' [_fz,_uid,B_ACTION.NAME]);
+         _add:=exec('f_zatra_add','f_zatr',{? -_fz=_fz || 'N' || 'T' ?},_fz,_uid);
+         {? _add=''
+         || __UPG.msg(' - uprawnienia nadane')
+         || __UPG.msg(_add);
+            _ret:=-1
+         ?}
+      !}
+   || __UPG.msg('"%1" - nieprawidłowy kod czynności.' [_uid]);
+      _ret:=-1
+   ?};
+   obj_del(_acz)
+!};
+B_ACTION.cntx_pop();
+_ret
+
+
+\f_zatra_add_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [22.26]
+:: OPIS: Nadanie czynnościom uprawnień do form współpracy - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Nadanie czynnościom uprawnień do form współpracy:\n'
+' ● "PKW_POR_IRSS - Rejestracja Start / Stop" dla formy współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PKW_POR_PRSS - Rej. Start / Stop - podwładny" dla formy współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PKW_POR_IPZD - Przeglądanie pracy zdalnej" dla formy współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PKW_POR_PPZD - Przeg. pr. zdalnej - podwładny" dla formy współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PKD_EZK_OPZD - Przegl. pracy zdalnej stałej" dla form współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● ● "p - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PKD_EZK_ORZD - Rejestracja pr.zdalnej stałej" dla form współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● ● "p - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PKD_EZK_OPAD - Przegl. adresów pr.zdalnej" dla form współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● ● "p - Pracownicy - zatrudnieni na podstawie umowy o pracę'
+' ● "PKD_EZK_ORAD - Rejestracja adresów pr.zdalnej" dla form współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● ● "p - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PKD_EZK_OPPO - Przegl. oświadczeń" dla form współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● ● "p - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PKD_EZK_ORPO - Rejestracja oświadczeń" dla form współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● ● "p - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PPL_PLL_RPHW - Redakcja zapisów Portal HR" dla formy współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę",\n'
+' ● "PPL_PLL_PPHW - Podgląd zapisów Portal HR" dla formy współpracy:\n'
+' ● ● "P - Pracownicy - zatrudnieni na podstawie umowy o pracę".'
+
+
+\procesy_pzd02
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Import procesów zmienionych w aktualizacji 22.26_PZD02
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+exec('procesy','upgrade','22.26','PER_ZA1,PER_ZAZ,PER_OOPZ_WWW,PER_PZDS_WWW,PER_PZDO_WWW','PER_')
+
+
+\procesy_pzd02_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Import procesów zmienionych w aktualizacji 22.26_PZD02 - opis
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+'Pozwala zaimportować nowy proces dziedziny PKD:\n'
+' ● PER_ZAZ - Rejestracja informacji o pracy zdalnej stałej (22.26).\n'
+'Pozwala zaimportować zmieniony proces dziedziny PKD:\n'
+' ● PER_ZA1 - Zatrudnienie pracownika (22.26).\n'
+'Pozwala zaimportować nowe procesy dziedziny OBE:\n'
+' ● PER_OOPZ_WWW - Oświadczenie o pracy zdalnej (22.26).\n'
+' ● PER_PZDS_WWW - Wniosek o pracę zdalną stałą (22.26).\n'
+' ● PER_PZDO_WWW - Wniosek o pracę zdalną okazjonalną (22.26).'
+
+
+\pola_pzd02
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie wartości w nowych polach związanych z pracą poza siedzibą firmy.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_firma:=exec('firma','ustawienia');
+
+PPSF_PO.trig_off('*','*');
+PPSF_PO.cntx_psh();
+PPSF_PO.index('UNIQUE');
+PPSF_PO.prefix();
+{? PPSF_PO.f_set(,
+      'join PPSF_NO using(PPSF_PO.PPSF_NO, PPSF_NO.REFERENCE)',
+      'PPSF_NO.FIRMA=:_a',_firma)
+|| {? PPSF_PO.f_first()
+   || {!
+      |? _put:=0;
+         {? PPSF_PO.O7=''
+         || PPSF_PO.O7:='N';
+            _put:=1
+         ?};
+         {? PPSF_PO.O8=''
+         || PPSF_PO.O8:='N';
+            _put:=1
+         ?};
+
+         {? _put & ~PPSF_PO.put()
+         || _ret:=-1
+         ?};
+
+         PPSF_PO.f_next()
+      !}
+   ?};
+   PPSF_PO.f_clear()
+|| _ret:=-1
+?};
+PPSF_PO.cntx_pop();
+PPSF_PO.trig_on('*','*');
+
+PPSF_NO.trig_off('*','*');
+PPSF_NO.cntx_psh();
+PPSF_NO.index('KOD');
+PPSF_NO.prefix(_firma);
+{? PPSF_NO.first()
+|| {!
+   |? _put:=0;
+      {? PPSF_NO.AKT=''
+      || PPSF_NO.AKT:='T';
+         _put:=1
+      ?};
+
+      {? _put & ~PPSF_NO.put()
+      || _ret:=-1
+      ?};
+
+      PPSF_NO.next()
+   !}
+?};
+PPSF_NO.cntx_pop();
+PPSF_NO.trig_on('*','*');
+
+PPSFN.trig_off('*','*');
+PPSFN.cntx_psh();
+PPSFN.index('PRAC');
+PPSFN.prefix(_firma);
+{? PPSFN.first()
+|| {!
+   |? _put:=0;
+      {? PPSFN.ORIGIN='' & PPSFN.AZ='R'
+      || PPSFN.ORIGIN:='R';
+         _put:=1
+      ?};
+
+      {? _put & ~PPSFN.put()
+      || _ret:=-1
+      ?};
+
+      PPSFN.next()
+   !}
+?};
+PPSFN.cntx_pop();
+PPSFN.trig_on('*','*');
+
+{? _ret<>1
+|| __UPG.msg('Nie powiodła się operacja uzupełnienia nowych pól.')
+|| __UPG.msg('Operacja uzupełnienia nowych pól zakończona powodzeniem.')
+?};
+
+_ret
+
+
+\pola_pzd02_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie wartości w nowych polach związanych z pracą poza siedzibą firmy - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie wartości w nowych polach tabel związanych z pracą zdalną:\n'
+' ● PPSF_PO - Praca poza siedzibą firmy - oświadczenia pracownika:\n'
+' ● ● PPSF_PO.O7 - Oświadczenie [7]\n'
+' ● ● PPSF_PO.O8 - Oświadczenie [8]\n'
+' ● PPSF_NO - Praca poza siedzibą firmy - typy oświadczeń:\n'
+' ● ● PPSF_NO.AKT - Aktywny\n'
+'Uzupełnienie brakujących wartości w istniejących polach tabel związanych z pracą zdalną:\n'
+' ● PPSFN - Praca poza siedzibą firmy - nagłówek:\n'
+' ● ● PPSFN.ORIGIN - Pochodzenie wniosku'
+
+
+\sch_imp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [22.26]
+:: OPIS: Importuje "personelowe" wnioski w obiegu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_msg:="
+{? _a
+|| __UPG.msg('Zakończono import wniosku: \"%1\".'@[_b])
+|| __UPG.msg('Nie udało się zaimportować wniosku: \"%1\".'@[_b])
+?}
+";
+:: Nazwy formuł w obiegi.fml zwracających nazwę konkretnego wniosku (odzdzielone przecinkami):
+_nazwy:=spli_str('nazwa_oopz,nazwa_wpzds,nazwa_wpzdo',',');
+
+{! _ii:=1..obj_len(_nazwy)
+|! _nazwa:=exec(_nazwy[_ii],'obiegi');
+   _msg(exec('imp_wn','sch_imp',_nazwa,1,0),_nazwa)
+!};
+
+obj_del(_nazwy);
+1
+
+
+\sch_imp_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [22.26]
+:: OPIS: Importuje "personelowe" wnioski w obiegu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Import definicji nowych wniosków w obiegu: \n'+
+' ●  %1\n'[exec('nazwa_oopz','obiegi')]+
+' ●  %1\n'[exec('nazwa_wpzds','obiegi')]+
+' ●  %1\n'[exec('nazwa_wpzdo','obiegi')]
+
+
+\ppsf_adr_hash
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Zmiana algorytmu wyliczania skrótu SHA-1 dla dla pól adresowych tabeli PPSF_ADR.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+PPSF_ADR.cntx_psh();
+PPSF_ADR.index('PRAC');
+PPSF_ADR.prefix();
+{? PPSF_ADR.first()
+|| PPSF_ADR.trig_off('*','*');
+   {!
+   |? _hash:=exec('ppsf_adr_hash','ppsf');
+      {? PPSF_ADR.HASH<>_hash
+      || PPSF_ADR.HASH:=_hash;
+         {? ~PPSF_ADR.put()
+         || _ret:=-1
+         ?}
+      ?};
+
+      (_ret=1) & PPSF_ADR.next()
+   !};
+   PPSF_ADR.trig_on('*','*')
+?};
+PPSF_ADR.cntx_pop();
+
+{? _ret<>1
+|| __UPG.msg('Nie powiodła się operacja wygenerowania skrótu nowym algorytmem.')
+|| __UPG.msg('Operacja wygenerowania skrótu nowym algorytmem zakończona powodzeniem.')
+?};
+
+_ret
+
+
+\ppsf_adr_hash_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Zmiana algorytmu wyliczania skrótu SHA-1 dla dla pól adresowych tabeli PPSF_ADR - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Zmiana algorytmu wyliczania skrótu SHA-1 dla dla pól adresowych tabeli PPSF_ADR.\n'
+'Zadanie wygeneruje skrót w polu PPSF_ADR.HASH dla rekordów, które mają skrót wygenerowany poprzednim algorytmem.'
+
+
+\R_POR_WW
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Aktualizacja znaczników: Sposób rejestrowania SR, Rodzaj zapisu ZM dla Start/Stop.
+::----------------------------------------------------------------------------------------------------------------------
+_cnt:=0;
+_err:=0;
+_size:=0;
+
+R_POR_WW.trig_off('*','*');
+Cntx.psh(R_POR_WW,P);
+P.prefix();
+{? exec('lic','#b_domain','POR')
+|| _par:=exec('get_par','#portal','PersonWorkCalOption')
+|? P.find_tab('first','GRAFIK',,'=','T')
+|| _par:=exec('get_par','#parametr',340,2)
+|| _par:=''
+?};
+_masks:=R_POR_WW.names();
+{? _masks.first()
+|| {!
+   |? {? _masks.SIZE
+      || R_POR_WW.use(_masks.NAME);
+         R_POR_WW.index('POR_ID');
+         R_POR_WW.prefix();
+         _size+=R_POR_WW.size();
+         {? R_POR_WW.first()
+         || {!
+            |? _zm:=0;
+               {? |R_POR_WW.SR='' & +_par
+               || _zm+=1;
+                  R_POR_WW.SR:=_par
+               ?};
+               {? |R_POR_WW.ZM=''
+               || _zm+=1;
+                  R_POR_WW.ZM:={? R_POR_WW.POR='N' || 'R' || 'A' ?}
+               ?};
+               {? _zm
+               || {? R_POR_WW.put()
+                  || _cnt+=1
+                  || _err+=1
+                  ?}
+               ?};
+               R_POR_WW.next()
+            !}
+         ?}
+      ?};
+      _masks.next()
+   !}
+?};
+Cntx.pop(R_POR_WW,P);
+R_POR_WW.trig_on('*','*');
+obj_del(_masks);
+
+__UPG.msg('Liczba wszystkich wierszy: %1.'[$_size]);
+__UPG.msg('Liczba zaktualizowanych wierszy: %1.'[$_cnt]);
+__UPG.msg('Liczba pominiętych wierszy: %1.'[$(_size-_cnt-_err)]);
+__UPG.msg('Błędy aktualizacji wierszy: %1.'[$_err]);
+
+{? _err>0 || -1 || 1 ?}
+
+
+\R_POR_WW_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Aktualizacja znaczników: Sposób rejestrowania SR, Rodzaj zapisu ZM dla Start/Stop - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja znaczników Sposób rejestrowania (SR), Rodzaj zapisu (ZM) dla Start/Stop.'
+
+:Sign Version 2.0 jowisz:1045 2023/07/21 13:25:32 46fd8a4090f6f3f99a643f0f2ec799dc4d5b9c10ea44f8aabb556b7a8f4e53e71248730a4b79e461006057685f266b94cc051e0e2e6f0b894c17977636549c64a94a57b2029a25ae1f6e7e1d664a33d5bd9ad8abce92d6e8900a4684eabcbbcebf58997efdeec0261f68460cbbb238eba29735c13e1f6238e54619c93f276df0

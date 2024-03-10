@@ -1,0 +1,479 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !wyp_lww_gwyd.fml
+:: Utworzony: 12.09.2017
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Generowanie wydań na podstawie poleceń wydania
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Formuła główna czynności generowania wydań na podstawie poleceń wydania (WYP_LWW_GWYD)
+::
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::  OLD: \polwo_wydaj/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,F_ZATR,UD_SKL
+::# properties=LOOP,SERVICE
+
+::# condition=Rejestracja polecenia wydania, act_uid=WYP_LWW_DWYD,   auto=T,  formula=_a.KARO<>~~ & _a.KARO<>null()
+
+::# kind=WE, symbol=POLWO,    type=_POLWO,   name=Polecenie wydania,       required=N,keyref=T
+::# kind=WY, symbol=KARO,     type=_KARO,    name=Wskazanie na wydanie wyposażenia,     required=N
+::# kind=WY, symbol=RESULT,   type=STRING,   name=Wynik działania,         required=N
+
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+_out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+
+_mp.trigRef('KARO',,1,,exec('kind_out','#b_port'),'KARO',,,1);
+
+_dialog:=1;
+_result:=1;
+_can_continue:=1;
+
+{? _mp.isAutoRun() | _mp.isService()
+|| _dialog:=0
+?};
+
+:: Parametry
+_keyRefs:=_mp.getRefs();
+
+_polwo:=null();
+:: jest rekord kluczowy POLWO, to ustawiam odpowiednie POLWO
+{? var_pres('[1]',_keyRefs)>0 & ref_name(_keyRefs[1])=POLWO.name()
+|| _polwo:=exec('FindAndGet','#table',POLWO,_keyRefs[1],,,null())
+:: jest parametr wejściowy POLWO
+|? var_pres('POLWO',_in)=type_of(null())
+|| _polwo:=exec('FindAndGet','#table',POLWO,_in.POLWO,,,null())
+?};
+
+_mag_fo:=exec('get','#params',700530);
+_mp.save(exec('kind_out','#b_port'),'RESULT','BŁĄD');
+
+
+{? ~_mp.loop() & _out.KARO=~~
+||
+:: Sekcja sprawdzania
+   {? _dialog=0 & _polwo=null()
+   ||
+      _can_continue:=0;
+      _msg:='Generowanie wydania na podstawie polecenia nie mogło się wykonać z powodu braku parametru wejściowego.'@;
+      {? _mp.isGroup()
+      || KOMM.add(_msg,2,,1)
+      || FUN.emsg(_msg)
+      ?};
+      _mp.error(_msg)
+   ?};
+:: generacja mozliwa pod warunkiem zdefiniowania w parametrach schematu numeracji
+   {? _mp.isService() & _mag_fo=''
+   || _can_continue:=0;
+      _msg:='Nie podano domyślnego magazynu wyposażenia w parametrach systemu (parametr 700530).'@;
+      _mp.error(_msg)
+   ?};
+   {? _polwo<>null()
+   || _akc:=exec('FindAndGet','#table',POLWO,_polwo,,"AKCEPT",'N');
+      {? _akc<>'T'
+      || _result:=0;
+         _can_continue:=0;
+         {? _dialog>0
+         || _msg:=
+               'Aby wygenerować wydanie na podstawie polecenia: %1 musi być ono zaakceptowane.'@
+               [exec('record','#to_string',_polwo)];
+            {? _mp.isGroup()
+            || KOMM.add(_msg,2,,1)
+            || FUN.emsg(_msg)
+            ?}
+         ?};
+         {? _mp.isService()
+         || _mp.done()
+         ?}
+      ?}
+   ?};
+
+   {? _can_continue>0 & _dialog>0
+   ||
+::    Edycja
+
+      {? _polwo=null()
+      ||
+::       Pytanie o POLWO
+         _pracownik:=null();
+         {? var_pres('_context')>100 & var_pres('PRAC',_context)>0
+         || _pracownik:=_context.PRAC
+         ?};
+         _polwo:=exec('select_polwo','wyp_polwo',_pracownik);
+         {? _polwo=null()
+         || _can_continue:=0;
+            _mp.cancel()
+         ?}
+      || _can_continue:=FUN.ask(
+            'Czy dodać pozycje do kartoteki na podstawie polecenia: %1'@[exec('record','#to_string',_polwo)]
+         );
+         {? _can_continue=0
+         || _mp.cancel()
+         ?}
+      ?};
+      ~~
+   ?};
+   {? _can_continue>0
+   ||
+::    Faktyczne generowanie
+      POLWO.cntx_psh();
+      POLWO.clear();
+      {? POLWO.seek(_polwo)
+      ||
+         {? exec('blk_lock','#table','POLWO',_polwo,,,'Polecenie wydania jest redagowane'@)
+         || _magazyn:=null();
+            {? _mp.isService()
+            ||
+               MG.cntx_psh();
+               MG.index('MAGAZYNY');
+               MG.prefix(_mag_fo,_mag_fo,);
+               {? MG.first()
+               || _magazyn:=MG.ref()
+               ?};
+               MG.cntx_pop()
+            || _magazyn:=ST.MAG
+            ?};
+
+            exec('prep_ctril','wyp_head',POLWO.P);
+            KOMM.init(250,,'Generowanie wydań na podstawie poleceń wydań.'@);
+            _result+=exec('genfrompolwo','!wyp_lww_gwyd',_magazyn);
+            exec('drop_ctril','wyp_head');
+            KOMM.select();
+            exec('blk_unlock','#table','POLWO',_polwo);
+            ~~
+         ||
+::          Nie udało się zablokować
+            _mp.save(exec('kind_out','#b_port'),'RESULT','BŁĄD');
+            {? _mp.isService()
+            || _mp.done()
+            ?}
+         ?}
+      ?};
+      POLWO.cntx_pop();
+      ~~
+   ?}
+?};
+{? _can_continue>0
+||
+   _karo:=_mp.grpkeyGet();
+   {? _karo=~~
+   ||
+::    nie ma wydań do wyemitowania
+      _mp.done()
+   ||
+::    Zapisanie parametru wyjściowego KARO, zakończenie czynności
+      do();
+::    grpkey - KARO - del
+      {? _mp.grpkeyDel()
+      ||
+         _karo_ref:=exec('FindAndGet','#table',KARO,_karo,,,null());
+::       save - out - KARO
+         _mp.save(exec('kind_out','#b_port'),'KARO',_karo_ref);
+::       grpkey - KARO - get
+         {? _mp.grpkeyGet()<>~~
+         ||
+::          kontynuacja pętli
+            _mp.loop_continue()
+         ?}
+      ?};
+      _mp.done();
+      end()
+   ?}
+?};
+{? _result>0
+|| _mp.save(exec('kind_out','#b_port'),'RESULT','OK');
+   {? var_pres('_context')>100 & var_pres('RESULT',_context)>0
+   || _context.RESULT:=1
+   ?}
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Opis dla czynności generowania wydań na podstawie polecenia (WYP_LWP_GWYD)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+_in:=_mp.load(exec('kind_in','#b_port'));
+_polwo:=null();
+:: jest rekord kluczowy POLWO, to ustawiam odpowiednie POLWO
+{? var_pres('[1]',_keyRefs)>0 & ref_name(_keyRefs[1])=POLWO.name()
+|| _polwo:=exec('FindAndGet','#table',POLWO,_keyRefs[1],,,null())
+:: jest parametr wejściowy ZL
+|? var_pres('POLWO',_in)>0
+|| _polwo:=exec('FindAndGet','#table',POLWO,_in.POLWO,,,null())
+?};
+{? _polwo<>null()
+|| _desc:='Wygeneruj wydanie wyposażenia na podstawie polecenia: %1'@@[exec('record','#to_string',_polwo)]
+|| _desc:='Wygeneruj wydanie wyposażenia'@@
+?};
+_desc
+
+
+\action_generate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Akcja 'Generuj' w oknie wertowania POLWO, uruchamia czynność
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='WYP_LWW_GWYD';
+_args.AKCJA:='GENERUJ';
+_args.PROC_START:='T';
+_args.CONTEXT:=obj_new('RESULT','PRAC');
+_args.CONTEXT.RESULT:=0;
+_args.CONTEXT.PRAC:=P.ref();
+::_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+
+::exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'POLWO',POLWO.ref());
+KARO.cntx_psh();
+exec('mp_run','#b__box',_args);
+KARO.cntx_pop();
+grp_disp(P,'WYP_KARO',1);
+~~
+
+
+\genfrompolwo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Generacja pozycji KARO na podstawie pozycji polecenia
+::       Procedura musi dzialac w ramach przygotowanego kontekstu tabel
+::   WE: _a - MG.ref - magazyn na który generować wydanie
+::   WY: ile dopisano rekordow do KARO
+::  OLD: \genfrompolwo/nadzor.fml
+::----------------------------------------------------------------------------------------------------------------------
+_magazyn:=_a;
+_result:=0;
+KARO.cntx_psh();
+KARO.clear();
+{? POLWO.DATA_W<=date()
+||
+   PWOPOZ.index('PRODZO'); PWOPOZ.prefix(POLWO.ref());
+   {? PWOPOZ.first()
+   ||
+::    >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+      do();
+      {!
+      |?
+         _ilpol:=PWOPOZ.IL-exec('pwopoz_licz_lg','wyp_polwo');
+         {? _ilpol>0
+         || _ctril:=exec('find_4_ctril','wyp_head',PWOPOZ.MGRP);
+            _max:=exec('max_il_ctril','wyp_head',_ctril,PWOPOZ.MGRP().CTRLIL);
+::       _max=~~ (type_of=0) jesli nie bylo danych w normatywie
+            _il:={? type_of(_max) || {? _max<0 || 0 || _max ?} || 0 ?}
+::       uwzglednienie ilosci juz wygenerowanych z polecenia
+         || _il:=0;
+            _max:=~~
+         ?};
+         {? MGRP.CTRLIL='N' | exec('get','#params',700510)='N'
+         || _il:=_ilpol
+         || {? _ilpol<_il
+            || _il:=_ilpol
+            ?}
+         ?};
+::          jesli brak kontroli ilosci to wchodzi bez pytania
+         {? _il>0
+         ||
+            KARO.blank();
+            KARO.P:=POLWO.P;
+            KARO.ARCH:='N';
+            KARO.STATUS:='N';
+            KARO.MGRP:=PWOPOZ.MGRP;
+            KARO.M:=exec('FindAndGet','#table',M,PWOPOZ.MGRP().M,M.name(),,null());
+            KARO.IL:=_il;
+            KARO.ZWROT:=PWOPOZ.ZWROT;
+            KARO.DATA:=date();
+            KARO.DATAZ:={? PWOPOZ.ZWROT<>'B'
+                        || KARO.DATA+PWOPOZ.CZAS
+                        || date(0,0,0)
+                        ?};
+            KARO.TOLER:={? PWOPOZ.ZWROT<>'B'
+                        || PWOPOZ.TOLER
+                        || 0
+                        ?};
+            KARO.TYP:='W';
+            KARO.MG:=_magazyn;
+            KARO.KTO:=OPERATOR.USER;
+            KARO.PWOPOZ:=PWOPOZ.ref();
+            _tmg:=1+KARO.MG().TYP;
+
+:: Automatyczne przypisanie dostawy
+            VAR1.DOST:=date(0,0,0);
+            _wyn:=0;
+            _zwrot:=1;
+
+            _tmg:=1+KARO.MG().TYP;
+            {? KARO.M<>null || _wyn:=_tmg='D' ?};
+            {? _wyn || _wyn:=~BEER.REORG ?};
+            {? _zwrot || _wyn:=1 ?};
+
+            {? _wyn=1
+            ||
+               {? 'D'*_tmg | _zwrot
+               ||  exec('sc_aktyw','magazyn_stan',KARO.MG,KARO.M);
+                  _stskind:={? _zwrot
+                            || 'NOZ'
+::                     DK.N().MAG().DEFSTATS().KIND
+                            || exec('Create_ZON4typ','statexam',DK.N().TYP();TYPYDOK)
+                            ?};
+                  exec('sc_tymczas','magazyn_stan',KARO.MG,KARO.M,{? _zwrot || 'T' || '' ?}
+                       ,,_stskind,);
+                  {? __sc.size()=1
+                  || __sc.first();
+                     VAR1.DOST:=__sc.D;
+                     KARO.SRDK:=__sc.SRDK;
+                     KARO.PRDK:=__sc.PRDK
+                  ?}
+               || VAR1.DOST:=date(0,0,0);
+                  KARO.SRDK:='';
+                  KARO.PRDK:=''
+               ?}
+            ?};
+
+
+:: Rozczytanie DK_C i środka trwałego na podstawie KARO.SRDK
+            __sc.cntx_psh();
+            {? KARO.SRDK<>''
+            || _rdk:=BIT.sqlint(KARO.SRDK);
+               _ndk:=form(8+KARO.SRDK);
+               _ind:=__sc.ndx_tmp('',,'RDK',,,'NDK',,);
+               __sc.index(_ind);
+               __sc.prefix(_rdk,_ndk);
+               _jest:=__sc.first();
+               {? ~_jest
+               || KARO.SRDK:='';
+                  KARO.DK:=null();
+                  __sc.ndx_drop(_ind);
+                  _ind:=__sc.ndx_tmp('',,'D',,);
+                  __sc.index(_ind);
+                  __sc.prefix(VAR1.DOST);
+                  _jest:=__sc.first();
+                  {? _jest
+                  || {!
+                     |? {? {? __sc.S>0 || exec('sc_tmp_info','magazyn_stan'); DISP.SD>0 || 0 ?}
+                        || 0
+                        || __sc.next()
+                        ?}
+                     !}
+                  ?}
+               || VAR1.DOST:=__sc.D
+               ?}
+            ||
+::    szukanie gdy nie wybrano przez F3
+               _ind:=__sc.ndx_tmp('',,'D',,);
+               __sc.index(_ind);
+               __sc.prefix(VAR1.DOST);
+               _jest:=__sc.first();
+               {? _jest
+               || {!
+                  |? {? {? __sc.S>0 || exec('sc_tmp_info','magazyn_stan'); DISP.SD>0 || 0 ?}
+                     || 0
+                     || __sc.next()
+                     ?}
+                  !}
+               ?}
+            ?};
+            {? _jest
+            || _wyn:=1;
+               KARO.SRDK:=__sc.SRDK;
+               KARO.PRDK:=__sc.PRDK;
+               VAR1.DOST:=__sc.D;
+               _cecha:=null;
+               DK.cntx_psh();
+               DK.use(__sc.NDK);
+               DK.index('DOST3');
+               DK.prefix(KARO.MG,KARO.M,__sc.RDK,__sc.NDK,'T');
+               {? DK.first()
+               || {? DK.DK_C<>null || _cecha:=DK.DK_C ?};
+                  KARO.DK:=DK.ref()
+               ?};
+               DK.cntx_pop();
+               KARO.DK_C:=_cecha;
+               {? KARO.DK_C().M_ATR<>null()
+               || {! _i..10 |! ($('ATR.WAR'+form(_i,-2,0,'99')))():=($('KARO.DK_C().WAR'+form(_i,-2,0,'99')))() !};
+                  KARO.DK_C().M_ATR().SYM;
+                  _srsr:=exec('atr_get_srsr','mat_atr',KARO.DK_C().M_ATR);
+                  {? _srsr<>null()
+                  || KARO.RSRSR:=$_srsr
+                  ?}
+               || {! _i..10 |! ($('ATR.WAR'+form(_i,-2,0,'99')))():='' !};
+                  M_ATR.blank(0)
+               ?}
+            || {? VAR1.DOST=date(0,0,0) || _wyn:=1 || FUN.info('Nie ma dostawy w tym dniu.'@) ?}
+            ?};
+            {? KARO.DK<>null()
+            || DK.use(ref_name(KARO.DK));
+               DK.prefix();
+               {? DK.seek(KARO.DK) & DK.N<>null()
+               || ND.use(ref_name(DK.N))
+               ?}
+            ?};
+            __sc.ndx_drop(_ind);
+            __sc.cntx_pop();
+            __sc.prefix()
+;
+            _result+=KARO.add()
+         ||
+            _sect:='Polecenie: %1'@[exec('POLWO','#to_string')];
+            {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+            _msg:='Nie utworzono wydania ponieważ ';
+            _what:=exec('PWOPOZ','#to_string');
+            {? _ilpol>0
+            || {? _max=~~
+               || _msg+='brak tej pozycji w bieżącym normatywie pracownika (%1).'@[_what]
+               || _msg+='bieżący normatyw zostałby przekroczony (%1).'@[_what]
+               ?}
+            || _msg+='Pozycja została już wydana (%1).'@[_what]
+            ?};
+            KOMM.add(_msg,2,,1);
+            KOMM.sect_end()
+         ?};
+         PWOPOZ.next()
+      !};
+::    jezeli wygenerowano cokolwiek to zmiana statusu polecenia
+      {? _result>0
+      || POLWO.DATA_G:=date();
+         POLWO.put()
+      ?};
+      end()
+::    <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+   || _sect:='Polecenie: %1'@[exec('POLWO','#to_string')];
+      {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+      _msg:='Brak pozycji, wydanie nie zostało utworzone';
+      KOMM.add(_msg,2,,1);
+      KOMM.sect_end()
+   ?}
+|| _sect:='Polecenie: %1'@[exec('POLWO','#to_string')];
+   {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+   _msg:='Polecenie można wykorzystać dopiero od: %1'@[$POLWO.DATA_W];
+   KOMM.add(_msg,2,,1);
+   KOMM.sect_end()
+?};
+KARO.cntx_pop();
+_result
+
+:Sign Version 2.0 jowisz:1045 2024/01/26 10:18:27 9ac0a0cae6cfe25e80d7f8d0c72453c733f654392f3d5781801c08b2dacc7a52371c0e5dff8f4efbcdd427c449f3faabd40589c077209a657495d16caee3c911e13df209288836b905513f34a40fa8603a6f4fde441ad04bcece3b1f57e8c45e96876508e30daedeebc7bfb2f9b5ab9377883c88dddf9d93ff0e98a415a4dc73

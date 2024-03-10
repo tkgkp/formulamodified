@@ -1,0 +1,429 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ppl_grp_ppsw.fml
+:: Utworzony: 09.07.2021
+:: Autor: DG
+::======================================================================================================================
+:: Zawartość: Formuły czynności PPL_GRP_PPSW - We/wy - praca poza siedzibą
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Wejścia/wyjścia - praca poza siedzibą - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+_okr:=__HARM.OKR_REF;
+_ok:=0;
+{? FUN.ask(
+         'Funkcja wprowadza informacje o wejściach i wyjściach dla całodziennej pracy poza siedzibą,\n'
+         'dla określonej wcześniej grupy pracowników,\n'
+         'na podstawie wniosków o pracę zdalną pracownika oraz zarejestrowanych nieobecności.'@+'\n' +
+         'Czy na pewno rozpocząć proces wprowadzania danych?'@
+      )
+|| {? _okr
+   || _od:={? date()>=A_OKR.OD & date()<=A_OKR.DO || date(,,1) || date(A_OKR.OD~1,A_OKR.OD~2,1) ?};
+      _do:={? date()>=A_OKR.OD & date()<=A_OKR.DO || date(,,0) || date(A_OKR.OD~1,A_OKR.OD~2,0) ?};
+      VAR_EDIT.D_OD:=_od;
+      VAR_EDIT.D_DO:=_do
+   || VAR_EDIT.D_OD:=date(,,1);
+      VAR_EDIT.D_DO:=date(,,0)
+   ?};
+   VAR_EDIT.win_edit('ZAKR_DAT');
+   VAR_EDIT.efld_opt('ZAKR_DAT','mark=1',,'D_OD');
+   VAR_EDIT.efld_opt('ZAKR_DAT','mark=1',,'D_DO');
+   _ok:=VAR_EDIT.edit("
+         {? __CHK.record(VAR_EDIT,,'D_OD','D_DO')=''
+         || {? VAR_EDIT.D_OD>VAR_EDIT.D_DO
+            || FUN.emsg('Wartość w polu \"Od daty\" musi być większa od wartości w polu \"Do daty\".'@);
+                  'D_OD'
+            |? VAR_EDIT.D_DO~2<>VAR_EDIT.D_OD~2
+            || FUN.emsg('Pola \"Od daty\" i \"Do daty\" muszą dotyczyć tego samego miesiąca.'@);
+               'D_OD'
+            || 1
+            ?}
+         ?}
+         ")
+?};
+
+{? _ok
+|| _args:=exec('wybierz_args','pracownik');
+   _args.DOMAIN:='PRC';
+   _args.UD_SCH:=exec('domyslny','schemat','PODZORG');
+   _args.UD_SKL:=__PARSES.getVal('JednostkaOrganizacyjna').REF;
+   _args.F_ZATR:={? +P_FILTER.F_ZATR().KOD || P_FILTER.F_ZATR().KOD || '*T' ?};
+   _args.VIEW:=P_FILTER.STATUS;
+   {? _okr
+   || _args.SQL_FROM:='join A_OKRP using(A_OKRP.P, P.REFERENCE) join PPSFP using(PPSFP.P, P.REFERENCE) '
+         'join PPSFN using(PPSFN.P, P.REFERENCE) join PPSFT using(PPSFN.PPSFT, PPSFT.REFERENCE) ';
+      _args.SQL_WHERE:='A_OKRP.OKR=\''+$_okr+'\' and PPSFP.ROK ='+$(VAR_EDIT.D_OD~1)+' '
+                       'and PPSFP.MC ='+$(VAR_EDIT.D_OD~2)+' and PPSFP.PARTDAY<>\'T\' and PPSFT.GEN_G=\'W\' '
+   ?};
+   _PRAC:=exec('wybierz','pracownik',_args).P;
+
+   {? _PRAC.first()
+   || _width:=MS.fld_len('OSOBA','NAZWISKO')+MS.fld_len('OSOBA','PIERWSZE')+MS.fld_len('P','T')+15;
+      KOMM.init(_width,,' Uwagi do wprowadzanych danych o wykonaniu dla pracy poza siedzibą .'@,'');
+      A_OKRP.cntx_psh();
+      A_OKRP.index('A_OKRPR');
+      P.cntx_psh();
+      P.index('PRACOIP');
+      H.cntx_psh();
+      H.index('_HISTKOD');
+      PPSFP.cntx_psh();
+      _size:=_PRAC.size()*(VAR_EDIT.D_DO-VAR_EDIT.D_OD+1);
+      PROGRESS.set(_size,'Trwa wprowadzanie danych do kartoteki wejść/wyjść.'@);
+      KAL_DEF.cntx_psh();
+      KAL_DEF.prefix();
+      {!
+      |? {? P.seek(_PRAC.SQL,,1)
+         || {? P.KAL
+            || __KAL.set_cal(P.KAL().NAZWA)
+            || __KAL.set_cal('standard')
+            ?};
+:: Definicja okna do wyświetlania komunikatów.
+            _komm:=obj_new('lp','closed','blocked','locked','change','ok','lpadd','cempty','bempty','okempty','lempty',
+               'chempty');
+            _komm.cempty:=_komm.bempty:=_komm.okempty:=_komm.lempty:=_komm.chempty:=0;
+            _komm.lp:=KOMM.sect_beg(
+               ' %1 %2 %3:'[P.OSOBA().NAZWISKO,P.OSOBA().PIERWSZE,'[nr teczki - %1]'@[form(P.T)]],
+               'xwin16.png:100'
+            );
+            KOMM.sect_end();
+            _komm.closed:=KOMM.sect_beg(' Miesiąc zamknięty, aktualizacja jest niemożliwa'@,'xwin16.png:157');
+            KOMM.sect_end();
+            KOMM.chngroot(_komm.closed,_komm.lp);
+            _komm.blocked:=KOMM.sect_beg(
+               ' Dane przeniesione do rozliczenia, aktualizacja jest niemożliwa'@,
+               'xwin16.png:157'
+            );
+            KOMM.sect_end();
+            _komm.change:=KOMM.sect_beg(
+               ' Dane zmodyfikowane, aktualizacja jest niemożliwa'@,
+               'xwin16.png:157'
+            );
+            KOMM.sect_end();
+            KOMM.chngroot(_komm.change,_komm.lp);
+            KOMM.chngroot(_komm.blocked,_komm.lp);
+            _komm.ok:=KOMM.sect_beg(' Dane zaktualizowane'@,'xwin16.png:1');
+            KOMM.sect_end();
+            KOMM.chngroot(_komm.ok,_komm.lp);
+            _komm.locked:=KOMM.sect_beg(
+               ' Dane zablokowane do rozliczenia, aktualizacja jest niemożliwa'@,
+               'xwin16.png:157'
+            );
+            KOMM.sect_end();
+            KOMM.chngroot(_komm.locked,_komm.lp);
+            PPSFP.index('PRMPO');
+            PPSFP.prefix(exec('ref_firma','ustawienia'),P.ref,VAR_EDIT.D_DO~1,VAR_EDIT.D_OD~2,'N');
+            {? PPSFP.first()
+            || {!
+               |? _od:=_do:=#0;
+                  {? PPSFP.OD<=VAR_EDIT.D_DO & PPSFP.OD>=VAR_EDIT.D_OD
+                  || _od:=PPSFP.OD
+                  |? PPSFP.OD<VAR_EDIT.D_OD
+                  || _od:=VAR_EDIT.D_OD
+                  ?};
+                  {? PPSFP.DO<=VAR_EDIT.D_DO & PPSFP.DO>=VAR_EDIT.D_OD
+                  || _do:=PPSFP.DO
+                  |? PPSFP.DO>VAR_EDIT.D_DO
+                  || _do:=VAR_EDIT.D_DO
+                  ?};
+                  {? _od>#0 & _do>#0
+                  || {! _ind:=0..(_do-_od)
+                     |! _dzien:=_od+_ind;
+                        {? exec('get_msc_status','grafik',_dzien)='Z'
+                        || _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                           KOMM.chngroot(_komm.lpadd,_komm.closed);
+                           _komm.cempty+=1
+                        |? __HARM.mc_zam_prac(_dzien)
+                        || _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                           KOMM.chngroot(_komm.lpadd,_komm.blocked);
+                           _komm.bempty+=1
+                        |? exec('isBlokada','prc_rozlicz',P.ref(),_dzien)
+                        || _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                           KOMM.chngroot(_komm.lpadd,_komm.locked);
+                           _komm.lempty+=1
+                        ||
+                           _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                          _komm.okempty+=1;
+                           KOMM.chngroot(_komm.lpadd,_komm.ok);
+                           {? KAL_DEF.seek(__KAL.get_day(_dzien)) & (_dzien>=P.DZA) & (P.DZ=#0 | _dzien<=P.DZ)
+                           || _wy_d:=KAL_DEF.DATAW;
+                              _wy_t:=KAL_DEF.KONIEC;
+                              _we_d:=KAL_DEF.DATA;
+                              _we_t:=KAL_DEF.POCZATEK;
+                              {? KAL_DEF.TYP<>'R'
+                              || _we_t:=_wy_t:=*0
+                              ?};
+                              _nb:=exec('nieobecnosc','grafik',P.ref(),_dzien);
+                              _ng:=0;
+                              _typ:='';
+                              {? _nb & __RUB.sys_attr(_nb,199,_dzien)
+                              || N.cntx_psh();
+                                 N.index('NIEORM');
+                                 N.prefix('N',P.ref(),_dzien~1,_dzien~2);
+                                 {? N.first()
+                                 || {!
+                                    |? {? N.PARTDAY='T' & ( N.OD=_dzien & N.DO=_dzien)
+                                       || _ng+=N.NG
+                                       ?};
+                                       N.next()
+                                    !}
+                                 ?};
+                                 N.cntx_pop();
+                                 {? _ng
+                                 || {? _we_d<>_wy_d & ((time(24,0,0)-_we_t)+_wy_t-(*0))>*(_ng*60)
+                                    || _we_t+=*(_ng*60);
+                                       {? _we_t=*(24*60)
+                                       || _we_t:=*0;
+                                          _we_d:=_wy_d;
+                                          _typ:='X'
+                                       |? _we_t>*(24*60)
+                                       || _we_t-=*(24*60);
+                                          _we_d:=_wy_d;
+                                          _typ:='X'
+                                       ?};
+                                       _nb:=0
+                                    |? _wy_t-_we_t>*(_ng*60)
+                                    || _we_t+=*(_ng*60);
+                                       _nb:=0
+                                    ?}
+                                 ?}
+                              ?};
+                              exec('wpisz_ts','prc_wewy',_we_d,1);
+                              _zapis:=1;
+                              {? R_SPEC.first()
+                              || {!
+                                 |? {? R_SPEC.CZ<>'SYS_5' | R_SPEC.ZM='P'
+                                    || _zapis:=0
+                                    ?};
+                                    _zapis & R_SPEC.next()
+                                 !}
+                              ?};
+                              {? _zapis
+                              || {? _nb
+                                 || exec('save2wewy','prc_wewy',P.ref(),_we_d,time(0,0,0),_wy_d,time(0,0,0),,,,'SYS_5')
+                                 || exec('save2wewy','prc_wewy',P.ref(),_we_d,_we_t,_wy_d,_wy_t,,_typ,,'SYS_5')
+                                 ?};
+                                 KOMM.chngroot(_komm.lpadd,_komm.ok)
+                              || KOMM.chngroot(_komm.lpadd,_komm.change);
+                                 _komm.chempty+=1
+                              ?}
+                           ?}
+                        ?};
+                        PROGRESS.next()
+                     !}
+                  ?};
+                  PPSFP.next
+               !};
+               {? ~_komm.cempty || KOMM.del(_komm.closed) ?};
+               {? ~_komm.bempty || KOMM.del(_komm.blocked) ?};
+               {? ~_komm.okempty || KOMM.del(_komm.ok) ?};
+               {? ~_komm.lempty || KOMM.del(_komm.locked) ?};
+               {? ~_komm.chempty || KOMM.del(_komm.change) ?};
+               obj_del(_komm);
+               exec('kwal','grafik',P.ref(),VAR_EDIT.D_OD,VAR_EDIT.D_DO);
+               {? _okr
+               || A_OKRP.prefix(_okr,P.ref());
+                  {? A_OKRP.first()
+                  || params_exec('oblicz','okres',1)
+                  ?}
+               ?}
+            || {! _ind:=0..(VAR_EDIT.D_DO-VAR_EDIT.D_OD) |! PROGRESS.next() !}
+            ?}
+         ?};
+         _PRAC.next()
+      !};
+      KOMM.select(,,,,,0);
+      PPSFP.cntx_pop();
+      KAL_DEF.cntx_pop();
+      H.cntx_pop();
+      P.cntx_pop();
+      A_OKRP.cntx_pop();
+      PROGRESS.close()
+   || FUN.info('Operacja przerwana przez operatora.'@)
+   ?}
+?};
+~~
+
+
+\StartStop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [22.26]
+:: OPIS: Tworzy grupowe zapisy wewy z portalu Start/Stop
+::   WE: _a - alias tabeli tymczasowej  __GRUPSKL
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+_okr:=__HARM.OKR_REF;
+_ok:=0;
+{? FUN.ask(
+      '\nProcedura usuwa i ponownie wprowadza zapisy w kartotece wejść i wyjść.\n'
+      'Dane będą wprowadzone dla określonej wcześniej grupy pracowników na podstawie informacji'
+      ' o start/stop w portalu.\n\n'@ +
+      'Czy na pewno rozpocząć proces wprowadzania danych?'@
+      )
+|| {? _okr
+   || _od:={? date()>=A_OKR.OD & date()<=A_OKR.DO || date(,,1) || date(A_OKR.OD~1,A_OKR.OD~2,1) ?};
+      _do:={? date()>=A_OKR.OD & date()<=A_OKR.DO || date(,,0) || date(A_OKR.OD~1,A_OKR.OD~2,0) ?};
+      VAR_EDIT.D_OD:=_od;
+      VAR_EDIT.D_DO:=_do
+   || VAR_EDIT.D_OD:=date(,,1);
+      VAR_EDIT.D_DO:=date(,,0)
+   ?};
+   VAR_EDIT.win_edit('ZAKR_DAT');
+   VAR_EDIT.efld_opt('ZAKR_DAT','mark=1',,'D_OD');
+   VAR_EDIT.efld_opt('ZAKR_DAT','mark=1',,'D_DO');
+   _ok:=VAR_EDIT.edit("
+         {? __CHK.record(VAR_EDIT,,'D_OD','D_DO')=''
+         || {? VAR_EDIT.D_OD>VAR_EDIT.D_DO
+            || FUN.emsg('Wartość w polu \"Od daty\" musi być większa od wartości w polu \"Do daty\".'@);
+                  'D_OD'
+            |? VAR_EDIT.D_DO~2<>VAR_EDIT.D_OD~2
+            || FUN.emsg('Pola \"Od daty\" i \"Do daty\" muszą dotyczyć tego samego miesiąca.'@);
+               'D_OD'
+            || 1
+            ?}
+         ?}
+         ")
+?};
+
+{? _ok
+|| _args:=exec('wybierz_args','pracownik');
+   _args.DOMAIN:='PRC';
+   _args.UD_SCH:=exec('domyslny','schemat','PODZORG');
+   _args.UD_SKL:=__PARSES.getVal('JednostkaOrganizacyjna').REF;
+   _args.F_ZATR:={? +P_FILTER.F_ZATR().KOD || P_FILTER.F_ZATR().KOD || '*T' ?};
+   _args.VIEW:=P_FILTER.STATUS;
+   {? _okr
+   || _args.SQL_FROM:='join A_OKRP using(A_OKRP.P, P.REFERENCE) ';
+      _args.SQL_WHERE:='A_OKRP.OKR=\''+$_okr+'\' '
+   ?};
+   _PRAC:=exec('wybierz','pracownik',_args).P;
+
+   {? _PRAC.first()
+   || _width:=MS.fld_len('OSOBA','NAZWISKO')+MS.fld_len('OSOBA','PIERWSZE')+MS.fld_len('P','T')+15;
+      KOMM.init(_width,,' Uwagi do wprowadzanych danych start/stop z Portalu .'@,'');
+      A_OKRP.cntx_psh();
+      A_OKRP.index('A_OKRPR');
+      P.cntx_psh();
+      P.index('PRACOIP');
+      H.cntx_psh();
+      H.index('_HISTKOD');
+      PPSFP.cntx_psh();
+      _size:=_PRAC.size()*(VAR_EDIT.D_DO-VAR_EDIT.D_OD+1);
+      PROGRESS.set(_size,'Trwa wprowadzanie danych do kartoteki wejść/wyjść.'@);
+      KAL_DEF.cntx_psh();
+      KAL_DEF.prefix();
+      _year:=($(VAR_EDIT.D_OD~1))+2;
+      _month:={? (_mc:=VAR_EDIT.D_OD~2)>=10 || $_mc || '0%1'[$_mc] ?};
+      R_POR_WW.use('r_ph%1%2'[_year,_month]);
+      R_POR_WW.index('NR');
+      {!
+      |? {? P.seek(_PRAC.SQL,,1)
+         || {? P.KAL
+            || __KAL.set_cal(P.KAL().NAZWA)
+            || __KAL.set_cal('standard')
+            ?};
+:: Definicja okna do wyświetlania komunikatów.
+             {? var_pres('_komm')>0 || &_komm ?};
+                  _komm:=obj_new('lp','closed','blocked','locked','change','ok','lpadd','cempty','bempty','okempty',
+                     'lempty','chempty','widout','lwidout','ok_save');
+                  _komm.cempty:=_komm.bempty:=_komm.okempty:=_komm.lempty:=_komm.chempty:=0;
+                  _komm.lwidout:=_komm.ok_save:=0;
+                  _komm.lp:=KOMM.sect_beg(
+                     ' %1 %2 %3:'[P.OSOBA().NAZWISKO,P.OSOBA().PIERWSZE,'[nr teczki - %1]'@[form(P.T)]],
+                     'xwin16.png:100'
+                  );
+                  KOMM.sect_end();
+                  _komm.closed:=KOMM.sect_beg(' Miesiąc zamknięty, aktualizacja nie jest możliwa'@,'xwin16.png:157');
+                  KOMM.sect_end();
+                  KOMM.chngroot(_komm.closed,_komm.lp);
+
+                  _komm.widout:=KOMM.sect_beg('Błąd danych start/stop '@,'xwin16.png:157');
+                  KOMM.sect_end();
+                  KOMM.chngroot(_komm.widout,_komm.lp);
+
+                  _komm.blocked:=KOMM.sect_beg(
+                     ' Dane przeniesione do rozliczenia, aktualizacja jest niemożliwa'@,
+                     'xwin16.png:157'
+                  );
+                  KOMM.sect_end();
+                  _komm.change:=KOMM.sect_beg(
+                     'Aktualizacja wejść/wyjść nie jest możliwa'@,
+                     'xwin16.png:157'
+                  );
+                  KOMM.sect_end();
+                  KOMM.chngroot(_komm.change,_komm.lp);
+                  KOMM.chngroot(_komm.blocked,_komm.lp);
+                  _komm.ok:=KOMM.sect_beg(' Dane zaktualizowane'@,'xwin16.png:1');
+                  KOMM.sect_end();
+                  KOMM.chngroot(_komm.ok,_komm.lp);
+                  _komm.locked:=KOMM.sect_beg(
+                     ' Dane zablokowane do rozliczenia, aktualizacja nie jest możliwa'@,
+                     'xwin16.png:157'
+                  );
+                  KOMM.sect_end();
+                  KOMM.chngroot(_komm.locked,_komm.lp);
+                  {! _ind:=0..(VAR_EDIT.D_DO-VAR_EDIT.D_OD)
+                  |! _dzien:=VAR_EDIT.D_OD+_ind;
+
+                     R_POR_WW.prefix(P.ref(),_dzien);
+                     {? R_POR_WW.first()
+                     || _komm.okempty+=1;
+                        _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                        {? exec('get_msc_status','grafik',_dzien)='Z'
+                        || KOMM.chngroot(_komm.lpadd,_komm.closed);
+                           _komm.cempty+=1
+                        |? __HARM.mc_zam_prac(_dzien)
+                        || KOMM.chngroot(_komm.lpadd,_komm.blocked);
+                           _komm.bempty+=1
+                        |? exec('isBlokada','prc_rozlicz',P.ref(),_dzien)
+                        || KOMM.chngroot(_komm.lpadd,_komm.locked);
+                           _komm.lempty+=1
+                        || _ok:=exec('start_stop','prc_wewy',_dzien,P.ref,_komm)
+                        ?}
+                     ?};
+                     PROGRESS.next()
+                  !};
+
+                  {? _ok
+                  || exec('kwal','grafik',P.ref(),VAR_EDIT.D_OD,VAR_EDIT.D_DO);
+                     _komm.ok_save+=1
+                  ?};
+                  {? ~_komm.okempty
+                  || KOMM.del(_komm.ok);
+                     KOMM.del(_komm.closed);
+                     KOMM.del(_komm.locked);
+                     KOMM.del(_komm.change);
+                     KOMM.del(_komm.widout);
+                     KOMM.del(_komm.lp)
+                  || {? ~_komm.cempty || KOMM.del(_komm.closed) ?};
+                     {? ~_komm.bempty || KOMM.del(_komm.blocked) ?};
+                     {? ~_komm.lempty || KOMM.del(_komm.locked) ?};
+                     {? ~_komm.chempty || KOMM.del(_komm.change) ?};
+                     {? ~_komm.lwidout || KOMM.del(_komm.widout) ?};
+                     {? ~_komm.okempty || KOMM.del(_komm.lp) ?};
+                     {? ~_komm.ok_save || KOMM.del(_komm.ok) ?}
+                  ?};
+                  obj_del(_komm)
+               ?};
+         _PRAC.next()
+      !};
+      KOMM.select(,,,,,0);
+      PPSFP.cntx_pop();
+      KAL_DEF.cntx_pop();
+      H.cntx_pop();
+      P.cntx_pop();
+      A_OKRP.cntx_pop();
+      PROGRESS.close()
+   || FUN.info('Operacja przerwana przez operatora.'@)
+   ?}
+?};
+~~
+
+:Sign Version 2.0 jowisz:1045 2023/06/27 11:10:46 b841f4c49e7f5d99d52fa2cf77d32e5f47895d039ab2032a101ad777e9dd6c7482b4dc1285e9b18be95e857aa4938b0f28e4e94bc005cc3dfbff79e5834aae9cc391450906d98f71ebd9c76bcc9b16f8f96dcf76d7996bd9b69ccb25f3c4f09c4188f5d0664e322bfc352b605fe669946adb95e99b8e7b889f155ae4b5a49ace

@@ -1,0 +1,1596 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: magazyn_mob.fml
+:: Utworzony: 16.10.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Operacje mobilne
+::======================================================================================================================
+
+
+\uzupdane
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [12.30]
+:: OPIS: uzupelnia dane
+::  OLD: \uzupdane/ean2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_scean:=EANP.SCEAN;
+{? EANP.PAL=null & EANP.M<>null & EANP.LOKZ().MG().PAL<>'T' & (1+EANP.LOKZ().MG().TYP)='D'
+ & (';PZ'*EANP.M().IDMOB)>1 & _scean<>''
+|| {? EANP.M().IDMOB='P' & exec('FindInSet','#table','MKODK','KK',_scean,_scean)=null
+   || ZPARN.cntx_psh();
+      ZPARN.index('SCEAN');
+      ZPARN.prefix(EANP.M,_scean,_scean);
+      {? ZPARN.first() || exec('mkodkadd','kody_kresk',EANP.M,_scean,$ZPARN.ref()) ?};
+      ZPARN.cntx_pop()
+   |? EANP.M().IDMOB='Z' & exec('FindInSet','#table','MKODK','KK',_scean,_scean)=null
+   || ZL.cntx_psh();
+      ZL.index('SCEAN');
+      ZL.prefix(EANP.M,_scean,_scean);
+      {? ZL.first() || exec('mkodkadd','kody_kresk',EANP.M,_scean,$ZL.ref()) ?};
+      ZL.cntx_pop()
+   ?}
+?};
+{? EANP.PAL=null & EANP.M<>null & EANP.M().SETW='P' & EANP.LOKZ().MG().PAL<>'T' & (1+EANP.LOKZ().MG().TYP)='D'
+ & EANP.M().IDMOB='D' & _scean<>''
+|| _scsql:=exec('FindInSet','#table','MKODK','KK',_scean,_scean,"MKODK.RSQL",,,'');
+   {? (5+_scsql)='dokma'
+   || _tw:=exec('FindAndGet','#table',DK,_scsql,,"TW",date(0,0,0));
+      {? _tw<>date(0,0,0) & EANP.TW=date(0,0,0)
+      || EANP.TW:=_tw;
+         EANP.put(1)
+      ?}
+   ?}
+?};
+
+{? EANP.ZL=null & (1+EANP.EANN().RODZ)='W'
+|| {? EANP.EANN().TYP='W' & EANP.ZLEAN<>''
+   || exec('przypzle','magazyn_mob',EANP.ZLEAN,'','N')
+   |? EANP.EANN().TYP<>'W' & (EANP.ZLEAN<>'' | (EANP.SCEAN<>'' & (';PZ'*EANP.M().IDMOB)>1))
+   || exec('przypzle','magazyn_mob',EANP.ZLEAN,EANP.SCEAN,EANP.M().IDMOB)
+   || ''
+   ?}
+?};
+:: aktualizacja znaczników dla reorganizacji
+::  UTW: NUCO [PeKa]
+:: OPIS: Zablokowanie przesuniecia magazynowego - przy mieszanej reorganizacji magazyn. przesuniecie dziala zle
+{? EANP.EANN().TYP='R'
+|| EANP.IS_RM:={? EANP.LOKDO<>null() & EANP.LOKZ().MG<>EANP.LOKDO().MG || 'R' || 'R' ?}
+|| EANP.IS_RM:='N'
+?};
+exec('akt_R_M','magazyn_mobi',EANP.EANN);
+~~
+
+\akc_wysl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [2009]
+:: OPIS: akceptacja zamowien do wysylki
+::   WE: _a - 0-pytamy lub 1-nie
+::       _b - numer czytnika kompletacja lub 0
+::       _c - numer czytnika reorganizacja lub 0
+::       _d - kod doku załadunkowego
+::       [_e] - dyspozycja w magazynie
+::   WY: GRP_KEY- klucz grupujący lub pusty string
+::  OLD: \akc_wysl/ean.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:='';
+POMOC.TR_NZL:={? var_pres('_e')=type_of(null()) || _e || null() ?};
+_bezwurz:=exec('get','#params',4022,2,OPERATOR.USER)='T';
+{? _bezwurz & _b<=0
+ & exec('FindInSet','#table','EANC','AKT','T',,,,,null())<>null()
+|| _autonrc:=1;
+   _b:=0; _c:=0;
+   EANX.NRC_Z:=0; EANX.NRC_R:=0
+|| _autonrc:=_a>0
+?};
+{? _a=2 || _a:=0 ?};
+
+VAR_DEL.delete('__eann','__zknrea','__mat_mag','__dstean','__dstsel','__zknsel','__grpsel','__dstbtn');
+VAR_DEL.delete('__refrea','__ilplus','__ctrlst','__lstum');
+
+:: ewentualna kompletacja bez kontroli stanów magazynowych
+_par:=exec('get','#params',600702,2);
+__ctrlst:=1;
+{? _par='T'
+| (_par='P' & FUN.ask('Czy kompletacja bez kontroli stanów magazynowych?\n\n'
+                      'Uwaga. Pozycje bez kodów kreskowych i przypisanych magazynów zostaną pominięte.'@))
+|| __ctrlst:=0
+?};
+
+__refrea:=($ZK_N.tm_stamp())+($OPERATOR.USER);
+
+__eann:=tab_tmp(1,'DAT','DATE',''
+         ,'TIM','TIME',''
+         ,'TIMER','TIME',''
+         ,'USER','STRING[20]',''
+         ,'TIMEZ','TIME',''
+         ,'STN','STRING[10]',''
+         ,'SYM','STRING[20]',''
+         ,'KHD','STRING[20]',''
+         ,'NRC','INTEGER',''
+         ,'REF','INTEGER',''
+         ,'PRC','REAL',''
+         ,'TXT1','STRING[255]','');
+
+__zknrea:=tab_tmp(4,'TREE','TREE_REF','galazka'
+           ,'LAB','STRING[90]','Etykieta'
+           ,'ZAM','STRING[20]','Symbol zamówienia'
+           ,'POZ','INTEGER','Pozycja'
+           ,'REF','STRING[16]','ref'
+           ,'MAG','STRING[10]','Magazyn'
+           ,'KTM','STRING[50]','Indeks-KTM'
+           ,'NAZ','STRING[100]','Indeks-Nazwa'
+           ,'ILZ','REAL','Il.zamówiona'
+           ,'ILP','REAL','Il.pozostała'
+           ,'REZ','REAL','Il.zarezerwowana'
+           ,'REA','REAL','Il.do realizacji'
+           ,'ICON','INTEGER','Ikonka'
+           ,'WYB','STRING[1]','Wybrano'
+           ,'RJ2','REAL','Ilość w j.sprz.'
+           ,'JM1','STRING[10]','jm'
+           ,'JM2','STRING[10]','J.sprz.'
+           ,'DTZ','DATE','Data zamówienia'
+           ,'ZKN','STRING[16]','ref zamowienia'
+           ,'PAL','STRING[16]','paleta'
+           ,'SQM','STRING[16]','ref SQL M'
+           ,'KPAL','STRING[30]','kod kreskowy palety'
+           ,'CZY','INTEGER','czy magazyn paletowy'
+           ,'LOKZ','STRING[20]','Lokalizacja'
+           ,'KODK','STRING[128]','Kod kreskowy'
+           ,'TW','DATE','Termin ważności'
+           ,'ZLSYM','STRING[20]','Symbol zlecenia'
+           ,'WART','REAL','wartosc sprzedazy'
+           ,'ONEMG','STRING[16]','tylko z magazynu'
+           ,'DOST','INTEGER','rezerwacje wg dostaw'
+           ,'NAD','INTEGER','czy galaz nadrzedna'
+           ,'NRC','INTEGER','nr czytnika'
+           ,'SQL','STRING[16]','ref ZK_P'
+           ,'TR','DATE','Termin realizacji'
+           ,'WTR','DATE','Wewnętrzny termin realizacji'
+           ,'USL','STRING[1]','Czy usluga'
+           ,'ZGH','INTEGER','Przewodnik zlecenia - #ZGH.ref()'
+           ,'ZGP','INTEGER','Pozycja przewodnika - #ZGP.ref()'
+           ,'ZGP_NAME','STRING[40]','Pozycja przewodnika'
+           ,'RED','REAL','Ilość zarezerwowana wg dostawy'
+           ,'SCEAN','STRING[128]','kod identyfikacji'
+           ,'NRCS','STRING[15]','napis nr czytnika'
+           ,'SMG','STRING[16]','ref SQL magazynu'
+           ,'PLUS','REAL','Ilość powyżej'
+           ,'RES','REAL','Sumaryczna ilość do realizacji'
+           ,'RS2','REAL','Sumaryczna ilość wg j.sprz.'
+           ,'WDST','INTEGER','Czy wynika z wyboru dostawy'
+           ,'UWAGI','STRING[40]','Uwagi');
+:: NUCO - dodanie uwag do widoku pozycji wysyłanej na czytnik
+
+__mat_mag:=tab_tmp(2,'MG','STRING[16]','','M','STRING[16]','');
+
+_wg_tr:=POMOC.TR_NZL<>null();
+exec('initdste','magazyn_mob');
+_tab:={? _wg_tr || exec('zknWGtr_nzl','transport_wspolne',POMOC.TR_NZL) || ZK_N.sel_aget() ?};
+_ilezaz:=_tab.size();
+
+_win_sel:=__zknsel:=__zknrea.mk_sel('Ilości do realizacji'@,'P',,'qqqqrrraeokax',,,__zknrea.size(),1);
+
+__zknrea.win_fld(_win_sel,,'LAB',,,38,,1,'');
+__zknrea.win_fld(_win_sel,,'MAG',,,10,3,1,'Magazyn'@);
+__zknrea.win_fld(_win_sel,,'LOKZ',,,15,,1,'Lokalizacja'@);
+__zknrea.win_fld(_win_sel,,'KPAL',,,10,,1,'Paleta'@);
+__zknrea.win_fld(_win_sel,,'TW',,,-13,,1,'Termin ważności'@);
+__zknrea.win_fld(_win_sel,,'NRCS',,,-13,0,1,'Czytnik'@);
+__zknrea.win_fld(_win_sel,,'REZ',,,-12,3,1,'Zarezerwowano'@);
+__zknrea.win_fld(_win_sel,,'REA',,,-10,3,1,'Do realizacji'@);
+__zknrea.win_fld(_win_sel,,'RES',,,-10,3,,'Do realizacji'@);
+__zknrea.win_fld(_win_sel,,'JM1',,,5,,1,'jm'@);
+:: NUCO - dodanie uwag do widoku pozycji wysyłanej na czytnik
+__zknrea.win_fld(_win_sel,,'UWAGI',,,15,,1,'Uwagi'@);
+{? ~_wg_tr || __zknrea.win_act(_win_sel,0,'Popraw',,,,"exec('prpopwys','magazyn_mob')",,1) ?};
+__zknrea.win_act(_win_sel,0,'Rekord',,,,"exec('rekzkrea','magazyn_mob')","exec('popzkrea','magazyn_mob')");
+__zknrea.win_act(_win_sel,0,'Formuła','Akceptuj'@@,,'Akceptacja ilości do realizacji'@,,"sel_exit()",,,,,'A');
+{? ~_wg_tr || __zknrea.win_act(_win_sel,0,'Formuła','&Zeruj/wypełnij'@@,,'Zerowanie lub wypełnienie pola Do realizacji'@
+                  ,"exec('zatw_wyb','magazyn_mob')",,,1,"exec('zatw_wyb','magazyn_mob')",,'Z') ?};
+__zknrea.win_act(_win_sel,0,'Formuła','&Czytnik'@@,,'Przypisanie czytnika do operacji'@
+                    ,"exec('wyb_czyt','magazyn_mob',0,,,,exec('FindAndGet','#table',MG,__zknrea.SMG,,,null()))"
+                    ,,,1,"exec('wyb_czyt','magazyn_mob',0,,,,1)",,'C');
+__zknrea.win_act(_win_sel,0,'Formuła','&Ustaw parametry'@@,,'Ustawienie parametrów dla magazynu'@
+                    ,"exec('ustparam','magazyn_mob',0)",,,,,,'U');
+__zknrea.tr_fml(_win_sel,,"{? _a || {? __zknrea.TREE=0 || 1 || _a ?} || _a ?}");
+__zknrea.win_fml(_win_sel,,'LAB',,'ICON_BEFORE',"
+         {? __zknrea.TREE<>0 & __zknrea.WYB='*'
+         || 'xwin16.png:38'
+         |? __zknrea.TREE<>0 & __zknrea.WYB=''
+         || ''
+         |? __zknrea.ICON=-1
+         || 'xwin16.png:7'+{? __zknrea.tr_state()=1 || '5' || '4' ?}
+         |? __zknrea.ICON=-2
+         || 'xwin16.png:52'
+
+         || ''
+         ?}
+      ");
+__zknrea.win_fml(_win_sel,,'MAG',,'ICON_BEFORE',"
+         {? __zknrea.TREE<>0 & __zknrea.SQM<>'' & exec('FindAndGet','#table',M,__zknrea.SQM,,\"RODZ\",'')='U'
+         || 'xwin16.png:72'
+         || ''
+         ?}
+      ");
+__zknrea.win_fml(_win_sel,,'NRCS',,'ICON_BEFORE',"
+         {? ~__zknrea.TREE & __zknrea.ICON=-2
+         || 'xwin16.png:70'
+         |? ~__zknrea.TREE
+         || 'xwin16.png:85'
+         || ''
+         ?}");
+__zknrea.fld_fml('NRCS','DISPLAY_FORMAT'
+ ,"{? ~__zknrea.TREE | __zknrea.ICON=-2
+    | exec('FindInSet','#table','MG','MAGAZYNY',__zknrea.MAG,__zknrea.MAG,\"MG.MWS\",,,'')='T'
+   || 'empty=0'
+   || 'empty=1'
+   ?}");
+__zknrea.fld_fml('LOKZ','DISPLAY_FORMAT'
+ ,"{? __zknrea.ICON<>-2
+    & (~__zknrea.TREE | (';DAPZ'*exec('FindAndGet','#table',M,__zknrea.SQM,,\"IDMOB\",''))>1)
+   || 'empty=1'
+   || 'empty=0'
+   ?}");
+__zknrea.fld_fml('REZ','DISPLAY_FORMAT',"{? ~__zknrea.TREE | __zknrea.ICON=-2 || 'empty=1' || 'empty=0' ?}");
+__zknrea.fld_fml('REA','DISPLAY_FORMAT',"{? ~__zknrea.TREE | __zknrea.ICON=-2 || 'empty=1' || 'empty=0' ?}");
+__zknrea.fld_fml('RES','DISPLAY_FORMAT',"{? ~__zknrea.TREE | __zknrea.ICON=-2 || 'empty=1' || 'empty=0' ?}");
+__zknrea.fld_fml('TW','DISPLAY_FORMAT'
+ ,"{? __zknrea.ICON=-2
+    | ~__zknrea.TREE
+    | (';DAPZ'*exec('FindAndGet','#table',M,__zknrea.SQM,,\"IDMOB\",''))>1
+    | exec('FindAndGet','#table',M,__zknrea.SQM,,\"RODZ\",'')='U'
+   || 'empty=1'
+   || 'empty=0'
+   ?}");
+
+__zknrea.win_sel(_win_sel);
+
+__dstsel:=__dstean.mk_sel('Ilości wg identyfikacji dostaw'@,'P',,'xxxxraeokax',,,,,'U');
+
+__dstean.win_fld(__dstsel,,'LAB',,,29,,1,'');
+__dstean.win_fld(__dstsel,,'LOKZ',,,20,,1,'Lokalizacja'@);
+__dstean.win_fld(__dstsel,,'TW',,,10,,1,'Termin'@);
+__dstean.win_fld(__dstsel,,'ILP',,,10,3,1,'Ilość wg identyfikacji'@);
+__dstean.win_fld(__dstsel,,'ILR',,,10,3,1,'Ilość do realizacji'@);
+__dstean.win_fld(__dstsel,,'JM1',,,5,,1,'jm'@);
+__dstean.win_act(__dstsel,0,'Formuła','&Zmień'@@,,,"exec('kplscean','magazyn_mob')",,1,,,,'Z');
+__dstean.win_act(__dstsel,1,'Formuła','&Zmień'@@,,,"exec('kplscean','magazyn_mob')",,1,,,,'Z');
+__dstean.win_act(__dstsel,0,'Rekord',,,,"exec('rekzkrea','magazyn_mob')","exec('popzkrea','magazyn_mob')");
+
+__dstean.fld_fml('JM1','DISPLAY_FORMAT',"{? 'NX'*__dstean.TYP || 'empty=1' || 'empty=0' ?}");
+__dstean.fld_fml('ILP','DISPLAY_FORMAT',"{? 'NX'*__dstean.TYP || 'empty=1' || 'empty=0' ?}");
+__dstean.fld_fml('ILR','DISPLAY_FORMAT',"{? 'NX'*__dstean.TYP || 'empty=1' || 'empty=0' ?}");
+
+__dstbtn:=__dstean.win_btn(__dstsel,'text=%1, panel=bottom, align=begin'['&Zmień'@],'menu:Z');
+__zknrea.win_sel(__zknsel);
+__dstean.win_sel(__dstsel);
+
+__zknrea.win_btn(_win_sel,'text=%1, panel=bottom, align=begin'['&Akceptuj'@],'menu:A',,,,,,'noempty');
+
+:: tworzymy okienko grupowe z informacjami dotyczacymi identyfikacji dostaw
+
+__grpsel:=__zknrea.grp_make('Kompletacja wysyłki'@,,'#komplwysyl');
+__zknrea.grp_sel(__grpsel,__zknrea,__zknsel,,"exec('odswid_m','magazyn_mob')",,,20,,,,,'maximized_with_title');
+__zknrea.grp_splt(__grpsel,,'horizontal','idmob');
+__zknrea.grp_sel(__grpsel,__dstean,__dstsel,,"grp_disp(__zknrea,__zknsel)",,,8,,,,,'maximized_with_title');
+__zknrea.win_sel(__grpsel);
+
+:: tabela kontrolujaca juz rozpisane pozycje
+_ilwyk:=tab_tmp(2,'SL','STRING[16]',''
+         ,'ILL','REAL','');
+
+_ilepom:=0;
+_beerzkn:=BEER.ZK_N;
+_param:={? BEER.ZK_N().T().R='Z' || 600800 || 600801 ?};
+__ilplus:=~(BEER.ZK_N().MG().PAL='T') & (BEER.ZK_N().LIM='T' | (';ZR'*exec('get','#params',_param,2))>1);
+_sa_poz:=0;
+_nopal:=1;
+
+ZK_N.sel_adel();
+{? 1
+|| {? (_b>0 & exec('FindInSet','#table','EANC','AKT',_b,'T')) | _b=0
+   || _nrc_z:=EANX.NRC_Z:={? _b=0 & ~_bezwurz || -1 || _b ?}
+   |? (_c>0 & exec('FindInSet','#table','EANC','AKT',_c,'T')) | _c=0
+   || _nrc_r:=EANX.NRC_R:={? _c=0 & ~_bezwurz || -1 || _c ?}
+   |? _d<>'' & (_dok:=exec('FindInSet','#table','EANL','KOD',_d,_d))<>null()
+   || EANX.DOK:=_dok
+   ?};
+   _grp_key:=tm_stamp()+'1';
+
+   _blok:=tab_tmp(1,'RSQL','STRING[20]','','WAR_BE','REAL','');
+   _blok_zam:='';
+   {? ~_ilezaz
+   || BEER.TYP:='Z';
+      BEER.ZK_N:=ZK_N.ref();
+      _blok.prefix();
+      _blok.blank();
+      _blok.RSQL:=$ZK_N.ref();
+      _blok.WAR_BE:=ZK_N.BRT;
+      _blok.add();
+      exec('buf_stap','zamsiw_wspolne',BEER.ZK_N,BEER.TYP,,1)
+   ?};
+
+   _onemag:=__mags.size()=1;
+   _bezmg:=0;
+
+   EANL.cntx_psh();
+
+   {? _onemag
+   || EANX.MG:=exec('FindAndGet','#table',MG,__mags.MG,,,null());
+      EANX.WYLZAL:={? EANX.MG().MWS='T' & ~EANX.MG().W_ALL || 'N' || 'T' ?}
+   || EANX.MG:=null();
+      EANX.WYLZAL:='T'
+   ?};
+
+   {? ZK_N.T().R='Z'
+   ||
+      exec('ini_kom','#message','Informacje o pozycjach zamówień.'@);
+::    sprawdzenie ceny na pozycjach zamowienia zamowien
+      ZK_N.cntx_psh();
+      {? _ilezaz & _tab.first()
+      || {!
+         |? ZK_N.clear;
+            {? ZK_N.seek(_tab.REF,ZK_N.name()) & ZK_N.AKC='T' & ZK_N.T().MOB='T'
+             & {? _ilezaz>1 || {? ZK_N.MG=null() | ZK_N.MG().PAL='N' || 1 || _nopal:=0; 0 ?} || 1 ?}
+             & {? ZK_N.T().ZAP='T' || {? ZK_N.EZAPOT<>'' ||  exec('zapot_akc','zamowienia',ZK_N.EZAPOT) || 0 ?} || 1 ?}
+            || BEER.ZK_N:=ZK_N.ref();
+               exec('zp_spr_c','zamsiw_nag')
+            ?};
+            _tab.next()
+         !}
+      |? ZK_N.AKC='T'
+      || exec('zp_spr_c','zamsiw_nag')
+      ?};
+      ZK_N.cntx_pop();
+      exec('end_kom','#message')
+   ?};
+:: podrezerwowanie tego co się da
+   __lstum:=1;
+   {? _nopal
+   || ZK_N.cntx_psh();
+      {? _ilezaz & _tab.first()
+      || {!
+         |? ZK_N.clear;
+            {? ZK_N.seek(_tab.REF,ZK_N.name()) & ZK_N.AKC='T' & ZK_N.T().MOB='T'
+            || _bezmg:=~exec('rez2oper','magazyn_mob',ZK_N.ref())
+            ?};
+            ~_bezmg & _tab.next()
+         !}
+      |? ZK_N.AKC='T' & ZK_N.T().MOB='T'
+      || _bezmg:=~exec('rez2oper','magazyn_mob',ZK_N.ref())
+      ?};
+      {? ~_bezwurz & (EANX.NRC_Z=0 | EANX.NRC_R=0) || EANX.NRC_Z:=-1; EANX.NRC_R:=-1 ?};
+      _edt:=1;
+      ZK_N.cntx_pop();
+      {? _bezmg
+      || _nrc:=-1
+      |? _onemag
+      || _dict:=EANL.win_dict('?');
+         EANL.win_dict('WER');
+         _act:=EANL.actions('WER','dpUKMBPEAGZ:dKAZ');
+         EANL.index('KOD');
+         EANL.prefix();
+         EANL.f_clear();
+         {? EANX.MG().MWS='T' & EANX.MG().W_ALL
+         || EANL.f_set('KOD',,'\"EANL\".MG=:_a and \"EANL\".AKT=\'T\' ',EANX.MG)
+         || EANL.f_set('KOD',,'\"EANL\".MG=:_a and \"EANL\".DOK=\'T\' and \"EANL\".AKT=\'T\' ',EANX.MG)
+         ?};
+
+         {? EANX.MG<>null & EANX.DOK().MG<>EANX.MG || EANX.DOK:=null ?};
+
+         EANX.win_edit('WYSYLK'+{? EANX.MG().MWS='T' & ~EANX.MG().W_ALL || 'W' || 'A' ?});
+         {? (_autonrc & EANX.NRC_Z>=0) | (_edt:=EANX.edit("exec('sprwysyl','magazyn_mob')"); _edt)
+         || __mags.clear();
+            __mags.prefix($EANX.MG);
+            {? __mags.first()
+            || {!
+               |? __mags.DOK:=$EANX.DOK;
+                  __mags.NRK:=EANX.NRC_Z;
+                  __mags.put(1);
+                  __mags.next()
+               !}
+            ?}
+         || EANX.NRC_Z:=-1
+         ?};
+         {? EANX.MG().MWS<>'T' | EANX.MG().W_ALL || EANX.NRC_R:=EANX.NRC_Z ?};
+         EANL.f_clear();
+         EANL.win_dict(_dict);
+         EANL.actions('WER',_act)
+      || EANX.win_edit('WYSYLKA');
+         {? (_autonrc & EANX.NRC_Z>=0) | (_edt:=EANX.edit("exec('sprwysyl','magazyn_mob')");_edt)
+         || EANX.NRC_R:=EANX.NRC_Z;
+            __mags.clear();
+            {? __mags.first()
+            || {!
+               |? __mags.NRK:=EANX.NRC_Z;
+                  __mags.put(1);
+                  __mags.next()
+               !}
+            ?}
+         || EANX.NRC_Z:=0
+         ?};
+         EANX.DOK:=null()
+      ?};
+      {? ~_bezmg || _nrc:=EANX.NRC_Z ?}
+   || _nrc:=-1
+   ?};
+   EANL.cntx_pop();
+   __lstum:=0;
+   {? _edt & _nrc>=0 & _nopal
+   || {? _tab.size
+      || _tab.clear();
+         {? _tab.first()
+         || _czypom:=0;
+            _byl:=1;
+            {!
+            |? ZK_N.cntx_psh;
+               ZK_N.clear;
+               {? ZK_N.seek(_tab.REF,ZK_N.name()) & ZK_N.AKC='T' & ZK_N.T().MOB='T'
+::                & {? _ilezaz>1 || {? ZK_N.MG().PAL='N' || 1 || _ilepom+=1; 0 ?} || 1 ?}
+                & {? exec('add_blk','zamsiw_nag',ZK_N.ref()) || 1 || _blok_zam+=ZK_N.SYM+','; 0 ?}
+               || _tabilr:=exec('sapozzkn','magazyn_mob',ZK_N.ref(),POMOC.TR_NZL,__ctrlst);
+                  BEER.TYP:='Z';
+                  BEER.ZK_N:=ZK_N.ref();
+                  BEER.AKTZKN:=$ZK_N.ref();
+                  _blok.prefix();
+                  _blok.blank();
+                  _blok.RSQL:=$ZK_N.ref();
+                  _blok.WAR_BE:=ZK_N.BRT;
+                  _blok.add();
+                  exec('buf_stap','zamsiw_wspolne',BEER.ZK_N,BEER.TYP,_byl,1);
+                  _byl:=0;
+                  EANN.clear();
+                  EANN.blank();
+                  EANN.DATA:=date();
+                  EANN.TYP:='Z';
+                  EANN.REFSQL:=EANN.UNIK:={? POMOC.TR_NZL<>null() || $POMOC.TR_NZL || $ZK_N.ref() ?};
+                  EANN.IDZAM:=EANN.IDADD;
+                  EANN.SYM:=ZK_N.SYM;
+                  EANN.KH:=ZK_N.KH;
+                  EANN.ODB:=ZK_N.ODB;
+                  EANN.NRC:=_nrc;
+                  EANN.IDEANC:=exec('FindInSet','#table','EANC','AKT',_nrc,'T',"EANC.IDADD",,,'');
+                  EANN.STAN:='!';
+                  EANN.MG:=ZK_N.MG;
+                  EANN.TIME:=time();
+                  EANN.RODZ:={? ZK_N.T().R='Z' || 'Z' || 'W' ?};
+                  EANN.GRP_KEY:=_grp_key;
+                  {? EANN.add(1)
+                  || _ref:=EANN.ref;
+                     EANN.UNIK:=$_ref;
+                     EANN.put();
+                     __zknrea.clear();
+                     __zknrea.blank();
+                     __zknrea.TREE:=0;
+                     __zknrea.LAB:='Pozycje do wysyłki zamówienia: '+ZK_N.SYM;
+                     __zknrea.ICON:=-1;
+                     __zknrea.POZ:=__zknrea.REZ:=__zknrea.ILP:=__zknrea.REA:=__zknrea.RES:=__zknrea.PLUS:=0;
+                     __zknrea.REF:=$EANN.ref();
+                     __zknrea.ZKN:=$ZK_N.ref();
+                     __zknrea.JM1:='';
+                     __zknrea.NRCS:='reorganizacja';
+                     __zknrea.add();
+                     _korzen:=__zknrea.ref();
+                     {? _<1 || _a:=0 ?};
+                     ZK_P.cntx_psh();
+                     ZK_P.index('NAG');
+                     ZK_P.prefix(ZK_N.ref());
+                     {? ZK_P.first()
+                     || _czypal:=ZK_N.MG().PAL='T';
+                        {!
+                        |? _tabilr.clear();
+                           {? _tabilr.find_key($ZK_P.M,$ZK_P.ref())
+                           || _ilerea:=_tabilr.ILE
+                           || _ilerea:=0
+                           ?};
+                           _top:=$ZK_P.ref();
+                           REZ.index('ZK_P');
+                           REZ.prefix(ZK_P.ref(),'B');
+                           _isREZ:=REZ.first();
+                           {? (_isREZ | ~__ctrlst) & _ilerea>0
+                           || _czywgd:={? _isREZ
+                                       || (1+REZ.MG().TYP)='D' & ~_czypal & (';DAPZ'*ZK_P.M().IDMOB)>1
+                                       || (1+ZK_P.MG().TYP)='D' & ~_czypal & (';DAPZ'*ZK_P.M().IDMOB)>1
+                                       ?};
+                              exec('admatmag','zamsiw_wspolne',{? _isREZ || $REZ.MG || $ZK_P.MG ?},$ZK_P.M);
+                              {!
+                              |? _open:=exec('czy_z_ok','okresy',1,0,ST.AR,ST.AM,{? _isREZ || REZ.MG || ZK_P.MG ?})<>0;
+                                 {? _open
+                                 || {? ~_isREZ
+                                    || _ilr:=_ilerea;
+                                       _ilerea:=0
+                                    |? _ilerea>=REZ.ILR
+                                    || _ilr:=REZ.ILR;
+                                       _ilerea-=REZ.ILR
+                                    || _ilr:=_ilerea;
+                                       _ilerea:=0
+                                    ?};
+                                    _czypom+=ZK_P.ILP>0 & _ilr<=0;
+                                    _czypom+=form(ZK_P.M().KODK)=''
+                                 ?};
+                                 {? _open & _ilr>0
+                                  & {? _isREZ
+                                    || REZ.MG<>null() & REZ.MG().SL='T'
+                                    || ZK_P.MG<>null() & ZK_P.MG().SL='T'
+                                    ?}
+                                  & form(ZK_P.M().KODK)<>''
+                                 ||
+::                                  zwraca lokalizacje dostawy
+                                    {? _isREZ
+                                    || _lokz:=exec('rozpdk_l','magdok_poz',0,REZ.MG,ZK_P.M,_ilr,ZK_P.N().DLAKH,,,_ilwyk);
+                                       _lokz.clear()
+                                    || _lokz:=tab_tmp(2,'EANL','STRING[16]',''
+                                               ,'TW','DATE',''
+                                               ,'IL','REAL','');
+                                       _lokz.blank();
+                                       _lokz.EANL:={? _isREZ || $REZ.MG().EANL || $ZK_P.MG().EANL ?};
+                                       _lokz.TW:=date(0,0,0);
+                                       _lokz.IL:=_ilr;
+                                       _lokz.add(1)
+                                    ?};
+                                    {? _wg_tr & POMOC.TR_NZL().EANL<>null()
+                                    || _lokz.EANL:=$POMOC.TR_NZL().EANL;
+                                       _lokz.put()
+                                    ?};
+                                    {? _lokz.size() & _lokz.first()
+                                    || {!
+                                       |? {? ~_czywgd
+                                          || _loki:=exec('FindAndGet','#table',EANL,_lokz.EANL,,,null());
+                                             _term:=_lokz.TW
+                                          || _loki:={? _isREZ || REZ.MG().EANL || ZK_P.MG().EANL ?};
+                                             _term:=date(0,0,0)
+                                          ?};
+                                          EANP.index('TOWLOK2');
+                                          EANP.prefix();
+                                          {? EANP.find_key(EANN.ref(),ZK_P.M,_loki,_term) & EANP.RSQL=_top
+                                          || EANP.IL+=_lokz.IL;
+                                             {? EANP.put() || _ok:=1 ?}
+                                          || EANP.clear();
+                                             EANP.blank;
+                                             EANP.EANN:=EANN.ref();
+                                             EANP.NRC:=EANN.NRC;
+                                             EANP.LOKZ:=_loki;
+                                             EANP.LOKDO:=null;
+                                             EANP.TW:=_term;
+                                             EANP.M:=ZK_P.M;
+                                             EANP.EAN:=ZK_P.M().KODK;
+                                             EANP.IL:=_lokz.IL;
+                                             EANP.ILS:=0;
+                                             _ws2:=exec('oblWSP','jm',EANP.M);
+                                             EANP.IL2:={? EANP.M().J2<>null() & _ws2>0 || EANP.IL/_ws2 || 0 ?};
+                                             EANP.ILS2:=0;
+                                             EANP.LP:=ZK_P.POZ;
+                                             EANP.RSQL:=_top;
+                                             EANP.ZLEAN:=ZK_P.ZL().SCEAN;
+                                             {? EANP.M<>null() & ZK_P.DK_C<>null() & ZK_P.DK_C().M_ATR<>null()
+                                             || _aa:=1;
+                                                _wsk:=form(_aa,-2,0,'99');
+                                                {! |? _aa<11 & ($('ZK_P.DK_C().M_ATR().SL_%1'[_wsk]))()<>null()
+                                                |! ($('EANP.WAR%1'[_wsk]))():=($('ZK_P.DK_C().WAR%1'[_wsk]))();
+                                                   _aa+=1;
+                                                   _wsk:=form(_aa,-2,0,'99')
+                                                !}
+                                             ?};
+                                             exec('uzupIDkod','magdok_palety',EANP);
+                                             {? EANP.add()
+                                             || _ok:=1;
+                                                EANP.UNIK:=(($EANP.EANN)+8)+(form(8+$EANP.ref())+3)+($EANP.ref()+8);
+                                                EANP.put()
+                                             ?}
+                                          ?};
+                                          {? _isREZ
+                                          || _ilwyk.clear();
+                                             {? ~_ilwyk.find_key(_lokz.SL)
+                                             || _ilwyk.blank();
+                                                _ilwyk.SL:=_lokz.SL;
+                                                _ilwyk.ILL:=_lokz.IL;
+                                                _ilwyk.add(1)
+                                             || _ilwyk.ILL+=_lokz.IL;
+                                                _ilwyk.put(1)
+                                             ?}
+                                          ?};
+                                          _lokz.next()
+                                       !}
+                                    ?};
+                                    obj_del(_lokz)
+                                 ?};
+                                 _isREZ:=REZ.next();
+                                 _isREZ | (~__ctrlst & _ilerea>0)
+                              !}
+                           |? ZK_P.M().RODZ='U'
+                           || _naczyt:=exec('oblilean','magazyn_mob',_top);
+                              {? (ZK_P.ILP-_naczyt)>0
+                              || EANP.clear();
+                                 EANP.blank;
+                                 EANP.EANN:=EANN.ref();
+                                 EANP.NRC:=EANN.NRC;
+                                 EANP.LOKZ:=null();
+                                 EANP.LOKDO:=null();
+                                 EANP.M:=ZK_P.M;
+                                 EANP.EAN:=ZK_P.M().KODK;
+                                 EANP.IL:=ZK_P.ILP-_naczyt;
+                                 _ws2:=exec('oblWSP','jm',EANP.M);
+                                 EANP.ILS:=0;
+                                 EANP.IL2:={? EANP.M().J2<>null() & _ws2>0 || EANP.IL/_ws2 || 0 ?};
+                                 EANP.ILS2:=0;
+                                 EANP.LP:=ZK_P.POZ;
+                                 EANP.RSQL:=_top;
+                                 exec('uzupIDkod','magdok_palety',EANP);
+                                 {? EANP.add()
+                                 || _ok:=1;
+                                    EANP.UNIK:=(($EANP.EANN)+8)+(form(8+$EANP.ref())+3)+($EANP.ref()+8);
+                                    EANP.put()
+                                 ?}
+                              ?}
+                           ?};
+                           ZK_P.next()
+                        !}
+                     ?};
+                     ZK_P.cntx_pop();
+                     EANP.index('TOWLOK2');
+                     EANP.prefix(_ref);
+                     {? EANP.first()
+                     || {!
+                        |?
+                           ZK_P.cntx_psh();
+                           ZK_P.clear();
+                           {? ZK_P.seek(EANP.RSQL,form(8+EANP.RSQL))
+                           || __zknrea.prefix();
+                              __zknrea.blank();
+                              __zknrea.ZKN:=$ZK_P.N;
+                              __zknrea.TREE:=_korzen;
+                              __zknrea.LAB:=form(ZK_P.POZ,4,0,'99')+'. '+ZK_P.M().KTM+' '+ZK_P.M().N;
+                              __zknrea.ZAM:=ZK_P.N().SYM;
+                              __zknrea.DTZ:=ZK_P.N().DP;
+                              __zknrea.POZ:=ZK_P.POZ;
+                              __zknrea.SQL:=$ZK_P.ref();
+                              __zknrea.MAG:={? ZK_P.M().RODZ='U' || 'USŁUGA' || EANP.LOKZ().MG().SYM ?};
+                              __zknrea.KTM:=ZK_P.M().KTM;
+                              __zknrea.SQM:=$ZK_P.M;
+                              __zknrea.KODK:=ZK_P.M().KODK;
+                              __zknrea.NAZ:=ZK_P.M().N;
+                              __zknrea.REZ:=EANP.IL;
+                              __zknrea.ILP:=EANP.IL;
+                              __zknrea.REA:=__zknrea.RES:=EANP.IL;
+                              __zknrea.WYB:='*';
+                              __zknrea.JM1:=ZK_P.M().J().KOD;
+                              __zknrea.LOKZ:=EANP.LOKZ().KOD;
+                              __zknrea.TW:=EANP.TW;
+                              __zknrea.REF:=$EANP.ref();
+                              __zknrea.NRC:=EANX.NRC_R;
+                              __zknrea.NRCS:=form(__zknrea.NRC,6);
+                              __zknrea.ICON:=0;
+                              __zknrea.CZY:=EANP.LOKZ().MG().PAL='T';
+                              __zknrea.RED:=ZK_P.ILRD;
+                              __zknrea.SMG:=$EANP.LOKZ().MG;
+:: NUCO - dodanie uwag do widoku pozycji wysyłanej na czytnik
+                              __zknrea.UWAGI:=ZK_P.U;
+                              {? __zknrea.add() & (__mags.clear(); __mags.find_key($EANP.LOKZ().MG,$ZK_P.N))
+                              || __mags.WYB:=1;
+                                 __mags.put(1)
+                              ?}
+                           ?};
+                           ZK_P.cntx_pop();
+                           EANP.next()
+                        !}
+                     || _ok:=0
+                     ?};
+                     EANN.cntx_psh();
+                     EANN.clear;
+                     {? EANN.seek(_ref) || {? ~_ok || EANN.del() ?} ?};
+                     EANN.cntx_pop
+                  ?};
+                  obj_del(_tabilr)
+               ?};
+               ZK_N.cntx_pop();
+               _tab.next()
+            !};
+            {? _ilepom>0
+            || FUN.info('Niedostępne grupowe wysłanie na urządzenie mobilne zamówień do magazynu z obsługą palet.\n'
+                        'Liczba pominiętych zamówień: %1.'@[form(_ilepom,,0,'99')])
+            ?};
+            {? _czypom>0
+            || {? __ctrlst
+               || FUN.info('Nie wszystkie pozycje z zamówień zostały wyszczególnione do wysyłki.\n\n'
+                           'Zostały pominięte: pozycje bez pokrycia na stanie magazynu,\n'
+                           'pozycje już wysłane na czytnik lub pomniejszono ich ilość,\n'
+                           'pozycje o indeksach materiałowych bez przypisanych kodów kreskowych.'@)
+               || FUN.info('Nie wszystkie pozycje z zamówień zostały wyszczególnione do wysyłki.\n\n'
+                           'Zostały pominięte:\n'
+                           'pozycje już wysłane na czytnik lub pomniejszono ich ilość,\n'
+                           'pozycje o indeksach materiałowych bez przypisanych kodów kreskowych.'@)
+               ?}
+            ?}
+         ?}
+      || {? ZK_N.AKC='T' & ZK_N.T().MOB='T'
+         || {? (_sa_poz:=exec('sprpozzk','zamsiw_wspolne',ZK_N.ref());
+                {? __ctrlst=0
+                || {? _sa_poz=-2
+                   || FUN.info('Nie wszystkie indeksy materiałowe na pozycjach zamówienia mają przypisany kod kreskowy.\n'
+                               'Do wysyłki zostaną wyszczególnione '
+                               'wyłącznie indeksy materiałowe z przypisanym kodem kreskowym.'@)
+                   ?};
+                   _sa_poz:=1;
+                   0
+                || _sa_poz=0
+                ?})
+            || _sa_poz:=1;
+              {? _sa_poz
+              || _sa_poz:=exec('sprpozzk','zamsiw_wspolne',ZK_N.ref());
+                 {? ~_sa_poz
+                 || {? ZK_N.MG<>null & exec('czyinwds','magdok_wspolne',ZK_N.MG,date(),,1)
+                    || FUN.info('W magazynie: %1 jest otwarta inwentaryzacja.\n'
+                                'Niemożliwe wysłanie pozycji do wysyłki.'@[ZK_N.MG().SYM])
+                    |? exec('eann2zk','magdok_wspolne',ZK_N.ref())<>''
+                    || FUN.info('Zamówienie już zostało wysłane na czytnik (częściowo lub w całości).\n'
+                                'Obecnie brak pozycji w magazynie: %1 o stanie dostępnym większym od zera.\n'
+                                'Niemożliwe ponowne wysłanie pozycji do wysyłki.'@[ZK_N.MG().SYM])
+                    || FUN.info('Brak pozycji w magazynie: %1 o stanie dostępnym większym od zera.\n'
+                                'Niemożliwe wysłanie pozycji do wysyłki.'@[ZK_N.MG().SYM])
+                    ?}
+                 ?}
+              ?}
+            |? _sa_poz<0
+            || {? _sa_poz=-1
+               || FUN.info('Wszystkie indeksy materiałowe na pozycjach zamówienia\n'
+                           'nie mają przypisanego kodu kreskowy.\n'
+                           'Niemożliwe wysłanie pozycji do wysyłki.'@);
+                  _sa_poz:=0
+               |? _sa_poz=-2
+               || FUN.info('Nie wszystkie indeksy materiałowe na pozycjach zamówienia mają przypisany kod kreskowy.\n'
+                           'Do wysyłki zostaną wyszczególnione '
+                           'wyłącznie indeksy materiałowe z przypisanym kodem kreskowym.'@);
+                  _sa_poz:=1
+               |? _sa_poz=-4
+               || FUN.info('Wszystkie pozycje zamówienia\n'
+                           'nie mają przypisanego magazynu.\n'
+                           'Niemożliwe wysłanie pozycji do wysyłki.'@);
+                  _sa_poz:=0
+               |? _sa_poz=-8
+               || FUN.info('Nie wszystkie pozycje zamówienia mają przypisany magazyn.\n'
+                           'Do wysyłki zostaną wyszczególnione '
+                           'wyłącznie pozycje z przypisanym magazynem.'@);
+                  _sa_poz:=1
+               |? _sa_poz=-10
+               || FUN.info('Nie wszystkie indeksy materiałowe na pozycjach zamówienia mają przypisany kod kreskowy.\n'
+                           'Nie wszystkie pozycje zamówienia mają przypisany magazyn.\n'
+                           'Do wysyłki zostaną wyszczególnione '
+                           'wyłącznie indeksy materiałowe z przypisanym kodem kreskowym i mgazynem na pozycjach.'@);
+                  _sa_poz:=1
+               ?}
+            || _sa_poz:=1
+            ?}
+         || _sa_poz:=0
+         ?};
+         {? _sa_poz
+         || _tabilr:=exec('sapozzkn','magazyn_mob',ZK_N.ref(),POMOC.TR_NZL,__ctrlst);
+            _czypal:=ZK_N.MG().PAL='T';
+            BEER.TYP:='Z';
+            BEER.ZK_N:=ZK_N.ref();
+            BEER.AKTZKN:=$ZK_N.ref();
+            EANN.clear();
+            EANN.blank();
+            EANN.DATA:=date();
+            EANN.TYP:='Z';
+            EANN.REFSQL:=EANN.UNIK:={? POMOC.TR_NZL<>null() || $POMOC.TR_NZL || $ZK_N.ref() ?};
+            EANN.IDZAM:=ZK_N.IDADD;
+            EANN.SYM:=ZK_N.SYM;
+            EANN.KH:=ZK_N.KH;
+            EANN.ODB:=ZK_N.ODB;
+            EANN.NRC:=_nrc;
+            EANN.IDEANC:=exec('FindInSet','#table','EANC','AKT',_nrc,'T',"EANC.IDADD",,,'');
+            EANN.STAN:='!';
+            EANN.MG:=ZK_N.MG;
+            EANN.RODZ:={? ZK_N.T().R='Z' || 'Z' || 'W' ?};
+            EANN.TIME:=time();
+            EANN.GRP_KEY:=_grp_key;
+            {? EANN.add(1)
+            || _ref:=EANN.ref;
+               EANN.UNIK:=$_ref;
+               EANN.put();
+               __zknrea.clear();
+               __zknrea.blank();
+               __zknrea.TREE:=0;
+               __zknrea.LAB:='Pozycje do wysyłki zamówienia: '+ZK_N.SYM;
+               __zknrea.ICON:=-1;
+               __zknrea.POZ:=__zknrea.REZ:=__zknrea.ILP:=__zknrea.REA:=__zknrea.RES:=__zknrea.PLUS:=0;
+               __zknrea.REF:=$EANN.ref();
+               __zknrea.ZKN:=$ZK_N.ref();
+               __zknrea.JM1:='';
+               __zknrea.NRCS:='reorganizacja';
+               __zknrea.add();
+               _korzen:=__zknrea.ref();
+               {? _<1 || _a:=0 ?};
+               ZK_P.cntx_psh();
+               ZK_P.index('NAG');
+               ZK_P.prefix(ZK_N.ref());
+               {? ZK_P.first()
+               || _czypal:=ZK_N.MG().PAL='T';
+                  {!
+                  |? _tabilr.clear();
+                     {? _tabilr.find_key($ZK_P.M,$ZK_P.ref())
+                     || _ilerea:=_tabilr.ILE
+                     || _ilerea:=0
+                     ?};
+                     _top:=$ZK_P.ref();
+                     REZ.index('ZK_P');
+                     REZ.prefix(ZK_P.ref(),'B');
+                     _isREZ:=REZ.first();
+                     {? (_isREZ | ~__ctrlst) & _ilerea>0
+                     || _czywgd:={? _isREZ
+                                 || (1+REZ.MG().TYP)='D' & ~_czypal & (';DAPZ'*ZK_P.M().IDMOB)>1
+                                 || (1+ZK_P.MG().TYP)='D' & ~_czypal & (';DAPZ'*ZK_P.M().IDMOB)>1
+                                 ?};
+                        exec('admatmag','zamsiw_wspolne',{? _isREZ || $REZ.MG || $ZK_P.MG ?},$ZK_P.M);
+                        {!
+                        |? _open:=exec('czy_z_ok','okresy',1,0,ST.AR,ST.AM,{? _isREZ || REZ.MG || ZK_P.MG ?})<>0;
+                           {? _open
+                           || {? ~_isREZ
+                              || _ilr:=_ilerea;
+                                 _ilerea:=0
+                              |? _ilerea>=REZ.ILR
+                              || _ilr:=REZ.ILR;
+                                 _ilerea-=REZ.ILR
+                              || _ilr:=_ilerea;
+                                 _ilerea:=0
+                              ?}
+                           ?};
+                           {? _open & _ilr>0
+                            & {? _isREZ || REZ.MG<>null() & REZ.MG().SL='T' || ZK_P.MG<>null() & ZK_P.MG().SL='T' ?}
+                            & form(ZK_P.M().KODK)<>''
+                           ||
+::                            zwraca lokalizacje dostawy
+                              {? ~_czypal & _isREZ
+                              || _lokz:=exec('rozpdk_l','magdok_poz',0,REZ.MG,ZK_P.M,_ilr,ZK_P.N().DLAKH,,,_ilwyk);
+                                 _lokz.clear()
+                              || _lokz:=tab_tmp(2,'EANL','STRING[16]',''
+                                         ,'TW','DATE',''
+                                         ,'IL','REAL','');
+                                 _lokz.blank();
+                                 _lokz.EANL:={? _isREZ || $REZ.MG().EANL || $ZK_P.MG().EANL ?};
+                                 _lokz.TW:=date(0,0,0);
+                                 _lokz.IL:=_ilr;
+                                 _lokz.add(1)
+                              ?};
+                              {? _lokz.size() & _lokz.first()
+                              || {!
+                                 |? {? ~_czywgd
+                                    || _loki:=exec('FindAndGet','#table',EANL,_lokz.EANL,,,null());
+                                       _term:=_lokz.TW
+                                    || _loki:={? _isREZ || REZ.MG().EANL || ZK_P.MG().EANL ?};
+                                       _term:=date(0,0,0)
+                                    ?};
+                                    EANP.index('TOWLOK2');
+                                    EANP.prefix();
+                                    {? EANP.find_key(EANN.ref(),ZK_P.M,_loki,_term) & EANP.RSQL=_top
+                                    || EANP.IL+=_lokz.IL;
+                                       {? EANP.put() || _ok:=1 ?}
+                                    || EANP.clear();
+                                       EANP.blank;
+                                       EANP.EANN:=EANN.ref();
+                                       EANP.NRC:=EANN.NRC;
+                                       EANP.LOKZ:=_loki;
+                                       EANP.LOKDO:=null;
+                                       EANP.TW:=_term;
+                                       EANP.M:=ZK_P.M;
+                                       EANP.EAN:=ZK_P.M().KODK;
+                                       EANP.IL:=_lokz.IL;
+                                       EANP.ILS:=0;
+                                       _ws2:=exec('oblWSP','jm',EANP.M);
+                                       EANP.IL2:={? EANP.M().J2<>null() & _ws2>0 || EANP.IL/_ws2 || 0 ?};
+                                       EANP.ILS2:=0;
+                                       EANP.LP:=ZK_P.POZ;
+                                       EANP.RSQL:=_top;
+                                       EANP.ZLEAN:=ZK_P.ZL().SCEAN;
+                                       {? EANP.M<>null() & ZK_P.DK_C<>null() & ZK_P.DK_C().M_ATR<>null()
+                                       || _aa:=1;
+                                          _wsk:=form(_aa,-2,0,'99');
+                                          {! |? _aa<11 & ($('ZK_P.DK_C().M_ATR().SL_%1'[_wsk]))()<>null()
+                                          |! ($('EANP.WAR%1'[_wsk]))():=($('ZK_P.DK_C().WAR%1'[_wsk]))();
+                                             _aa+=1;
+                                             _wsk:=form(_aa,-2,0,'99')
+                                          !}
+                                       ?};
+                                       exec('uzupIDkod','magdok_palety',EANP);
+                                       {? EANP.add()
+                                       || _ok:=1;
+                                          EANP.UNIK:=(($EANP.EANN)+8)+(form(8+$EANP.ref())+3)+($EANP.ref()+8);
+                                          EANP.put()
+                                       ?}
+                                    ?};
+                                    {? ~_czypal & _isREZ
+                                    || _ilwyk.clear();
+                                       {? ~_ilwyk.find_key(_lokz.SL)
+                                       || _ilwyk.blank();
+                                          _ilwyk.SL:=_lokz.SL;
+                                          _ilwyk.ILL:=_lokz.IL;
+                                          _ilwyk.add(1)
+                                       || _ilwyk.ILL+=_lokz.IL;
+                                          _ilwyk.put(1)
+                                       ?}
+                                    ?};
+                                    _lokz.next()
+                                 !}
+                              ?};
+                              obj_del(_lokz)
+                           ?};
+                           _isREZ:=REZ.next();
+                           _isREZ | (~__ctrlst & _ilerea>0)
+                        !}
+                     |? ZK_P.M().RODZ='U'
+                     || _naczyt:=exec('oblilean','magazyn_mob',_top);
+                        {? (ZK_P.ILP-_naczyt)>0
+                        || EANP.clear();
+                           EANP.blank;
+                           EANP.EANN:=EANN.ref();
+                           EANP.NRC:=EANN.NRC;
+                           EANP.LOKZ:=null();
+                           EANP.LOKDO:=null();
+                           EANP.M:=ZK_P.M;
+                           EANP.EAN:=ZK_P.M().KODK;
+                           EANP.IL:=ZK_P.ILP-_naczyt;
+                           EANP.ILS:=0;
+                           _ws2:=exec('oblWSP','jm',EANP.M);
+                           EANP.IL2:={? EANP.M().J2<>null() & _ws2>0 || EANP.IL/_ws2 || 0 ?};
+                           EANP.ILS2:=0;
+                           EANP.LP:=ZK_P.POZ;
+                           EANP.RSQL:=_top;
+                           exec('uzupIDkod','magdok_palety',EANP);
+                           {? EANP.add()
+                           || _ok:=1;
+                              EANP.UNIK:=(($EANP.EANN)+8)+(form(8+$EANP.ref())+3)+($EANP.ref()+8);
+                              EANP.put()
+                           ?}
+                        ?}
+                     ?};
+                     ZK_P.next()
+                  !}
+               ?};
+               ZK_P.cntx_pop();
+               EANP.index('TOWLOK2');
+               EANP.prefix(EANN.ref());
+               {? EANP.first()
+               || {!
+                  |?
+                     ZK_P.cntx_psh();
+                     ZK_P.clear();
+                     {? ZK_P.seek(EANP.RSQL,form(8+EANP.RSQL))
+                     || __zknrea.prefix();
+                        __zknrea.blank();
+                        __zknrea.TREE:=_korzen;
+                        __zknrea.LAB:=form(ZK_P.POZ,4,0,'99')+'. '+ZK_P.M().KTM+' '+ZK_P.M().N;
+                        __zknrea.ZKN:=$ZK_P.N;
+                        __zknrea.ZAM:=ZK_P.N().SYM;
+                        __zknrea.DTZ:=ZK_P.N().DP;
+                        __zknrea.POZ:=ZK_P.POZ;
+                        __zknrea.SQL:=$ZK_P.ref();
+                        __zknrea.MAG:={? ZK_P.M().RODZ='U' || 'USŁUGA' || EANP.LOKZ().MG().SYM ?};
+                        __zknrea.KTM:=ZK_P.M().KTM;
+                        __zknrea.SQM:=$ZK_P.M;
+                        __zknrea.KODK:=ZK_P.M().KODK;
+                        __zknrea.NAZ:=ZK_P.M().N;
+                        __zknrea.REZ:=EANP.IL;
+                        __zknrea.ILP:=EANP.IL;
+                        __zknrea.REA:=__zknrea.RES:=EANP.IL;
+                        __zknrea.WYB:='*';
+                        __zknrea.JM1:=ZK_P.M().J().KOD;
+                        __zknrea.LOKZ:=EANP.LOKZ().KOD;
+                        __zknrea.TW:=EANP.TW;
+                        __zknrea.REF:=$EANP.ref();
+                        __zknrea.NRC:=EANX.NRC_R;
+                        __zknrea.NRCS:=form(__zknrea.NRC,6);
+                        __zknrea.ICON:=0;
+                        __zknrea.CZY:=EANP.LOKZ().MG().PAL='T';
+                        __zknrea.RED:=ZK_P.ILRD;
+                        __zknrea.SMG:=$EANP.LOKZ().MG;
+:: NUCO - dodanie uwag do widoku pozycji wysyłanej na czytnik
+                        __zknrea.UWAGI:=ZK_P.U;
+                        {? __zknrea.add() & (__mags.clear(); __mags.find_key($EANP.LOKZ().MG,$ZK_P.N))
+                        || __mags.WYB:=1;
+                           __mags.put(1)
+                        ?}
+                     ?};
+                     ZK_P.cntx_pop();
+                     EANP.next()
+                  !}
+               || _ok:=0
+               ?};
+
+               EANN.cntx_psh();
+               EANN.clear;
+               {? EANN.seek(_ref) || {? ~_ok || EANN.del() ?} ?};
+               EANN.cntx_pop()
+            ?}
+         |? _sa_poz
+         || FUN.info('Już istnieje niezamknięta kompletacja wysyłki.\n'
+                     'Ponowne generowanie wysyłki możliwe po zamknięciu wcześniejszej wysyłki.'@)
+         ?}
+      ?};
+      {? _blok_zam<>''
+      || FUN.info('Z powodu blokady przez innych użytkowników\nnie będą realizowane zamówienia:\n%1.'@[_blok_zam-1])
+      ?};
+
+      __zknrea.clear();
+::    sprawdzenie dostepnosci wg palet
+      _czypal:=_ilezaz<2 & ZK_N.MG().PAL='T';
+      {? _czypal & __zknrea.first()
+      || EANN.clear();
+         EANN.seek(_ref);
+         {? exec('wybpalzk','zamsiw_palety',1)
+         || ''
+         || FUN.info('Nie wybrano palet do realizacji zamówienia.\nRealizacja niemożliwa.'@);
+            __zknrea.clear();
+            __zknrea.for_each("{? __zknrea.TREE
+                               || EANP.clear();
+                                  {? (4+__zknrea.REF)='eanp' & EANP.seek(__zknrea.REF,) || EANP.del() ?};
+                                  __zknrea.del()
+                               ?}",0);
+            __zknrea.for_each("EANP.clear();
+                               {? (4+__zknrea.REF)='eanp' & EANP.seek(__zknrea.REF,) || EANP.del() ?};
+                               __zknrea.del()",0);
+            EANN.cntx_psh();
+            EANN.clear;
+            {? EANN.seek(_ref) || EANN.del() ?};
+            EANN.cntx_pop()
+         ?}
+      ?};
+      exec('dstidmob','magazyn_mob');
+      {? __zknrea.first() & __zknrea.size()>1 & ~_czypal
+      || _korzen:=0;
+         __mags.clear();
+         {? __mags.first()
+         || {!
+            |? {? __mags.WYB
+               || MG.cntx_psh();
+                  MG.clear();
+                  {? MG.seek(__mags.MG)
+                  || {? _korzen=0
+                     || __zknrea.clear();
+                        __zknrea.blank();
+                        __zknrea.TREE:=0;
+                        __zknrea.LAB:='Parametry dla magazynów';
+                        __zknrea.MAG:='';
+                        __zknrea.LOKZ:='';
+                        __zknrea.ICON:=-2;
+                        __zknrea.POZ:=__zknrea.REZ:=__zknrea.ILP:=__zknrea.REA:=__zknrea.RES:=__zknrea.PLUS:=0;
+                        __zknrea.REF:=$EANN.ref();
+                        __zknrea.ZKN:='';
+                        __zknrea.JM1:='';
+                        __zknrea.NRCS:='załadunek';
+                        {? __zknrea.add() || _korzen:=__zknrea.ref() ?}
+                     ?};
+                     __zknrea.clear();
+                     {? ~__zknrea.find_key(_korzen,'Magazyn: '+MG.SYM,)
+                     || __zknrea.blank();
+                        __zknrea.TREE:=_korzen;
+                        __zknrea.LAB:='Magazyn: '+MG.SYM;
+                        __zknrea.MAG:=MG.SYM;
+                        __zknrea.LOKZ:={? EANX.DOK<>null() || EANX.DOK().KOD || MG.EANL().KOD ?};
+                        __zknrea.ICON:=-2;
+                        __zknrea.POZ:=__zknrea.REZ:=__zknrea.ILP:=__zknrea.REA:=__zknrea.RES:=__zknrea.PLUS:=0;
+                        __zknrea.REF:=$EANN.ref();
+                        __zknrea.ZKN:=$MG.ref();
+                        __zknrea.NRC:=EANX.NRC_Z;
+                        __zknrea.NRCS:=form(__zknrea.NRC,6);
+                        __zknrea.JM1:='';
+                        __zknrea.SMG:=$MG.ref();
+                        __zknrea.add()
+                     ?}
+                  ?};
+                  MG.cntx_pop();
+                  __mags.next()
+               || __mags.del()
+               ?}
+            !}
+         ?}
+      ?};
+      _esc:=0;
+      _il_usl:=0;
+      _ok:=__zknrea.first() & __zknrea.size()>1 & {? ~_czypal || {? __zknrea.select() || 1 || _esc:=1; 0 ?} || 1 ?};
+
+::    sprawdza czy istnieja pozycje do wysylki
+      _eanns:=tab_tmp(2,'ZKN','STRING[16]','','REF','STRING[16]','');
+      {? __zknrea.first()
+      ||
+         _il_sum:=0;
+         {!
+         |? _il_sum+=__zknrea.RES;
+            _il_usl+={? __zknrea.SQM<>'' & exec('FindAndGet','#table',M,__zknrea.SQM,,"RODZ",'')='U'
+                     || __zknrea.RES
+                     || 0
+                     ?};
+            {? __zknrea.RES>0 & (__mags.clear(); __mags.find_key(__zknrea.SMG,__zknrea.ZKN))
+            || __mags.WYB:=2;
+               __mags.put(1);
+               _refe:=$exec('FindAndGet','#table',EANP,__zknrea.REF,,"EANN",null());
+               _eanns.clear();
+               _eanns.prefix(__zknrea.ZKN,_refe);
+               {? ~_eanns.first()
+               || _eanns.blank();
+                  _eanns.REF:=_refe;
+                  _eanns.ZKN:=__zknrea.ZKN;
+                  _eanns.add(1)
+               ?}
+            ?};
+            __zknrea.next()
+         !};
+         {? _il_sum=0 | _il_sum=_il_usl || _ok:=0 ?}
+      ?};
+      {? _ok=1
+      ||
+::       przepisanie nowych ilosci + aktywacja statusu do tabeli EANP
+         _czymws:=0;
+         __mags.clear();
+         {? __mags.first()
+         || {!
+            |? {? __mags.WYB=2
+               || _eanns.clear();
+                  _eanns.prefix(__mags.ZKN);
+                  {? _eanns.first() & (EANN.clear(); EANN.seek(_eanns.REF))
+                  || {? $EANN.MG=''
+                     || EANN.MG:=exec('FindAndGet','#table',MG,__mags.MG,,,null());
+                        EANN.NRC:=__mags.NRK;
+                        EANN.IDEANC:=exec('FindInSet','#table','EANC','AKT',__mags.NRK,'T',"EANC.IDADD",,,'');
+                        EANN.UNIK:=$EANN.ref();
+                        EANN.REFSQL:={? POMOC.TR_NZL<>null() || $POMOC.TR_NZL || __mags.ZKN ?};
+                        EANN.IDZAM:={? POMOC.TR_NZL<>null()
+                                    || POMOC.TR_NZL().IDADD
+                                    || exec('FindAndGet','#table',ZK_N,__mags.ZKN,,"IDADD",'')
+                                    ?};
+                        {? POMOC.TR_NZL<>null() || EANN.ZEANN:=__mags.ZKN ?};
+                        _bufeann:={? EANN.put(1) || $EANN.ref() || '' ?}
+                     |? $EANN.MG=__mags.MG
+                     || EANN.NRC:=__mags.NRK;
+                        EANN.IDEANC:=exec('FindInSet','#table','EANC','AKT',__mags.NRK,'T',"EANC.IDADD",,,'');
+                        EANN.UNIK:=$EANN.ref();
+                        EANN.REFSQL:={? POMOC.TR_NZL<>null() || $POMOC.TR_NZL || __mags.ZKN ?};
+                        EANN.IDZAM:={? POMOC.TR_NZL<>null()
+                                    || POMOC.TR_NZL().IDADD
+                                    || exec('FindAndGet','#table',ZK_N,__mags.ZKN,,"IDADD",'')
+                                    ?};
+                        {? POMOC.TR_NZL<>null() || EANN.ZEANN:=__mags.ZKN ?};
+                        EANN.put(1);
+                        _bufeann:=$EANN.ref()
+                     || EANN.cntx_psh();
+                        EANN.clear();
+                        EANN.MG:=exec('FindAndGet','#table',MG,__mags.MG,,,null());
+                        EANN.NRC:=__mags.NRK;
+                        EANN.IDEANC:=exec('FindInSet','#table','EANC','AKT',__mags.NRK,'T',"EANC.IDADD",,,'');
+                        _bufeann:={? EANN.add(1) || $EANN.ref() || '' ?};
+                        EANN.UNIK:=$EANN.ref();
+                        EANN.REFSQL:={? POMOC.TR_NZL<>null() || $POMOC.TR_NZL || __mags.ZKN ?};
+                        EANN.IDZAM:={? POMOC.TR_NZL<>null()
+                                    || POMOC.TR_NZL().IDADD
+                                    || exec('FindAndGet','#table',ZK_N,__mags.ZKN,,"IDADD",'')
+                                    ?};
+                        {? POMOC.TR_NZL<>null() || EANN.ZEANN:=__mags.ZKN ?};
+                        EANN.put(1);
+                        EANN.cntx_pop()
+                     ?};
+                     __mags.EANN:=_bufeann;
+                     __mags.put(1);
+                     {? ~_czymws & __mags.MWS='T' || _czymws:=1 ?};
+                     __mags.next()
+                  || __mags.next()
+                  ?}
+               |? ~__ctrlst & (_eanns.prefix(); _eanns.first())
+               || {!
+                  |? EANN.prefix();
+                     {? EANN.seek(_eanns.REF)
+                     || {? exec('FindInSet','#table','EANP','EANN',EANN.ref())<>null
+                        || _wyn:=_grp_key;
+                           EANN.STAN:='O';
+                           EANN.ILP:=exec('addilp','magazyn_mob',EANN.ref());
+                           _refeann:=$EANN.ref();
+                           EANN.put(1)
+                        || EANN.del()
+                        ?}
+                     ?};
+                     _eanns.next()
+                  !}
+               || __mags.del()
+               ?}
+            !}
+         || _czymws:=ZK_N.MG().MWS='T' & ~ZK_N.MG().W_ALL
+         ?};
+
+         _refeann:='';
+         {? _czypal
+         || EANN.clear();
+            {? EANN.seek(_ref)
+            || {? exec('FindInSet','#table','EANP','EANN',EANN.ref())<>null
+               || _wyn:=_grp_key;
+                  EANN.STAN:='O';
+                  EANN.ILP:=exec('addilp','magazyn_mob',EANN.ref());
+                  _refeann:=$EANN.ref();
+                  EANN.put(1)
+               || EANN.del()
+               ?}
+            ?}
+         |? __zknrea.first()
+         || _steann:=tab_tmp(1,'EANN','STRING[16]','');
+            {!
+            |?
+               {? __zknrea.TREE<>0 & __zknrea.ICON<>-2
+               || EANP.cntx_psh();
+                  EANP.clear();
+                  {? (4+__zknrea.REF)='eanp' & EANP.seek(__zknrea.REF,form(8+__zknrea.REF))
+                  || {? ~__zknrea.CZY & __zknrea.RES>0 & __zknrea.SCEAN=''
+                     ||
+                        __dstean.clear();
+                        __dstean.prefix($__zknrea.ref());
+                        {? __dstean.first()
+                        || {? (';DAPZ'*__dstean.TYP)>1
+                           || _doroz:={? ~__ctrlst || __zknrea.RES || 0 ?};
+                              _first:=1;
+                              {!
+                              |? {? __dstean.ILR>0
+                                 || _doroz-=__dstean.ILR;
+                                    EANP.IL:=__dstean.ILR;
+                                    EANP.SCEAN:=__dstean.SCEAN;
+                                    EANP.LOKZ:=exec('FindAndGet','#table',EANL,__dstean.REFL,,,null());
+                                    EANP.TW:=__dstean.TW;
+                                    _ws2:=exec('oblWSP','jm',EANP.M);
+                                    EANP.IL2:={? EANP.M().J2<>null() & _ws2>0 || EANP.IL/_ws2 || 0 ?};
+                                    exec('uzupIDkod','magdok_palety',EANP);
+                                    {? _first
+                                    || _first:=0;
+                                       {? EANP.put(1)
+                                       || __zknrea.SCEAN:={? EANP.SCEAN<>'' || EANP.SCEAN || 'brak id' ?};
+                                          __zknrea.REA:=__zknrea.RES:=EANP.IL;
+                                          __zknrea.LOKZ:=__dstean.LOKZ;
+                                          __zknrea.put(1)
+                                       ?}
+                                    || {? EANP.add(1)
+                                       || EANP.UNIK:='';
+                                          __zknrea.SCEAN:={? EANP.SCEAN<>'' || EANP.SCEAN || 'brak id' ?};
+                                          __zknrea.REA:=__zknrea.RES:=EANP.IL;
+                                          __zknrea.LOKZ:=__dstean.LOKZ;
+                                          __zknrea.add(1)
+                                       ?}
+                                    ?};
+                                    EANP.UNIK:=(($EANP.EANN)+8)+(form(8+$EANP.ref())+3)+($EANP.ref()+8);
+                                    {? (__mags.clear(); __mags.find_key($EANP.LOKZ().MG,__zknrea.ZKN))
+                                    || EANX.DOK:=exec('FindAndGet','#table',EANL,__mags.DOK,,,null());
+                                       EANP.EANN:=exec('FindAndGet','#table',EANN,__mags.EANN,,,null());
+                                       EANP.NRC:=EANP.EANN().NRC
+                                    ?};
+                                    {? EANP.LOKZ().MG().MWS='T' & ~EANP.LOKZ().MG().W_ALL || EANP.LOKZ:=EANX.DOK ?};
+                                    EANP.put(1)
+                                 ?};
+                                 __dstean.next()
+                              !};
+                              {? _doroz>0
+                              || EANP.IL:=_doroz;
+                                 EANP.SCEAN:='';
+                                 EANP.LOKZ:=exec('FindAndGet','#table',MG,__zknrea.SMG,,"EANL",null());
+                                 EANP.TW:=date(0,0,0);
+                                 _ws2:=exec('oblWSP','jm',EANP.M);
+                                 EANP.IL2:={? EANP.M().J2<>null() & _ws2>0 || EANP.IL/_ws2 || 0 ?};
+                                 exec('uzupIDkod','magdok_palety',EANP);
+                                 {? EANP.add(1)
+                                 || EANP.UNIK:=(($EANP.EANN)+8)+(form(8+$EANP.ref())+3)+($EANP.ref()+8);
+                                    EANP.NRC:=EANP.EANN().NRC
+                                 ?};
+                                 {? EANP.LOKZ().MG().MWS='T' & ~EANP.LOKZ().MG().W_ALL || EANP.LOKZ:=EANX.DOK ?};
+                                 EANP.put(1)
+                              ?}
+                           || EANP.IL:=__zknrea.RES;
+                              _ws2:=exec('oblWSP','jm',EANP.M);
+                              EANP.IL2:={? EANP.M().J2<>null() & _ws2>0 || EANP.IL/_ws2 || 0 ?};
+                              {? __zknrea.SQM<>'' & exec('FindAndGet','#table',M,__zknrea.SQM,,"RODZ",'')='U'
+                              || EANP.ILS:=__zknrea.RES
+                              ?};
+                              {? (__mags.clear(); __mags.find_key($EANP.LOKZ().MG,__zknrea.ZKN))
+                              || EANX.DOK:=exec('FindAndGet','#table',EANL,__mags.DOK,,,null());
+                                 EANP.EANN:=exec('FindAndGet','#table',EANN,__mags.EANN,,,null());
+                                 EANP.NRC:=EANP.EANN().NRC
+                              ?};
+                              {? EANP.LOKZ().MG().MWS='T' & ~EANP.LOKZ().MG().W_ALL || EANP.LOKZ:=EANX.DOK ?};
+                              {? EANP.put(1)
+                              || __zknrea.SCEAN:={? EANP.SCEAN<>'' || EANP.SCEAN || 'brak id' ?};
+                                 __zknrea.put(1)
+                              ?}
+                           ?}
+                        ?};
+                        __mags.clear();
+                        {? __mags.first()
+                        || {!
+                           |? EANN.clear();
+                              {? (_steann.clear(); ~_steann.find_key(__mags.EANN)) & EANN.seek(__mags.EANN)
+                              || _steann.blank();
+                                 _steann.EANN:=__mags.EANN;
+                                 _steann.add(1)
+                              ?};
+                              __mags.next()
+                           !}
+                        ?}
+                     |? ~(~__zknrea.CZY & __zknrea.RES>0)
+                     || _eann:=EANP.EANN;
+                        EANP.del();
+                        {? exec('FindInSet','#table','EANP','EANN',_eann)=null
+                        || EANN.cntx_psh();
+                           EANN.clear();
+                           {? EANN.seek(_eann) || EANN.del() ?};
+                           EANN.cntx_pop()
+                        ?}
+                     ?}
+                  ?};
+                  EANP.cntx_pop()
+               ?};
+               __zknrea.next()
+            !};
+            _steann.clear();
+            {? _steann.first()
+            || {!
+               |? EANN.clear();
+                  {? EANN.seek(_steann.EANN)
+                  || EANN.STAN:='O';
+                     EANN.ILP:=exec('addilp','magazyn_mob',EANN.ref());
+                     _refeann:=$EANN.ref();
+                     EANN.put(1)
+                  ?};
+                  _steann.next()
+               !}
+            ?};
+            obj_del(_steann)
+         ?};
+         _rozpa:={? _czypal & _refeann<>''
+                 || exec('pal_iroz','magazyn_mob',exec('FindAndGet','#table',EANN,_refeann,,,null()),,1)
+                 || 0
+                 ?};
+::       reorganizacja w przypadku kompletacji zlozonej
+         {? _czymws | _rozpa=1 | _rozpa=2
+         || _symzam:=ZK_N.SYM;
+            _i:=0;
+            {? {? ZK_N.MG<>null() || ZK_N.MG().PAL='N' || __mags.size() ?}
+            || _grnrc:=sql('select distinct :_a.NRC NRC, :_a.SMG SMG, :_a.ZKN ZKN'+
+                           ' from :_a where :_a.REA>0 and :_a.ICON<>-2 ',__zknrea);
+               _grnrc.clear;
+               {? _grnrc.first()
+               || _ndx:=__zknrea.ndx_tmp('',0,'NRC',,0,'SMG',,0,'ZKN',,0,'ICON',,0,'LOKZ',,0,'KTM',,0);
+                  {!
+                  |? {? _grnrc.NRC>=0 & exec('FindAndGet','#table',MG,_grnrc.SMG,,"MWS",'')='T'
+                     || __zknrea.index(_ndx);
+                        __zknrea.prefix(_grnrc.NRC,_grnrc.SMG,_grnrc.ZKN,0);
+                        {? __zknrea.first()
+                        || DK_LN.clear();
+                           DK_LN.blank();
+                           _i+=0.033333;
+                           DK_LN.TM+=_i;
+                           DK_LN.MG:=exec('FindAndGet','#table',MG,_grnrc.SMG,,,null());
+                           DK_LN.RODZ:='S';
+                           __mags.clear();
+                           {? __mags.find_key(_grnrc.SMG,__zknrea.ZKN)
+                           || DK_LN.ZDOK:=__mags.EANN;
+                              EANX.DOK:=exec('FindAndGet','#table','EANL',__mags.DOK,,,null())
+                           || DK_LN.ZDOK:=_refeann
+                           ?};
+                           _refakc:={? ~DK_LN.add() || undo(); null || DK_LN.ref() ?};
+                           {? _refakc<>null
+                           || {!
+                              |? {? __zknrea.SCEAN<>'brak id'
+                                 || _scean:=__zknrea.SCEAN;
+                                    _czyscean:=1
+                                 || _scean:='';
+                                    _czyscean:=0
+                                 ?};
+                                 _lok:=exec('FindInSet','#table','EANL','KOD',__zknrea.LOKZ,__zknrea.LOKZ);
+                                 {? _lok<>EANX.DOK
+                                 || {? ~exec('add2dk_l','magdok_wspolne',null,DK_LN.ref()
+                                         ,_lok,EANX.DOK,__zknrea.TW,__zknrea.TW,__zknrea.REA,DK_LN.MG
+                                         ,exec('FindInSet','#table','M','MATKTM',__zknrea.KTM,__zknrea.KTM),~_czyscean
+                                         ,,,,,,_scean)
+                                    || undo()
+                                    ?}
+                                 ?};
+                                 __zknrea.next()
+                              !};
+                              _symzam:=exec('FindAndGet','#table',ZK_N,_grnrc.ZKN,,"SYM",'');
+                              exec('dkl2eann','magazyn_mob',_refakc,_grnrc.NRC,,_symzam,_grp_key)
+                           ?}
+                        ?}
+                     ?};
+                     _grnrc.next()
+                  !};
+                  __zknrea.ndx_drop(_ndx)
+               ?};
+               obj_del(_grnrc)
+            |? _refeann<>'' & (_refik:=exec('FindAndGet','#table',EANN,_refeann,,,null()))<>null
+            || _dklnroz:=tab_tmp(2,'KODK','STRING[128]','','REF','STRING[16]','');
+               _dklnpal:=null;
+
+               EANP.cntx_psh();
+               EANP.index('EANN');
+               EANP.prefix(_refik);
+               {? EANP.first()
+               ||
+                  _bpal:=tab_tmp(1,'PAL','STRING[16]','');
+                  _rozpa:=exec('pal_iroz','magazyn_mob',_refik,,1);
+
+                  {? _rozpa=1 | _rozpa=2
+                  || EANP.cntx_psh();
+                     {!
+                     |? _kodpaldo:={? EANP.PALDO<>null() || EANP.PALDO().KODK || EANP.PALDOEAN ?};
+                        {? (_czymws | _rozpa<3) & _kodpaldo<>'' & EANP.PAL<>EANP.PALDO
+                         & (_dklnroz.clear(); _dklnroz.prefix(_kodpaldo,); ~_dklnroz.first())
+                        || DK_LN.clear();
+                           DK_LN.blank();
+                           _i+=0.033333;
+                           DK_LN.TM+=_i;
+                           DK_LN.MG:=ZK_N.MG;
+                           DK_LN.RODZ:='S';
+                           DK_LN.ZDOK:=_refeann;
+                           {? ~DK_LN.add()
+                           || undo();
+                              null()
+                           || _dklnroz.prefix();
+                              _dklnroz.blank();
+                              _dklnroz.REF:=$DK_LN.ref();
+                              _dklnroz.KODK:=_kodpaldo;
+                              _dklnroz.add(1)
+                           ?}
+                        ?};
+                        EANP.next()
+                     !};
+                     EANP.cntx_pop()
+                  ?};
+
+                  {? _rozpa=0 | _rozpa>=2
+                  || DK_LN.clear();
+                     DK_LN.blank();
+                     _i+=0.033333;
+                     DK_LN.TM+=_i;
+                     DK_LN.MG:=ZK_N.MG;
+                     DK_LN.RODZ:='S';
+                     DK_LN.ZDOK:=_refeann;
+                     _refakc:={? ~DK_LN.add() || undo(); null || DK_LN.ref() ?};
+                     _dklnpal:=_refakc
+                  || _dklnpal:=null()
+                  ?};
+
+                  {? _dklnroz.size() | _dklnpal<>null()
+                  || {!
+                     |? _tech:={? ~_czymws
+                               || EANP.PAL<>null() & EANP.PAL().BEZOZN='B' & EANP.PAL().MG=EANP.LOKZ().MG
+                               || EANP.PALDO<>null() & EANP.PALDO().BEZOZN='B' & EANP.PALDO().MG=EANP.LOKZ().MG
+                               ?};
+                        {? ~_tech | _czymws
+                        || EANP.cntx_psh();
+                        {? EANP.ZPALET=2
+                           || {? _rozpa>2 & _dklnpal<>null()
+                              || {? ~exec('addrozpa','magazyn_mob',exec('FindAndGet','#table',DK_LN,_dklnpal,,,null()))
+                                 || undo()
+                                 ?}
+                              |? (_dklnroz.clear(); _dklnroz.prefix(_kodpaldo,); _dklnroz.first())
+                           || {? ~exec('addrozpa','magazyn_mob',exec('FindAndGet','#table',DK_LN,_dklnroz.REF,,,null()))
+                              || undo()
+                              ?}
+                           || undo()
+                           ?}
+                        || {? EANP.LOKDO<>EANX.DOK
+                           || {? ~exec('add2dk_l','magdok_wspolne',null,DK_LN.ref(),EANP.LOKDO,EANX.DOK,date(0,0,0)
+                                  ,date(0,0,0),1,DK_LN.MG,null,0,,EANP.PAL,EANP.PAL,,,EANP.SCEAN)
+                              || undo()
+                              ?}
+                           ?}
+                        ?};
+                           EANP.cntx_pop()
+                        ?};
+                        {? EANP.ZPALET=2
+                        || EANP.LOKDO:=null;
+                           {? ~_tech
+                           || EANP.M:=null();
+                           EANP.ZPALET:=1;
+                           EANP.PAL:=EANP.PALDO;
+                           EANP.EAN:=EANP.PAL().KODK;
+                              EANP.PALDO:=null();
+                           EANP.PALEAN:=EANP.PAL().KODK;
+                           EANP.IL:=1
+                           || EANP.EAN:=EANP.M().KODK;
+                              EANP.ZPALET:=2;
+                              EANP.ROZPAL:={? _czymws || 3 || 1 ?};
+                              EANP.PALDO:=null;
+                              EANP.PALEAN:=EANP.PAL().KODK
+                           ?}
+                        || EANP.LOKDO:=null
+                        ?};
+                        _bpal.clear();
+                        {? _bpal.find_key($EANP.PAL)
+                        || _refb:=EANP.ref(); _okb:=EANP.next();
+                           EANP.cntx_psh();
+                           EANP.clear();
+                           {? EANP.seek(_refb) || EANP.del() ?};
+                           EANP.cntx_pop();
+                           _okb
+                        || _bpal.blank();
+                           _bpal.PAL:=$EANP.PAL;
+                           _bpal.add(1);
+                           EANP.put(1);
+                           EANP.next()
+                        ?}
+                     !};
+                     {? EANX.NRC_R=0 || EANX.NRC_R:=EANX.NRC_Z ?};
+                     {? _dklnpal<>null
+                     || exec('dkl2eann','magazyn_mob',_dklnpal,EANX.NRC_R,,_symzam,_grp_key,_rozpa>2)
+                     ?};
+                     {? _dklnroz.size()
+                     || _dklnroz.prefix();
+                        {? _dklnroz.first()
+                        || {!
+                           |? exec('dkl2eann','magazyn_mob',exec('FindAndGet','#table',DK_LN,_dklnroz.REF,,,null())
+                               ,EANX.NRC_R,1,_symzam,_grp_key);
+                              _dklnroz.next()
+                           !}
+                        ?}
+                     ?}
+                  ?};
+                  obj_del(_bpal)
+               ?};
+               EANP.cntx_pop();
+               obj_del(_dklnroz)
+            ?}
+         ?}
+      ||
+::       usuniecie EANN i EANP
+         {? __zknrea.first()
+         || {!
+            |? {? __zknrea.TREE=0
+               || EANN.clear();
+                  {? EANN.seek(__zknrea.REF,form(8+__zknrea.REF))
+                  || EANP.index('EANN');
+                     EANP.prefix(EANN.ref());
+                     {? EANP.first() || {! |? EANP.del() !} ?};
+                     EANN.del()
+                  ?}
+               ?};
+               __zknrea.next()
+            !}
+         ?};
+         {? ~_esc
+         || {? _il_usl=0
+            || FUN.info('Brak pozycji na zamówieniu do kompletacji wysyłki.'@)
+            || FUN.info('Nie można realizować kompletacji wysyłki wyłącznie na pozycje usługowe.'@)
+            ?}
+         ?}
+      ?};
+      obj_del(_eanns)
+   |? ~_nopal
+   || FUN.info('Grupowa generacja kompletacji nie jest dostępna w magazynach z obsługą palet.'@)
+   |? _bezmg
+   || FUN.info('Istnieją pozycje zamówienia bez przypisanego magazynu.\nWysłanie kompletacji niemożliwe.'@)
+   |? ~_edt
+   || FUN.info('Nie wskazano urządzenia.\nWysłanie kompletacji niemożliwe.'@)
+   ?};
+
+   exec('anul_bez','zamsiw_rea');
+
+   ZK_N.cntx_psh();
+   _blok.prefix();
+   {? _blok.first()
+   || {!
+      |? ZK_N.prefix();
+         {? ZK_N.seek(_blok.RSQL)
+         || BEER.ZK_N:=ZK_N.ref();
+            BEER.TYP:='Z';
+            exec('akt_stap','zamsiw_wspolne',BEER.ZK_N,BEER.TYP,,,~_sa_poz | ~__ctrlst);
+            exec('obl_warz','zamsiw_nag',BEER.ZK_N,,1)
+         ?};
+         _blok.next()
+      !};
+::    aktualizujemy stany na danych materialach
+      {? var_pres('__mat_mag')>100 || exec('wgmatmag','magazyn_stan') ?}
+   ?};
+   ZK_N.cntx_pop()
+?};
+BEER.ZK_N:=_beerzkn;
+
+exec('done_blk','zamsiw_nag');
+
+obj_del(_ilwyk);
+VAR_DEL.delete('__refrea','__mags','__ctrlst','__lstum');
+VAR_DEL.delete('__zknrea','__eanc','__eann','__mat_mag','__dstean','__dstsel','__zknsel','__grpsel','__dstbtn');
+_wyn
+

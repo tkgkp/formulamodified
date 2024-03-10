@@ -1,0 +1,1354 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_dlim.fml
+:: Utworzony: 17.09.2015
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_DLIM - Rejestracja limitów zlecenia
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła główna czynności rejestracji limitów zlecenia (TTE_PZL_DLIM)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+::# permissions=ODDZ
+::# properties=SERVICE
+::# parses=exec('parses','!tte_pzl_dlim')
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=T, keyref=T
+{? var_pres('ZL',_in)<>type_of(~~) & var_pres('ZL',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZL',_in)=type_of(~~) || return() ?};
+
+::# kind=WE, symbol=ZGH, type=_ZGH, name=Wskazanie na przewodnik zlecenia, required=N, keyref=T
+{? var_pres('ZGH',_in)<>type_of(~~) & var_pres('ZGH',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZGH',_in)=type_of(~~) || _in.ZGH:=null() ?};
+
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik działania (OK, BŁĄD)", required=N
+
+_zl:=null();
+_zgh:=null();
+
+_keyRefs:=_mp.getRefs();
+
+ZL.cntx_psh(); ZGH.cntx_psh();
+ZL.prefix(); ZGH.prefix();
+
+_clean_result:=params_exec('clean','!tte_pzl_dlim',_mp,_in);
+_can_continue:=_clean_result.RESULT;
+_zl:=_clean_result.ZL;
+_zgh:=_clean_result.ZGH;
+
+:: WSTĘPNE WALIDACJE
+{? _can_continue>0 & _mp.isService() & _zl=null()
+|| _msg:='Błędna konfiguracja procesu — nie przekazano zlecenia.'@;
+   _mp.error(_msg);
+   _can_continue:=0
+?};
+
+:: Tylko zlecenie
+{? _can_continue
+||
+   {? _zl & ZL.seek(_zl)
+   ||
+:: Warsztatowe automatycznie - w tym kontekście zawsze wycofanie czynności
+      {? ZL.TYP().WP='W' & _mp.isAutoRun()
+      || _mp.cancel()
+      |? ZL.TYP().WP='W' & _mp.isService()
+      || _out.RESULT:='BŁĄD';
+         _mp.save(,_out);
+         _mp.done()
+
+:: Warunki wykluczające uruchomienie
+      |? ZL.RODZAJ='N'
+      || _msg:='Nie można uruchomić czynności dla zlecenia %1.'@[ZL.SYM];
+         _msg+='\n';
+         _msg+='Rejestrowanie zapotrzebowań dla zlecenia niezależnego jest niedozwolone.'@;
+         {? ~_mp.isService()
+         || {? _mp.isGroup()
+            || KOMM.add(gsub(_msg,'\n',' '),2,,1)
+            || FUN.info(_msg)
+            ?}
+         ?};
+         _mp.error(_msg)
+
+::   |? ZL.RODZAJ='Z'
+::   || _msg:='Nie można uruchomić czynności dla zlecenia %1.'@[ZL.SYM];
+::      _msg+='\n';
+::      _msg+='Rejestrowanie zapotrzebowań dla zlecenia nadrzędnego jest niedozwolone.'@;
+::      {? _mp.isGroup()
+::      || KOMM.add(gsub(_msg,'\n',' '),2,,1)
+::      || FUN.info(_msg)
+::      ?};
+::      _mp.error(_msg)
+
+      |? ZL.STAN='Z'
+      || FUN.info('Zlecenie %1 jest zamknięte — czynność rejestrowania zapotrzebowań zostaje zakończona.'@[ZL.SYM]);
+         _out.RESULT:='OK';
+         _mp.save(,_out);
+         _mp.done()
+
+      |? ZL.TYP().WP='P' & ZL.TYP().TECH='T' & ZL.STAT_T='N'
+      || _msg:='';
+         {? _zgh=null()
+         || _msg+='Nie można uruchomić czynności dla zlecenia %1.'@[ZL.SYM]
+         || _msg+='Nie można uruchomić czynności dla przewodnika %1.'@[exec('FindAndGet','#table',ZGH,_zgh,,"NRPRZ",'')]
+         ?};
+         _msg+='\n';
+         _msg+='Rejestrowanie technologii zlecenia %1 nie zostało zakończone.'@[ZL.SYM];
+         {? _mp.isService()
+         || _out.RESULT:='BŁĄD';
+            _mp.save(,_out);
+            _mp.done()
+         || {? _mp.isGroup()
+            || KOMM.add(gsub(_msg,'\n',' '))
+            || FUN.info(_msg)
+            ?};
+            _mp.cancel()
+         ?}
+
+:: Gdy podany przewodnik
+      |? _zgh
+      || {? ZGH.seek(_zgh)
+         ||
+            {? ZGH.STAT_L='T' & _mp.pathArea()=0
+            || {? ~_mp.isAutoRun() & ~_mp.isService()
+               || _msg:='Zakończono rejestrację zapotrzebowań do przewodnika %1.'@[ZGH.NRPRZ];
+                  {? _mp.isGroup()
+                  || KOMM.add(_msg,,,1)
+                  || FUN.info(_msg)
+                  ?}
+               ?}
+
+::       Automatyczne uruchomienie czynności - wygenerowanie zapotrzebowań i ewentualnie zatwierdzenie
+            |? _mp.isAutoRun() | _mp.isService()
+            ||
+::               KOMM.init(,,'Generowanie zapotrzebowań do przewodnika %1'[ZGH.NRPRZ]);
+               exec('openmask','zl_common',ZL.ref());
+               VAR_DEL.delete('__matakt');
+               _f500011:=exec('get','#params',500011,2,null());
+               _AutoAkc:=exec('get','#params',500010,2,null())='T' & _f500011<>'';
+               _AutoRez:=exec('get','#params',500007,2,null())='T' & _f500011<>'';
+               {? _AutoAkc
+               || __matakt:=tab_tmp(2
+                     ,'REF','STRING[16]',''
+                     ,'NRK','INTEGER',''
+                     ,'ILR','REAL',''
+                     ,'ZKP','STRING[16]',''
+                     ,'ZKN','STRING[16]','')
+               ?};
+               {? exec('zlim_gen_main','zl_limit','',_zl,,0,0,0,0,0,_AutoAkc,_AutoRez,ZGH.ref(),,0)
+               || {? _AutoAkc
+                  || ZGH.STAT_L:='T';
+                     ZGH.put()
+                  || exec('run_zgh_todo','!tte_pzl_dlim',_mp,ZGH.ref())
+                  ?}
+               ?};
+               {? _AutoAkc
+               || exec('openz','open_tab',ST.ODDZ+'__');
+                  exec('akt_rezy','rezerwacje',,1);
+                  VAR_DEL.delete('__matakt')
+               ?}
+
+::       Lista TODO
+            |? _mp.pathTodo()
+            || exec('run_zgh_todo','!tte_pzl_dlim',_mp,ZGH.ref())
+
+            |? _mp.akcja()='ZL_LIMITY'
+            || _mp.keep();
+               _context.RESULT:=exec('kart_lim','zl_limit',0,ZL.ref(),'T',null(),null(),ZL.TYP().WP);
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZL_SUROWCE'
+            || _mp.keep();
+               _context.RESULT:=exec('sur_all','zl_nlimit',ZL.ref());
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZGH_LIMITY' & _in.ZGH
+            || _mp.keep();
+               _context.RESULT:=exec('zgh_limity','zl_limit',_in.ZGH);
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZGH_NIELIMITOWANE' & _in.ZGH
+            || _mp.keep();
+               _context.RESULT:=exec('zgh_nlim','zl_nlimit',_in.ZGH);
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZGH_SUROWCE' & _in.ZGH
+            || _mp.keep();
+               _context.RESULT:=exec('zgh_sur','zl_nlimit',_in.ZGH);
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZGP_LIMITY'
+            || _mp.keep();
+               exec('zgp_limity','zl_limit',_context.ZGP,0,'T');
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZGP_SUROWCE'
+            || _mp.keep();
+               exec('zgp_sur','zl_nlimit',_context.ZGP);
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZGP_NIELIMITOWANE'
+            || _mp.keep();
+               exec('zgp_nlim','zl_nlimit',_context.ZGP);
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZAKOŃCZ_ZGH'
+            || _context.RESULT:=0;
+               {? ZGH.STAT_L='T'
+               || _msg:='Zakończono rejestrację zapotrzebowań do przewodnika %1.'@[ZGH.NRPRZ];
+                  {? _mp.isGroup()
+                  || KOMM.add(_msg)
+                  || FUN.info(_msg)
+                  ?}
+               || {? _mp.isGroup() | FUN.ask('Czy zakończyć rejestrację zapotrzebowań do przewodnika %1?'@[ZGH.NRPRZ])
+                  || {? ~_mp.isGroup() || KOMM.init(,,'Zakończenie rejestracji zapotrzebowań do przewodnika %1'@[ZGH.NRPRZ]) ?};
+                     {? exec('spr_lim','zl_limit',{? _mp.isGroup() || 'N' || 'T' ?},,ZGH.ZLEC,ZGH.ref())
+                     || ZGH.STAT_L:='T';
+                        {? ZGH.put() || _context.RESULT:=1 ?}
+                     ?};
+                     {? ~_mp.isGroup() || KOMM.select() ?}
+                  ?}
+               ?}
+
+::       Wejście do okienka w ramach obszaru roboczego - uruchomienie czynności
+            |? _mp.akcja()='START'
+            || _mp.keyRef(ZL.uidref());
+               _mp.lock();
+               _context.VIEW:=0
+
+::       Wyjście z okienka w ramach obszaru roboczego - anulowanie czynności
+            |? _mp.akcja()='STOP'
+            || {? _mp.isMicro()
+               || _mp.delRef(ZL.uidref());
+                  _mp.cancel()
+               ?};
+               _mp.unlock();
+               _context.VIEW:=0
+
+            || FUN.info('Nie obsłużony kontekst wywołania czynności %1.'@['(TTE_PZL_DLIM/ZGH)'])
+            ?};
+
+::       Jeżeli ustawiony status przewodnika, to czynność zostaje zakończona
+            ZGH.get();
+            {? ZGH.STAT_L='T'
+            || _out.RESULT:='OK';
+               _mp.save(,_out);
+               _mp.done()
+            |? _mp.isService()
+            || _out.RESULT:='BŁĄD';
+               _mp.save(,_out);
+               _mp.done()
+            ?}
+         ?}
+
+:: Tylko zlecenie (w przygotowaniu)
+      |? ZL.STAN='N'
+      || {? exec('stat_l','zl_limit',ZL.ref())='T' & _mp.pathArea()=0
+         || {? ~_mp.isAutoRun() & ~_mp.isService()
+            || _msg:='Zakończono rejestrację zapotrzebowań do wszystkich przewodników zlecenia %1.'@[ZL.SYM];
+               {? _mp.isGroup()
+               || KOMM.add(_msg,,,1)
+               || FUN.info(_msg)
+               ?}
+            ?}
+
+         ||
+::       Zmienne
+            VAR.A_ZLEC:=ZL.ref();
+
+::       Właściwa obsługa
+::       Automatyczne uruchomienie czynności - wygenerowanie zapotrzebowań i ewentualne zatwierdzenie
+            {? _mp.isAutoRun() | _mp.isService()
+            ||
+::               KOMM.init(,,'Generowanie zapotrzebowań do zlecenia %1'[ZL.SYM]);
+               exec('openmask','zl_common',ZL.ref());
+               VAR_DEL.delete('__matakt');
+               _f500011:=exec('get','#params',500011,2,null());
+               _AutoAkc:=exec('get','#params',500010,2,null())='T' & _f500011<>'';
+               _AutoRez:=exec('get','#params',500007,2,null())='T' & _f500011<>'';
+               {? _AutoAkc
+               || __matakt:=tab_tmp(2
+                     ,'REF','STRING[16]',''
+                     ,'NRK','INTEGER',''
+                     ,'ILR','REAL',''
+                     ,'ZKP','STRING[16]',''
+                     ,'ZKN','STRING[16]','')
+               ?};
+               {? exec('zlim_gen_main','zl_limit','',ZL.ref(),,0,0,0,0,0,_AutoAkc,_AutoRez,,,0)
+               || {? _AutoAkc
+                  || ZGH.index('ZLNR');
+                     ZGH.prefix(ZL.ref());
+                     {? ZGH.first()
+                     || {!
+                        |? ZGH.STAT_L:='T';
+                           ZGH.put();
+                           ZGH.next()
+                        !}
+                     ?}
+                  || exec('run_zl_todo','!tte_pzl_dlim',_mp,ZL.ref())
+                  ?}
+               ?};
+               {? _AutoAkc
+               || exec('openz','open_tab',ST.ODDZ+'__');
+                  exec('akt_rezy','rezerwacje',,1);
+                  VAR_DEL.delete('__matakt')
+               ?}
+
+::       Zakończenie rejestrowania dla zlecenia
+            |? _mp.akcja()='ZAKOŃCZ_ZGH'
+            ||
+               _context.RESULT:=0;
+               {? exec('stat_l','zl_limit',ZL.ref())='T'
+               || {? ZGH.KIND='T'
+                  || _msg:='Zakończono rejestrację zapotrzebowań do zlecenia %1.'@[ZL.SYM]
+                  || _msg:='Zakończono rejestrację zapotrzebowań do wszystkich przewodników zlecenia %1.'@[ZL.SYM]
+                  ?};
+                  {? _mp.isGroup()
+                  || KOMM.add(_msg,,,1)
+                  || FUN.info(_msg)
+                  ?}
+               || ZGH.index('ZLNR');
+                  ZGH.prefix(ZL.ref());
+                  {? ZGH.first()
+                  || {? ZGH.KIND='T'
+                     || _msg:='Czy zakończyć rejestrację zapotrzebowań do zlecenia %1?'@[ZL.SYM]
+                     || _msg:='Czy zakończyć rejestrację zapotrzebowań do wszystkich przewodników zlecenia %1?'@[ZL.SYM]
+                     ?};
+                     {? _mp.isGroup() | FUN.ask(_msg)
+                     || _msg:='Zakończenie rejestracji zapotrzebowań do zlecenia %1'@[ZL.SYM];
+                        {? _mp.isGroup()
+                        || KOMM.sect_beg(_msg)
+                        || KOMM.init(,,_msg)
+                        ?};
+                        {? exec('spr_lim','zl_limit','T',,ZL.ref())
+                        || {!
+                           |? ZGH.STAT_L:='T';
+                              ZGH.put();
+                              ZGH.next()
+                           !};
+                           _context.RESULT:=1
+                        ?};
+                        {? _mp.isGroup() || KOMM.sect_end() || KOMM.select() ?}
+                     ?}
+                  || FUN.info('Brak przewodników do zlecenia %1 — nie można zakończyć rejestracji zapotrzebowań.'@[ZL.SYM])
+                  ?}
+               ?}
+
+::       Wejście do okienka w ramach obszaru roboczego - uruchomienie czynności
+            |? _mp.akcja()='START'
+            || _mp.keyRef(ZL.uidref());
+               _mp.lock();
+               _context.VIEW:=0
+
+::       Wyjście z okienka w ramach obszaru roboczego - anulowanie czynności
+            |? _mp.akcja()='STOP'
+            || {? _mp.isMicro()
+               || _mp.delRef(ZL.uidref());
+                  _mp.cancel()
+               ?};
+               _mp.unlock();
+               _context.VIEW:=0
+
+::       Lista TODO
+            |? _mp.pathTodo()
+            || exec('run_zl_todo','!tte_pzl_dlim',_mp,ZL.ref())
+
+            |? _mp.akcja()='ZL_LIMITY'
+            || _mp.keep();
+               _context.RESULT:=exec('kart_lim','zl_limit',0,ZL.ref(),'T',null(),null(),ZL.TYP().WP);
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZL_NIELIMITOWANE'
+            || _mp.keep();
+               _context.RESULT:=exec('sur_nlim','zl_limit',1,ZL.ref());
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            |? _mp.akcja()='ZL_SUROWCE'
+            || _mp.keep();
+               _context.RESULT:=exec('sur_all','zl_nlimit',ZL.ref());
+               {? _mp.isMicro() || _mp.cancel() ?}
+
+            || FUN.info('Nie obsłużony kontekst wywołania czynności %1.'@['(TTE_PZL_DLIM/ZL/P)'])
+
+            ?}
+         ?};
+
+::    Jeżeli ustawiony status wszystkich przewodników zlecenia (zlecenie w przygotowaniu) - czynność zostaje zakończona
+         ZL.clear();
+         {? ZL.seek(_in.ZL)
+         || {? exec('stat_l','zl_limit',ZL.ref())='T'
+            || _out.RESULT:='OK';
+               _mp.save(,_out);
+               _mp.done()
+            |? _mp.isService()
+            || _out.RESULT:='BŁĄD';
+               _mp.save(,_out);
+               _mp.done()
+            ?}
+         ?}
+
+:: Tylko zlecenie (uruchomione)
+      |? ZL.STAN='O'
+      ||
+::    Zmienne
+         VAR.A_ZLEC:=ZL.ref();
+
+::    Właściwa obsługa
+::    Automatyczne uruchomienie czynności albo lista ToDo - wygenerowanie zapotrzebowań i zakończenie czynności
+         {? _mp.isAutoRun() | _mp.isService() | _mp.pathTodo()
+         ||
+::            KOMM.init(,,'Generowanie zapotrzebowań do zlecenia %1'[ZL.SYM]);
+            exec('openmask','zl_common',ZL.ref());
+            VAR_DEL.delete('__matakt');
+            _f500011:=exec('get','#params',500011,2,null());
+            _AutoAkc:=exec('get','#params',500010,2,null())='T' & _f500011<>'';
+            _AutoRez:=exec('get','#params',500007,2,null())='T' & _f500011<>'';
+            {? _AutoAkc
+            || __matakt:=tab_tmp(2
+                  ,'REF','STRING[16]',''
+                  ,'NRK','INTEGER',''
+                  ,'ILR','REAL',''
+                  ,'ZKP','STRING[16]',''
+                  ,'ZKN','STRING[16]','')
+            ?};
+            {? exec('zlim_gen_main','zl_limit','',ZL.ref(),,0,0,0,0,0,_AutoAkc,_AutoRez,,,0)
+            || _out.RESULT:='OK';
+               _mp.save(,_out);
+               _mp.done()
+            |? _mp.isService()
+            || _out.RESULT:='BŁĄD';
+               _mp.save(,_out);
+               _mp.done()
+            ?};
+            {? _AutoAkc
+            || exec('openz','open_tab',ST.ODDZ+'__');
+               exec('akt_rezy','rezerwacje',,1);
+               VAR_DEL.delete('__matakt')
+            ?}
+
+::    Wejście do okienka w ramach obszaru roboczego - uruchomienie czynności
+         |? _mp.akcja()='START'
+         || _mp.keyRef(ZL.uidref());
+            _mp.lock();
+            _context.VIEW:=0
+
+::    Wyjście z okienka w ramach obszaru roboczego - anulowanie czynności
+         |? _mp.akcja()='STOP'
+         || {? _mp.isMicro()
+            || _mp.delRef(ZL.uidref());
+               _mp.cancel()
+            ?};
+            _mp.unlock();
+            _context.VIEW:=0
+
+::    Zakończenie czynności po generacji
+         |? _mp.akcja()='ZAKOŃCZ'
+         || _out.RESULT:='OK';
+            _mp.save(,_out);
+            _mp.done()
+
+         |? _mp.akcja()='ZL_LIMITY'
+         || _mp.keep();
+            _context.RESULT:=exec('kart_lim','zl_limit',0,ZL.ref(),'T',null(),null(),ZL.TYP().WP);
+            {? _mp.isMicro() || _mp.cancel() ?}
+
+         |? _mp.akcja()='ZL_NIELIMITOWANE'
+         || _mp.keep();
+            _context.RESULT:=exec('sur_nlim','zl_limit',1,ZL.ref());
+            {? _mp.isMicro() || _mp.cancel() ?}
+
+         |? _mp.akcja()='ZL_SUROWCE'
+         || _mp.keep();
+            _context.RESULT:=exec('sur_all','zl_nlimit',ZL.ref());
+            {? _mp.isMicro() || _mp.cancel() ?}
+
+         || FUN.info('Nie obsłużony kontekst wywołania czynności %1.'@['(TTE_PZL_DLIM/ZL/O)'])
+
+         ?}
+      ?}
+   ||
+:: Nie znaleziono zlecenia
+      _msg:='Nie można uruchomić czynności %1 - nie podano zlecenia lub je usunięto'@@['TTE_PZL_DLIM'];
+      _mp.error(_msg)
+   ?}
+?};
+ZL.cntx_pop(); ZGH.cntx_pop();
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Opis dla czynności rejestracji zapotrzebowań do zlecenia (TTE_PZL_DLIM)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+_zl:=null();
+_zgh:=null();
+
+{? obj_len(_keyRefs)>0
+||
+   {! _it:=1..obj_len(_keyRefs)
+   |! _kref:=_keyRefs[_it];
+      {? type_of(_kref)>0
+      ||
+         {? ref_name(_kref)=ZL.name()
+         || _zl:=exec('FindAndGet','#table',ZL,_kref,,,null())
+         |? ref_name(_kref)=ZGH.name()
+         || _zgh:=exec('FindAndGet','#table',ZGH,_kref,,,null())
+         ?}
+      ?}
+   !}
+?};
+
+:: jest parametr wejściowy ZL
+{? _zl=null() & var_pres('ZL',_in)=type_of(null())
+|| _zl:=_in.ZL
+?};
+:: jest parametr wejściowy ZGH
+{? _zgh=null() & var_pres('ZGH',_in)=type_of(null())
+|| _zgh:=exec('FindAndGet','#table',ZGH,_in.ZGH,,"ref()",null())
+?};
+
+{? _zgh<>null()
+|| _sym:=exec('FindAndGet','#table',ZGH,_zgh,,"NRPRZ",'');
+   _desc:='Zarejestruj zapotrzebowania do przewodnika: %1'@@[_sym]
+|? _zl<>null()
+|| _sym:=exec('FindAndGet','#table',ZL,_zl,,"SYM",'');
+   _desc:='Zarejestruj zapotrzebowania do zlecenia: %1'@@[_sym]
+|| _desc:='Czynność rejestracji zapotrzebowań — błąd konfiguracji procesu (brak przekazanych argumentów)'@@
+?};
+_desc
+
+
+\run_zgh_todo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Uruchamia czynność z ToDo oraz automatycznie o ile wymaga ingerencji operatora (kontekst dla ZGH)
+::   WE: _a - _mp
+::       _b - ZL.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=_a;
+_zgh:=_b;
+
+ZGH.cntx_psh();
+ZGH.prefix();
+{? ZGH.seek(_zgh)
+|| _mp.keep();
+   _wp:=exec('FindAndGet','#table',ZL,ZGH.ZLEC,,"TYP().WP",'W');
+   _red:='LIM'+_wp;
+   _env_guide:=exec('env_guide','zl_guide');
+   _env_guide.used:=1;
+   params_set('env_guide',_env_guide);
+   ZGH.win_edit(_red);
+   ZGH.display();
+   {? _env_guide.limit_end=1
+   || ZGH.STAT_L:='T';
+      ZGH.put();
+::    Uruchomienie ponownie instancji tej samej czynności może zmienić status, więc przywracam
+::      _mp.coreKeep();
+      ~~
+   ?}
+?};
+
+ZGH.cntx_pop();
+~~
+
+
+\run_zl_todo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Uruchamia czynność z ToDo oraz automatycznie o ile wymaga ingerencji operatora (kontekst dla ZL)
+::   WE: _a - _mp
+::       _b - ZL.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=_a;
+_zl:=_b;
+
+ZL.cntx_psh();
+ZL.prefix();
+{? ZL.seek(_zl)
+|| ATR.MJS:='ZL';
+   DK_C.cntx_psh();
+   {? ZL.DK_C<>null() & ref_name(ZL.DK_C)<>DK_C.name() || DK_C.use(ref_name(ZL.DK_C)) ?};
+   _atryb:=exec('czytadkc','mat_atr',ZL.DK_C,ZL.RDKC);
+:: Ustawiam zmienne potrzebne gdyby karta technologiczna źródłowa była w archiwum
+   {? ZL.RKTL<>''
+   || exec('display_vars','tech_common',ZL.RKTL)
+   ?};
+:: Podczytuje M_ATR
+   {? _atryb>0
+   || ZL.KTM().M_ATR()
+   ?};
+
+   _wp:=ZL.TYP().WP;
+   _red:=ZL.mk_edit('Zapotrzebowania do zlecenia'@,,'zl_l_dred'+(-_wp));
+   ZL.win_ewin(_red,,'DISP_'+{? _wp='W' || 'WAR' || 'PRO' ?});
+   ZL.win_edit(_red);
+   _btn:=ZL.win_ebtn(_red,'text=%1,align=begin,display=1'['Limity'@],"exec('action_zl_lim','!tte_pzl_dlim')");
+   {? ZL.TYP().WP='P'
+   || _btn:=ZL.win_ebtn(_red,'text=%1,align=begin,display=1'['Nielimitowane'@],"exec('action_zl_nlim','!tte_pzl_dlim')")
+   ?};
+   {? exec('chk_role','#b__box',OPERATOR.USER,'TTE_PZL_DLIM')
+   || _btn:=ZL.win_ebtn(_red,'text='+'Zakończ'@+',align=end,display=1',
+         "exec('dlim_dalej','!tte_pzl_dlim')"
+      );
+      ZL.btn_eopt(_red,_btn,{? ZL.STAT_N='N' || 'state=grayed' || 'state=normal' ?})
+   ?};
+   _btn:=ZL.win_ebtn(_red,'text='+'Anuluj'@+',align=end,display=1',"'key:Esc'");
+
+   _buffer:=exec('buffer','zl_head'); _buffer.get();
+   _args:=obj_new('buffer','sprawdz','edit');
+   _args.buffer:=_buffer; _args.sprawdz:=1; _args.edit:=0;
+   params_set('args',_args);
+
+::   exec('ustaw_pola','zl_head');
+   exec('efld_opt','zl_head',_red);
+   ZL.DK_C();
+   _mp.keep();
+   ZL.display();
+   {? exec('stat_l','zl_limit',ZL.ref())='T'
+   ||
+::    Uruchomienie ponownie instancji tej samej czynności może zmienić status, więc przywracam
+::      _mp.coreKeep();
+      ~~
+   ?};
+   DK_C.cntx_pop()
+?};
+
+ZL.cntx_pop();
+~~
+
+
+\action_zl_lim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie zapotrzebowań do zlecenia - akcja 'Definicje->Zapotrzebowania - limity' do zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+
+{? ZL.STAN='Z'
+|| exec('kart_lim','zl_limit',0,ZL.ref(),'T',null(),null(),ZL.TYP().WP)
+|| {? exec('zl_lock','zl_common',ZL.ref(),'L')
+   || _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='TTE_PZL_DLIM';
+      _args.UIDREF:=ZL.uidref();
+      _args.AKCJA:='ZL_LIMITY';
+      _args.CONTEXT:=obj_new('ZGP','RESULT'); _args.CONTEXT.ZGP:=null(); _args.CONTEXT.RESULT:=0;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+      exec('mp_run','#b__box',_args);
+      {? _args.CONTEXT.RESULT>0 || _result:='key:Esc' ?}
+   ?};
+   exec('zl_unlock','zl_common',ZL.ref(),'L')
+?};
+_result
+
+
+\action_zl_nlim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie zapotrzebowań do zlecenia - akcja 'Definicje->Zapotrzebowania - surowce nielimitowane' do zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+
+{? ZL.STAN='Z'
+|| exec('sur_nlim','zl_limit',1,ZL.ref(),,,0)
+|| {? exec('zl_lock','zl_common',ZL.ref(),'L')
+   || _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='TTE_PZL_DLIM';
+      _args.UIDREF:=ZL.uidref();
+      _args.AKCJA:='ZL_NIELIMITOWANE';
+      _args.CONTEXT:=obj_new('ZGP','RESULT'); _args.CONTEXT.ZGP:=null(); _args.CONTEXT.RESULT:=0;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+      exec('mp_run','#b__box',_args);
+      {? _args.CONTEXT.RESULT>0 || _result:='key:Esc' ?}
+   ?};
+   exec('zl_unlock','zl_common',ZL.ref(),'L')
+?};
+_result
+
+
+\action_zl_sur
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [23.25]
+:: OPIS: Rejestrowanie zapotrzebowań do zlecenia - akcja 'Definicje->Zapotrzebowania - wszystkie ' do zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+
+{? ZL.STAN='Z'
+|| exec('sur_all','zl_nlimit',ZL.ref())
+|| {? exec('zl_lock','zl_common',ZL.ref(),'L')
+   || _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='TTE_PZL_DLIM';
+      _args.UIDREF:=ZL.uidref();
+      _args.AKCJA:='ZL_SUROWCE';
+      _args.CONTEXT:=obj_new('ZGP','RESULT'); _args.CONTEXT.ZGP:=null(); _args.CONTEXT.RESULT:=0;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+      exec('mp_run','#b__box',_args);
+      {? _args.CONTEXT.RESULT>0 || _result:='key:Esc' ?}
+   ?};
+   exec('zl_unlock','zl_common',ZL.ref(),'L')
+?};
+_result
+
+
+\action_zgh_lim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie zapotrzebowań do zlecenia - akcja 'Limity' do przewodnika zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+
+{? exec('FindAndGet','#table',ZL,ZGH.ZLEC,,"STAN",'')='Z'
+|| exec('zgh_limity','zl_limit',ZGH.ref())
+|| {? exec('zl_lock','zl_common',ZGH.ZLEC,'L')
+   || _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='TTE_PZL_DLIM';
+      _args.UIDREF:=ZGH.uidref();
+      _args.AKCJA:='ZGH_LIMITY';
+      _args.CONTEXT:=obj_new('ZGP','RESULT'); _args.CONTEXT.ZGP:=null(); _args.CONTEXT.RESULT:=0;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZGH.ZLEC);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZGH',ZGH.ref());
+
+      exec('mp_run','#b__box',_args);
+      {? _args.CONTEXT.RESULT>0 || _result:='key:Esc' ?}
+   ?};
+   exec('zl_unlock','zl_common',ZGH.ZLEC,'L')
+?};
+_result
+
+
+\action_zgh_nlim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie zapotrzebowań do zlecenia - akcja 'Surowce nielimitowane' do przewodnika zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+
+{? exec('FindAndGet','#table',ZL,ZGH.ZLEC,,"STAN",'')='Z'
+|| exec('zgh_nlim','zl_nlimit',ZGH.ref())
+|| {? exec('zl_lock','zl_common',ZGH.ZLEC,'L')
+   || _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='TTE_PZL_DLIM';
+      _args.UIDREF:=ZGH.uidref();
+      _args.AKCJA:='ZGH_NIELIMITOWANE';
+      _args.CONTEXT:=obj_new('ZGP','RESULT'); _args.CONTEXT.ZGP:=null(); _args.CONTEXT.RESULT:=0;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZGH.ZLEC);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZGH',ZGH.ref());
+
+      exec('mp_run','#b__box',_args);
+      {? _args.CONTEXT.RESULT>0 || _result:='key:Esc' ?}
+   ?};
+   exec('zl_unlock','zl_common',ZGH.ZLEC,'L')
+?};
+_result
+
+
+\action_zgh_sur
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [23.25]
+:: OPIS: Rejestrowanie zapotrzebowań do zlecenia - akcja 'Zapotrzebowania' do przewodnika zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+
+{? exec('FindAndGet','#table',ZL,ZGH.ZLEC,,"STAN",'')='Z'
+|| exec('zgh_sur','zl_nlimit',ZGH.ref())
+|| {? exec('zl_lock','zl_common',ZGH.ZLEC,'L')
+   || _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='TTE_PZL_DLIM';
+      _args.UIDREF:=ZGH.uidref();
+      _args.AKCJA:='ZGH_SUROWCE';
+      _args.CONTEXT:=obj_new('ZGP','RESULT'); _args.CONTEXT.ZGP:=null(); _args.CONTEXT.RESULT:=0;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZGH.ZLEC);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZGH',ZGH.ref());
+
+      exec('mp_run','#b__box',_args);
+      {? _args.CONTEXT.RESULT>0 || _result:='key:Esc' ?}
+   ?};
+   exec('zl_unlock','zl_common',ZGH.ZLEC,'L')
+?};
+_result
+
+
+\action_end
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie zapotrzebowań do zlecenia - akcja 'Zakończ' z menu okna wertowania (obsługa z pytaniem)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env;
+
+{? ZL.STAT_N='N'
+|| FUN.info('Nie można uruchomić czynności.\nRejestrowanie nagłówka zlecenia nie zostało zakończone.'@)
+|? ZL.STAN='N'
+|| _result:=1;
+
+:: Zlecenie proste
+   {? ZL.RODZAJ='P'
+   || {? ZL.KTM<>null() &
+         (exec('FindAndGet','#table',TKTL,ZL.RTKTL,,"TYP().OPER='N'",0) |
+          exec('FindAndGet','#table',TKTL,ZL.RKTL,,"TYP().OPER='N'",0))
+      || _ask:='Czy zakończyć rejestrację zapotrzebowań do całego zlecenia %1?'@[ZL.SYM]
+      || _ask:='Czy zakończyć rejestrację zapotrzebowań do wszystkich przewodników zlecenia %1?'@[ZL.SYM]
+      ?};
+      {? FUN.ask(_ask)
+      || KOMM.init(,,'Zakończenie rejestracji zapotrzebowań do zlecenia %1'@[ZL.SYM]);
+         _args:=exec('mp_run_a','#b__box');
+         _args.ACT_UID:='TTE_PZL_DLIM';
+         _args.UIDREF:=ZL.uidref();
+         _args.AKCJA:='ZAKOŃCZ_ZGH';
+         _args.GRUPA:='T';
+         _args.CONTEXT:=obj_new('RESULT');
+         _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+         exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+         ZGH.index('ZLNR');
+         ZGH.prefix(ZL.ref());
+         {? ZGH.first()
+         || {!
+            |? _args.CONTEXT.RESULT:=0;
+               exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZGH',ZGH.ref());
+
+               exec('mp_run','#b__box',_args);
+               _result:=_result*_args.CONTEXT.RESULT;
+
+               ZGH.next()
+            !};
+            KOMM.select()
+         ?}
+      || _result:=0
+      ?}
+
+:: Zlecenie złożone
+   || {? FUN.ask('Czy zakończyć rejestrację zapotrzebowań do wszystkich zleceń podrzędnych do %1?'@[ZL.SYM])
+      || KOMM.init(,,'Zakończenie rejestracji zapotrzebowań do zlecenia %1'@[ZL.SYM]);
+         ZL.cntx_psh();
+         ZL.index('NRNZL');
+         ZL.prefix(ZL.UNRZL);
+         {? ZL.first()
+         || _args:=exec('mp_run_a','#b__box');
+            _args.ACT_UID:='TTE_PZL_DLIM';
+            _args.UIDREF:=ZL.uidref();
+            _args.AKCJA:='ZAKOŃCZ_ZGH';
+            _args.GRUPA:='T';
+            _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+            _args.CONTEXT:=obj_new('RESULT'); _args.CONTEXT.RESULT:=0;
+            {!
+            |?
+               exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+               ZGH.index('ZLNR');
+               ZGH.prefix(ZL.ref());
+               {? ZGH.first()
+               || {!
+                  |? _args.CONTEXT.RESULT:=0;
+                     exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZGH',ZGH.ref());
+
+                     exec('mp_run','#b__box',_args);
+                     _result:=_result*_args.CONTEXT.RESULT;
+
+                     ZGH.next()
+                  !}
+               ?};
+               ZL.next()
+            !}
+         ?};
+         ZL.cntx_pop();
+         KOMM.select()
+      || _result:=0
+      ?}
+   ?};
+
+   _env.ZLIM_reload:=1;
+   win_disp()
+?};
+~~
+
+
+\action_end_button
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie zapotrzebowań do zlecenia - akcja 'Zakończ' z menu okna wyświetlania nagłówka przewodnika
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+{? ZL.STAT_N='N'
+|| FUN.info('Nie można uruchomić czynności.\nRejestrowanie nagłówka zlecenia %1 nie zostało zakończone.'@[ZL.SYM])
+|? ZL.STAN='Z'
+|| FUN.info('Nie można uruchomić czynności.\nZlecenie %1 zostało zamknięte.'@[ZL.SYM])
+|| {? FUN.ask('Czy zakończyć rejestrację zapotrzebowań do przewodnika %1?'@[ZGH.NRPRZ])
+   || KOMM.init(,,'Zakończenie rejestracji zapotrzebowań do przewodnika %1'@[ZGH.NRPRZ]);
+      exec('openmask','zl_common',ZL.ref());
+      {? exec('spr_lim','zl_limit','T',,ZL.ref(),ZGH.ref())
+      || params_get().env_guide.limit_end:=1;
+         _result:='key:Esc'
+      ?};
+      KOMM.select()
+   ?}
+?};
+_result
+
+
+\dlim_dalej
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przycisku 'Zakończ' w oknie redagowania ZL
+::       Zatwierdza zapotrzebowania i popycha proces dalej
+::       Kontekst wywołania - rekord ZL
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+
+:: Rekord mógł być zmodyfikowany przez inne czynności, więc go ponownie wczytuję
+{? ZL.get()
+|| {? exec('stat_l','zl_limit',ZL.ref())='T'
+   || FUN.info('Rejestracja zapotrzebowań do wszystkich przewodników zlecenia %1 została już zakończona.'@[ZL.SYM]);
+      _result:='key:Esc'
+   |? ZL.STAT_N='N'
+   || FUN.info('Nie zakończono rejestrowania nagłówka zlecenia %1.'@[ZL.SYM])
+   |? exec('get','#params',500015,2)='T' & exec('all_checked','zl_limit',ZL)=0
+   || FUN.info('Przed zakończeniem rejestracji wszystkie pozycje muszą być zaakceptowane.'@)
+
+   || ZGH.index('ZLNR');
+      ZGH.prefix(ZL.ref());
+      {? ZGH.size()>0
+      || {? exec('zl_lock','zl_common',ZL.ref(),'L')
+         || {? FUN.ask('Czy zakończyć rejestrację zapotrzebowań do zlecenia %1?'@[ZL.SYM])
+            || KOMM.init(,,'Zakończenie rejestracji zapotrzebowań do zlecenia %1'@[ZL.SYM]);
+               exec('openmask','zl_common',ZL.ref());
+               {? exec('spr_lim','zl_limit','T',,ZL.ref())
+               || {? ZGH.first()
+                  || {!
+                     |? ZGH.STAT_L:='T';
+                        ZGH.put();
+                        ZGH.next()
+                     !}
+                  ?};
+                  _result:='key:Esc'
+               ?};
+               KOMM.select()
+            ?};
+            exec('zl_unlock','zl_common',ZL.ref(),'L')
+         ?}
+      || FUN.info('Brak przewodników do zlecenia %1 — nie można zakończyć rejestracji zapotrzebowań.'@[ZL.SYM])
+      ?}
+   ?}
+|| _result:='key:Esc'
+?};
+_result
+
+
+\be_zlim_ktm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2006]
+:: OPIS: przed redakcją pola ZLIM.KTM
+::   WY: 1 / 0
+::  OLD: \be_zlim_ktm/zl_limit.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLIM.KOR=0
+||
+:: Sprawdzam czy sa jakies dokumenty do zlima
+   {? (-menu_txt='popraw' | -menu_txt='korekta')& ZLIM.ref()<>null()
+       & ZLIM.IL_RW+ZLIM.IL_ZW>0
+   ||
+::    Nieredagowalne jak wygenerowano już dokumenty
+      0
+   ||
+      {? var_pres('__ZLIM2ZAM')>0
+      ||
+::       W przypadku korekty na zamiennik wyświetlane okno z zakładkami
+         __ZLIM2ZAM:=1;
+         exec('slo_m4zam','zl_nlimit')
+      || exec('slo_m_ok','material','T',0,,'W')
+      ?};
+      ZAKR.MATU:='A';
+      POMOC.RODZ:='T';
+      exec('wpm_opis','material',,' — '+exec('zakr_naz','material',ZAKR.MATU));
+      1
+   ?}
+|| 0
+?}
+
+
+\ae_zlim_ktm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2008]
+:: OPIS: Po redakcji pola ZLIM.KTM
+::   WY: 1 / 0
+::  OLD: \ae_zlim_ktm/zl_lim01.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLIM.KTM=null()
+|| FUN.emsg('Proszę wypełnić pole.'@);
+   return(0)
+?};
+
+{? ZLIM.KTM().A<>'T'
+|| FUN.emsg('Na limicie zlecenia może być tylko aktywny materiał.'@);
+   return(0)
+?};
+
+::{? ZLIM.KTM=VAR.A_ZLEC().KTM
+::|| FUN.emsg('Na limicie nie można umieszczać produktu zlecenia.'@);
+::   return(0)
+::?};
+
+exec('zlim_mg','!tte_pzl_dlim');
+
+:: Zeruje ceche jesli material nie ma jej przypisanej
+_m_atr:=ZLIM.KTM().M_ATR;
+ATR.MJS:='ZLIM';
+
+{? _m_atr=null()
+|| ZLIM.DK_C:=null()
+||
+:: Zeruje ceche jesli M_ATR materialu rozny od M_ATR wybranej cechy
+:: ustawienie slownika okienka cech
+   {? ZLIM.KTM().M_ATR<>null & #ZLIM.KTM().M_ATR<>#ATR.M_ATR
+   || {! _i..10 |! ($('ATR.WAR'+form(_i,-2,0,'99')))():='' !};
+      ZLIM.DK_C:=null
+   ?};
+   ATR.M_ATR:=ZLIM.KTM().M_ATR;
+   ATR.FLAG_ED:=((1+ZLIM.MG().TYP)='D' | ZLIM.MG=null()) & ATR.CZY_ATR & ATR.M_ATR().EDIT;
+   ATR.FLAG:={? ATR.FLAG_ED & ZLIM.KTM().M_ATR<>null() || 2 || 0 ?};
+   {? ATR.FLAG_ED || {? ZLIM.KTM().M_ATR<>null() || ATR.FLAG_ED:=2 ?} ?};
+   {? _m_atr<>ZLIM.DK_C().M_ATR
+   || ZLIM.DK_C:=null()
+   ?};
+   win_disp()
+?};
+1
+
+
+\poredlil
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MKO [8.60]
+:: OPIS: Kontrola wypełnienia pola i podzielności jednostek
+::   WY: 0 / 1
+::  OLD: \poredlil/zl_limit.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_il_zero:=exec('zlim_chk4il','zl_nlimit');
+{? (ZLIM.KOR<>0 & fld()<>0) | ((_il_zero=0 & fld()>0) | (_il_zero>0 & fld()>=0))
+|| _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM);
+   {? _dokl=0
+   || _l:=ceil(ZLIM.LIL)
+   || _l:=ZLIM.LIL $ _dokl
+   ?};
+   _result:=1
+|| {? fld()<0
+   || {? ZLIM.LIMIT='T'
+      || FUN.emsg('Stan początkowy limitu nie może być ujemny.'@)
+      || FUN.emsg('Norma surowca nie może być ujemna.'@)
+      ?}
+   || FUN.emsg('Proszę wypełnić pole.'@)
+   ?};
+   _result:=0
+?};
+
+{? _result>0 & ZLIM.KOR2<>0
+||
+   _ktm:=ZLIM.KTM;
+   _lil:=ZLIM.LIL;
+   ZLIM.cntx_psh();
+   ZLIM.index('ZGP_NM');
+   ZLIM.prefix(ZLIM.ZGP,'T',ZLIM.KOR2);
+   {? ZLIM.first()
+   ||
+::    Korekta na zamiennik - wtyczka na dodatkową korektę dla oryginalnego surowca:
+      _res:=Plugin.run('ZLIM_KOR_ORG_001',ZLIM.ref(),_ktm,_lil);
+      {? type_of(_res)=type_of(0) & _res>-1
+      || VAR.LILP:=_res
+      ?}
+   ?};
+   ZLIM.cntx_pop()
+?};
+
+_result
+
+
+\be_zlim_why
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2010]
+:: OPIS: Przed redagowaniem pola ZLIM.WHY
+::   WY: 0 / 1
+::  OLD: \be_zlim_why/zl_lim01.fml
+::----------------------------------------------------------------------------------------------------------------------
+::{? ZLIM.KOR<>0 || 1 || 0 ?}
+1
+
+
+\zlim_fld_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Przed redagowaniem pól tabeli ZLIM: STARTD, STARTT, MODE_DST, MG
+::  OLD: \zlim_fld_be/zl_lim01.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+{? cur_afld()='STARTD' | cur_afld()='STARTT'
+||
+:: Mozliwosc redagowania tylko, gdy pozycja przewodnika nie byla "planowana" - nie ma okreslonej daty startu
+   _result:=ZLIM.ZGP().STARTD=date(0,0,0)
+
+|? cur_afld()='MODE_DST'
+||
+:: Pole 'Ręczne śledzenie dostaw partii'
+   {? ZLIM.KOR>0 | ZLIM.KOR2>0
+   ||
+::    Nieredagowalne dla korekt
+      _result:=0
+   |? ZLIM.ZLEC().TYP().WP='W'
+   ||
+::    Nieredagowalne dla zlecen warsztatowych
+      _result:=0
+   ?}
+
+|? cur_afld()='SO'
+||
+:: Pole 'Surowiec/Odpad'
+   {? ZLIM.KOR>0 | ZLIM.KOR2>0
+   ||
+::    Nieredagowalne dla korekt
+      _result:=0
+   ?}
+
+|? cur_afld()='PFAZ'
+||
+:: Pole 'Faza produkcji'
+   {? ZLIM.KOR>0 | ZLIM.KOR2>0
+   ||
+::    Nieredagowalne dla korekt
+      _result:=0
+   ?}
+
+|? cur_afld()='MG'
+||
+:: Ustawienie filtra na magazyny wszystkie (surowce nielimitowane lub odpad),
+:: albo magazyny do realizacji zamówień wewnętrznych
+   MG.clear();
+   {? ZLIM.LIMIT='N' | ZLIM.SO='O'
+   || MG.f_set('SYM',,'MG.ODDZ=\':_a\'',ST.ODDZ_KOD)
+   || MG.f_set('SYM','join USERS_UP','USERS_UP.USERS is null and USERS_UP.AKR=\'ZAW\' and MG.ODDZ=\':_a\'',ST.ODDZ_KOD)
+   ?}
+|? cur_afld()='ROZ'
+||
+   {? ZLIM.GROP<>null() | (-menu_txt='popraw' & ZLIM.IL_RW+ZLIM.IL_ZW>0)
+   ||
+::    Nieredagowalne jak wygenerowano już dokumenty lub surowiec do grupy
+      _result:=0
+   ?}
+?};
+_result
+
+
+\zlim_fld_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Po redagowaniu pól w tabeli ZLIM: STARTD, STARTT, MG
+::  OLD: \zlim_fld_ae/zl_lim01.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+{? cur_afld()='STARTT'
+|| _result:=exec('valid_time','#field',fld())
+|? cur_afld()='MG'
+||
+:: Sprawdzam czy magazyn jest typu z obsługą dostaw jeżeli przypięta jest cecha
+   {? ZLIM.DK_C<>null() & ZLIM.MG<>null()
+   || {? ~(ZLIM.MG().TYP*'DOST')
+      || _msg:='Limit posiada cechę, przypisany magazyn musi być typu: \'%1\''@['DOSTAWY lub DOSTEWI'];
+         FUN.emsg(_msg);
+         _result:=0
+      ?}
+   ?}
+|| _result:=1
+?};
+{? _result
+|| ATR.MJS:='ZLIM';
+   ATR.M_ATR:=ZLIM.KTM().M_ATR;
+   ATR.FLAG_ED:=((1+ZLIM.MG().TYP)='D' | ZLIM.MG=null()) & ATR.CZY_ATR & ATR.M_ATR().EDIT;
+   ATR.FLAG:={? ATR.FLAG_ED & ZLIM.KTM().M_ATR<>null() || 2 || 0 ?};
+   {? ATR.FLAG_ED || {? ZLIM.KTM().M_ATR<>null() || ATR.FLAG_ED:=2 ?} ?};
+   {? ZLIM.DK_C<>null() & ZLIM.DK_C().M_ATR<>null()
+   || {! _i:=1..10 |! ($('ATR.WAR'+form(_i,-2,,'99')))():=($('ZLIM.DK_C().WAR'+form(_i,-2,,'99')))() !}
+   |? ZLIM.KTM().M_ATR=null()
+   || {! _i:=1..10 |! ($('ATR.WAR'+form(_i,-2,,'99')))():='' !}
+   ?};
+   win_disp()
+?};
+_result
+
+
+\zlim_fld_fd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Format wyświetlania pól w tabeli ZLIM: STARTD, STARTT
+::  OLD: \zlim_fld_fd/zl_lim01.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? cur_afld()='STARTD' & fld=date(0,0,0)                           || 'empty=1'
+|? cur_afld()='STARTT' & ZLIM.STARTD=date(0,0,0) & fld=time(0,0,0) || 'empty=1'
+                                                                   || 'empty=0'
+?}
+
+
+\zlim_fld_fe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Format redagowania pól w tabeli ZLIM: STARTD, STARTT
+::  OLD: \zlim_fld_fe/zl_lim01.fml
+::----------------------------------------------------------------------------------------------------------------------
+''
+
+
+\ae_pfaz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2006]
+:: OPIS: po redakcji pola ZLIM.PFAZ
+::  OLD: \ae_pfaz/zl_limit.fml
+::----------------------------------------------------------------------------------------------------------------------
+VAR.A_PFAZ:=fld();
+VAR.A_WYD:=VAR.A_PFAZ().WYD;
+{? VAR.A_WYD<>null() || ZLIM.WYD:=VAR.A_WYD ?};
+1
+
+
+\ae_so
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2006]
+:: OPIS: Po redakcji pola ZLIM.SO
+::   WY: 1
+::  OLD: \ae_so/zl_limit.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLIM.SO='O' || ZLIM.PARTIA:='N' ?};
+1
+
+
+\be_partia
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2006]
+:: OPIS: Przed redakcją pola ZLIM.PARTIA
+::   WY: 1 / 0
+::  OLD: \be_partia/zl_limit.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLIM.SO='S' || 1 || 0 ?}
+
+
+\bl_wyd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2008]
+:: OPIS: Blank pola ZLIM.WYD
+::  OLD: \bl_wyd/zl_lim01.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLIM.PFAZ<>null()
+ & ZLIM.PFAZ().WYD<>null() || ZLIM.PFAZ().WYD
+|? ZLIM.WYD<>null          || ZLIM.WYD
+                           || ZLIM.ZLEC().JORG
+?}
+
+
+\be_wyd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2006]
+:: OPIS: Przed redakcją pola ZLIM.WYD
+::   WY: 0 / 1
+::  OLD: \be_wyd/zl_limit.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('jakislw','wzorce');
+_result:=1;
+{? VAR.A_WYD<>null()
+|| _result:=0
+|| {? ZLIM.KOR>0 | ZLIM.KOR2>0
+   ||
+::    Nieredagowalne dla korekt
+      _result:=0
+   ?}
+?};
+_result
+
+
+\zlim_wyd_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Po redakcji pola ZLIM.WYD
+::  OLD: \zlim_wyd_ae/zl_lim01.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('zlim_mg','!tte_pzl_dlim');
+1
+
+
+\bl_zlim_zlec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Wartość początkowa pola ZLIM.ZLEC
+::----------------------------------------------------------------------------------------------------------------------
+VAR.A_ZLEC
+
+
+\zlim_mg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Ustala wartość pola ZLIM.MG
+::----------------------------------------------------------------------------------------------------------------------
+exec('zlim_set_mg','zl_limit1',1);
+~~
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.14]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+params_exec('zl_clean','zl_common',_mp,_in,'ERROR',1)
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [23.25]
+:: OPIS: Formuła ustalająca PARSES
+::   WE:
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('zl_parses','zl_common')
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 40ab00da97966461cb970d1fc23465eaf1c3fce8e035033697effb1548a20aedfa7b325faacae21ca5687017103d4ac6d12dcf51b47fc401a6a8b73d255251864933b1d29c42e54a102dbde681a9d2984392f6871d32d616e0ca34aa9a593a9170c879f4f8a8d9169d288981b84cc0d77a400627ec6033f6c8215ff7b9e30b50

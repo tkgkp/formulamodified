@@ -1,0 +1,304 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: portlao.fml
+:: Utworzony: 08.04.2022
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Formuły obsługi "opóźnionej aktualizacji" - aktualizacji rekordów tabel lokalnych (firmowych) po zmianach
+::            w tabeli globalnej.
+::======================================================================================================================
+
+
+\add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.51]
+:: OPIS: Formuła rejestrująca zmianę wartości wskazanego rekordu tabeli globalnej, do aktualizacji rekordów tabel
+::       lokalnych. Wywoływana najczęściej z wyzwalacza "put po".
+::   WE:  _a  [STRING] - Idenyfikator zmiany - nazwa formuły (w bieżącym pliku) obsługującej zmianę.
+::        _b  [STRING] - uidref zmienionego rekordu.
+::       [_c] [ARRAY]  - Tablica z dodatkowymi parametrami.
+::                       +---------------------------------------------------------------------------------------------+
+::                       | UWAGA:                                                                                      |
+::                       | Tablica będzie zapamiętana jako napis w formacie JSON-a - wynik funkcji json_obj(),         |
+::                       | by później (jako wynik json_parse) być przekazaną do formuły _a. Taka konwersja ZMIENI typ  |
+::                       | niektórych elementów tablicy.                                                               |
+::                       +---------------------------------------------------------------------------------------------+
+::   WY: Wynik operacji: 1/0.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('PORTALOA')<>type_of(SYSLOG)
+|| return(0)
+?};
+
+_tSTRING:=type_of('');
+_tARRAY:=type_of(obj_new(1));
+
+_fs:=form_stack(0);
+_rule:=_fs.name;
+_fml:=_fs.file;
+
+_ds:=do_state();
+_merror:={? _ds=0 || "FUN.emsg(_a)" || "undo(_a)" ?};
+
+{? var_pres('_a')<>_tSTRING
+|| _merror('Nieprawidłowy typ parametru "%1".' ['ID']+'\n(\\%1/%2.fml)' [_rule,_fml]);
+   return(0)
+|? ~exec('is_fun_core','#file',_fml,_a)
+|| _merror('Nieprawidłowa wartość parametru "%1".' ['ID']+'\n(\\%1/%2.fml)' [_rule,_fml]);
+   return(0)
+|| _id:=_a
+?};
+
+{? var_pres('_b')<>_tSTRING
+|| _merror('Nieprawidłowy typ parametru "%1".' ['UIDREF']+'\n(\\%1/%2.fml)' [_rule,_fml]);
+   return(0)
+|? +_b<>48 | ref_name(_b)=''
+|| _merror('Nieprawidłowa wartość parametru "%1".' ['UIDREF']+'\n(\\%1/%2.fml)' [_rule,_fml]);
+   return(0)
+|| _uidref:=_b
+?};
+
+_par:={? var_pres('_c')=_tARRAY || json_obj(_c) || '' ?};
+_hash:=hash(_par);
+
+{? _ds=0
+|| do()
+|? _ds=2
+|| return(0)
+?};
+
+FIRMA.cntx_psh();
+FIRMA.index('SYMBOL2');
+FIRMA.prefix('S',);
+{? FIRMA.first()
+|| PORTALOA.cntx_psh();
+   PORTALOA.index('UNIQUE');
+   {!
+   |? PORTALOA.prefix(FIRMA.SYMBOL,_id,_uidref,_hash,);
+      {? PORTALOA.first() & PORTALOA.r_lock(1,1,1)
+::       Rekord istnieje i nie jest przetwarzany - nie ma potrzeby duplikowania zapisu.
+      || PORTALOA.r_unlock()
+::       Albo rekordu nie ma, albo nie dał się zalokować (bo jest przetwarzany).
+      || PORTALOA.blank();
+         PORTALOA.FIRMA:=FIRMA.SYMBOL;
+         PORTALOA.ID:=_id;
+         PORTALOA.UIDREF:=_uidref;
+         PORTALOA.HASH:=_hash;
+         {? PORTALOA.add() & _par<>''
+         || PORTALOA.memo_set(_par,'PARAMS');
+            PORTALOA.memo_put(,'PARAMS')
+         ?}
+      ?};
+      FIRMA.next()
+   !};
+   PORTALOA.cntx_pop()
+?};
+FIRMA.cntx_pop();
+
+{? _ds=0
+|| end()
+|| do_state()=1
+?}
+
+
+\_run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.51]
+:: OPIS: Formuła pomocnicza, wykonująca opóźnioną aktualizację dla bieżącego rekordu tabeli PORTALOA. Rekord ten
+::       jest usuwany po aktualizacji.
+::   WE:
+::   WY: Rozszerzony wynik usunięcia rekordu tabeli PORTALOA. Warto zauważyć, że 0 oznacza, iż aktualizacja
+::       nie powiodła się.
+::----------------------------------------------------------------------------------------------------------------------
+_wm:=ref_name(PORTALOA.UIDREF);
+_TAB:=ref_tab(PORTALOA.UIDREF);
+
+_TAB.cntx_psh();
+{? _TAB.name()<>_wm
+|| TAB.use(_wm)
+?};
+_TAB.prefix();
+{? _TAB.seek(PORTALOA.UIDREF)
+|| _par:=PORTALOA.memo_txt(0,1,'PARAMS');
+   do();
+   {? _par=''
+   || exec(PORTALOA.ID,form_stack(0).file)
+   || exec(PORTALOA.ID,form_stack(0).file,json_parse(_par))
+   ?};
+   _ret:=PORTALOA.del(,1);
+   {? ~end()
+   || _ret:=0
+   ?}
+|| _ret:=PORTALOA.del(,1)
+?};
+_TAB.cntx_pop();
+
+_ret
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.51]
+:: OPIS: Formuła wykonująca opóźnioną aktualizację dla wszystkich zapisów związanych z bieżącą firmą.
+::   WE:
+::   WY: Wszystkie rekordy zostały przetworzone bezbłędnie: 1/0.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('PORTALOA')<>type_of(SYSLOG)
+|| return(0)
+?};
+
+_ok:=1;
+PORTALOA.cntx_psh();
+PORTALOA.index('FI');
+PORTALOA.prefix(__Firma,);
+{? PORTALOA.first()
+|| {!
+   |? {? PORTALOA.r_lock(1,1,1)
+      || _ret:=exec('_run','portaloa');
+         {? _ret=0
+         || _ok:=0;
+            PORTALOA.r_unlock();
+            PORTALOA.next()
+         || _ret=2
+         ?}
+      || PORTALOA.next()
+      ?}
+   !}
+?};
+PORTALOA.cntx_pop();
+_ok
+
+
+\select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.51]
+:: OPIS: Formuła prezentująca aktualną zawartość bufora opóźnionych aktualizacji.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('PORTALOA')<>type_of(SYSLOG)
+|| FUN.info('W definicji systemu brakuje tabeli PORTALOA.'@);
+   return(0)
+?};
+
+exec('__WND','#object');
+
+PORTALOA.cntx_psh();
+PORTALOA.f_clear();
+PORTALOA.index('FI');
+PORTALOA.prefix();
+
+_acr:='WER';
+{? (_ws:=__WND.SEL.get(PORTALOA,_acr))=''
+|| _ws:=PORTALOA.mk_sel('Opóźnione aktualizacje'@,,,'#wer',,,,,'U');
+   PORTALOA.win_fld(_ws,,'FIRMA');
+   PORTALOA.win_fld(_ws,,'ID');
+   PORTALOA.win_fld(_ws,,'UIDREF');
+
+   PORTALOA.win_act(_ws,,'Usuń',,,,,,,1);
+   PORTALOA.win_act(_ws,,'Formuła','U&ruchom'@@,,
+      ," {? PORTALOA.FIRMA=__Firma
+         || _grp:=PORTALOA.sel_size();
+            {? _grp | FUN.ask('Czy uruchomić opóźnioną aktualizację na podstawie bieżącego rekordu?'@)
+            || exec('_run','portaloa')
+            ?}
+         ?}"
+      ,,1,1
+      ,"FUN.ask('Czy na pewno uruchomić opóźnione aktualizacje na podstawie zaznaczonych rekordów?'@)"
+      ,
+      ,'R'
+   );
+   PORTALOA.win_act(_ws,,'Kolejność');
+   PORTALOA.win_act(_ws,,'Rekord',,,,"
+      _bf:=PORTALOA.FIRMA=__Firma;
+      {? _a
+      || _ag:={? _bf | PORTALOA.sel_size() || ':' || 'R' ?};
+         PORTALOA.actions_grayed(cur_win(1,1),_ag)
+      ?};
+      {? ~_bf
+      || '178:178:178'
+      ?}
+   ");
+
+   __WND.SEL.put(PORTALOA,_acr,_ws)
+?};
+
+_acr:='RED';
+{? (_we:=__WND.EDIT.get(PORTALOA,_acr))=''
+|| _we:=PORTALOA.mk_edit('Opóźniona aktualizacja'@,,'#red');
+   PORTALOA.win_efld(_we,,'FIRMA');
+   PORTALOA.win_efld(_we,,'ID');
+   PORTALOA.win_efld(_we,,'UIDREF',,,48);
+   PORTALOA.win_efld(_we,,'PARAMS',,,48,-5);
+   PORTALOA.win_efld(_we,,'HASH',,,48);
+   PORTALOA.win_efld(_we,,'IDADD',,,48);
+   __WND.EDIT.put(PORTALOA,_acr,_we)
+?};
+
+PORTALOA.win_sel(_ws);
+PORTALOA.win_edit(_we);
+PORTALOA.select();
+
+PORTALOA.cntx_pop();
+~~
+
+
+::======================================================================================================================
+::======================================================================================================================
+::======================================================================================================================
+
+
+\adres_puta2os_szkol
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Po zmianie nazwy szkoły w słowniku (ADRES) należy "uaktualnić" odpowiednie rekordy ukończonych szkół
+::       (OS_SZKOL).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('idput_ndx','#table',OS_SZKOL,'SZKOLA',ADRES.ref())
+
+
+\users_puta2portalu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_14]
+:: OPIS: Po zmianie loginu webowego użytkownika należy uaktualnić uprawnienia do funkcjonalności Portal HR
+::   WE: _a [ARRAY] - Tablica elementów nazwanych:
+::                      WEBLOGIN_b - WEBLOGIN przed zmianą
+::                      WEBLOGIN_a - WEBLOGIN po zmianie
+::----------------------------------------------------------------------------------------------------------------------
+_par:=_a;
+
+PORTALU.cntx_psh();
+PORTALU.trig_off('*','*');
+PORTALU.index('LOGIN');
+PORTALU.prefix('U',_par.WEBLOGIN_b,);
+{? PORTALU.first()
+|| {!
+   |? _next:=0;
+      _ref_nxt:=null();
+      PORTALU.cntx_psh();
+      {? PORTALU.next()
+      || _ref_nxt:=PORTALU.ref()
+      ?};
+      PORTALU.cntx_pop();
+
+      _can_continue:=1;
+
+      PORTALU.cntx_psh();
+      PORTALU.prefix();
+      PORTALU.LOGIN:=_par.WEBLOGIN_a;
+      PORTALU.put();
+      PORTALU.cntx_pop();
+
+      {? _ref_nxt<>null()
+      || _next:=PORTALU.seek(_ref_nxt)
+      ?};
+      _next>0 & _can_continue>0
+   !}
+?};
+PORTALU.trig_on('*','*');
+PORTALU.cntx_pop();
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:36 ded2c4f12692ec60c00f732817b92cd7d676de5f65e7a27c1bf564ea62efe7233f8d73c79574ad49eccb8c30ea5b91e1f44a1181cf30ed70730f1204391c8747ef8cc3cc1fd419a157040074618a335bd4e96cf953bbf9eff827751ffd148d859b6cdfb37b340c71f4d066bc171a993a58ee90d3884ca7e8f29c18207902714d

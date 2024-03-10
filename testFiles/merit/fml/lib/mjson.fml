@@ -1,0 +1,544 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku: mjson.fml
+:: Utworzony: 08.05.2014
+:: Autor: [mk] Michal Kocot
+::======================================================================================================================
+:: Zawartość: Json
+::======================================================================================================================
+:: Obiekty klasy JSON sluza do deserializacji i serializacji obiektow JSON (JavaScript Object Notation)
+:: Klasę deklaruje się poprzez wywołanie:
+::       exec('init','mjson')
+:: Powołanie obiektu
+::       MJSON:=obj_new(@.CLASS.JSON[, 'json_string'])
+::    gdzie json_string oznacza napis bedacy tekstem.
+:: Przykład:
+:: {"menu": {
+::    "id": "file",
+::    "value": "File",
+::    "popup": {
+::       "menuitem": [
+::          {"value": "New", "onclick": "CreateNewDoc()"},
+::          {"value": "Open", "onclick": "OpenDoc()"},
+::          {"value": "Close", "onclick": "CloseDoc()"}
+::       ]
+::    }
+:: }}
+:: Metoda MJSON.deserialize('json_string') nadpisuje poprzedni zaladowany obiekt lub powoluje nowy
+:: Dostep do danych mozna realizowac nastepujaco:
+::    JSON:=MJSON.JSON;
+::    JSON.menu.popup.menuitem[2].onclick - zwroci napis 'OpenDoc()'
+::    JSON.menu.id:='Opis' - przypisze nowa wartosc zmiennej id
+:: Metoda MJSON.serialize() zwroci 'json_string' z obiektu MSJON.JSON
+:: Metoda MJSON.serialize([dowolna_tabela][,pola]) - zwroci 'json_string' ze wszystkich dostepnych rekordow
+::    - [dowolna_tabela] to:
+::          tabela stala, np: I_USERS,
+::          zapytanie SQL, np: sql('select * from I_USERS'),
+::          procedura skladowana, np: proc_exec('firma@daneolap()')
+::          tabela tymczasowa
+::    - [pola] to:
+::          lista akronimow pol oddzielona przecinkami 'RN,RT,OPS'
+::          tablica akronimow pol _obj[1]:='RN'; _obj[2]:='RT'
+::          tabela akronimow pol, pierwsza kolumna
+::    - ilosc danych ograniczona jest do 524172 znakow, sa to ograniczenia MacroBASE
+::    - dane zostana obciete z dokladnoscia do rekordu
+::    - pobierane sa tylko dostepne rekordy, dziedzina ograniczone przez prefix
+::    - zawartosc MJSON.JSON nie ulegnie zmianie
+::    - pierwsze pole wyniku o akronimie REFERENCE zawiera REFSQL rekordu
+::    - mapowanie typow danych
+::          STRING      - ""
+::          REAL        -  000000.0000
+::          INTEGER     - 0
+::          REFERENCE   - "null"
+::          ZLACZENIE   - "xxxxxxxx00000000"
+::          HEADER      - "header"
+::          MEMO        - ""
+::          SYSMEMO     - ""
+::          TREE_REF    - "xxxxxxxx00000000"
+::          DATA        - "yyyy-MM-dd"
+::          CZAS        - "hh:mm:ss"
+::          BLOBRAW     - json {"id": ,"name": }
+::          BLOBIMAGE   - json {"id": ,"name": }
+::    - jesli w typach napisowych wystapi znak " moze zostac usuniety, przyklad: "to jest znak\" i moze on zniknac"
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [mk] Michal Kocot [12.30]
+:: OPIS: Definicja KLASY JSON
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('JSON', @.CLASS)<0
+|| obj_decl('JSON',
+      obj_fld('JSON',1),
+      obj_fld('TAB',1),
+      obj_fld('STR',''),
+      obj_meth('__init',"
+         .JSON:=
+            {? var_pres('_b')=type_of('')
+            || exec('parse','mjson',_a,_b)
+            || exec('parse','mjson',_a)
+            ?}
+      "),
+   obj_meth('serialize',"
+      .STR:=exec('serialize','mjson',.JSON,.TAB);
+      .deserialize(.STR);
+      .STR
+      "),
+   obj_meth('serialize',"
+      {? ~(var_pres('_b')>100 | var_pres('_b')=type_of('')) || _b:=0 ?};
+      .STR:=exec('serialize','mjson',.JSON,_a,1,_b)
+      ",type_of(SYSLOG)),
+   obj_meth('deserialize',"
+      {? var_pres('JSON',.)=type_of(0)
+      || &.JSON
+      |? var_pres('JSON',.)>0
+      || obj_del(.JSON)
+      ?};
+      {? var_pres('TAB',.)>0
+      || obj_del(.TAB)
+      ?};
+      .JSON:=exec('parse','mjson',.,_a)
+      ",type_of(''))
+   )
+?}
+
+
+\parse
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [mk] Michal Kocot [12.30]
+:: OPIS: Parsowanie JSON
+::   WE: _a - obiekt JSON
+::       _b - JSON
+::   WY: 0 lub obiekt JSON
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_b')<>type_of('') || _b:='{}' ?};
+_a.STR:=_b;
+::    eliminacja znaku \", zamiana lub usuniecie
+_na_znak:=obj_new(255-31);
+{! _licz:=255 //-1 .. 32 |! _na_znak[256-_licz]:=%_licz !};
+_znak:='';
+_str:=_b;
+{? _str*'\\"'
+|| {! _licz:=1..obj_len(_na_znak) |!
+      {? _znak='' & ~_str*_na_znak[_licz]
+      || _str:=gsub(_str,'\\"',_znak:=_na_znak[_licz])
+      ?}
+   !}
+?};
+{? _znak='' || _str:=gsub(_str,'\\"','') ?};
+&_na_znak;
+_tab:=tab_tmp(4,
+   'TREE','TREE_REF','Tata',
+   'LP','INTEGER','LP',
+   'POZ','INTEGER','Poziom',
+   'ID','INTEGER','Pozycja na poziomie',
+   'POLE','STRING[8]','Akronim pola',
+   'TYP','STRING[1]','Typ',
+   'WAR','STRING[255]','Wartość'
+);
+_ndx_poz:=_tab.ndx_tmp('',,'POZ',,,'LP',,);
+_ndx_lp:=_tab.ndx_tmp('',,'LP',,);
+_cur_ndx:=_tab.index('?');
+_add:="
+   _a.TREE:=0;
+   {? +_f
+   || {!|? +_f |!
+         _a.LP:=_a.LP+1;
+         _a.POZ:=_b;
+         _a.ID:=_c;
+         _a.POLE:=_d;
+         _a.TYP:=_e;
+         _a.WAR:=255+_f;
+         {? +(_d+_f) || _a.add() ?};
+         _f:=255-_f
+      !}
+   || _a.LP:=_a.LP+1;
+      _a.POZ:=_b;
+      _a.ID:=_c;
+      _a.POLE:=_d;
+      _a.TYP:=_e;
+      _a.WAR:=_f;
+      {? +(_d+_f) || _a.add() ?}
+   ?}
+   ";
+
+_co:=obj_new(3);
+_na:=obj_new(obj_len(_co));
+_co[1]:='\n';
+_na[1]:='';
+_co[2]:=%10;
+_na[2]:='';
+_co[3]:=%13;
+_na[3]:='';
+_rob:=gsub(_str,_co,_na);
+_new:='';
+_space:=1;
+_obj:=0;
+_poziom:=0;
+_pozycja:=0;
+_nazwa:='';
+_wart:='';
+_dkrop:=0;
+_typ:='';
+_id:=0;
+_czy_add:=0;
+_czy_wartosc:=0;
+{! _licz:=1..+_rob |!
+   _zn:=(_licz-1)-(_licz+_rob);
+   {? _zn='"' || _space:={? _space || 0 || 1 ?} ?};
+   {? _zn=' ' & _space || _zn:='' ?};
+   _new+=_zn
+!};
+_rob:=_new;
+_new:='';
+_space:=1;
+{! _licz:=1..+_rob |!
+   _zn:=(_licz-1)-(_licz+_rob);
+   {? _zn='"' || _space:={? _space || 0 || 1 ?} ?};
+   {? _zn=':' || _dkrop:=1 ?};
+
+   {? _zn='[' || _id+=1; _obj:=1 ?};
+   {? _zn=']' || _id-=1; _obj:=0 ?};
+   {? _zn='{' & ~_obj || _poziom+=1; _czy_add:=1 ?};
+   {? _zn='}' & ~_obj || _poziom-=1 ?};
+
+   {? ~_space & _zn<>'"' || _nazwa+=_zn ?};
+   {? +_nazwa & _space || _czy_add:=1 ?};
+
+   {? _dkrop & ':0123456789.'*_zn
+   || {? _zn<>':' || _wart+=_zn ?};
+      _czy_add:=1
+   || _dkrop:=0
+   ?};
+
+   {? _czy_add
+   || _czy_wartosc:=~(
+         (2+(_licz-_rob))=':{' |
+         (2+(_licz-_rob))=':[' |
+         (2+(_licz-_rob))=':"' |
+         (2+(_licz-_rob))=':.' |
+         (2+(_licz-_rob))=':0' |
+         (2+(_licz-_rob))=':1' |
+         (2+(_licz-_rob))=':2' |
+         (2+(_licz-_rob))=':3' |
+         (2+(_licz-_rob))=':4' |
+         (2+(_licz-_rob))=':5' |
+         (2+(_licz-_rob))=':6' |
+         (2+(_licz-_rob))=':7' |
+         (2+(_licz-_rob))=':8' |
+         (2+(_licz-_rob))=':9'
+      );
+      {? _dkrop
+         & +_wart
+         & (
+            (2+(_licz-_rob))=',"' |
+            (2+(_licz-_rob))='},' |
+            (2+(_licz-_rob))='}}' |
+            (2+(_licz-_rob))='}]' |
+            (2+(_licz-_rob))=',}' |
+            (2+(_licz-_rob))='}'
+         )
+      || _nazwa:=_wart;
+         _wart:=''
+      ?};
+      _typ:=
+         {? (2+(_licz-_rob))=':{' | (2+(_licz-_rob))=':[' || 'O'
+         |? (2+(_licz-_rob))=':"' || 'S'
+         |? (2+(_licz-_rob))=':.' |
+            (2+(_licz-_rob))=':0' |
+            (2+(_licz-_rob))=':1' |
+            (2+(_licz-_rob))=':2' |
+            (2+(_licz-_rob))=':3' |
+            (2+(_licz-_rob))=':4' |
+            (2+(_licz-_rob))=':5' |
+            (2+(_licz-_rob))=':6' |
+            (2+(_licz-_rob))=':7' |
+            (2+(_licz-_rob))=':8' |
+            (2+(_licz-_rob))=':9'
+         || 'N'
+         || ''
+         ?};
+      _add(_tab,_poziom,_id,{? ~_czy_wartosc || _nazwa || '' ?},_typ,{? _czy_wartosc || _nazwa || '' ?});
+      _czy_add:=0;
+      {? +_nazwa & _space || _nazwa:='' ?}
+   ?};
+   _new+=_zn
+!};
+_tab.index(_ndx_lp);
+{? _tab.first()
+|| _ref:=0;
+   _poz:=0; _typ:=''; _id:=0;
+   {!|?
+      {? _tab.POZ=1 & _tab.ID=0 || _ref:=0 ?};
+      {? _tab.POZ<_poz & _tab.POZ<>1
+      || _tab.cntx_psh();
+         _tab.index(_ndx_poz);
+         _tab.prefix(_tab.POZ);
+         {? _tab.first()
+         || {!|?
+               {? _tab.TREE || _ref:=_tab.TREE ?};
+               _tab.next()
+            !}
+         ?};
+         _tab.cntx_pop()
+      ?};
+      _tab.TREE:=_ref; _poz:=_tab.POZ; _id:=_tab.ID; _tab.put();
+      {? _poz<>_tab.POZ | _tab.TYP='O' | _id<>_tab.ID
+      || _ref:=#_tab.ref();
+         _poz:=_tab.POZ; _id:=_tab.ID
+      ?};
+      _tab.next()
+   !};
+   {? _ref || _tab.TREE:=_ref; _tab.put() ?}
+?};
+_tab.index(_cur_ndx);
+
+&_add; &_co; &_czy_add; &_czy_wartosc; &_dkrop; &_id; {? var_pres('_licz')>0 || &_licz ?}; &_na; &_nazwa; &_new; &_obj;
+&_poziom; &_pozycja;
+&_rob; &_space; &_str; &_typ; &_wart; {? var_pres('_zn')>0 || &_zn ?};
+
+{? _tab.first()
+|| _obj:='_ret:=';
+   _wart:='';
+   _txt:='';
+   _val:='';
+   _acr:=tab_tmp(1,'ACR','STRING[8]','ACR');
+   _item:='';
+   _tree:=-1;
+   _pole:='';
+   _licz:=0;
+   {!|?
+      {? +_tab.POLE
+      || {? _tree<>_tab.TREE
+         || {? _licz
+            || _obj+=$_licz+',';
+               {! _iter:=1.._licz |!
+                  _item+='_ret'+_txt+'['+$_iter+']:=obj_new(';
+                  {? _acr.first()
+                  || {!|?
+                        _item+='\''+_acr.ACR+'\',';
+                        _acr.next()
+                     !};
+                     _item:=(_item-1)+');\n'
+                  ?}
+               !}
+            ?};
+            _licz:=0;
+             _pole:=''
+         ?};
+         {? _tree<>_tab.TREE
+         || {? _tree>-1
+            || _obj:=(_obj-1)+');\n';
+               _tab.cntx_psh();
+               {? _tab.TREE
+               || _obj+='_ret';
+                  _txt:='';
+                  {!|? _tab.seek(_tab.TREE,) |!
+                     _txt:='.'+_tab.POLE+_txt
+                  !};
+                  _obj+=_txt+':='
+               ?};
+               _tab.cntx_pop()
+            ?};
+            _tree:=_tab.TREE;
+            _obj+='obj_new('
+         ?};
+         {? _tab.ID=0
+         || _obj+='\''+_tab.POLE+'\','
+         || {? _licz=0
+            || {? _acr.first() || {!|? _acr.del() !} ?};
+               _pole:=_tab.POLE
+            ?};
+            {? ~_acr.find_key(_tab.POLE) || _acr.ACR:=_tab.POLE; _acr.add() ?};
+            _licz+=(_pole=_tab.POLE)
+         ?}
+      || _tab.cntx_psh();
+         {!|?
+            _wart+=gsub(_tab.WAR,'\'','\\\'');
+            _last_ref:=_tab.ref();
+            _tab.next() & _tab.POLE='' & _tab.TYP=''
+         !};
+         _tab.cntx_pop();
+         _tab.cntx_psh();
+         {? _tab.prev()
+         || _wart:='.'+_tab.POLE+':='+{? _tab.TYP='S' || '\''+_wart+'\'' || _wart ?}+';\n'
+         ?};
+         {? _licz || _wart:='['+$_licz+']'+_wart ?};
+         {? _tab.TREE
+         || _txt:='';
+            {!|? _tab.seek(_tab.TREE,) |!
+               _txt:='.'+_tab.POLE+_txt
+            !};
+            _wart:='_ret'+_txt+_wart
+         || _wart:='_ret'+_wart
+         ?};
+         _tab.cntx_pop();
+         {? _tab.ref()<>_last_ref || _tab.seek(_last_ref) ?};
+         _val+=_wart;
+         _wart:=''
+      ?};
+      _tab.next()
+   !};
+   {? _licz
+   || _obj+=$_licz+',';
+      {! _iter:=1.._licz |!
+         _item+='_ret'+_txt+'['+$_iter+']:=obj_new(';
+         {? _acr.first()
+         || {!|?
+               _item+='\''+_acr.ACR+'\',';
+               _acr.next()
+            !};
+            _item:=(_item-1)+');\n'
+         ?}
+      !}
+   ?};
+   _obj:=(_obj-1)+');\n';
+   _obj+=_item;
+   _obj+=_val;
+   _obj+='_ret';
+   {? +_znak || _obj:=gsub(_obj,_znak,'\\"') ?};
+   _a.TAB:=_tab;
+   {? +_obj || ($_obj)() || 0 ?}
+|| 0
+?}
+
+
+\serialize
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [mk] Michal Kocot [12.30]
+:: OPIS: Serializacja obiektu JSON lub dowolnej tabeli
+::   WE: _a - obiekt JSON
+::       _b - obiekt JSON lub tabela
+::       _c - czy tabela 1 lub brak
+::   WY: JSON
+::----------------------------------------------------------------------------------------------------------------------
+_limit:=524172;
+_c:={? var_pres('_c')=type_of(0) || 0 || 1 ?};
+_czy_pola:='';
+{? var_pres('_d')>100
+|| {? var_pres('_d')=type_of(SYSLOG)
+   || {? _d.first()
+      || _czy_pola+=',';
+         {!|?
+            _czy_pola+=_d[1]+',';
+            _d.next()
+         !}
+      ?}
+   || {! _licz:=1..obj_len(_d) |!
+         _czy_pola+=_d[_licz]+','
+      !};
+      {? +_czy_pola || _czy_pola:=','+_czy_pola ?}
+   ?}
+|? var_pres('_d')=type_of('')
+|| _czy_pola:=','+_d+','
+?};
+_txt:='';
+_b.cntx_psh();
+{? _c
+|| _b.index(_b.ndx_tmp('',,'LP',,));
+   _ndx_tree:=_b.ndx_tmp('',,'TREE',,,'LP',,,'POZ',,,'ID',,);
+   {? _b.first()
+   || _typ:='-';
+      _id:=_b.ID;
+      _poz:=-1;
+      _nr:=_nrp:=0;
+      _pole:='';
+      {!|?
+         {? _b.ID=1 || _licz+=1 || _licz:=0 ?};
+         {? _licz=1 || _pole:=_b.POLE ?};
+         {? _licz || {? _pole=_b.POLE || _nr+=1 ?} ?};
+         {? ~_licz || _nr:=0; _pole:='' ?};
+         {? _poz>=_b.POZ & _id=_b.ID & +_b.POLE
+         || {? _nrp=_nr || _txt+=',' || _txt+='},'?};
+            {? (_poz-_b.POZ)>0 || _txt+=(_poz-_b.POZ)*('\n'+((_b.POZ+_b.ID-1)*'   ')+'},') ?}
+         ?};
+         {? _b.TYP<>'-' & +_b.POLE || _txt+='\n' ?};
+         {? +_b.TYP || _txt+=((_b.POZ+_b.ID-1)*'   ') ?};
+         {? _poz<_b.POZ || _txt+='{' ?};
+         {? _id<_b.ID || _txt+='[' ?};
+         {? _licz & _pole=_b.POLE || _txt+='{' ?};
+         {? _id>_b.ID || {? _nrp<>_nr || _txt+='}'?}; _txt+='],\n' ?};
+         {? +_b.TYP || _txt+='"'+_b.POLE+'" : ' ?};
+         _b.cntx_psh();
+         _b.index(_ndx_tree);
+         _wart:='';
+         {? _b.TREE
+         || _wart:='';
+            {!|? _b.seek(_b.TREE,) |! _wart:='.'+_b.POLE+_wart !}
+         ?};
+         _b.cntx_pop();
+         {? _b.TYP='S' | _b.TYP='N'
+         || _val:='_a'+_wart+{? _nr || '['+$_nr+'].' || '.' ?}+_b.POLE;
+            {? _b.TYP='S'
+            || _txt+='"'+($(_val))(_a)+'"'
+            |? _b.TYP='N'
+            || _txt+=form(($(_val))(_a),,,'9.')
+            ?}
+         ?};
+         _typ:=_b.TYP; _id:=_b.ID; _poz:=_b.POZ; _nrp:=_nr;
+         _b.next()
+      !};
+      {? (_poz-1)>0 || _txt+=(_poz-1)*('\n'+((_b.POZ+_b.ID-1)*'   ')+'},') ?};
+      _txt+='\n}'
+   ?};
+   _b.cntx_pop();
+   _b.ndx_drop()
+|| _txt:='{';
+   {? _b.first()
+   || _txt+='\"data\": [';
+      {!|?
+         _wiersz:='\n{';
+         _wiersz+='"REFERENCE" : "'+$_b.ref()+'",';
+         {? exec('has_idadd','#table',_b)
+         || _wiersz+='"IDADD" : "'+_b.IDADD+'",'
+         ?};
+         {! _licz:=1..obj_len(_b) |!
+            {? {? +_czy_pola
+               || _czy_pola*(','+_b.fld_acr(_licz)+',')
+               || 1
+               ?}
+            || _co:=var_pres(_b.fld_acr(_licz), _b, 'diff_blob');
+               _wiersz+='"'+_b.fld_acr(_licz)+'" : ';
+               _wiersz+=
+                  {? _co=20 || form(_b[_licz],,,'9.')
+                  |? _co=21 || '"'+gsub(_b[_licz]$2,'.','-')+'"'
+                  |? _co=22 || $_b[_licz]
+                  |? _co=24 || '"header"'
+                  |? _co=25 || '"'+gsub(_b.memo_txt(,1,_b.fld_acr(_licz)),'"','\\"')+'"'
+                  |? _co=26 || '"'+$_b[_licz]+'"'
+                  |? _co=27 || '"'+gsub(_b[_licz],'"','\\"')+'"'
+                  |? _co=29 || '"'+_b[_licz]$3+'"'
+                  |? _co=30 || '"null"'
+                  |? _co=32 ||
+                     _b.cntx_psh();
+                     _b.clear();
+                     _ret:={? _b.seek(_b[_licz],) || $_b.ref() || '' ?};
+                     _b.cntx_pop();
+                     '"'+_ret+'"'
+                  |? _co=33 || '{"id" : "'+_b[_licz]().ID+'","name" : "'+_b[_licz]().NAME+'"}'
+                  |? _co=36 || '"'+gsub(_b.memo_txt(,1,_b.fld_acr(_licz)),'"','\\"')+'"'
+                  |? _co=37 || '{"id" : "'+_b[_licz]().ID+'","name" : "'+_b[_licz]().NAME+'"}'
+                  || '""'
+                  ?};
+               _wiersz+=','
+            ?}
+         !};
+         _wiersz:=_wiersz-1;
+         _wiersz+='},';
+         {? ((+_txt)+(+_wiersz))>=(_limit-3)
+         || 0
+         || _txt+=_wiersz;
+            _b.next()
+         ?}
+      !};
+      _txt:=_txt-1;
+      _txt+='\n]'
+   ?};
+   _b.cntx_pop();
+   _txt+='}'
+?};
+_txt
+
+:Sign Version 2.0 jowisz:1028 2019/06/07 15:59:54 e17dab8aecbf97697a4686ade55d593ce3258b5bc9b18f31a44fc0e9a50f97628a2632436302440818f31ddaeba6032126f4739ebf72cc3a4268ea051749d497dfa44cb59575e6bdca2b13b7cc4bcc6592754c3a4c1afa950c7ce734031235a6ba6aeecae6b60bf4d6a49242aa24d8ce2c47b9646e25daf8a37c13339ef2c025

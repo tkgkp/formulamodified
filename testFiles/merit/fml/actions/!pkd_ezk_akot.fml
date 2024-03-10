@@ -1,0 +1,162 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_ezk_akot.fml
+:: Utworzony: 18.04.2023
+:: Autor: IgPtasze
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PKD_EZK_AKOT - Usunięcie danych o wynikach kontroli trzeźwości
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IgPtasze [22.26]
+:: OPIS: Usunięcie wyników - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=SERVICE
+::# permissions=F_ZATR,UD_SKL
+::
+:: Parametry wejściowe
+::
+::
+::----------------------------------------------------------------------------------------------------------------------
+:: Parametry wyjściowe.
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik czynności (OK,BŁĄD)", required=N
+::# kind=WY, symbol=SUB, type=STRING, name=Temat, required=N
+::# kind=WY, symbol=RCV, type=MEMO, name=Lista odbiorców, required=N
+::# kind=WY, symbol=BODYH, type=MEMO, name=Treść w formacie HTML, required=N
+::
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_out:=_par.out;
+_out.RESULT:='BŁĄD';
+_out.SUB:='Proces PER_KOT_AUTO. ';
+:: Wyszukujemy odbiorców wiadomości na podstawie uprawnień do czynności
+_out.RCV:=exec('emls_w_perm','personel_alerty',_mp.buf_act.UID);
+_ret:=exec('run','!pkd_ezk_akot');
+{? var_press('RESULT',_ret)=type_of('')
+|| _out.RESULT:=_ret.RESULT;
+   _out.BODYH:=_ret.BODYH
+?};
+{? _out.RESULT='OK'
+|| _out.SUB+='Informacja o cyklicznym usunięciu danych o wynikach kontroli trzeźwości.'
+|| _out.SUB+='Informacja o błędzie podczas cyklicznego usuwania danych o wynikach kontroli trzeźwości.'
+?};
+
+_mp.save(,_out);
+_mp.done();
+
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IgPtasze [22.26]
+:: OPIS: Usunięcie wyników - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Usunięcie wyników kontroli trzeźwości oraz powiązanych z badaniem nagan i załączników.'@@
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IgPtasze [22.26]
+:: OPIS: Formuła odpowiedzialna za przetwarzanie danych
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=obj_new('RESULT','BODYH');
+_ret.RESULT:='OK';
+_ret.BODYH:='';
+
+:: Usunięcie danych o wynikach badań trzeźwości po przekroczeniu daty przetwarzania
+Cntx.psh(KOT_TEST,KART_DOD,KART_DEF,OSOBA);
+Cntx.clr(KOT_TEST,KART_DOD,KART_DEF);
+:: index malejący
+KOT_TEST.index('DATA');
+KOT_TEST.prefix(exec('ref_firma','ustawienia'),);
+{? _first:=KOT_TEST.first()
+|| _DANE_DEL:=tab_tmp(4,
+      'LP','INTEGER','Lp.',
+      'NAZWISKO','STRING['+$MS.fld_len(OSOBA,'NAZWISKO')+']',MS.name(OSOBA,'NAZWISKO'),
+      'PIERWSZE','STRING['+$MS.fld_len(OSOBA,'PIERWSZE')+']',MS.name(OSOBA,'PIERWSZE'),
+      'T','STRING[255]',MS.name(P,'T'),
+      'OPIS','STRING[255]','Opis'
+   );
+   _DANE_DEL.blank();
+   {!
+   |? _del:=0;
+      {? KOT_TEST.WYNIK_D<>#0 & KOT_TEST.PD_DATA<date()
+      || _DANE_DEL.LP+=1;
+         _DANE_DEL.NAZWISKO:=KOT_TEST.OSOBA().NAZWISKO;
+         _DANE_DEL.PIERWSZE:=OSOBA.PIERWSZE;
+         _DANE_DEL.T:=exec('teczki','kontrola_trzezwosci',OSOBA.ref(),KOT_TEST.DATA);
+         _DANE_DEL.OPIS:='Usunięto badanie przeprowadzone %1 o godz. %2'[$KOT_TEST.DATA,$KOT_TEST.GODZ];
+         {? KOT_TEST.KART_DOD
+         || _DANE_DEL.OPIS+=' oraz naganę z dnia %1'@[$KOT_TEST.KART_DOD().OD]
+         ?};
+         _DANE_DEL.OPIS+='.';
+         ZALACZ.cntx_psh();
+         ZALACZ.index('NAG');
+         ZALACZ.prefix(KOT_TEST.uidref(),);
+         {? ZALACZ.first()
+         || _DANE_DEL.OPIS+='<br>Usunięto również załączniki powiązane z badaniem.'
+         ?};
+         ZALACZ.cntx_pop();
+         _DANE_DEL.add();
+         _del:=KOT_TEST.del(,1)
+      ?};
+      (_del=2 | KOT_TEST.next())
+   !}
+?};
+Cntx.pop(KOT_TEST,KART_DOD,KART_DEF,OSOBA);
+
+{? _first & _DANE_DEL.first()
+:: Przygotowanie treści maila
+|| _th:="'<th [[STYLE_TABLE_TH]]>'+_a+'</th>'";
+   _td:="'<td [[STYLE_TABLE_TD]]>'+_a+'</td>'";
+
+   _ret.BODYH:=
+      '<h3>'+
+         'Powiadomienie o usunięciu wyników badań trzeźwości po upływie roku.'@+
+      '</h3>\n'
+      '<p>'+
+         'Osoby, którym dnia %1 usunięto dane wyników kontroli trzeźwości.'@[$date()]+
+      '</p><br>'
+      '<table [[STYLE_TABLE]]>\n'
+         '<tr [[STYLE_TABLE_TR]]>'+
+            _th('Lp.'@)+
+            _th('Nazwisko'@)+
+            _th('Imię'@)+
+            _th('Nr teczki'@)+
+            _th('Opis'@)+
+         '</tr>\n';
+
+   _lp:=0;
+   {!
+   |? _lp+=1;
+      _ret.BODYH+=
+         '<tr [[STYLE_TABLE_TR]]>'+
+            _td($_lp)+
+            _td(_DANE_DEL.NAZWISKO)+
+            _td(_DANE_DEL.PIERWSZE)+
+            _td(_DANE_DEL.T)+
+            _td(_DANE_DEL.OPIS)+
+         '</tr>\n';
+      _DANE_DEL.next()
+   !};
+   _ret.BODYH+=
+      '</table>\n'
+      '<p>'+'Ta wiadomość została wygenerowana automatycznie - prosimy na nią nie odpowiadać.'+'</p>'
+
+?};
+
+_ret
+
+:Sign Version 2.0 jowisz:1045 2023/07/21 13:25:24 01f4c694fbd9b95ba263a60e165951a8a7f5703aeaa83d1ef765fd8237e91121f0ca2b07b8b9957a588340c0259992b27566388358b6f82f31696debf41b3a15a54c3b9b2c010b2fab1d03fe1484ff98e5e2628a8a8cf116fd20377a14492b89fc421506107e7635146966a036a29df69e5a38aabe36b16f5e78dac2ccdb04a6

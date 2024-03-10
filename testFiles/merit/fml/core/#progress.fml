@@ -1,0 +1,761 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku: #progress.fml [17.00]
+:: Utworzony: 17.12.2014
+:: Autor: AK
+::======================================================================================================================
+:: Zawartość: Uniwersalne formuły do obsługi progressu
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Tworzy tablicę nazwaną - obiekt sterujący (multi)progessem
+::  OLD: \init/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new(
+::             Obiekt systemowy
+               'SYS',
+
+::             Ilość progressów
+               'ILOSC',
+::             Maksymalna ilosc progressow - jezeli ma byc wieksza to nalezy zmodyfikowac definicje pulpitu: skid_progress.dsk
+               'IL_MAX',
+::             Tytul okienka z progressem
+               'TITLE',
+::             Tryb działania globalnego progresu
+               'GlobalMode',
+
+::             Nazwy kolejnych progressow
+               'ProgName',
+::             Tablica rozmiaru progresów (w tym globalnego)
+               'ProgSize',
+::             Tablica pozycji progresów (w tym globalnego)
+               'ProgPos',
+::             Tablica procentów progresów (w tym globalnego)
+               'ProgProc',
+::             Tablica współczynników do wyznaczania pozycji progresów (w tym globalnego)
+               'ProgCoef',
+
+::             Kontrolka jest wyświetlona, można aktualizowac i takietam
+               'CtrVisible',
+
+::             Aktualnie przetwarzany nr zadania
+               'PHASE',
+::             'Wysokosc okna z progressem [w wierszach]'
+               'HEIGHT',
+::             Tekst na guziku 'Przerwij'
+               'BREAK_TX',
+::             Czy mozliwe przerywanie czy nie
+               'BREAK_ON',
+
+::             Metoda inicjująca obiekt systemowy
+               'init_sys',
+
+::             Metoda przełączjąca na następne zadanie
+               'next_phase',
+::             .phase_start(phase) - metoda rozpoczynająca podane zadanie
+               'ph_start',
+::             .phase_complete(phase) - metoda kończąca podane zadanie
+               'ph_complete',
+
+::             .ctr_stop() - konczy prace z kontrolka
+               'ctr_stop',
+
+::             .global_set_mode('%'/'#') %-średni procent wszystkich lokalnych, #-liczba wszystkich kroków
+               'gl_smode',
+::             .global_update_size() - aktualizuje wielkość globalnego progresu
+               'global_update_size',
+::             .global_update_position() - aktualizuje pozycje globalnego progresu
+               'global_update_position',
+
+::             Metoda 'dodająca', a raczej nadająca parametry dla kolejnych progresów
+::             .add_progress([Nazwa zadania],[liczba_kroków] - domyślnie nazwa='Zadanie nr ', liczba_krokow=100
+               'add_progress',
+::             .phase_set_name(numer_zadania,Nazwa_zadania) - ustala nazwę podanego zadani
+               'ph_sname',
+::             .phase_set_size(numer_zadania,Liczba_kroków) - ustala wielkość podanego zadania
+               'ph_ssize',
+::             .phase_set_pos(numer_zadania,Liczba_kroków) - ustala aktualną liczbę kroków podanego zadania
+               'ph_spos',
+
+::             .is_break() - czy przerwano?
+               'is_break',
+
+::             .next_step([phase],[steps]) - dodaje liczbe krokow do zadania
+               'next_step',
+
+::             .global_step([steps]) - dodaje liczbe krokow do głównego progressa
+               'global_size',
+               'global_step'
+               );
+:: Ilosc progressow - max 10
+exec('init_const','#progress',_args);
+_args.TITLE:='Postęp obliczeń';
+
+_args.ProgName:=exec('obj_new_hybrid','#var',_args.IL_MAX,'Global'); exec('array_blank','#array',_args.ProgName, '');
+_args.ProgSize:=exec('obj_new_hybrid','#var',_args.IL_MAX,'Global'); exec('array_blank','#array',_args.ProgSize,  1);
+_args.ProgCoef:=exec('obj_new_hybrid','#var',_args.IL_MAX,'Global'); exec('array_blank','#array',_args.ProgCoef,  0);
+_args.ProgProc:=exec('obj_new_hybrid','#var',_args.IL_MAX,'Global'); exec('array_blank','#array',_args.ProgProc,  0);
+_args.ProgPos:=exec('obj_new_hybrid','#var',_args.IL_MAX,'Global'); exec('array_blank','#array',_args.ProgPos,  -1);
+
+_args.ProgPos.Global:=0;
+
+:: -----------------------------------------------   M E T O D Y   ----------------------------------------------------
+_args.init_sys:="exec('init_sys','#progress',.)";
+
+_args.next_phase:="
+:: Koncze stare zadanie - jezeli bylo takowe
+   {? .PHASE>0      || .ph_complete(.PHASE) ?};
+:: Rozpoczynam nowe zadanie - jeżeli istnieje takowe
+   {? .PHASE<.ILOSC || .ph_start(.PHASE+=1) ?};
+   ~~
+";
+
+_args.ph_start:="
+   _num:=_a;
+   .ProgPos[_num]:=0;
+   .ProgProc[_num]:=0;
+   {? .CtrVisible
+   || .SYS.start(_num);
+      {? .GlobalMode='|'
+      || .SYS.set_pos(_num,0)
+      ?};
+      1
+   ?}
+";
+
+_args.ph_complete:="
+   _num:=_a;
+   .ProgProc[_num]:=100;
+   .ProgPos[_num]:=.ProgSize[_num];
+   {? .CtrVisible
+   || .SYS.step(_num,.ProgSize[_num]);
+      1
+   ?}
+";
+
+_args.ctr_stop:="
+:: ustawiam wszystkie zadania jako wykonane
+   {! _it:=1.. .ILOSC |! .ph_complete(_it) !};
+   .CtrVisible:=0;
+:: gasze okno
+   .SYS.close();
+   ~~
+";
+
+:: .add_progress([Nazwa zadania],[liczba_kroków] - domyślnie nazwa='Zadanie nr ', liczba_krokow=100
+_args.add_progress:="
+   _size:={? var_pres('_b')=type_of(0) & _b>0 || _b || 100 ?};
+   {? _size>0
+    & .ILOSC<.IL_MAX
+   || .ILOSC+=1;
+      .ProgName[.ILOSC]:={? var_pres('_a')=2 || _a || 'Zadanie nr '+$.ILOSC ?};
+      .ph_ssize(.ILOSC,_size);
+      .ProgProc[.ILOSC]:=0;
+      .ProgPos[.ILOSC]:=-1;
+      1
+   || 0
+   ?}
+";
+
+_args.gl_smode:="{? .ILOSC=0 & '%#|'*(1+_a)>0 || .GlobalMode:=1+_a; 1 || 0 ?}";
+
+:: aktualizuje rozmiar globalnego progresa
+_args.global_update_size:="
+
+:: jezeli tryb krokowy
+   {? .GlobalMode='#'
+   || .ProgSize.Global:=0;
+      {! _pp:=1.. .ILOSC |! .ProgSize.Global+=.ProgSize[_pp] !};
+      .ProgCoef.Global:={? .ProgSize.Global>0 || 100.0/.ProgSize.Global || 1 ?}
+:: jezeli tryb procentowy
+   |? .GlobalMode='%'
+   || .ProgSize.Global:=0;
+      .ProgSize.Global:=100;
+      .ProgCoef.Global:=1/.ILOSC
+:: jezeli tryb resetujący się
+   |? .GlobalMode='|'
+   || ~~
+:: jezeli inny, to nie ma co sie przejmowac
+   ||
+      .ProgSize.Global:=1;
+      .ProgCoef.Global:=0;
+      ~~
+   ?}
+";
+
+_args.global_update_position:="
+:: jezeli tryb krokowy, to najpierw sumujemy kroki na wszystkich progresach
+   {? .GlobalMode='#'
+   || .ProgPos.Global:=0;
+      {! _pp:=1.. .ILOSC |! {? .ProgPos[_pp]>0 || .ProgPos.Global+=.ProgPos[_pp] ?} !};
+:: jezeli pozycja przekracza rozmiar to znaczy że 100%
+:: jezeli nie, to pozycja * wspolczynnik
+      .ProgProc.Global:={? .ProgPos.Global>=.ProgSize.Global
+                        || .ProgPos.Global:=.ProgSize.Global;
+                           100
+                        || .ProgPos.Global*.ProgCoef.Global
+                        ?};
+      1
+:: jezeli tryb procentowy, to sumujemy procenty progresów
+   |? .GlobalMode='%'
+   || .ProgProc.Global:=0;
+      {! _pp:=1.. .ILOSC |! .ProgProc.Global+=.ProgProc[_pp] !};
+      .ProgProc.Global:=(.ProgProc.Global*.ProgCoef.Global)$0;
+      {? .ProgProc.Global>=100 || .ProgProc.Global:=100 ?};
+      1
+   |? .GlobalMode='|'
+   ||
+      {? .ProgSize.Global>0
+      || .ProgProc.Global:=(100*(.ProgPos.Global/.ProgSize.Global))$0
+      ?};
+      {? .ProgProc.Global>=100 || .ProgProc.Global:=100 ?};
+      {? .CtrVisible & .ProgPos.Global>0
+      || .SYS.set_pos(0,.ProgPos.Global)
+      ?};
+      1
+   ?};
+   {? .CtrVisible
+   || {? .is_break()
+      || 0
+      || 1
+      ?}
+   || 1
+   ?}
+";
+
+_args.ph_sname:="
+   _num:={? var_pres('_a')=1 || _a || .PHASE ?};
+   {? var_pres('_b')=2
+   ||
+      .ProgName[_num]:=_b;
+::    od razu aktualizujemy na kontrolce
+      {? .CtrVisible
+      || .SYS.set_name(_num,.ProgName[_num]);
+         ~~
+      ?}
+   ?};
+   .ProgName[_num]
+";
+
+_args.ph_ssize:="
+   _num:={? var_pres('_a')=1   || _a || .PHASE ?};
+   {? _b>0
+   || _size:=_b;
+
+      {? .CtrVisible
+      ||
+         {? .GlobalMode='|'
+         || .SYS.set_size(_num,_size)
+         ||
+            {? .ProgSize[_num]>_size
+            ||
+::             Jeżeli nastąpiło zmniejszenie zadania to obiekt .SYS nie pozwoli mi zmniejszyć
+::             tego zadania, zamiast zmniejszenia zadania ustawiam od razu progress temu zadaniu
+               _diff:=.ProgSize[_num]-_size;
+               {? _diff>=1
+               || .SYS.step(_num,_diff)
+               ?}
+            || .SYS.set_size(_num,_size)
+            ?}
+         ?}
+      ?};
+      .ProgSize[_num]:=_size;
+      .ProgCoef[_num]:=100.0/_size;
+
+::    ponowne nakrecenie wielkosci dla progresa lokalnego
+      .global_update_size()
+   || 0
+   ?}
+";
+
+_args.ph_spos:="
+   _num:={? var_pres('_a')=1   || _a || .PHASE ?};
+   {? .ProgPos[_num]<0 || .ph_start(_num) ?};
+   _steps:=_b;
+   _sys_update:=0;
+   {? var_pres('_c')=type_of(0)
+   || _sys_update:=_c
+   ?};
+   .ProgPos[_num]:=_steps;
+   {? .ProgPos[_num]>=.ProgSize[_num]
+   || .ProgPos[_num]:=.ProgSize[_num];
+      .ProgProc[_num]:=100;
+      .ph_complete(_num)
+
+   || .ProgProc[_num]:=(_steps*.ProgCoef[_num])$0
+   ?};
+   {? .CtrVisible & _sys_update>0
+   || .SYS.set_pos(_num,.ProgPos[_num]);
+      ~~
+   ?};
+   .global_update_position()
+";
+
+_args.next_step:="
+   _num:={? var_pres('_a')=1   || _a || .PHASE ?};
+   _steps:={? var_pres('_b')=1 || _b || 1      ?};
+   {? _num>0 & _num<=.IL_MAX
+   || .PHASE:=_num;
+      {? .CtrVisible
+      ||
+         .SYS.step(_num,_steps);
+         ~~
+      ?};
+      .ph_spos(.PHASE,.ProgPos[.PHASE]+_steps)
+   ?}
+";
+_args.global_size:="
+   _size:={? var_pres('_a')=1 || _a || 1      ?};
+   .ProgSize.Global:=_size;
+   .ProgCoef.Global:={? .ProgSize.Global>0 || 100.0/.ProgSize.Global || 1 ?};
+   ~~
+";
+
+_args.global_step:="
+   _steps:={? var_pres('_a')=1 || _a || 1      ?};
+   .ProgPos.Global+=_steps;
+   .global_update_position()
+";
+
+_args.is_break:="
+:: jezeli tekst na guziku sie rozni od oryginalnego to znak ze przerwano progress
+   {? .CtrVisible
+   || .SYS.is_canceled()
+   || 0
+   ?}
+";
+_args
+
+
+\init_const
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: Przypisuje stałe do obiektu progresa
+::   WE: _args
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::  OLD: \init_const/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+
+_args.ILOSC:=0;
+_args.IL_MAX:=10;
+_args.GlobalMode:='%';
+_args.BREAK_TX:='Przerwij przetwarzanie'@;
+_args.BREAK_ON:='T';
+
+_args.HEIGHT:=40;
+_args.PHASE:=0;
+
+_args.CtrVisible:=0;
+~~
+
+
+\init_sys
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [22.26]
+:: OPIS: Inicjalizuje obiekt systemowy multiprogress
+::   WE: _a - obj_new() - tablica nazwana - obiekt sterujący progressem - exec('init','#progress')
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+_args.CtrVisible:=1;
+
+_no_break:=0;
+{? _args.BREAK_ON='N'
+|| _no_break:=1
+?};
+_no_auto:=0;
+{? _args.GlobalMode='|'
+|| _no_auto:=1
+?};
+_args.SYS:=mprogress(_args.TITLE,_no_auto,_no_break,_args.BREAK_TX);
+{! _it:=1.._args.ILOSC
+|! _size:=_args.ProgSize[_it];
+   _name:=_args.ProgName[_it];
+   _args.SYS.add(_name,_size);
+   ~~
+!};
+{? _args.GlobalMode='|'
+|| _args.SYS.set_size(0,_args.ProgSize.Global)
+?};
+~~
+
+
+\start
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Pokazuje okno z multiprogressem i rozpoczyna obliczenia
+::   WE: _a - obj_new() - tablica nazwana - obiekt sterujący progressem - exec('init','#progress')
+::  OLD: \start/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+
+:: jezeli transakcja rozpoczeta to nie wyswietlam okna, bo i tak sie nie uda
+{? do_state()>0
+|| return()
+?};
+exec('init_sys','#progress',_args);
+_args.SYS.show();
+~~
+
+
+\update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: Aktualizuje bieżący etap o podaną liczbę kroków
+::   WE: _a - obj_new() - tablica nazwana - obiekt sterujący progressem - exec('init','#progress')
+::       _b - liczba kroków
+::   WY: 0 - user ręcznie przerwał progress
+::       1 - progress może być kontynuowany
+::  OLD: \update/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_a.next_step(,_b)
+
+
+\phase_start
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Rozpoczyna podany etap
+::   WE: _a - obj_new() - tablica nazwana - obiekt sterujący progressem - exec('init','#progress')
+::       _b - INTEGER - numer etapu
+::  OLD: \phase_start/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_a.ph_start(_b)
+
+
+\phase_complete
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Ustawia etap jako skończony
+::   WE: _a - obj_new() - tablica nazwana - obiekt sterujący progressem - exec('init','#progress')
+::       _b - INTEGER - numer etapu
+::  OLD: \phase_complete/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_a.ph_complete(_b)
+
+
+\next_step
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: Ustawia pozycję na progresie danego etapu + globalnym
+::   WE: _a - obj_new() - tablica nazwana - obiekt sterujący progressem - exec('init','#progress')
+::      [_b] - INTEGER - numer etapu [_a.PHASE]
+::      [_c] - INTEGER - liczba kroków do przesunięcia - domyślnie [1]
+::   WY: 0 - user ręcznie przerwał progress
+::       1 - progress może byc kontynuowany
+::  OLD: \next_step/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+_num:={? var_pres('_b')=1 || _b || _args.PHASE ?};
+_steps:={? var_pres('_c')=1 || _c || 1 ?};
+
+_args.next_step(_num,_steps)
+
+
+\check_break
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: sprawdza czy nastąpiło wciśnięcie klawisza 'przerwij'
+::   WE: _a - obj_new() - tablica nazwana - obiekt sterujący progressem - exec('init','#progress')
+::   WY: 1/0 - wciśnięto/nie_wciśnięto
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::  OLD: \check_break/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args.is_break()
+
+
+\stop
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Gasi okno z progressem
+::   WE: _a - obj_new() - tablica nazwana - obiekt sterujący progressem - exec('init','#progress')
+::  OLD: \stop/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_a.ctr_stop()
+
+
+\test
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Formuła testowa - uruchamia demo
+::  OLD: \test/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('init','#progress');
+_args.TITLE:='Ciocia basia';
+_args.gl_smode('#');
+_args.add_progress('Zadanie testowe 1',400);
+_args.add_progress('Inne zadanie testowe 2',200);
+_args.add_progress('Jeszcze inne zadanie testowe',200);
+_args.add_progress('No i jeszcze inne zadanie testowe',200);
+_args.HEIGHT:=20;
+
+exec('start','#progress',_args);
+exec('test_calc','#progress',_args);
+::msg();
+_args.ctr_stop();
+~~
+
+
+\test_reset
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Formuła testowa - uruchamia demo
+::  OLD: \test/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_argsprog:=exec('init','#progress');
+_argsprog.gl_smode('|');
+_global_size:=1000;
+_argsprog.add_progress('Zadanie testowe resetujące się',_global_size);
+_argsprog.global_size(_global_size);
+_argsprog.HEIGHT:=10;
+
+exec('start','#progress',_argsprog);
+_argsprog.next_phase();
+
+_num:=10;
+_global_step:=_global_size/_num;
+{! _pr:=1.._num
+|!
+
+   _argsprog.ph_ssize(,100);
+   _argsprog.ph_start(1);
+   _argsprog.ph_sname(1,'Zadanie nr: '+$_pr);
+   {! _it:=1..10
+   |! delay(,100);
+      _can_continue:=exec('update','#progress',_argsprog,10)
+   !};
+   _argsprog.global_step(_global_step);
+   ~~
+::   _org:=_args.ph_sname();
+::   _args.ph_sname(,'Zakończono: '+_org)
+!};
+_argsprog.ctr_stop();
+~~
+
+
+\test_calc
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Formuła testowa - kręci progressem
+::   WE:
+::   WY:
+::  OLD: \test_calc/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+_can_continue:=1;
+{? _can_continue>0
+||
+   _args.next_phase();
+::   _args.ph_ssize(,300);
+::   _args.ph_spos(,0);
+   {! _it:=1..10
+   |? _can_continue>0
+   |! delay(,300);
+      _can_continue:=exec('next_step','#progress',_args,1,40)
+   !};
+   _org:=_args.ph_sname();
+   _args.ph_sname(,'Zakończono: '+_org)
+?};
+{? _can_continue>0
+||
+   _args.next_phase();
+::   _args.ph_ssize(,200);
+::   _args.ph_spos(,0);
+   {! _it:=1..10
+   |? _can_continue>0
+   |! delay(,200);
+      _can_continue:=exec('next_step','#progress',_args,2,20)
+   !}
+?};
+
+{? _can_continue>0
+||
+   _args.next_phase();
+   _args.ph_ssize(,200);
+   _args.ph_spos(,0);
+   {! _it:=1..10
+   |? _can_continue>0
+   |! delay(,400);
+      _can_continue:=exec('next_step','#progress',_args,3,20)
+   !}
+?};
+
+{? _can_continue>0
+||
+   _args.next_phase();
+::   _args.ph_ssize(,200);
+::   _args.ph_spos(,0);
+   {! _it:=1..10
+   |? _can_continue>0
+   |! delay(,100);
+      _can_continue:=exec('next_step','#progress',_args,4,20)
+   !}
+?};
+~~
+
+
+\test_p
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: Test równoległego nakręcania progresu
+::  OLD: \test_p/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('init','#progress');
+
+_size:=obj_new('a','b','c','d');
+_size[1]:=100;
+_size[2]:=700;
+_size[3]:=300;
+_size[4]:=400;
+
+_args.add_progress('Zadanie testowe 1',_size.a);
+_args.add_progress('Inne zadanie testowe 2',_size.b);
+_args.add_progress('Jeszcze inne zadanie testowe',_size.c);
+_args.add_progress('No i jeszcze inne zadanie testowe',_size.d);
+_args.HEIGHT:=30;
+_args.gl_smode('#');
+
+exec('start','#progress',_args);
+
+exec('test_p_calc','#progress',_args,_size);
+
+_args.ctr_stop();
+~~
+
+
+\test_p_calc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: formuła testowa - do aktualizacji progresu
+::   WE: _a - _args
+::       _b - _size
+::  OLD: \test_p_calc/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+_size:=_b;
+_can_continue:=1;
+
+_sizesize:=obj_len(_size);
+
+_all:='';
+{! _aa:=1.._sizesize |! {? _size[_aa]>0 || _all+=$_aa ?} !};
+
+{!
+|?
+   _ndx:=int(rand()*(+_all))+1;
+   _etap:=#((_ndx+_all)+1);
+   _step:=int(rand()*20)+1;
+   _can_continue:=exec('next_step','#progress',_args,_etap,_step);
+   _size[_etap]-=_step;
+   _all:='';
+   delay(, int(rand()*500));
+   {! _aa:=1.._sizesize |! {? _size[_aa]>0 || _all+=$_aa ?} !};
+   _can_continue>0
+   & +_all>0
+!};
+~~
+
+
+\test_std
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS:
+::   WE:
+::   WY:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+
+_can_continue:=1;
+{! _it:=1..100
+|? _can_continue>0
+|!
+   _txt:='';
+   _txt1:='Test krótki';
+   _txt2:='Test długi długi długi długi długi długi długi długi długi długi długi długidługi długi długi koniec.';
+   {? (rand()*10)>5
+   || _txt:=_txt2
+   || _txt:=_txt1
+   ?};
+   _res:=progress(_it,_txt,'Standardowy progress',,,1,1,'Przerwij');
+   {? _res=0
+   || {? FUN.ask('Przerwać?')>0
+      || _can_continue:=0
+      ?}
+   ?};
+   delay(, int(rand()*200));
+   ~~
+!};
+prgs_clr();
+~~
+
+
+\test_cofaj
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Formuła testowa - uruchamia demo
+::  OLD: \test/skid_prg.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('init','#progress');
+_args.TITLE:='Test błędu z cofaniem';
+_args.gl_smode('|');
+_args.add_progress('Zadanie testowe 1',576000);
+_args.HEIGHT:=20;
+
+exec('start','#progress',_args);
+exec('test_cofaj_calc','#progress',_args,576000);
+::msg();
+_args.ctr_stop();
+~~
+
+
+\test_cofaj_calc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [23.25]
+:: OPIS:
+::   WE:
+::   WY:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+_size_all:=_b;
+
+_step_current:=0;
+_step_big:=1000;
+
+{!
+|? _step_current+=_step_big;
+   delay(,50);
+   _can_continue:=_args.ph_spos(1,_step_current,1);
+
+   _step_current_small:=_step_current;
+   _continue_small:=1;
+   {!
+   |?
+      delay(,50);
+      _rand:=rand()*800;
+      _step_current_small+=_rand;
+      {? _step_current+_step_big>_step_current_small
+      || _can_continue:=exec('next_step','#progress',_args,1,_rand)
+      || _continue_small:=0
+      ?};
+      _continue_small>0
+   !};
+   _step_current<_size_all & _can_continue>0
+!};
+~~
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:13:35 1fd1eeaf185b1f8b7c370c6600c3da1dc3fbcf55c63b6f74b843579bdec2c5e615035ba4fc38d28d1b8b02ee65d02b4835a6e79d9c88b7ebb96a21bd2a219de588c747122a043d9470455768ad154592b96465b65810620b88d30d5fa26678068e3e0f66ef1f4b8df59c2c218b093485c69f25808ce192ae28c1ad8062307ac4

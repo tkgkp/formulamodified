@@ -1,0 +1,572 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !wyp_lww_dwyd.fml
+:: Utworzony: 16.08.2017
+:: Autor: GZ
+::======================================================================================================================
+:: Zawartość: Formuły czynności WYP_LWW_DWYD - Rejestracja wydania pracownikowi
+::            Uwaga: większość kodu jest wspólna z czynnościami:
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Formuła główna czynności rejestracji wydania pracownikowi(WYP_LWW_DWYD)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+::# permissions=ODDZ,LMG,F_ZATR,UD_SKL
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=KARO, type=_KARO, name=Wskazanie na wydanie wyposażenia, required=N, keyref=T
+{? var_pres('KARO',_in)<>type_of(~~) & var_pres('KARO',_in)<>type_of(null()) || return() ?};
+{? var_pres('KARO',_in)=type_of(~~) || _in.KARO:=null() ?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=KARO, type=_KARO, name=Wskazanie na wydanie wyposażenia, required=N
+{? var_pres('KARO',_out)<>type_of(~~) & var_pres('KARO',_out)<>type_of(null()) || return() ?};
+
+:: Sprawdzenie rekordu wydania wyposażenia i ustawienie parametru wyjściowego
+{? var_pres('KARO',_in)=type_of(null())
+|| {? _in.KARO
+   || {? exec('FindAndGet','#table',KARO,_in.KARO,,"TYP",'')<>'W'
+      || _msg:='Niezgodność wywołania czynności.\nPrzekazany zapis obrotu wyposażeniem musi być wydaniem.'@@;
+         FUN.emsg(_msg);
+         _mp.error(_msg);
+         return()
+      || _mp.save(exec('kind_out','#b_port'),'KARO',_in.KARO)
+      ?}
+::   || _msg:='Niezgodność wywołania czynności.\nPrzekazany parametr KARO nie może mieć wartości null().'@@;
+::      FUN.emsg(_msg);
+::      _mp.error(_msg);
+::      return()
+   ?}
+?};
+
+_keyRef:='';
+
+:: Wyzwalacz, który po dodaniu nagłówka zlecenia:
+:: - add/put: dodaje/aktualizuje rekord kluczowy nagłówka utworzonego zlecenia
+::   del: usuwa rekord kluczowy nagłówka utworzonego zlecenia
+:: - add/put: zapisuje parametr wyjściowy ZL - wskazanie na nagłówek utworzonego zlecenia
+::   del: zapisuje parametr wyjściowy ZL - null()
+:: - add/put: usuwa kluczowy rekord nagłówka zlecenia nadrzędnego
+::   del: dodaje rekord kluczowy nagłówka zlecenia nadrzędnego
+:: - aktualizuje opis na ToDo
+_mp.trigRef('KARO',1,1,1,exec('kind_out','#b_port'),'KARO',_keyRef,$('KARO.uidref()<>\''+_keyRef+'\''));
+
+:: pobranie keyref w celu przetworzenia w zależności od miejsca wywołania czynności
+_keyRefs:=_mp.getRefs();
+{? var_pres('[1]',_keyRefs)=type_of('') & _keyRefs[1]<>_keyRef
+|| KARO.cntx_psh();
+   KARO.clear();
+   {? KARO.seek(_keyRefs[1])
+   || _karo:=KARO.ref();
+      _karo_uid:=KARO.uidref()
+   || _karo:=null();
+      _karo_uid:=''
+   ?};
+   KARO.cntx_pop()
+|? _mp.akcja()='POPRAW' | _mp.akcja()='USUŃ' | _mp.akcja()='ZAKOŃCZ'
+|| _karo:=_context.KARO;
+   _karo_uid:=exec('FindAndGet','#table',KARO,_context.KARO,,"uidref()",'')
+|| _karo:=null();
+   _karo_uid:=''
+?};
+
+:: Ustawienie filtra i okna pracowników
+P.cntx_psh();
+_p6520:=exec('get','#params',6520,2,OPERATOR.USER);
+exec('filtruj_p','wyp',1+_p6520,_p6520+1);
+P.win_dict('WYP_SEL');
+ATR.M_ATRSQL:='';
+
+:: Wywołanie automatyczne, jest odpowiedni KeyRef, więc bezwarunkowe zakończenie redagowania wydania
+{? _mp.isAutoRun() & _karo<>null()
+|| KARO.cntx_psh();
+   KARO.clear();
+   {? KARO.seek(_karo)
+   || exec('FindAndGet','#table',DK,KARO.SRDK,,"VAR1.DOST:=DOST");
+      exec('FindAndGet','#table',P,KARO.P,,"VAR1.NAZWISKO:=P.OSOBA().NAZWISKO");
+      {? exec('karorw_ra','wyp_head')<>''
+      || _karo:=params_exec('karo_popraw_todo','!wyp_lww_dwyd',_karo);
+         {? _mp.isMicro()
+         || _mp.cancel()
+         |? _karo<>null
+         || {? exec('FindAndGet','#table',KARO,_karo,,"STATUS",'N')='Z'
+            || _mp.save(exec('kind_out','#b_port'),'KARO',_karo);
+               _mp.done()
+            ?}
+         ?}
+      || KARO.STATUS:='Z';
+         {? KARO.put()
+         || _mp.done()
+         ?}
+      ?}
+   || _mp.cancel()
+   ?};
+   KARO.cntx_pop()
+
+:: Wywołanie z listy ToDo, jest odpowiedni KeyRef, więc kontynuacja redagowania wydania
+|? _mp.pathTodo() & _karo<>null()
+|| {? exec('FindAndGet','#table',KARO,_karo,,"STATUS",'N')='Z'
+   || FUN.info('Zakończono rejestrację wydania wyposażenia pracownikowi.'@);
+      _mp.done()
+   || _mp.keyRef(_karo_uid);
+      _karo:=params_exec('karo_popraw_todo','!wyp_lww_dwyd',_karo);
+      {? _mp.isMicro()
+      || _mp.cancel()
+      |? _karo<>null
+      || {? exec('FindAndGet','#table',KARO,_karo,,"STATUS",'N')='Z'
+         || _mp.save(exec('kind_out','#b_port'),'KARO',_karo);
+            _mp.done()
+         ?}
+      ?}
+   ?}
+
+:: Poprawianie wydania (obszar roboczy - wydanie przekazane kontekstem)
+|? _mp.akcja()='POPRAW'
+|| _mp.keyRef(_karo_uid);
+   _status:=exec('FindAndGet','#table',KARO,_karo,,"STATUS",'N');
+   _karo:=params_exec('karo_popraw_akcja','!wyp_lww_dwyd');
+   {? _mp.isMicro()
+   || _mp.cancel()
+   |? _karo<>null()
+   ||
+      {? _status='Z'
+      || _mp.done()
+      |? _status='N'
+      || _mp.save(exec('kind_out','#b_port'),'KARO',_karo);
+         _mp.done()
+      ?}
+   ?}
+
+:: Dodawanie (obszar roboczy - wydanie przekazane kontekstem)
+|? _mp.akcja()='WYDAJ'
+|| _mp.keyRef(_karo_uid);
+   _karo:=params_exec('karo_wydaj_akcja','!wyp_lww_dwyd');
+   {? _mp.isMicro()
+   || _mp.cancel()
+   |? exec('FindAndGet','#table',KARO,_karo,,"STATUS",'N')='Z'
+   || _mp.save(exec('kind_out','#b_port'),'KARO',_karo);
+      _mp.done()
+   ?}
+
+:: Dodawanie (obszar roboczy - wydanie przekazane kontekstem)
+|? _mp.akcja()='DOŁĄCZ'
+|| _mp.keyRef(_karo_uid);
+   _karo:=params_exec('karo_dolacz_akcja','!wyp_lww_dwyd');
+   {? _mp.isMicro()
+   || _mp.cancel()
+   |? exec('FindAndGet','#table',KARO,_karo,,"STATUS",'N')='Z'
+   || _mp.save(exec('kind_out','#b_port'),'KARO',_karo);
+      _mp.done()
+   ?}
+
+:: Wywołanie z panelu czynności - nowy proces, więc nowe wydanie
+:: Wywołanie z listy ToDo, nie ma KeyRef, więc nowe wydanie
+:: Dołączanie nowego wydania (obszar roboczy)
+|? _mp.pathProc() | _mp.pathTodo()
+|| _karo:=exec('karo_dolacz_proces','!wyp_lww_dwyd');
+   {? _mp.isMicro()
+   || _mp.cancel()
+   |? _karo<>null()
+   || {? exec('FindAndGet','#table',KARO,_karo,,"STATUS",'N')='Z'
+      || _mp.save(exec('kind_out','#b_port'),'KARO',_karo);
+         _mp.done()
+      ?}
+   || _mp.cancel()
+   ?}
+
+:: Usuwanie wydania (obszar roboczy - wydanie przekazane kontekstem)
+|? _mp.akcja()='USUŃ'
+|| _ok:=params_exec('karo_usun_akcja','!wyp_lww_dwyd');
+   {? _ok
+   || _mp.cancel()
+   ?}
+
+:: Zakończenie redagowania wydania (obszar roboczy - wydanie przekazane kontekstem)
+|? _mp.akcja()='ZAKOŃCZ'
+|| {? exec('blk_lock','#table','KARO',_karo,,,'Zapis obrotu wyposażeniem jest redagowany'@)
+   || KARO.cntx_psh();
+      KARO.clear();
+      {? KARO.seek(_karo)
+      || exec('FindAndGet','#table',DK,KARO.SRDK,,"VAR1.DOST:=DOST");
+         exec('FindAndGet','#table',P,KARO.P,,"VAR1.NAZWISKO:=P.OSOBA().NAZWISKO");
+         {? exec('karorw_ra','wyp_head')<>''
+         || _karo:=params_exec('karo_popraw_todo','!wyp_lww_dwyd',_karo);
+            {? _mp.isMicro()
+            || _mp.cancel()
+            |? _karo<>null
+            || {? exec('FindAndGet','#table',KARO,_karo,,"STATUS",'N')='Z'
+               || _mp.save(exec('kind_out','#b_port'),'KARO',_karo);
+                  _mp.done()
+               ?}
+            ?}
+         || {? FUN.ask('Czy zakończyć rejestrację wydania wyposażenia pracownikowi?'@)
+            || KARO.STATUS:='Z';
+               {? KARO.put()
+               || _mp.save(exec('kind_out','#b_port'),'KARO',_karo);
+                  _mp.done()
+               ?}
+            ?}
+         ?}
+      || _mp.cancel()
+      ?};
+      KARO.cntx_pop()
+   ?};
+   exec('blk_unlock','#table','KARO',_karo)
+
+:: Tutaj nie powinno dojść, więc błąd
+|| _mp.error('Błędny kontekst wywołania czynności %1.'@@['WYP_LWW_DWYD'])
+?};
+P.cntx_pop();
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Opis dla czynności rejestracji rejestracji wydania pracownikowi(WYP_LWW_DWYD)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_desc:='Zredaguj nowe wydanie pracownikowi.'@@;
+_desc
+
+
+\karo_dolacz_proces
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Dołączanie rekordu do KARO - z pulpitu lub todo
+::----------------------------------------------------------------------------------------------------------------------
+_res:=null();
+POMOC.MGRP:=null();
+POMOC.MGRW:=null();
+ZKARO.MGRP:=null();
+VAR1.DOST:=date(0,0,0);
+ATR.MJS:='KARO';
+DK_C.blank(0);
+M_ATR.blank(1);
+KARO.cntx_psh();
+KARO.clear();
+KARO.blank();
+KARO.win_edit('RED_WYD');
+ZKARO.RODZORED:=1;
+{? KARO.edit("exec('karorw_ra','wyp_head')")
+|| KARO.STATUS:='Z';
+   KARO.cntx_psh();
+   KARO.clear();
+   {? KARO.add() & KARO.TYP='W'
+   || _nrk:=exec('update','rezerwacje','KARO',KARO.ref(),KARO.MG,KARO.M,KARO.IL,KARO.SRDK,,,3);
+      exec('aktu_rez','rezerwacje',KARO.M,_nrk,KARO.IL);
+      exec('obl_stan','magazyn_stan',KARO.M,1,KARO.MG)
+   ?};
+   _res:=KARO.ref();
+   KARO.cntx_pop()
+?};
+KARO.cntx_pop();
+POMOC.MGRP:=null();
+POMOC.MGRW:=null();
+return(_res)
+
+
+\karo_wydaj_akcja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Redakcja wyposażenia z okna
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env_karo:=params_get().context.env_karo;
+_env_karo.MAT_EDIT:=1;
+params_set('env_karo',_env_karo);
+_res:=null();
+{? exec('karorw_db','wyp_head')
+|| _res:=exec('karm_dolacz','wyp_head');
+   {? _res<>null()
+   || KARO.cntx_psh();
+      KARO.prefix();
+      {? KARO.seek(_res)
+      || _karo_stan:=params_get().context.env_karo.STAN;
+         _karo_stan.cntx_psh();
+         _karo_stan.index(params_get().context.env_karo.NDX);
+         _karo_stan.prefix(-1,#KARO.M);
+         {? ~_karo_stan.first()
+         || exec('stan4pos','wyp_head')
+         ?};
+         _karo_stan.cntx_pop()
+      ?};
+      KARO.cntx_pop()
+   ?}
+?};
+_res
+
+
+\karo_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Dołączanie rekordu do KARO - z obszaru
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='WYP_LWW_DWYD';
+_params.AKCJA:='DOŁĄCZ';
+_params.PROC_START:='T';
+_params.CONTEXT:=obj_new('KARO','env_karo');
+_params.CONTEXT.KARO:=null();
+_env_karo:=params_get().env_karo;
+_env_karo.MAT_EDIT:=1;
+_params.CONTEXT.env_karo:=_env_karo;
+exec('mp_run','#b__box',_params);
+params_exec('st_refresh','wyp_head')
+
+
+\karo_dolacz_akcja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Redakcja wyposażenia z okna
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env_karo:=params_get().context.env_karo;
+params_set('env_karo',_env_karo);
+_karo:=null();
+{? exec('karorw_db','wyp_head')
+|| _karo:=exec('karm_dolacz','wyp_head');
+   exec('FindAndGet','#table',KARO,_karo,,"exec('karorw_dpua','wyp_head')")
+?};
+_karo
+
+
+\karo_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Poprawianie rekordu w KARO - z obszaru
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='WYP_LWW_DWYD';
+_params.AKCJA:='POPRAW';
+_params.UIDREF:=KARO.uidref();
+_params.CONTEXT:=obj_new('KARO','env_karo');
+_params.CONTEXT.KARO:=KARO.ref();
+_env_karo:=params_get().env_karo;
+_env_karo.MAT_EDIT:=1;
+_params.CONTEXT.env_karo:=_env_karo;
+exec('mp_run','#b__box',_params)
+
+
+\karo_popraw_akcja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Redakcja wyposażenia z okna
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env_karo:=params_get().context.env_karo;
+params_set('env_karo',_env_karo);
+_karo:=null();
+KARO.cntx_psh(); KARO.prefix();
+{? exec('karorw_pb','wyp_head')
+|| {? exec('blk_lock','#table','KARO',KARO.ref(),,,'Zapis obrotu wyposażeniem jest redagowany'@)
+   || {? KARO.edit("exec('karorw_ra','wyp_head')")
+      || {? KARO.put() & KARO.TYP='W'
+         || _rdk:=BIT.sqlint(KARO.SRDK);
+            _ndk:=form(8+KARO.SRDK);
+            {? HELP.MOD_IND<>KARO.M | KARO.SRDK<>HELP.MRSQL
+            || _nr0:=exec('FindInSet','#table','REZ','RODZ',KARO.M,'W',"REZ.NRK",,,0);
+               exec('update','rezerwacje','KARO',KARO.ref(),KARO.MG,KARO.M,0,HELP.MRSQL,,,0);
+               _nr1:=exec('update','rezerwacje','KARO',KARO.ref(),KARO.MG,KARO.M,KARO.IL,KARO.SRDK,,,3);
+               {? HELP.MOD_IND<>KARO.M || exec('aktu_rez','rezerwacje',HELP.MOD_IND,_nr0,HELP.IL) ?};
+               exec('aktu_rez','rezerwacje',KARO.M,_nr1,KARO.IL);
+               exec('obl_stan','magazyn_stan',KARO.M,1,KARO.MG);
+               exec('obl_stan','magazyn_stan',HELP.MOD_IND,1,KARO.MG)
+            |? HELP.IL<>KARO.IL
+            || _nrk:=exec('update','rezerwacje','KARO',KARO.ref(),KARO.MG,KARO.M,KARO.IL,KARO.SRDK,,,3);
+               exec('aktu_rez','rezerwacje',KARO.M,_nrk,KARO.IL);
+               exec('obl_stan','magazyn_stan',KARO.M,1,KARO.MG)
+            ?}
+         ?};
+         _karo:=KARO.ref();
+         exec('FindAndGet','#table',KARO,_karo,,"exec('karorw_dpua','wyp_head')")
+      ?}
+   ?};
+   exec('blk_unlock','#table','KARO',KARO.ref())
+?};
+KARO.cntx_pop();
+{? _karo<>null()
+|| KARO.cntx_psh();
+   KARO.prefix();
+   KARO.seek(_karo);
+   _brak:=0;
+   {? VAR.TRYBRODZ
+   || {? ~params_get(1).env_karo.STANG.size() | ~exec('czy_na_stanie','wyp_head')
+      || _brak:=1
+      ?}
+   || {? ~params_get(1).env_karo.STAN.size() | ~exec('czy_na_stanie','wyp_head')
+      || _brak:=1
+      ?}
+   ?};
+   KARO.cntx_pop();
+   {? _brak
+   || {? VAR.TRYBRODZ
+      || {? exec('reload_karms','wyp_head',P.ref(),0)
+         || exec('uzu_c_karms','wyp_head',0)
+         ?};
+         grp_disp(params_get(1).env_karo.STANG,params_get(1).env_karo.WERG,1)
+      ||
+         {? exec('reload_karms','wyp_head',P.ref(),1)
+         || exec('uzu_c_karms','wyp_head',1)
+         ?};
+         grp_disp(params_get(1).env_karo.STAN,params_get(1).env_karo.WER,1)
+::      exec('karow_prfx','wyp_head',1,1);
+::      grp_disp(KARO,'WER_R')
+      ?}
+   ?};
+   KARO.seek(_karo)
+?};
+_karo
+
+
+\karo_popraw_todo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Redakcja wydania wyposażenia z listy zadań
+::   WE: KARO.ref
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_karo:=null();
+KARO.cntx_psh();
+{? KARO.seek(_a) & exec('karorw_pb','wyp_head')
+|| {? exec('blk_lock','#table','KARO',KARO.ref(),,,'Zapis obrotu wyposażeniem jest redagowany'@)
+   || {? KARO.edit("exec('karorw_ra','wyp_head')")
+      || KARO.STATUS:='Z';
+         {? KARO.put() & KARO.TYP='W'
+         || _rdk:=BIT.sqlint(KARO.SRDK);
+            _ndk:=form(8+KARO.SRDK);
+            {? HELP.MOD_IND<>KARO.M | KARO.SRDK<>HELP.MRSQL
+            || _nr0:=exec('FindInSet','#table','REZ','RODZ',KARO.M,'W',"REZ.NRK",,,0);
+               exec('update','rezerwacje','KARO',KARO.ref(),KARO.MG,KARO.M,0,HELP.MRSQL,,,3);
+               _nr1:=exec('update','rezerwacje','KARO',KARO.ref(),KARO.MG,KARO.M,KARO.IL,KARO.SRDK,,,3);
+               {? HELP.MOD_IND<>KARO.M || exec('aktu_rez','rezerwacje',HELP.MOD_IND,_nr0,HELP.IL) ?};
+               exec('aktu_rez','rezerwacje',KARO.M,_nr1,KARO.IL);
+               exec('obl_stan','magazyn_stan',KARO.M,1,KARO.MG);
+               exec('obl_stan','magazyn_stan',HELP.MOD_IND,1,KARO.MG)
+            |? HELP.IL<>KARO.IL
+            || _nrk:=exec('update','rezerwacje','KARO',KARO.ref(),KARO.MG,KARO.M,KARO.IL,KARO.SRDK,,,3);
+               exec('aktu_rez','rezerwacje',KARO.M,_nrk,KARO.IL);
+               exec('obl_stan','magazyn_stan',KARO.M,1,KARO.MG)
+            ?}
+         ?};
+         _karo:=KARO.ref()
+      ?}
+   ?};
+   exec('blk_unlock','#table','KARO',KARO.ref())
+?};
+KARO.cntx_pop();
+_karo
+
+
+\karo_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Usuwanie rekordu z KARO - z obszaru
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='WYP_LWW_DWYD';
+_params.AKCJA:='USUŃ';
+_params.UIDREF:=KARO.uidref();
+_params.CONTEXT:=obj_new('KARO','env_karo');
+_params.CONTEXT.KARO:=KARO.ref();
+_params.CONTEXT.env_karo:=params_get().env_karo;
+exec('mp_run','#b__box',_params);
+params_exec('st_refresh','wyp_head')
+
+
+\karo_usun_akcja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Redakcja wyposażenia z okna
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env_karo:=params_get().context.env_karo;
+params_set('env_karo',_env_karo);
+_ok:=0;
+_karo:=KARO.ref();
+{? exec('blk_lock','#table','KARO',_karo,,,'Zapis obrotu wyposażeniem jest redagowany'@)
+|| {? exec('karorw_ub','wyp_head')
+   || {? KARO.TYP='W'
+      || exec('update','rezerwacje','KARO',KARO.ref(),KARO.MG,KARO.M,0,KARO.SRDK,,,0);
+         exec('aktu_rez','rezerwacje',KARO.M,exec('FindInSet','#table','REZ','RODZ',KARO.M,'W',"REZ.NRK",,,0),KARO.IL);
+         exec('obl_stan','magazyn_stan',KARO.M,1,KARO.MG)
+      ?};
+      PWOPOZ.cntx_psh();
+      POLWO.cntx_psh();
+      _polwo:=KARO.PWOPOZ().POLWO;
+      _ok:=KARO.del(,1);
+      {? _ok
+      || exec('karorw_dpua','wyp_head')
+      ?};
+      {? _ok>0 & POLWO.seek(_polwo)
+      || POLWO.DATA_G:=date(0,0,0);
+         _ok:=POLWO.put()
+      ?};
+      {? _ok>0
+      || KARO.cntx_psh();
+         _size:=KARO.size();
+         KARO.cntx_pop();
+         {? _size=0
+         || {? VAR.TRYBRODZ
+            || {? exec('reload_karms','wyp_head',P.ref(),0)
+               || exec('uzu_c_karms','wyp_head',0)
+               ?};
+               grp_disp(_env_karo.STANG,_env_karo.WERG,1)
+            || {? exec('reload_karms','wyp_head',P.ref(),1)
+               || exec('uzu_c_karms','wyp_head',1)
+               ?};
+               grp_disp(_env_karo.STAN,_env_karo.WER,1)
+            ?}
+         ?}
+      ?};
+      POLWO.cntx_pop();
+      PWOPOZ.cntx_pop()
+   ?}
+?};
+exec('blk_unlock','#table','KARO',_karo);
+_ok
+
+
+\karo_zakoncz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.42]
+:: OPIS: Zakańczanie redakcji KARO - z obszaru
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='WYP_LWW_DWYD';
+_params.AKCJA:='ZAKOŃCZ';
+_params.UIDREF:=KARO.uidref();
+_params.CONTEXT:=obj_new('KARO','env_karo');
+_params.CONTEXT.KARO:=KARO.ref();
+_params.CONTEXT.env_karo:=params_get().env_karo;
+exec('mp_run','#b__box',_params)
+
+:Sign Version 2.0 jowisz:1048 2020/10/16 15:19:22 44b9ef68d999e05fb05663cd3f5d1a60f6a0b4bbe660190225f8bc9d39e174f2e6b609edd704a0f0665fb1f2ae2ddfb7e70a5850a497b00ddd484185090a17b001dab2770ed72f4cf0ded084670c065afcf9fec9ae859829b2ac01b366d31f011a7dad8ef9394a483949e7ce86b7267a7ad75ea6f65d24ead88db38941e575c2

@@ -1,0 +1,525 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: mwa_fakz.fml
+:: Utworzony: 21.02.2019
+:: Autor: Markus
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi faktur przez MacroWebAPI
+::======================================================================================================================
+
+
+\serialize_fakz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Formuła pomocnicza do serializacji rekordów z tabeli FAKZ.
+::       Kontekst wywołania: ustawiona dziedzina tabeli FAKZ
+::   WE: _a - FILE - obiekt plikowy przeznaczony do zapisu wynikowego JSONa
+::   WY: 0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_resp:=fopen(null,'Uw',,1,1);
+
+_data:="
+   FAKZ.xml_records(params_get().resp,,'data','p',,'noheader=1,norecord=0,nodata=1,indentation=1'
+         ,'ODDZ',,'KH',,'DW',
+         ,'REFERENCE',,'IDADD',,'DF',,'KH_ODB',,'IL',,'STS',,'CN',,'CB',,'WN',,'WB',,'NR_ZEW',,'PROJEKTY',
+         ,'FIRMA',,'AR',,'AM',,'UWAGI',,'FAKSO',,'ZLECIL',,'ZAL',,'DA_ZAL',,'KOREKTA',,'SYM_KOR',,'M:M_KTM','KTM'
+         ,'FAKS',\"exec('FAKS_sym','mwa_fakz')\"
+   );
+   ''
+";
+_tab:=tab_tmp(,'STATUS','STRING[20]','');
+_tab.STATUS:='OK'; _tab.add();
+params_set('resp',_resp);
+_tab.xml_records(_resp,_a.METHOD+'Response',,'p',_a.OUTNSPC,'norecord=1'
+   ,'STATUS:status',
+   ,'',_data
+);
+
+_resp
+
+
+\set_fields_fakz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Ustawia pola zlecenia fakturowania
+::   WE: _a - STRING - parametry zlecenia fakturowania
+::       _b - OBJ - wsenv
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_fields','mwapi',_a);
+_wsenv:=_b;
+
+FAKZ.CZY_FAK:='N';
+{? FAKZ.FIRMA=null() || FAKZ.FIRMA:=REF.FIRMA ?};
+FAKZ.AR:=FAKZ.DW~1;
+FAKZ.AM:=FAKZ.DW~2;
+{? FAKZ.ZAL='' & FAKZ.DA_ZAL=date(0,0,0) || FAKZ.ZAL:='N' ?};
+:: Dodatkowa walidacja
+{? FAKZ.IL<0 || _wsenv.add_error('Ilość nie może być mniejsza od zera.'@) ?};
+{? FAKZ.CN<0 || _wsenv.add_error('Cena netto nie może być mniejsza od zera.'@) ?};
+{? FAKZ.CB<0 || _wsenv.add_error('Cena brutto nie może być mniejsza od zera.'@) ?};
+{? 'NT'*FAKZ.KOREKTA=0
+|| _wsenv.add_error('Znacznik określający czy dokument korygujący może mieć tylko wartość \'T\' lub \'N\'.'@)
+?};
+exec('fakz_war','faktury_wspolne');
+~~
+
+
+\create_fakz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Dodaje zlecenie fakturowania w oparciu o przekazane parametry.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+::{? var_pres('_b')<>type_of('') || return() ?};
+
+_par:=params_get();
+_option:=exec('get_option','mwapi',_par,'Fakz.IDADD');
+_idadd:=_option.value;
+_fields_fakz:='FAKZ'+_option.fields;
+
+FAKZ.cntx_psh();
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+:: jeżeli w KH jest podany kod lub w FIRMA symbol to podmieniamy na reference
+_fields_fakz:=exec('update_fields','mwa_fakz',_fields_fakz,'KH',KH);
+_fields_fakz:=exec('update_fields','mwa_fakz',_fields_fakz,'FIRMA',FIRMA);
+
+::_oddzial:=exec('get_option','#webservice',_b,'ODDZ');
+_oddzial:=exec('get_option','mwapi',_par,'Fakz.ODDZ').value;
+{? _oddzial<>''
+|| {? +_oddzial=1
+   || ODDZ.cntx_psh();
+      ODDZ.index('KOD');
+      ODDZ.prefix(_oddzial,);
+      {? ~ODDZ.first() || _wsenv.add_error('Należy podać prawidłowy kod oddziału.'@) ?};
+      ODDZ.cntx_pop()
+   || _wsenv.add_error('Kod oddziału musi mieć jeden znak.'@)
+   ?}
+|| _wsenv.add_error('Kod oddziału musi być podany.'@)
+?};
+
+::_dw:=exec('get_option','#webservice',_b,'DW');
+_dw:=exec('get_option','mwapi',_par,'Fakz.DW').value;
+{? _dw='' || _wsenv.add_error('Data wystawienia musi być podana.'@) ?};
+
+:: M_KTM Indeks materiałowy
+_m_ktm:=exec('get_option','mwapi',_par,'Fakz.M_KTM').value;
+_ktm:=null();
+{? _m_ktm<>''
+|| _ktm:=exec('FindInSet','#table','M','MATKTM',_m_ktm,,,1);
+   {? _ktm=null
+   || _wsenv.add_error('Nieprawidłowy kod materiału.'@)
+   ?}
+?};
+
+{? ~_wsenv.has_errors()
+|| __PARSES.setVal('OddzialLogProd',_oddzial);
+   _args:=__PARSES.args('OkresRok');
+   _args.OBSZAR:='LSP';
+   _args.AR:=exec('str2date','#convert',_dw)~1;
+   _args.AM:=exec('str2date','#convert',_dw)~2;
+   __PARSES.setVal('OkresRok',_args,1);
+
+   FAKZ.blank();
+   FAKZ.M:=_ktm;
+   FAKZ.memo_set('','UWAGI');
+   FAKZ.memo_set('','FAKSO');
+
+   exec('set_fields_fakz','mwa_fakz',_fields_fakz,_wsenv);
+
+   {? ~_wsenv.has_errors()
+   || _params:=exec('mp_run_a','#b__box');
+      _params.ACT_UID:='LSP_FAK_DZLF';
+      _params.AKCJA:='Dołącz';
+      _params.PROC_START:='T';
+      _params.QUIET:='T';
+      exec('mp_run','#b__box',_params);
+
+      {? _wsenv.IDADD=''
+      || _wsenv.add_error('Wystąpił błąd podczas próby dodania zlecenia fakturowania.'@)
+      ?}
+
+::      {? ~_wsenv.has_errors()
+::      || _result:=exec('read_fakz_idadd','webservice',
+::            _a,exec('make_options','#webservice','field','idadd','value',_wsenv.IDADD)
+::         )
+::      || _result:=_wsenv.to_json()
+::      ?}
+::   || _result:=_wsenv.to_json()
+   ?}
+::|| _result:=_wsenv.to_json()
+?};
+
+{? ~_wsenv.has_errors() & _wsenv.IDADD<>''
+|| _result:=exec('read_fakz_idadd_row','mwa_fakz',_par,_wsenv.IDADD)
+|| _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+FAKZ.cntx_pop();
+_result
+
+
+\read_fakz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje wszystkie rekordy tabeli FAKZ.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+:: _oddzial - Oddział (jednoliterowy kod oddziału), [domyślnie - c (centrala)]
+_oddzial:=exec('get_option','mwapi',_par,'Oddzial').value;
+{? _oddzial='' || _oddzial:='c' ?};
+{? +_oddzial=1
+||
+   {? ~exec('FindInSet','#table','ODDZ','KOD',_oddzial,,"ODDZ.KOD",1,,'')=''
+   ||
+      _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2]. Nie znaleziono oddziału'@ ['<oddzial>',_oddzial]);
+      _oddzial:=''
+   ?}
+|| _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2]. Długość parametru musi mieć 1 znak'@ ['<oddzial>',_oddzial])
+?};
+
+:: Dlaczego nie:
+::exec('chk_oddz','mwapi',_oddzial);
+
+:: _rok - Rok (wymagany)
+_rok:=exec('get_option','mwapi',_par,'Rok').value;
+_rok:=#_rok;
+_rok_min:=2000; _rok_max:=2099;
+{? _rok=0
+|| _wsenv.add_error('Rok musi być podany.'@)
+|? _rok<_rok_min | _rok>_rok_max
+|| _wsenv.add_error('Wartość parametru \'rok\' musi być z przedziału %1 - %2.'@[$_rok_min,$_rok_max])
+|| _rok:=($_rok)+2
+?};
+
+:: _firma - Symbol firmy, z której mają być zwrócone rekordy, nie podana - bieżąca.
+_firma:=exec('get_option','mwapi',_par,'Firma').value;
+{? _firma='' || _firma:=__Firma ?};
+
+:: uprawnienia do odglądania i rejestracji zleceń fakturowania
+{? ~exec('chk_role','#b__box',OPERATOR.USER,'LSP_FAK_PZLF') &
+   ~exec('chk_role','#b__box',OPERATOR.USER,'LSP_FAK_DZLF')
+|| _wsenv.add_error('Brak uprawnień do przeglądania zleceń fakturowania.'@)
+?};
+
+{? _wsenv.has_errors()
+|| _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+|| FAKZ.cntx_psh();
+   FAKZ.use('fz'+_firma+_oddzial+_rok);
+   FAKZ.index('DF');
+   FAKZ.prefix();
+   _result:=exec('serialize_fakz','mwa_fakz',_par);
+   FAKZ.cntx_pop()
+?};
+_result
+
+
+\read_fakz_idadd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje dane zlecenie fakturowania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_idadd:=exec('get_option','mwapi',_par,'IDADD').value;
+
+_result:=exec('read_fakz_idadd_row','mwa_fakz',_par,_idadd);
+_result
+
+
+\update_fakz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Modyfikuje dane zlecenie fakturowania
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_option:=exec('get_option','mwapi',_par,'Fakz.IDADD');
+_idadd:=_option.value;
+_fields_fakz:='FAKZ'+_option.fields;
+
+::_idadd:=exec('get_option','#webservice',_b,'IDADD');
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+:: M_KTM Indeks materiałowy
+_m_ktm:=exec('get_option','mwapi',_par,'Fakz.M_KTM',1).value;
+_ktm:=null();
+_is_ktm:={? type_of(_m_ktm)=type_of('') || 1 || 0 ?};
+{? _is_ktm & _m_ktm<>''
+|| _ktm:=exec('FindInSet','#table','M','MATKTM',_m_ktm,,,1)
+?};
+
+{? _idadd=''
+|| _wsenv.add_error('Nie przekazano IDADD.'@)
+|? _is_ktm & _m_ktm<>'' & _ktm=null()
+|| _wsenv.add_error('Nieprawidłowy kod materiału.'@)
+|? +_idadd=31
+|| FAKZ.cntx_psh();
+   _names:=FAKZ.names();
+   _names.first();
+   _found:=0;
+
+   {!
+   |? FAKZ.use(_names.NAME);
+      FAKZ.index('IDADD');
+      FAKZ.prefix();
+      {? FAKZ.find_key(_idadd)
+      || FAKZ.prefix(_idadd);
+         {? FAKZ.first()
+         || _found:=1;
+            _uidref:=FAKZ.uidref()
+         ?}
+      ?};
+      _names.next() & ~_found
+   !};
+
+   {? _found
+   ||
+      __PARSES.setVal('OddzialLogProd',FAKZ.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LSP';
+      _args.AR:=FAKZ.DW~1;
+      _args.AM:=FAKZ.DW~2;
+      __PARSES.setVal('OkresRok',_args,1);
+
+      exec('set_fields_fakz','mwa_fakz',_fields_fakz,_wsenv);
+      {? _is_ktm || FAKZ.M:=_ktm ?};
+      _buffer:=exec('FAKZ','buffer');
+      _buffer.get();
+
+      _params:=exec('mp_run_a','#b__box');
+      _params.ACT_UID:='LSP_FAK_DZLF';
+      _params.AKCJA:='Popraw';
+      _params.UIDREF:=FAKZ.uidref();
+      _params.QUIET:='T';
+      _params.CONTEXT:=obj_new('buffer'); _params.CONTEXT.buffer:=_buffer;
+
+      exec('mp_run','#b__box',_params)
+   || _wsenv.add_error('Nie znaleziono zlecenia fakturowania.'@)
+   ?};
+   FAKZ.cntx_pop()
+|| _wsenv.add_error('Nieprawidłowa wartość pola %1 [%2].'@ ['IDADD',_idadd])
+::   _result:=_wsenv.to_json()
+?};
+
+::{? ~_wsenv.has_errors()
+::|| _result:=exec('read_fakz_idadd','webservice',
+::      _a,exec('make_options','#webservice','field','idadd','value',_idadd)
+::   )
+::|| _result:=_wsenv.to_json()
+::?};
+
+{? _wsenv.has_errors()
+||
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+||
+   _result:=exec('read_fakz_idadd_row','mwa_fakz',_par,_idadd)
+?};
+
+_result
+
+
+\delete_fakz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Usuwa dane zlecenie fakturowania
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_idadd:=exec('get_option','mwapi',_par,'IDADD').value;
+
+::_idadd:=exec('get_option','#webservice',_b,'value');
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+
+{? +_idadd=31
+||
+   FAKZ.cntx_psh();
+   _names:=FAKZ.names();
+   _names.first();
+   _found:=0;
+
+   {!
+   |? FAKZ.use(_names.NAME);
+      FAKZ.index('IDADD');
+      FAKZ.prefix();
+      {? FAKZ.find_key(_idadd)
+      || FAKZ.prefix(_idadd);
+         {? FAKZ.first()
+         || _found:=1;
+            _uidref:=FAKZ.uidref()
+         ?}
+      ?};
+      _names.next() & ~_found
+   !};
+
+   {? _found
+   || _params:=exec('mp_run_a','#b__box');
+      _params.ACT_UID:='LSP_FAK_DZLF';
+      _params.AKCJA:='Usuń';
+      _params.UIDREF:=_uidref;
+      _params.QUIET:='T';
+      exec('mp_run','#b__box',_params);
+      _wsenv.erase();
+      _wsenv.add_info('Usunięto zlecenie fakturowania.'@)
+   ||
+      _wsenv.add_error('Nie znaleziono zlecenia fakturowania.'@)
+   ?};
+
+::   _result:=_wsenv.to_json();
+   FAKZ.cntx_pop()
+
+|| _wsenv.add_error('Nieprawidłowa wartość pola %1 [%2].'@ ['IDADD',_idadd])
+::   _result:=_wsenv.to_json()
+?};
+
+{? _wsenv.has_errors()
+||
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+||
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp,1)
+?};
+
+_result
+
+
+\read_fakz_idadd_row
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje dane zlecenie fakturowania.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=_a;
+_idadd:=_b;
+_can_continue:=1;
+_found:=0;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_idadd=31
+|| FAKZ.cntx_psh();
+   _names:=FAKZ.names();
+   {? _names.first()
+   || {!
+      |? FAKZ.use(_names.NAME);
+         FAKZ.index('IDADD');
+         FAKZ.prefix();
+         {? FAKZ.find_key(_idadd)
+         || FAKZ.prefix(_idadd);
+            {? FAKZ.first()
+            || _result:=exec('serialize_fakz','mwa_fakz',_par);
+               _found:=1;
+               _can_continue:=0
+            ?}
+         ?};
+         _can_continue>0 & _names.next()
+      !}
+   ?};
+   FAKZ.cntx_pop();
+   {? _found=0
+   || _wsenv.add_error('Nie znaleziono zlecenia fakturowania.'@);
+      _resp:=_wsenv.to_json();
+      _result:=exec('serialize_res','mwapi',_par,_resp)
+   ?}
+|| _wsenv.add_error('Nieprawidłowa wartość pola %1 [%2].'@ ['IDADD',_idadd]);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+_result
+
+
+\prolog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Formuła startowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+exec('prolog','mwapi',_par);
+~~
+
+
+\epilog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Fomuła końcowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+exec('epilog','mwapi');
+~~
+
+
+\FAKS_sym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [21.37]
+:: OPIS: Pobiera symbol faktury sprzedaży na jakie zlecenie zostało zafakturowane
+::----------------------------------------------------------------------------------------------------------------------
+_faks_sym:='';
+
+FAKZ2FAP.cntx_psh();
+FAKZ2FAP.use('fakzf'+(FAKZ.name()+3));
+FAKZ2FAP.cntx_psh();
+FAKZ2FAP.index('FAKZ');
+FAKZ2FAP.prefix(FAKZ.uidref(),);
+{? FAKZ2FAP.first()
+|| _faks_sym:=exec('FindAndGet','#table',FAKS,FAKZ2FAP.FAKS,,"FAKS.SYM",'')
+?};
+FAKZ2FAP.cntx_pop();
+FAKZ2FAP.cntx_pop();
+
+xml_value(_faks_sym)
+
+
+\update_fields
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [23.25]
+:: OPIS: Podmienia wartości pól
+::   WE: _a - String  z polami
+::       _b - nazwa pola
+::       _c - tabela
+::----------------------------------------------------------------------------------------------------------------------
+{? _a*'`sep`%1`sep`'[_b]
+|| _value:=
+   {? ((_a*'`sep`%1`sep`'[_b]+(+'`sep`%1`sep`'[_b])-_a)*'`sep`')=0
+   || (_a*'`sep`%1`sep`'[_b]+(+'`sep`%1`sep`'[_b]-1)-_a)
+   || ((_a*'`sep`%1`sep`'[_b]+(+'`sep`%1`sep`'[_b])-_a)*'`sep`')+(_a*'`sep`%1`sep`'[_b]+(+'`sep`%1`sep`'[_b]-1)-_a)
+   ?};
+   _mask:=_c.name();
+   {? ~(+_value=16 & BB.sqlint(_value)>0 & ((+_mask)+_value)=_mask) & _value<>''
+   || _ref:=null();
+      {? _c=KH
+      || _ref:=exec('FindInSet','#table','KH','KOD',_value,2,,1,,null())
+      |? _c=FIRMA
+      || _ref:=exec('FindInSet','#table','FIRMA','SYMBOL',_value,,,1,,null())
+      ?};
+      {? type_of(_ref)=type_of(null()) & _ref<>null()
+      || _a:=gsub(_a,'`sep`%1`sep`%2'[_b,_value],'`sep`%1`sep`%2'[_b,$_ref])
+      ?}
+   ?}
+?};
+_a
+
+:Sign Version 2.0 jowisz:1045 2023/12/04 13:43:19 018e6a3cba4233db62e81b907943edc0796688cdd4a9def9e38cc684377045e559f913840350a7d6eb1ca3e9609e1899a0034061f44648a4baff5c6568e8d0fb3d14658735c86c9959cf7e88578002e24773e8e4a39381e605dfd9c0cc3ef95703e0afe1871ab3bdfd3849cc3427d1748deb82e0ad8029b5ba8be8cedf6c922a

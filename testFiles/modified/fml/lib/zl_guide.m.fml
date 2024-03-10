@@ -1,0 +1,375 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: zl_guide.fml
+:: Utworzony: 25.06.2015
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Obsługa przewodników zleceń
+::            Plik biblioteczny - wspólna obsługa dla czynności obszaru roboczego TTE_PZL
+::======================================================================================================================
+
+
+\generuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JM [7.22]
+:: OPIS: Generowanie jednego przewodnika do zlecenia na podstawie technologii
+::   WE: [_a] - czy wyswietlac pytania o ilosc na przewodniku (1 - tak domyslnie / 0 - nie)
+::       [_b] - czy sprawdzac plan zasobow i wg niego generowac przewodniki (1 - tak domyslnie / 0 - nie)
+::       [_c] - czy generowac przewodniki wg partii, jezeli zlecenie partiowane (1 - tak domyslnie / 0 - nie)
+::       [_d] - STRING - klucz grupujący którym stemplować utworzone przewodniki
+::       [_e] - INTEGER - [0]/1 - czy akcja grupowa
+::       [_f] - INTEGER - [0]/1 - czy generować od razu zakończone przewodniki
+::       [_g] - REAL - ilość ze zlecenia którą podzielić
+::       [_h] - REAL - ilość na jednym przewodniku
+::       [_i] - czy generować przewodniki wg wtyczki, jeżeli dostępna (1 - tak domyślnie / 0 - nie)
+::   WY: -1 - użytkownik zrezygnował w dialogu
+::       0 - nie wygenerowano
+::       1 - sukces
+::  OLD: \generuj/zl_guid.fml
+::  OLD: \generuj/!tte_pzl_dpzg.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(0) || _ask:=_a     || _ask:=1     ?};
+{? var_pres('_b')=type_of(0) || _planres:=_b || _planres:=1 ?};
+{? var_pres('_c')=type_of(0) || _partie:=_c  || _partie:=1  ?};
+
+_env_guide:=exec('env_guide','zl_guide');
+params_set('env_guide',_env_guide);
+
+_grp_key:='';
+{? var_pres('_d')=type_of('')
+|| _grp_key:=_d
+?};
+
+_grupa:=0;
+{? var_pres('_e')=type_of(0)
+|| _grupa:=_e
+?};
+
+_zakoncz:=0;
+{? var_pres('_f')=type_of(0)
+|| _zakoncz:=_f
+?};
+
+_par_il_zl:=-1;
+{? var_pres('_g')=type_of(0)
+|| _par_il_zl:=_g
+?};
+
+_par_il_zgh:=-1;
+{? var_pres('_h')=type_of(0)
+|| _par_il_zgh:=_h
+?};
+
+{? var_pres('_i')=type_of(0) || _plugin:=_i || _plugin:=1 ?};
+
+ZL.cntx_psh();
+TOPER.cntx_psh();
+
+ZL.cntx_psh();
+_par:=exec('get','#params',500104,2);
+_zlil:=0;
+ZL.cntx_pop();
+_ok:=exec('przeddol','zl_guide');
+
+{? ~(_ok & (VAR.A_ZLEC().TKTL<>null() | VAR.A_ZLEC().TYP().TECH='N' | VAR.A_ZLEC().NRNZL=0))
+|| {? (VAR.A_ZLEC().NRNZL<>0 & _ok)
+   || FUN.info('Brak karty technologicznej, aby wygenerować przewodniki.'@)
+   ?};
+   _ok:=0
+|? ~(_ok & (VAR.A_ZLEC().TYP().TECH='T' | VAR.A_ZLEC().TYP().TECH='N' & VAR.A_ZLEC().KTL<>null()))
+|| FUN.info('Na podstawie archiwalnej karty technologicznej nie można generować przewodników.'@);
+   _ok:=0
+
+|? ~(_ok & (VAR.A_ZLEC().TYP().TECH='T' | VAR.A_ZLEC().TYP().TECH='N' & exec('check_tktl_arch','zl_link',ZL.ref())=0))
+|| FUN.info('Co najmniej jedno podzlecenie ma archiwalną technologię — nie można generować przewodników.'@);
+   _ok:=0
+|? ~(_ok & (VAR.A_ZLEC().TYP().TECH='T' | VAR.A_ZLEC().TYP().TECH='N' & exec('tktl_act','tech_head',3)))
+|| {? FUN.ask(
+         'Do zlecenia została przypisana nieaktualna karta technologiczna.\n'
+         'Czy generować przewodniki zlecenia na jej podstawie?'@
+      )
+   || _ok:=1
+   || _ok:=0
+   ?}
+|? ~(_ok & (VAR.A_ZLEC().TYP().TECH='T' | VAR.A_ZLEC().TYP().TECH='N' & exec('check_tktl_act','zl_link',ZL.ref())=0))
+|| {? FUN.ask(
+         'Co najmniej jedno podzlecenie ma przypisaną nieaktulną kartę technologiczną.\n'
+         'Czy generować przewodniki zlecenia na ich podstawie?'@
+      )
+   || _ok:=1
+   || _ok:=0
+   ?}
+?};
+{? _ok
+||
+   VAR_DEL.delete('__matakt');
+   __matakt:=tab_tmp(2
+      ,'REF','STRING[16]',''
+      ,'NRK','INTEGER',''
+      ,'ILR','REAL',''
+      ,'ZKP','STRING[16]',''
+      ,'ZKN','STRING[16]',''
+   );
+
+   _top_level:=exec('top_level','zl_link',ZL.ref());
+   _top_rodzaj:=exec('FindAndGet','#table',ZL,_top_level,,"RODZAJ",'');
+   _top_uid:=exec('FindAndGet','#table',ZL,_top_level,,"uidref()",'');
+
+   {? _top_rodzaj='Z'
+   ||
+::    Zlecenia zlozone
+
+::    PLAN ZASOBOW
+      {? _planres>0
+      || {? exec('zlec_planned','po_plan',$VAR.A_ZLEC)>0
+         || _return:=0;
+            {? exec('plan2zgh_smpl2','zl_guide',VAR.A_ZLEC,_grp_key,_top_uid,_ask,_zakoncz)>0
+            || _return:=1
+            ?};
+            ZL.cntx_pop();
+            TOPER.cntx_pop();
+            return(_return)
+         ?}
+      ?};
+
+::    PARTIE
+      {? _partie>0
+      ||
+         {? exec('zlec_party','zl_common',VAR.A_ZLEC)>0 & exec('zl_ile_part','zl_partie',VAR.A_ZLEC)>0
+         || _return:=0;
+            {? exec('part2zgh_smpl2','zl_guide',VAR.A_ZLEC,_grp_key,_top_uid,_ask,_zakoncz)>0
+            || _return:=1
+            ?};
+            ZL.cntx_pop();
+            TOPER.cntx_pop();
+            return(_return)
+         ?}
+      ?};
+
+::    WTYCZKA
+      {? _plugin>0 & _par_il_zgh=-1 & _par_il_zl=-1 & ZL.TREE_TYP='M'
+      || ZL.cntx_psh(); _var_zlec:=VAR.A_ZLEC;
+         _json:=Plugin.run('ZGH_F_ILGEN_001',ZL.ref(),_ask,exec('ile','zl_guide',ZL.ref(),ZL.IL));
+         ZL.cntx_pop(); VAR.A_ZLEC:=_var_zlec;
+         _tab_plugin:=json_parse(_json);
+:: NUCO - możliwość zastosowania wtyczki przy dogenerowywaniu zleceń - jak wtyczka zgłasza 0 to robimy bez niej
+::         {? type_of(_tab_plugin)>100 & obj_len(_tab_plugin)>0
+         {? type_of(_tab_plugin)>100 & obj_len(_tab_plugin)>0 & _tab_plugin[1]<>0
+         || exec('array_force_numbers','#array',_tab_plugin);
+            exec('array_round','#array',_tab_plugin,ZL.KTM().DOKL);
+            exec('array_del_minus','#array',_tab_plugin);
+            _return:=0;
+            {? exec('plug2zgh_smpl2','zl_guide',VAR.A_ZLEC,_grp_key,_top_uid,_ask,_zakoncz,_tab_plugin)>0
+            || _return:=1
+            ?};
+            ZL.cntx_pop();
+            TOPER.cntx_pop();
+            return(_return)
+         ?}
+      ?};
+
+::    PYTANIE O ILOŚĆ
+      {? _par_il_zgh=-1 & _par_il_zl=-1
+      ||
+::       Ilości nadrzędne nie zostały podane, więc pytam użytkownika albo wymyślam
+         _res_ilosc:=exec('generuj_get_ilosc','zl_guide',,_ask,_grupa);
+         _il_zl:=_res_ilosc.IL_ZL;
+         _il_zgh:=_res_ilosc.IL_ZGH;
+         _ok:=_res_ilosc.OK
+      || _il_zl:=_par_il_zl;
+         _il_zgh:=_par_il_zgh;
+         _ok:=1
+      ?};
+      _main_podzlec:=exec('main_podzlec','zl_link',ZL.ref());
+      _main_has_zgh:=exec('has_zgh','zl_common',_main_podzlec);
+      _main_sym:=exec('FindAndGet','#table',ZL,_main_podzlec,,"SYM",'');
+      _zgh_tied:=1;
+      {? _main_podzlec<>ZL.ref()
+      || _zgh_tied:=exec('chk_zgh_tied','zl_guide')
+      ?};
+      {? _zgh_tied>0 & _top_rodzaj='Z' & exec('kor_coef_equal','zl_head',_top_level)=0
+      ||
+::       Jeśli zlecenie złożone, przewodniki są równo ułożone, ale podzlecenia mają ilość niezgodną
+::       z proporcją to traktuję je tak jakby miały nierówno ułożone przewodniki
+         _zgh_tied:=0
+      ?};
+
+      {? _ok>0
+      ||
+         {? _il_zl>0
+         ||
+::          GENEROWANIE PRZEWODNIKÓW
+            exec('gen_przh_obj','zl_guide');
+            {? _main_podzlec<>ZL.ref() & _main_has_zgh>0 & _zgh_tied>0
+            ||
+::             Zlecenie inne niż montażowe, sprawdzam czy na montażowym są już jakieś przewodniki
+::             i generuje przewodniki wg takich samych proporcji
+               _tab_zgh:=exec('main_podzlec_zgh','zl_guide',ZL.ref());
+               _tab_zgh.clear();
+               {? _tab_zgh.first()
+               ||
+                  {!
+                  |?
+                     ZGH.cntx_psh();
+                     ZGH.index('UID_SRC');
+
+::                   Sprawdzam czy na tym zleceniu nie robiono jeszcze przewodnika na podstawie
+::                   montażowego
+                     ZGH.prefix(_tab_zgh.UID,ZL.ref());
+                     {? ZGH.size()=0
+                     ||
+                        _il_zgh:=_tab_zgh.ILNPRZ;
+::                      Obliczam proporcję
+                        _prop:=ZL.IL/_tab_zgh.IL_ZL;
+
+                        _il_zgh:=_il_zgh*_prop;
+
+                        _il_zgh:={? _il_zl>_il_zgh || _il_zgh || _il_zl ?};
+                        _ile_now:=exec('ile','zl_guide',ZL.ref,ZL.IL);
+                        _il_zgh:=exec('min','#math',_ile_now,_il_zgh);
+::                      Zaokrąglanie
+                        {? ZL.KTM().DOKL=0
+                        || _il_zgh:=ceil(_il_zgh)
+                        || _il_zgh:=_il_zgh$ZL.KTM().DOKL
+                        ?};
+                        exec('add_zgh','zl_guide',_il_zgh,ZL.ref(),,,,,,_grp_key,_top_uid,_tab_zgh.UID,_zakoncz);
+                        _il_zl-=_il_zgh
+                     ?};
+                     _ile_now:=exec('ile','zl_guide',ZL.ref(),ZL.IL);
+
+                     ZGH.cntx_pop();
+                     _tab_zgh.next() & _ile_now>0
+                  !}
+               ?}
+            ||
+               _ile_now:=exec('ile','zl_guide',ZL.ref,ZL.IL);
+               _il_zl:=exec('min','#math',_ile_now,_il_zl);
+               {!
+               |?
+                  _il_zgh:={? _il_zl>_il_zgh || _il_zgh || _il_zl ?};
+                  {? _il_zgh>0
+                  ||
+                     exec('add_zgh','zl_guide',_il_zgh,ZL.ref(),,,,,,_grp_key,_top_uid,,_zakoncz);
+                     _il_zl-=_il_zgh
+                  ?};
+                  _il_zl>0 & _il_zgh>0
+               !}
+            ?};
+            exec('del_przh_obj','zl_guide')
+         ?}
+      ?}
+   |? _top_rodzaj='P' | _top_rodzaj='N'
+   ||
+::    Zlecenia proste lub składniki zlecenia niezależnego
+
+::    PLAN ZASOBOW
+      {? _planres>0
+      || {? exec('zlec_planned','po_plan',$VAR.A_ZLEC)>0
+         || _return:=0;
+            {? exec('plan2zgh_smpl','zl_guide',VAR.A_ZLEC,_grp_key,_ask,_zakoncz)>0
+            || _return:=1
+            ?};
+            ZL.cntx_pop();
+            TOPER.cntx_pop();
+            return(_return)
+         ?}
+      ?};
+
+::    PARTIE
+      {? _partie>0
+      ||
+         {? exec('zlec_party','zl_common',VAR.A_ZLEC)>0 & exec('zl_ile_part','zl_partie',VAR.A_ZLEC)>0
+         || _return:=0;
+            {? exec('part2zgh_smpl','zl_guide',VAR.A_ZLEC,_grp_key,_ask,_zakoncz)>0
+            || _return:=1
+            ?};
+            ZL.cntx_pop();
+            TOPER.cntx_pop();
+            return(_return)
+         ?}
+      ?};
+
+::    WTYCZKA
+      {? _plugin>0 & _par_il_zgh=-1 & _par_il_zl=-1
+      || ZL.cntx_psh(); _var_zlec:=VAR.A_ZLEC;
+         _json:=Plugin.run('ZGH_F_ILGEN_001',ZL.ref(),_ask,exec('ile','zl_guide',ZL.ref(),ZL.IL));
+         ZL.cntx_pop(); VAR.A_ZLEC:=_var_zlec;
+         _tab_plugin:=json_parse(_json);
+:: NUCO - możliwość zastosowania wtyczki przy dogenerowywaniu zleceń - jak wtyczka zgłasza 0 to robimy bez niej
+::         {? type_of(_tab_plugin)>100 & obj_len(_tab_plugin)>0
+         {? type_of(_tab_plugin)>100 & obj_len(_tab_plugin)>0 & _tab_plugin[1]<>0
+         || exec('array_force_numbers','#array',_tab_plugin);
+            exec('array_round','#array',_tab_plugin,ZL.KTM().DOKL);
+            exec('array_del_minus','#array',_tab_plugin);
+            _return:=0;
+            {? exec('plug2zgh_smpl','zl_guide',VAR.A_ZLEC,_grp_key,_ask,_zakoncz,_tab_plugin)>0
+            || _return:=1
+            ?};
+            ZL.cntx_pop();
+            TOPER.cntx_pop();
+            return(_return)
+         ?}
+      ?};
+
+::    PYTANIE O ILOŚĆ
+      {? _par_il_zgh=-1 & _par_il_zl=-1
+      ||
+::       Ilości nadrzędne nie zostały podane, więc pytam użytkownika albo wymyślam
+         _res_ilosc:=exec('generuj_get_ilosc','zl_guide',,_ask,_grupa);
+         _il_zl:=_res_ilosc.IL_ZL;
+         _il_zgh:=_res_ilosc.IL_ZGH;
+         _ok:=_res_ilosc.OK
+      || _il_zl:=_par_il_zl;
+         _il_zgh:=_par_il_zgh;
+         _ok:=1
+      ?};
+
+      {? _ok>0
+      ||
+::       GENEROWANIE PRZEWODNIKÓW
+         exec('gen_przh_obj','zl_guide');
+
+::       Ponownie obliczam ilość która została do rozgenerowania na zleceniu na wypadek
+::       gdyby ktoś dodał lub wygenerował przewodniki podczas gdy ja się zastanawiałem
+::       w oknie
+         _ile_now:=exec('ile','zl_guide',VAR.A_ZLEC,VAR.A_ZLEC().IL);
+         _il_zl:=exec('min','#math',_ile_now,_il_zl);
+         {? _il_zl>0
+         ||
+            {!
+            |? _il_zgh:={? _il_zl>_il_zgh || _il_zgh || _il_zl ?};
+               exec('add_zgh','zl_guide',_il_zgh,,,,,,,_grp_key,,,_zakoncz);
+               _il_zl-=_il_zgh;
+               _il_zl>0
+            !};
+            exec('del_przh_obj','zl_guide')
+         || _ok:=0;
+            FUN.info('Ilość na przewodnikach nie może być większa niż na zleceniu.'@)
+         ?}
+      ?}
+   ?};
+   exec('openz','open_tab',ST.ODDZ+'__');
+   exec('akt_rezy','rezerwacje');
+   VAR_DEL.delete('__matakt')
+
+?};
+
+:: Aktualizacja limitow w zakladce, gdy jest wyswietlana
+::{? _ok
+::|| {? var_pres('__ZLIMp')>100
+::   || exec('__ZLIM_datapump','zl_limit',__ZLIMp);
+::      _zmask:=ZMASK.THEAD;
+::      ZMASK.THEAD:='0';
+::      {? cur_tab()=ZL & VAR.ZAKL_ALL*'L'>0 || exec('lim_hide','zlv',1) ?};
+::      {? cur_tab()=ZL & VAR.ZAKL_ALL*'Z'>0 || exec('zam_hide','zlv',1) ?};
+::      ZMASK.THEAD:=_zmask
+::   ?}
+::?};
+
+ZL.cntx_pop();
+TOPER.cntx_pop();
+VAR.A_ZLEC:=ZL.ref();
+_ok
+
+

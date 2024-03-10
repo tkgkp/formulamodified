@@ -1,0 +1,613 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: pkalsync.fml
+:: Utworzony: 10.06.2020
+:: Autor: TMR
+::======================================================================================================================
+:: Zawartość: Formuły do obslugi tabeli PKALSYNC.
+::======================================================================================================================
+
+\mod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Formuła aktualizująca rekord w tabeli PKALSYNC
+::   WE: _a [REFERENCE] - wskazanie na pracownika
+::       _b [DATE]      - data
+::       _c [DICT]      - obiekt do synchronizacji PKALSYNC
+::       UWAGA! - ze względów optymalizacyjnych typy parametrów nie są sprawdzane
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_p_ref:=_a;
+_data:=_b;
+_oSync:=_c;
+_rok:=_data~1;
+
+PKALSYNC.prefix(_p_ref,_rok);
+_pkalsync:={? PKALSYNC.first()
+           || PKALSYNC.ref()
+           || PKALSYNC.blank(1);
+              PKALSYNC.P:=_p_ref;
+              PKALSYNC.ROK:=_rok;
+              {? PKALSYNC.add(1)
+              || PKALSYNC.ref()
+              || null()
+              ?}
+           ?};
+{? _pkalsync
+|| {? _oSync.rok<>_rok || exec('PKALSYND_mask','pkalsync',_rok) ?};
+   PKALSYND.prefix(_pkalsync,_data);
+   _mod:=0;
+   {? PKALSYND.first()
+   || PKALSYND.SEND:=1;
+      _mod:=PKALSYND.put(,1)
+   || PKALSYND.blank(1);
+      PKALSYND.PKALSYNC:=_pkalsync;
+      PKALSYND.DATA:=_data;
+      PKALSYND.SEND:=1;
+      _mod:=PKALSYND.add(1)
+   ?};
+   {? _mod || _oSync.add($_pkalsync,_rok) ?}
+?};
+~~
+
+
+\PKALSYND_init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Formuła "inicjująca" dla rekordów PKALSYND.
+::   WE: _a [STRING] - znacznik czasowy time_ident
+::                     Inicjujemy tylko te rekordy, dla których PKALSYNC.IDPUT ma późniejszy znacznik czasowy
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_startSYNC:={? var_pres('_a')=type_of('') || _a || '' ?};
+exec('for_each','#table',PKALSYND,
+   $("{? '"+_startSYNC+"'<=PKALSYND.PKALSYNC().IDPUT
+    || PKALSYND.SEND:=1;
+       PKALSYND.put()
+    ?}
+   ")
+)
+
+
+\PKALSYND_mask
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Ustawia maskę dla tabeli PKALSYND
+::   WE: _a [INTEGER] - rok
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_rok:={? var_pres('_a')=type_of(0) & _a>=1900 || _a || return(_result) ?};
+
+_mask:='pkad%1'[$_rok];
+{? PKALSYND.name()=_mask
+|| _result:=1
+|| _result:=PKALSYND.use(_mask)
+?};
+_result
+
+
+\update4P
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Formuła wykorzystywana do aktualizacji rekordów w tabeli PKALSYNC oraz PKALSYND po zmianie rekordu w P
+::       Tabela PKALSYNC służy jako tabela "nagłówkowa" do synchronizacji kalendarzy pracownika z portalem HR.
+::       Uwaga! funkcja działa dla ustalonego rekordu tabeli P
+::   WE: [_a] [DATE]   - data początkowa (domyślnie początek bieżącego roku)
+::       [_b] [DATE]   - data końcowa    (domyślnie koniec następnego roku)
+::       [_c] [NUMBER] - pomiń warunek zatrudnienienia
+::   WY: ~~
+::  TAG: <TRIGGER>
+::----------------------------------------------------------------------------------------------------------------------
+    _od:={? var_pres('_a')=type_of(#0) || _a || date(,1,1)             ?};
+    _do:={? var_pres('_b')=type_of(#0) || _b || date((date~1)+1,12,31) ?};
+_bezspr:={? var_pres('_c')=type_of(0)  || _c || 0                      ?};
+
+{? _bezspr | P.ZA='T'
+|| _od:={? P.DZA>_od || P.DZA || _od ?};
+   exec('update_od_do','pkalsync',P.ref(),_od,_do)
+?}
+
+
+\update4PnextYear
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Sprawdza i aktualizuje jeśli trzeba rekordy tabeli PKALSYNC oraz PKALSYND dla następnego roku.
+::       Aktualizacja wywyływana jest w trakcie procesu aktualizującego dane pracownika
+::   WE: _a [REFERENCE] - wskazanie na pracownika
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_p_ref:={? var_pres('_a')=type_of(null) || _a || return(~~) ?};
+
+_nextYear:=(date~1)+1;
+_end:=date(_nextYear,12,31);
+_lastYear:=exec('lastYear','pkalsync',_p_ref);
+{? _lastYear<_nextYear
+|| P.cntx_psh();
+   P.index('OSOBA');
+   P.prefix();
+   {? P.seek(_p_ref)
+   || R_WZCZ.cntx_psh();
+      R_WZCZ.use('r_wzczas');
+      R_WZCZ.index('R_WZWND');
+      R_WZCZ.prefix('pracowni',ref_num(P.ref()),'N','N');
+      {? R_WZCZ.find_le(_end)
+      || _kal:={? R_WZCZ.GRAFIK='T' || P.KAL || R_WZCZ.KAL ?};
+         KAL_ROK.cntx_psh();
+         KAL_ROK.index('KAL_ROK');
+         KAL_ROK.prefix(_kal);
+         {? KAL_ROK.find_tab(,'ROK',,'=',_nextYear)
+         || exec('update4P','pkalsync',date(),_end)
+         ?};
+         KAL_ROK.cntx_pop()
+      ?};
+      R_WZCZ.cntx_pop()
+   ?};
+   P.cntx_pop()
+?};
+~~
+
+
+\update4kal_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Formuła wykorzystywana do aktualizacji rekordów w tabeli PKALSYNC oraz PKALSYND po zmianie rekordu w KAL_DEF
+::       Tabela PKALSYNC służy jako tabela "nagłówkowa" do synchronizacji kalendarzy pracownika z portalem ABS.
+::   WE: _a [STRING] - akcja ('add' / 'put')
+::   WY: ~~
+::  TAG: <TRIGGER>
+::----------------------------------------------------------------------------------------------------------------------
+_akcja:={? var_pres('_a')=type_of('') || _a || return() ?};
+
+:: powrót w przypadku zerwanej transakcji
+{? do_state()=2 || return() ?};
+
+{? ~exec('lic','#b_domain','POR')
+|| return()
+?};
+
+:: nie aktualizujemy jeżeli mamy ustawioną zmienną TRIG_OFF
+{? TRIG_OFF.KAL_DEF='T'
+|| return()
+?};
+
+:: warunek uruchomienia triggera
+_continue:=(_akcja='add' |
+           (_akcja='put' &
+           (KAL_DEF.TM_START<>bfld('TM_START') | KAL_DEF.TM_END<>bfld('TM_END') |
+            KAL_DEF.TYP<>bfld('TYP') | KAL_DEF.TYPWS<>bfld('TYPWS'))));
+
+{? _continue
+|| _data:=KAL_DEF.DATA;
+   KAL_ROK.cntx_psh();
+   KAL_NAZW.cntx_psh();
+   _nazwa:=KAL_DEF.ROK().NAZWA().NAZWA;
+   _nazwa:=STR.gsub(_nazwa,'\'','\'\'');
+   _kal_nazw:=KAL_DEF.ROK().NAZWA;
+   KAL_NAZW.cntx_pop();
+   KAL_ROK.cntx_pop();
+
+:: sprawdzamy czy modyfikacja dotyczy kalendarza indywidualnego pracownika
+   _czy_prac:=(5+_nazwa=%255+'prac');
+   P.cntx_psh();
+   P.index('PRACONAZ');
+   P.prefix();
+   _oSync:=exec('oSYNC','pkalsync');
+   {? _czy_prac
+   || {? P.seek(_nazwa+16) || exec('mod','pkalsync',P.ref(),_data,_oSync) ?}
+   || _sql:=''+"
+         select distinct R_WZCZ.P from R_WZCZ join KAL_NAZW using(KAL_NAZW.REFERENCE, R_WZCZ.KAL)
+         where KAL_NAZW.NAZWA=':_a' and P is not null and R_WZCZ.UKRYTY='N' and  KAL_NAZW.CZESC='N'
+         order by R_WZCZ.P
+      ";
+      _PRAC:=sql(_sql,_nazwa);
+      {? _PRAC.first()
+      || R_WZCZ.cntx_psh();
+         R_WZCZ.use('r_wzczas');
+         R_WZCZ.index('R_WZWND');
+         {!
+         |? R_WZCZ.prefix('pracowni',ref_num(_PRAC.P),'N','N');
+            {? R_WZCZ.find_le(_data) & R_WZCZ.KAL=_kal_nazw & R_WZCZ.GRAFIK<>'T'
+            || exec('mod','pkalsync',R_WZCZ.P,_data,_oSync)
+            ?};
+            _PRAC.next()
+         !};
+         R_WZCZ.cntx_pop()
+      ?}
+   ?};
+   _oSync.putAll();
+   P.cntx_pop()
+?};
+~~
+
+
+\update4H
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Formuła wykorzystywana do aktualizacji rekordów w tabeli PKALSYNC oraz PKALSYND po zmianie rekordu w H
+::       Tabela PKALSYNC służy jako tabela "nagłówkowa" do synchronizacji kalendarzy pracownika z portalem ABS.
+::       Uwaga!! funkcja działa dla ustalonego rekordu tabeli H
+::   WE: _a [STRING] - akcja ('add' / 'put' / 'del')
+::   WY: ~~
+::  TAG: <TRIGGER>
+::----------------------------------------------------------------------------------------------------------------------
+_akcja:={? var_pres('_a')=type_of('') || _a || return() ?};
+
+:: powrót w przypadku zerwanej transakcji
+{? do_state()=2 || return() ?};
+
+{? ~exec('lic','#b_domain','POR')
+|| return()
+?};
+
+:: nie aktualizujemy jeżeli mamy ustawioną zmienną TRIG_OFF
+{? TRIG_OFF.H='T'
+|| return()
+?};
+
+:: warunek uruchomienia triggera
+_continue:=(_akcja='add' | _akcja='del' |
+           (_akcja='put' & (H.OD<>bfld('OD') | H.DO<>bfld('DO') | H.WY<>bfld('WY'))));
+
+{? _continue
+|| _od:={? _akcja='add' | _akcja='del'
+        || H.OD
+        || {? bfld('OD')=H.OD & bfld('WY')=H.WY
+           || {? bfld('DO')<H.DO & bfld('DO')<>#0 | H.DO=#0 || bfld('DO') || H.DO ?}
+           || {? bfld('OD')<H.OD || bfld('OD') || H.OD ?}
+           ?}
+        ?};
+   _do:={? _akcja='add' | _akcja='del'
+        || H.DO
+        || {? bfld('DO')=H.DO & bfld('WY')=H.WY
+           || {? bfld('OD')>H.OD || bfld('OD') || H.OD ?}
+           || {? bfld('DO')>H.DO & H.DO<>#0 || bfld('DO') || H.DO ?}
+           ?}
+        ?};
+   _do:={? _do>date(,12,31) | _do=#0 || date(,12,31) || _do ?};
+
+   exec('update_od_do','pkalsync',H.P,_od,_do)
+?};
+~~
+
+
+\update_od_do
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Formuła wykorzystywana do aktualizacji rekordów w tabeli PKALSYNC po zmianie rekordu w R_WZCZ
+::   WE: _a [REFERENCE] - wskazanie na pracownika
+::       _b [DATE]      - data początkowa
+::       _c [DATE]      - data końcowa
+::   WY: ~~
+::  TAG: <TRIGGER>
+::----------------------------------------------------------------------------------------------------------------------
+_p_ref:={? var_pres('_a')=type_of(null()) || _a || return() ?};
+   _od:={? var_pres('_b')=type_of(date()) || _b || return() ?};
+   _do:={? var_pres('_c')=type_of(date()) || _c || return() ?};
+
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(null) ?};
+
+:: zalozenie transakcji
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+
+_oSync:=exec('oSYNC','pkalsync');
+{! _day:=#_od..#_do
+|! exec('mod','pkalsync',_p_ref,#_day,_oSync)
+!};
+_oSync.putAll();
+{? _mydo || end() ?};
+~~
+
+
+\update4kal_nazw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Formuła wykorzystywana do aktualizacji rekordów w tabeli PKALSYNC
+::       po dodaniu nowego roku dla wybranego kalendarza
+::   WE: _a [REFERENCE] - wskazanie na KAL_NAZW
+::       _b [DATE]      - data początkowa
+::       _c [DATE]      - data końcowa
+::     [_d] [INTEGER]   - czy wyświetlać progress
+::   WY: ~~
+::  TAG: <TRIGGER>
+::----------------------------------------------------------------------------------------------------------------------
+_kal_nazw:={? var_pres('_a')=type_of(null()) || _a || return() ?};
+      _od:={? var_pres('_b')=type_of(date()) || _b || return() ?};
+      _do:={? var_pres('_c')=type_of(date()) || _c || return() ?};
+     _prg:={? var_pres('_d')=type_of(0)      || _d || 0        ?};
+
+KAL_NAZW.cntx_psh();
+KAL_NAZW.prefix();
+_nazwa:={? KAL_NAZW.seek(_kal_nazw) || KAL_NAZW.NAZWA || '' ?};
+_nazwa:=STR.gsub(_nazwa,'\'','\'\'');
+KAL_NAZW.cntx_pop();
+
+:: sprawdzamy czy modyfikacja dotyczy kalendarza indywidualnego pracownika
+_czy_prac:=(5+_nazwa=%255+'prac');
+P.cntx_psh();
+P.index('PRACONAZ');
+P.prefix();
+{? _czy_prac
+|| {? P.seek(_nazwa+16) || exec('update_od_do','pkalsync',P.ref(),_od,_do) ?}
+|| _sql:=''+"
+      select distinct R_WZCZ.P from R_WZCZ join KAL_NAZW using(KAL_NAZW.REFERENCE, R_WZCZ.KAL)
+      where KAL_NAZW.NAZWA=':_a' and P is not null and R_WZCZ.UKRYTY='N' and  KAL_NAZW.CZESC='N'
+      order by R_WZCZ.P
+   ";
+   _PRAC:=sql(_sql,_nazwa);
+   {? _PRAC.first()
+   || {? _prg || FUN.prg_start(_PRAC.size(),'Aktualizacja kalendarzy na potrzeby HR Portal.'@) ?};
+      R_WZCZ.cntx_psh();
+      R_WZCZ.use('r_wzczas');
+      R_WZCZ.index('R_WZWND');
+      {!
+      |? R_WZCZ.prefix('pracowni',ref_num(_PRAC.P),'N','N');
+         {? R_WZCZ.find_le(_do)
+         || _prev_od:=_do;
+            _dalej:=1;
+            {!
+            |? {? R_WZCZ.KAL=_kal_nazw & R_WZCZ.GRAFIK<>'T' & _prev_od>=_od
+               || exec('update_od_do','pkalsync',R_WZCZ.P,_od,_do);
+                  _dalej:=0
+               || _prev_od:=R_WZCZ.OD
+               ?};
+               _dalej & R_WZCZ.prev()
+            !}
+         ?};
+         {? _prg || FUN.prg_next() ?};
+         _PRAC.next()
+      !};
+      R_WZCZ.cntx_pop();
+      {? _prg || FUN.prg_stop() ?}
+   ?}
+?};
+P.cntx_pop();
+~~
+
+
+\erase
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Usuwa wszystkie dane z tabeli PKALSYNC
+::   WE: [_a] [STRING] - lata do usunięcia. Napis w postaci ',2010,2011,' lub '' jeżeli chcemy usunąć wszystko
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_lata:={? var_pres('_a')=type_of('') || _a || 'brak' ?};
+
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(null) ?};
+
+:: zalozenie transakcji
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+
+PKALSYNC.cntx_psh();
+PKALSYNC.index('ROK');
+PKALSYNC.prefix();
+PROGRESS.set(PKALSYNC.size(),'Usuwanie danych dotyczących synchronizacji kalendarzy...');
+{? PKALSYNC.first()
+|| {!
+   |? {? (_lata='' | _lata*($PKALSYNC.ROK))
+      || _rok:=PKALSYNC.ROK;
+         exec('PKALSYND_mask','pkalsync',_rok);
+         PKALSYND.prefix(PKALSYNC.ref());
+         {? PKALSYND.first()
+         || {!
+            |? PKALSYND.del()
+            !}
+         ?};
+         _next:={? PKALSYNC.count()=0 || PKALSYNC.del(,1)=2 || PKALSYNC.next() ?}
+      || _next:=PKALSYNC.next()
+      ?};
+      PROGRESS.next();
+      _next
+   !}
+?};
+PROGRESS.close();
+PKALSYNC.cntx_pop();
+
+{? _mydo || end() ?};
+~~
+
+
+\update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Putuje wszystkie dane z tabeli PKALSYNC w celu wymuszenia synchronizacji
+::   WE: [_a] [STRING] - lata do aktualizacji. Napis w postaci '2010,2011'
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_lata:={? var_pres('_a')=type_of('') || _a || '' ?};
+
+_MASKS:=PKALSYND.names();
+
+{? _MASKS.first()
+|| {!
+   |? {? _MASKS.SIZE<>-1 & (_lata='' | _lata*(_MASKS.NAME+4))
+      || PKALSYND.use(_MASKS.NAME);
+         PKALSYND.prefix();
+         {? PKALSYND.first()
+         || {!
+            |? PKALSYND.put(,1);
+               PKALSYND.next()
+            !}
+         ?}
+      ?};
+      _MASKS.next()
+   !}
+?}
+
+
+\dayType
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Zwraca "portalowy" typ dnia na podstawie naszego określenia typu dnia
+::   WE: _a [STRING] - typ dnia KAL_DEF.TYP+KAL_DEF.TYPWS
+::   WY: "portalowy" typ dnia
+::----------------------------------------------------------------------------------------------------------------------
+_result:='P';
+_typ_dnia:={? var_pres('_a')=type_of('') || _a || return(_result) ?};
+
+::Typ dnia portalowy:
+::   P - Dzień roboczy,
+::   Q - Dzień wolny - roboczy,
+::   R - Sobota robocza
+::   N - Niedziela robocza
+::   $ - Święto,
+::   W - dzień wolny (sobota i niedziela)
+
+::'Roboczy w niedzielę'
+{? _typ_dnia='RN'
+|| _result:='N'
+:: Święto w niedzielę
+|? _typ_dnia='SN'
+|| _result:='$'
+::  Roboczy w święto
+|? _typ_dnia='RS'
+|| _result:='P'
+:: Święto
+|? _typ_dnia='SW'
+|| _result:='$'
+:: Roboczy
+|? _typ_dnia='R' | _typ_dnia='R '
+|| _result:='P'
+:: Wolny - 5 dniowy tydzień pracy
+|? _typ_dnia='W5'
+|| _result:='W'
+:: Wolny harmonogramowo
+|? _typ_dnia='WH'
+|| _result:='Q'
+:: Wolny za niedzielę
+|? _typ_dnia='WN'
+|| _result:='Q'
+:: Wolny za święto
+|? _typ_dnia='WS'
+|| _result:='Q'
+?};
+
+_result
+
+
+\delete4P
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Kasuje rekordy tabeli PKALSYNC (wykonywane w transakcji!!!) dla wskaznego rekordu _ref
+::   WE: _a [REFERENCE] - wskazanie na pracownika - P.ref()
+::   WY: >0 -wyczyszczone,
+::      <=0 -niewyczyszczone
+::UWAGA: Parametry bez [] sa wymagane, formula moze nie sprawdzac czy zostaly podane i moze wystapic blad.
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_ref:={? var_pres('_a')=type_of(null) || _a || return(_result) ?};
+
+_can_continue:=1;
+
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(-100) ?};
+
+:: zalozenie transakcji
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+
+PKALSYNC.cntx_psh();
+PKALSYNC.index('PRAC');
+PKALSYNC.prefix(_ref);
+{? PKALSYNC.first()
+|| {!
+   |?
+::    przed usunięciem rekordu PKALSYNC czyścimy rekordy z PKALSYND
+      _can_continue:=exec('PKALSYND_mask','pkalsync',PKALSYNC.ROK) &
+                     exec('del_ndx','#table',PKALSYND,'SYNC',PKALSYNC.ref()) &
+                     PKALSYNC.del(,1)>0;
+      _can_continue>0 & PKALSYNC.first()
+   !}
+?};
+PKALSYNC.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+{? _mydo || end() ?};
+_result
+
+
+\oSYNC
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Obiekt do odłożenia w czasie putowania rekordów PKALSYNC
+::----------------------------------------------------------------------------------------------------------------------
+_fld:="31+form(_a)";
+_mth:="31+form(_a)";
+::tworze tablice nazwana do przechowywania zmiennych
+_obj:=obj_new(
+                _fld('TAB'        ,'Tabela rekordami do put-nięcia')
+               ,_fld('rok'        ,'ostatnio przetworzony rok')
+
+::             metody PRYWATNE / TECHNICZNE
+               ,_mth('initTAB'   ,'Zasila tabelę')
+
+::             metody PUBLICZNE
+               ,_mth('add'       ,'Dodaje rekord do putnięcia')
+               ,_mth('putAll'    ,'Putuje wszystkie rekordy PKALSYNC')
+             );
+::usuwamy zbedne zmienne
+&_mth; &_fld;
+
+:: wczytujemy całą dziedzinę tabeli KAL_OPIS w celu przyspieszenia wyszukania dnia świątecznego
+_obj.initTAB:="
+   {? var_pres('TAB',.)>100 || obj_del(.TAB) ?};
+   .TAB:=tab_tmp(,'REF','STRING[16]','ref')
+";
+
+_obj.add:="
+   {? ~.TAB.find_tab(,'REF',,'=',_a)
+   || .TAB.REF:=_a;
+      .TAB.add(1)
+   ?};
+   .rok:=_b
+";
+
+_obj.putAll:="
+   PKALSYNC.cntx_psh();
+   PKALSYNC.prefix();
+   .TAB.prefix();
+   {? .TAB.first()
+   || {!
+      |? {? PKALSYNC.seek(.TAB.REF)
+         || PKALSYNC.put(,1)
+         ?};
+         .TAB.next()
+      !}
+   ?};
+   PKALSYNC.cntx_pop()
+";
+
+_obj.initTAB();
+_obj
+
+
+\lastYear
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Zwraca ostatni rok jaki znajduje się w tabeli synchronizacji dla wskazanego pracownika
+::   WE: _a [REFERENCE] - wskazanie na pracownika
+::   WY: 0 lub ostatni rok
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_p_ref:={? var_pres('_a')=type_of(null) || _a || return(_result) ?};
+
+PKALSYNC.cntx_psh();
+PKALSYNC.index('PRAC');
+PKALSYNC.prefix(_p_ref);
+{? PKALSYNC.last()
+|| _result:=PKALSYNC.ROK
+?};
+PKALSYNC.cntx_pop();
+_result
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:37 575c95668345ed2aa3640b95c6920cf26964086aa7461348b136d5dcdcce2f16e44dc9af3bae72ce05260f7d07130ab60d3d01306c9c401e8e01bdd7ef7de720c6bb818f529be6e1bdfb920733c83ba468ba81e9cf5602aa9ae1379aaa0a2def9f0462e8707e0c2bf52baa6a018db1a27a1322b1105009b2957874cc24c478d3

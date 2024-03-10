@@ -1,0 +1,397 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lsp_fak_dzdm.fml
+:: Utworzony: 30.03.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Obsługa dokumentu sprzedaży na podstawie dokumentów magazynowych
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LSP,LMG,TARS
+::# parses=exec('parses','!lsp_fak_dzdm')
+::# kind=WE,   symbol=TYPYSP,    type=_TYPYSP,  name=Typ dokumentu sprzedaży,   required=N, fml_val="exec('typysp','!lsp_fak_dzdm')", fml_exp="exec('typysp_export','typysp',_a)"
+::# kind=WE,   symbol=ND,        type=_ND,      name=Dokument magazynowy,       required=N, keyref=T
+::# kind=WE,   symbol=ZK_REA,    type=STRING,   name=Klucz grupujący,           required=N
+::# kind=WY,   symbol=FAKS,      type=_FAKS,    name=Dokument sprzedaży,        required=N
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+exec('init_fak','lsp');
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_area_lsp_fak:=_mp.pathArea('LSP_FAK') | _mp.pathArea('LSS_POS');
+_area_lsp_zkn:=_mp.pathArea('LSP_ZKN');
+_area:=_area_lsp_fak | _area_lsp_zkn;
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | _mp.pathArea() & ~_area;
+_grupa:=_mp.isGroup();
+_autoakc:=exec('autoAkc','#b__box',_mp,300080,'LSP_FAK_EASP');
+
+_nd:={? var_pres('ND',_in)=type_of(~~) || null() || _in.ND ?};
+_zk_rea:={? var_pres('ZK_REA',_in)=type_of(~~) || '' || _in.ZK_REA ?};
+_auto:=(_nd<>null() | _zk_rea<>'') & _mp.isAutoRun();
+_context:=
+   {? var_pres('context',params_get())=type_of(~~)
+   || exec('context_lsp_fak_dzdm','faktury_nag','Z',_zk_rea)
+   || params_get().context
+   ?};
+
+{? _todo
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('FAKS',_out)=type_of(null()) & _out.FAKS
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego FAKS.')
+   ?}
+?};
+
+:: Sprawdzenie uprawnień
+{? params_exec('permissions_chk','lsp','!lsp_fak_dzdm')=0 || return() ?};
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy nagłówka dokumentu
+::   del: usuwa rekord kluczowy nagłówka dokumentu
+:: - add: zapisuje parametr wyjściowy FAKS = wskazanie na nagłówek korekty
+::   del: zapisuje parametr wyjściowy FAKS = null
+_mp.trigRef('FAKS',,1,,exec('kind_out','#b_port'),'FAKS');
+
+{? _akcja='Fakturuj' | _akcja='Dołącz' | _akcja='Zamówienie'
+   | _proc
+   | _akcja='START_TODO'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+|| BEER.WYSTFAKS:=null;
+   HELP.WMAG:=0;
+
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   params_set('out',_out,'mp',_mp,'akcja',_akcja,'in',_in,'auto',_auto,'context',_context);
+   _done:=0;
+   {? _akcja='Zamówienie'
+:: fakturowanie wg zamówienia w obszarze zamówień
+   || _done:=exec('fakturuj_dokmag','faktury_wspolne',{? _zk_rea<>'' || _zk_rea || 'Zamówienie' ?},null(),0)
+   |? _zk_rea<>''
+:: fakturowanie wg klucza grupującego
+   || _done:=exec('fakturuj_dokmag','faktury_wspolne',_zk_rea,null(),0)
+   |? _nd
+:: fakturowanie dokumentu magazynowego
+   || _done:=exec('fakturuj_dokmag','faktury_wspolne','',_nd,0)
+   |? _akcja='Dołącz' | _akcja='START_TODO' | _proc
+:: dołączanie faktury z dokumentów magazynowych w obszarze sprzedaży
+   || _done:=exec('fakturuj_dokmag','faktury_wspolne',_zk_rea,_nd,0)
+   ?};
+   {? _done<0
+   || ''
+   |? _done
+:: nie ma nic do fakturowania
+   ||
+::    przypisanie _out.FAKS:=null() bo czynności z wymaganym parametrem wejściowym łączące się do tego
+::    parmetru nie nawiną się w menadżerze procesu (menadżer przerywa działanie)
+      _out.FAKS:=null();
+      _mp.save(,_out);
+      _mp.done()
+:: fakturowano lub wycofano się z fakturowania
+   ||
+::    Podczytanie parametrów wyjściowych
+      _outa:=_mp.load(exec('kind_out','#b_port'));
+      {? var_pres('FAKS',_outa)<>type_of(~~) & _outa.FAKS
+::    Dodano dokument
+      ||
+::       Ustawienie się na dodanym dokumencie w widoku obszaru
+         params_exec('seek_dok','faktury_wspolne',_area_lsp_fak,_outa.FAKS)
+::    Wycofanie czynności bo nie dodano dokumentu
+      || _mp.cancel()
+      ?}
+   ?}
+
+|? _akcja='Popraw'
+   | _todo
+|| {? var_pres('FAKS',_out)=type_of(null())
+:: Uruchomione w procesie
+   || FAKS.cntx_psh();
+      FAKS.prefix();
+      {? FAKS.seek(_out.FAKS)
+      || exec('faks_win_edit_set','faktury_nag');
+
+         params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('fak_pop','faktury_nag');
+
+         _mp.descTodo()
+      ?};
+      FAKS.cntx_pop()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   || {? ~_todo
+      || params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('fak_pop','faktury_nag')
+      |? _akcja='Zakończ_wer'
+      || {? exec('faks_zakoncz','faktury_nag',,_autoakc) || _mp.done() ?}
+      || _mp.cancel()
+      ?}
+   |? _todo
+:: Uruchomione zadanie z listy todo i brak _out.FAKS wtedy zadanie wycofujemy
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('FAKS',_out)=type_of(null())
+:: Uruchomione w procesie
+   || _faks:=null();
+      FAKS.cntx_psh();
+      {? ~_area_lsp_fak || FAKS.prefix() ?};
+      {? FAKS.seek(_out.FAKS)
+      ||
+         exec('usun_fak','faktury_nag',{? _grupa || 2 || 1 ?});
+
+         {? ~FAKS.seek(_out.FAKS)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _faks:=FAKS.ref()
+      ?};
+      FAKS.cntx_pop();
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+      {? _area_lsp_fak || {? _faks || FAKS.seek(_faks) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('usun_fak','faktury_nag',{? _grupa || 2 || 1 ?});
+
+      _mp.done()
+   ?}
+
+|? _akcja='Zakończ_wer' & (_area_lsp_fak | _area_lsp_zkn)
+|| {? exec('faks_zakoncz','faktury_nag',_grupa,_autoakc) || _mp.done() ?}
+
+|| _mp.error('Nieobsługiwana ścieżka.')
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? var_pres('FAKS',_out)=type_of(null()) & _out.FAKS
+|| 'Zakończ rejestrację dokumentu sprzedaży: %1'@@[exec('record','#to_string',_out.FAKS)]
+|| _in:=_mp.load(exec('kind_in','#b_port'));
+   {? var_pres('ZK_REA',_in)=type_of('') & _in.ZK_REA<>''
+   || 'Zarejestruj dokument sprzedaży na podstawie: %1'@@[exec('zk_rea2desc','!lsp_fak_dzdm',_in.ZK_REA)]
+   |? var_pres('ND',_in)=type_of(null()) & _in.ND
+   || 'Zarejestruj dokument sprzedaży na podstawie: %1'@@[exec('record','#to_string',_in.ND)]
+   || 'Zarejestruj dokument sprzedaży'@@
+   ?}
+?}
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+
+_wyn:=1;
+
+:: Sprawdzenie uprawnień do typu dokumentu
+{? _wyn & var_pres('TYPYSP',_in)=type_of(null()) & _in.TYPYSP
+|| _typysp_t:=exec('FindAndGet','#table',TYPYSP,$_in.TYPYSP,,"TYPYSP.T",'');
+   _wyn:=
+      {? _typysp_t<>''
+      || {? exec('FindInSet','#table','T2STS','UNIK',ST.STS)<>null()
+         || exec('FindInSet','#table','T2STS','UNIK',_in.TYPYSP,ST.STS)<>null()
+         || _where:=exec('tsp_where','typysp','M',,,,_typysp_t);
+            exec('tsp_upr','typysp',_where,,0,,1,,_user)<>null()
+         ?}
+      || 1
+      ?}
+?};
+
+_wyn
+
+
+\faks_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Faktura do dokumentów magazynowych - Dołącz
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+exec('faks_dolacz','faktury_nag','LSP_FAK_DZDM')
+
+
+\typysp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła na wartość parametru TYPYSP
+::   WY: TYPYSP.ref()
+::----------------------------------------------------------------------------------------------------------------------
+BEER.SZ:='S';
+exec('tsp_fak','typysp','M')
+
+
+\faks_zamow
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Faktura pozostała - Dołącz
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+:: wyznaczenie uidref identyfikującego instancję
+_uidref:='';
+ZK_RN.cntx_psh();
+ZK_RN.index('ZAM');
+ZK_RN.prefix(ZK_N.ref());
+_zk_rea:='';
+_zam_rns:='';
+_loop:=ZK_RN.first();
+{!
+|? _loop
+|!
+   {? ZK_RN.FAKS='' & _zam_rns*($ZK_RN.ref())=0 || _zam_rns+=$ZK_RN.ref() ?};
+   _loop:=ZK_RN.next()
+!};
+ZK_RN.cntx_pop();
+{!
+|? _zam_rn:=16+_zam_rns; _zk_rea='' & _zam_rn<>''
+|! _zam_rns:=16-_zam_rns;
+   _grp_key:=exec('FindAndGet','#table',ZK_RN,_zam_rn,,"ZK_RN.GRP_KEY",'');
+   {? _grp_key<>''
+   || B_KEYREF.cntx_psh();
+      B_KEYREF.index('UID_REF');
+      B_KEYREF.prefix('LSP_FAK_DZDM');
+      ZK_RN.cntx_psh();
+      ZK_RN.index('GRP_KEY');
+      ZK_RN.prefix(_grp_key-1);
+      _loop:=ZK_RN.first();
+      {!
+      |? _loop
+      |!
+         _uidref:=
+            {? B_KEYREF.find_key(exec('FindAndGet','#table',ND,ZK_RN.ND,,"ND.uidref()",''))
+            || B_KEYREF.KEY_REF
+            || ''
+            ?};
+         {? _uidref<>'' || _zk_rea:=_grp_key ?};
+         _loop:=_uidref='' & ZK_RN.next()
+      !};
+      ZK_RN.cntx_pop();
+      B_KEYREF.cntx_pop()
+   ?}
+!};
+:: uruchomienie czynności
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LSP_FAK_DZDM';
+{? _uidref<>'' || _params.UIDREF:=_uidref ?};
+_params.AKCJA:='Zamówienie';
+_params.PROC_START:='T';
+_params.CONTEXT:=exec('context_lsp_fak_dzdm','faktury_nag');
+_params.CONTEXT.REF:=ZK_N.ref();
+{? ZK_N.TR<>null()
+|| _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'TYPYSP',ZK_N.TR)
+?};
+exec('mp_run','#b__box',_params)
+
+
+\zk_rea2desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: zwraca napis na podstawie czego ma zostać wystawiona faktura wg identyfikatora zaznaczenia
+::   WE: _a - identyfikator zaznaczenia
+::----------------------------------------------------------------------------------------------------------------------
+_res:='';
+_zkn:=null();
+ZK_N.cntx_psh();
+ZK_RN.cntx_psh();
+_msk:=ZK_RN.names();
+
+_msk.clear();
+{? _msk.first()
+|| {!
+   |? ZK_N.use('zknag'+(_msk.NAME+3));
+      ZK_RN.use(_msk.NAME);
+
+      ZK_RN.index('GRP_KEY');
+      ZK_RN.prefix(_a-1);
+      {? ZK_RN.first()
+      || _zkn:=ZK_RN.N;
+         {!
+         |? {? _zkn<>ZK_RN.N
+            || _zkn:=null();
+               0
+            || ZK_RN.next()
+            ?}
+         !};
+         _res:={? _zkn<>null() || exec('record','#to_string',_zkn) || 'realizacji kilku zamówień' ?}
+      ?};
+      _res='' & _msk.next()
+   !}
+?};
+obj_del(_msk);
+ZK_N.cntx_pop();
+ZK_RN.cntx_pop();
+_res
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+{? var_pres('ZK_REA',_in)=type_of('') & _in.ZK_REA<>''
+|| _zk_rea:=gsub(_in.ZK_REA,'''','''''');
+   _oddz:=sql($"
+      select distinct ND.ODDZ from @ND where ND.GRP_KEY=':_a'
+   ",_zk_rea).ODDZ;
+   {? +_oddz
+   || __PARSES.setVal('OddzialLogProd',_oddz)
+   ?}
+?};
+
+1
+
+
+\display
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [19.02]
+:: OPIS: Lista zadań TO-DO, podgląd dokumentu
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+exec('display','faktury_nag',_out.FAKS)
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:39 0bc073aa0aee73f13065b7bb07e995fe21bc1b817482369b58edc750b13791eb1fad12bb444506f2d9bf9ae04fdd88b2f399f9bfb922cc4c87f845ed0cd4ab400d948427a38d5e8b8719c33328cd6eabb20e7dda7a23ada3f0e4d06996f110c26e2731d31e4670931ad00e904aa463cc988e52bbf08bea1fe28a50f20cf3d876

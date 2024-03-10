@@ -1,0 +1,214 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_grp_awsp.fml
+:: Utworzony:26.08.2021
+:: Autor: JAKOLTUN
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PKD_GRP_AWSP - Import współczynników
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JAKOLTUN [21.37]
+:: OPIS: Import współczynników - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+{? Plugin.runnable('PKD_WYN_WSP_001')
+|| Plugin.run('PKD_WYN_WSP_001')
+|| exec('import','!pkd_grp_awsp')
+?};
+~~
+
+
+\import
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JAKOLTUN [21.37]
+:: OPIS: Formuła importująca współczynniki z pliku csv.
+::       Separator kolumn (;) i format daty (yyyy-mm-dd)
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_user:=
+   {? _psep:=username()*'~' || _psep-1
+   |? _psep:=username()*'.' || _psep-1
+   || +username()
+   ?}+username();
+
+_fh:=0;
+_tmp_dir:=fmk_tmp_dir(0);
+{? type_of(_tmp_dir)<>type_of(~~)
+|| _pth:=_tmp_dir.get_path();
+   {? _pth<>''
+   || _uploaded:=dlg_upload(_pth,0,'.csv');
+      _sep:=exec('sep','#file',1);
+      {? _uploaded<>''
+      || _fh:=fopen(_pth+_sep+_uploaded,'ur')
+      ?}
+   ?}
+|| FUN.emsg('Nie udało się utworzenie katalogu tymczasowego po stronie serwera.'@)
+?};
+
+{? _fh
+||
+:: Pominięcie lini nagłówkowej
+   _nrl:=1;
+   fread(_fh);
+
+   _d0:=date(0,0,0);
+   _data:=
+      "  _rk:=#(4+_a);
+         _mc:=#((7+_a)+2);
+         _dz:=#(_a+2);
+         {? _rk>0 & _mc>0 & _mc<13 & _dz>0 & _dz<=(date(_rk,_mc,0)~3)
+         || date(_rk,_mc,_dz)
+         || date(0,0,0)
+         ?}
+      ";
+
+:: Potrzebne struktury
+   _TMP:=tab_tmp(2,
+      'P','STRING[20]','Identyfikator pracownika'@,
+      'R','STRING[20]','Rubryka płac'@,
+      'NAZWA','STRING[150]','Nazwa grupy'@,
+      'OD','DATE','Data od'@,
+      'DO','DATE','Data do'@,
+      'OPIS','STRING[80]','Opis współczynnika'@,
+      'WAR1','INTEGER','Wartość 1'@,
+      'WAR2','INTEGER','Wartość 2'@,
+      'WAR3','INTEGER','Wartość 3'@,
+:: Pola techniczne.
+      'WYKONAJ','INTEGER','Znacznik wykonanania'@,
+      'UWAGI','STRING[255]','Uwagi'@,
+      'NRL','INTEGER','Nr linii'@
+   );
+   _ndx:=_TMP.ndx_tmp(,,'NRL',,);
+   _buf:=obj_new('P','R','NAZWA','OD','DO','OPIS','WAR1','WAR2','WAR3');
+
+   exec('KOMM','#object');
+   KOMM.init(255);
+
+   P.cntx_psh();
+   P.index('PRACOIP');
+   P.prefix(exec('ref_firma','ustawienia'),__F_ZATR.P);
+
+   {!
+   |? _linia:=fread(_fh);
+      _linia<>'\n'
+   |! _nrl+=1;
+      _linia+=';';
+      {! _lp:=1 .. 9
+      |! _poz:=_linia*';';
+         _buf[_lp]:=(_poz-1)+_linia;
+         _linia:=_poz-_linia
+      !};
+      _TMP.blank();
+      _TMP.WYKONAJ:=1;
+      _TMP.P:=_buf.P;
+      _prac:=P.find_key(#_buf.P);
+      {? ~_prac
+      || _TMP.UWAGI:='Błąd importu. Nie odnaleziono pracownika o podanym numerze identyfikatora.';
+         _TMP.WYKONAJ:=0
+      ?};
+      _TMP.R:=_buf.R;
+      _skla:=exec('ref_r','edi_ka',_buf.R);
+      {? _buf.R<>'' & ~_skla
+      || _TMP.UWAGI:='Błąd importu. Nie odnaleziono składnika płacowego.';
+         _TMP.WYKONAJ:=0
+      ?};
+      _TMP.NAZWA:=_buf.NAZWA;
+      _TMP.OD:=_data(_buf.OD);
+      _TMP.DO:=_data(_buf.DO);
+      _TMP.OPIS:=_buf.OPIS;
+      _TMP.WAR1:=#_buf.WAR1;
+      _TMP.WAR2:=#_buf.WAR2;
+      _TMP.WAR3:=#_buf.WAR3;
+      {? _TMP.WAR1<0 | _TMP.WAR2<0 | _TMP.WAR3<0
+      || _TMP.UWAGI:='Błąd importu. Pola wartości nie mogą być mniejsze od zera.';
+         _TMP.WYKONAJ:=0
+      |? _TMP.OD<_d0 | _TMP.DO<_d0 | _TMP.DO<_TMP.OD
+      || _TMP.UWAGI:='Błąd importu. Nieprawidłowo wprowadzone daty.';
+         _TMP.WYKONAJ:=0
+      ?};
+      _TMP.NRL:=_nrl;
+      _TMP.add()
+   !};
+
+   fclose(&_fh);
+
+   {? ~_TMP.first()
+   || FUN.info('Brak danych do importu'@);
+      P.cntx_pop();
+      return()
+   ?};
+
+   _TMP.index(_ndx);
+   _TMP.prefix();
+:: Fakt istnienia rekordów w tabeli tymczasowej został sprawdzony kilka linii wyżej.
+   _TMP.first();
+   WYN_WSP.cntx_psh();
+   WYN_WSP.index('WYN_WSP');
+   WYN_WSP.prefix();
+
+   {!
+   |? _prac:=P.find_key(#_TMP.P);
+      {? _TMP.WYKONAJ
+      || WYN_WSP.blank();
+         WYN_WSP.P:={? _prac || P.ref || null() ?};
+         WYN_WSP.R:=exec('ref_r','edi_ka',_TMP.R);
+         WYN_WSP.NAZWA:=exec('grupwyn','!pkd_grp_awsp','GRUPWYN',_TMP.NAZWA);
+         WYN_WSP.OD:=_TMP.OD;
+         WYN_WSP.DO:=_TMP.DO;
+         WYN_WSP.OPIS:=_TMP.OPIS;
+         WYN_WSP.WAR1:=_TMP.WAR1;
+         WYN_WSP.WAR2:=_TMP.WAR2;
+         WYN_WSP.WAR3:=_TMP.WAR3;
+         {? WYN_WSP.add(1)
+         || _TMP.UWAGI:='Rekord poprawnie dodany.'
+         || _TMP.UWAGI:='Błąd przy imporcie rekordu.'
+         ?};
+         _TMP.put()
+      ?};
+      _info:=
+         {? _prac
+         || 'Pracownik: '+P.OSOBA().NAZWISKO+' '+P.OSOBA().PIERWSZE+' '
+         || 'Identyfikator pracownika: ' + _TMP.P ?}+
+         {? +_TMP.R || ', Kod składnika płacowego: '+_TMP.R || '' ?}+
+         {? +_TMP.NAZWA || ', Grupa współczynnika: '+_TMP.NAZWA || '' ?}+
+         {? +_TMP.OPIS || ', Opis współczynnika: '+_TMP.OPIS || '' ?};
+      KOMM.sect_beg(_info);
+      KOMM.add(_TMP.UWAGI);
+      KOMM.sect_end();
+      _TMP.next()
+   !};
+   KOMM.select();
+   _TMP.ndx_drop(_ndx);
+   WYN_WSP.cntx_pop();
+   P.cntx_pop()
+?};
+~~
+
+
+\grupwyn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JAKOLTUN [21.37]
+:: OPIS: Wyszukanie lub dodanie pola słownika SLO_NAZ
+::   WE: _a[STRING] - nazwa słownika
+::       _b[STRING] - nazwa pola
+::   WY: ref/null
+::----------------------------------------------------------------------------------------------------------------------
+_slo_naz:=_a;
+_pole:=_b;
+{? _slo_naz<>'' & _pole<>''
+|| _ref:=exec('FindInSet','#table','SLO_NAZ','NAZWA',_pole,_slo:=exec('slo_typ','ext_slo',_slo_naz),,1);
+   {? ~_ref
+   || exec('add_slo','edi_ka','SLO_NAZ',0,'NAZWA',_pole,'SLO_TYP',_slo)
+   || _ref
+   ?}
+|| null()
+?}
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:22:52 cac20e3f80e32bab8de3bc7e289add186a5d8d4d83540e8428bc85f5acc87d51d80f27e015ea4e7288ac079ac1783e26b1d1e3639ece892f57f37e26a56c49783fa2b4910e4575d65ebf1a8e9f9eae2fb9bf48c8472865fca3d8d993bdadc5cf96afec6a0ba621cb560791b5a2ae76d530a3c0a521d58f745f57f64b86b77abc

@@ -1,0 +1,228 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_mzle.fml
+:: Utworzony: 27.06.2017
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_MZLE - Modyfikacja zlecenia produkcyjnego prostego
+::            Uwaga: większość kodu jest wspólna z czynnością TTE_PZL_MZLP
+::            w przypadku zmian modyfikować oba pliki
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.28]
+:: OPIS: Formuła główna czynności modyfikacji zlecenia produkcyjnego prostego (TTE_PZL_MZLE)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+_uid:='TTE_PZL_MZLE';
+
+::# permissions=ODDZ,LMG
+::# properties=SERVICE
+::# parses=exec('parses','!tte_pzl_mzle')
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N, keyref=T
+{? var_pres('ZL',_in)<>type_of(~~) & var_pres('ZL',_in)<>type_of(null()) || return() ?};
+::# kind=WE, symbol=WSP, type=NUMBER, name=Współczynnik korekty, required=N, keyref=N
+{? var_pres('WSP',_in)<>type_of(~~) & var_pres('WSP',_in)<>type_of(0) || return() ?};
+{? _in.WSP=~~ || _in.WSP:=0 ?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N
+{? var_pres('ZL',_out)<>type_of(~~) & var_pres('ZL',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=WSP, type=NUMBER, name=Współczynnik korekty, required=N, keyref=N
+{? var_pres('WSP',_out)<>type_of(~~) & var_pres('WSP',_out)<>type_of(0) || return() ?};
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik czynności (OK, gdy została poprawnie zmieniona ilość)", required=N
+{? var_pres('RESULT',_out)<>type_of(~~) & var_pres('RESULT',_out)<>type_of('') || return() ?};
+
+:: Sprawdzenie wartości współczynnika
+{? _in.WSP<=-1
+|| _msg:='Niezgodność wywołania czynności %1.\nPrzekazany parametr %2 musi mieć wartość większą niż %3.'@@
+         [_uid,'WSP','-1'];
+   FUN.emsg(_msg);
+   _mp.error(_msg);
+   return()
+?};
+
+_clean_result:=params_exec('clean','!tte_pzl_mzle',_mp,_in);
+_can_continue:=_clean_result.RESULT;
+_zl:=_clean_result.ZL;
+
+:: Sprawdzenie zlecenia i ustawienie parametru wyjściowego
+{? var_pres('ZL',_in)=type_of(null())
+|| {? _in.ZL
+   || {? exec('FindAndGet','#table',ZL,_in.ZL,,"RODZAJ",'')<>'P'
+      || _msg:='Niezgodność wywołania czynności %1.\nPrzekazane zlecenie musi być zleceniem prostym.'@@[_uid];
+         FUN.emsg(_msg);
+         _mp.error(_msg);
+         return()
+      |? exec('FindAndGet','#table',ZL,_in.ZL,,"TYP().WP",'')<>'P'
+      || _msg:='Niezgodność wywołania czynności %1.\nPrzekazane zlecenie musi być zleceniem produkcyjnym.'@@[_uid];
+         FUN.emsg(_msg);
+         _mp.error(_msg);
+         return()
+      || _mp.save(exec('kind_out','#b_port'),'ZL',_in.ZL)
+      ?}
+   || _msg:='Niezgodność wywołania czynności %1.\nPrzekazany parametr %2 nie może mieć wartości %3.'@@
+            [_uid,'ZL','null()'];
+      FUN.emsg(_msg);
+      _mp.error(_msg);
+      return()
+   ?}
+?};
+
+{? _can_continue>0
+||
+:: Wyzwalacz, który:
+:: - aktualizuje rekord kluczowy nagłówka modyfikowanego zlecenia
+:: - aktualizuje opis na ToDo
+   _mp.trigRef('ZL',1,1,1,exec('kind_out','#b_port'),'ZL');
+
+   {? _mp.akcja()='POPRAW'
+   || _zl:=_context.ZL
+   ?};
+
+:: Wywołanie automatyczne, jest odpowiedni KeyRef, więc bezwarunkowe zakończenie redagowania nagłówka
+   {? _mp.isAutoRun() & _zl<>null()
+   || ZL.cntx_psh();
+      ZL.prefix();
+      {? ZL.seek(_zl)
+      || {? ZL.STAT_N='N'
+         || FUN.info('Nie zakończono rejestracji nagłówka zlecenia.'@)
+         || _il_before:=ZL.IL;
+            _buffer:=exec('buffer','zl_head'); _buffer.bl_void(); _buffer.IL:=_il_before+(_il_before*_in.WSP);
+            _ok:=exec('zl_popraw','zl_head',_zl,1,0,0,_buffer);
+            {? _ok
+            || ZL.get();
+               _mp.save(exec('kind_out','#b_port'),'WSP',(ZL.IL-_il_before)/_il_before);
+               _mp.save(exec('kind_out','#b_port'),'ZL',ZL.ref());
+               _mp.done()
+            ?}
+         ?}
+      ?};
+      ZL.cntx_pop()
+
+:: Wywołanie serwisowe, jest odpowiedni KeyRef, więc bezwarunkowe zakończenie redagowania nagłówka
+   |? _mp.isService() & _zl<>null()
+   || ZL.cntx_psh();
+      ZL.prefix();
+      {? ZL.seek(_zl)
+      || {? ZL.STAT_N='N'
+         || _mp.save(exec('kind_out','#b_port'),'WSP',0);
+            _mp.save(exec('kind_out','#b_port'),'ZL',ZL.ref());
+            _mp.save(exec('kind_out','#b_port'),'RESULT','BŁĄD');
+            _mp.done()
+         || _il_before:=ZL.IL;
+            _buffer:=exec('buffer','zl_head'); _buffer.bl_void(); _buffer.IL:=_il_before+(_il_before*_in.WSP);
+            _ok:=exec('zl_popraw','zl_head',_zl,1,0,0,_buffer);
+            {? _ok
+            || ZL.get();
+               _mp.save(exec('kind_out','#b_port'),'WSP',(ZL.IL-_il_before)/_il_before);
+               _mp.save(exec('kind_out','#b_port'),'ZL',ZL.ref());
+               _mp.save(exec('kind_out','#b_port'),'RESULT','OK');
+               _mp.done()
+            || ZL.get();
+               _mp.save(exec('kind_out','#b_port'),'WSP',0);
+               _mp.save(exec('kind_out','#b_port'),'ZL',ZL.ref());
+               _mp.save(exec('kind_out','#b_port'),'RESULT','BŁĄD');
+               _mp.done()
+            ?}
+         ?}
+      ?};
+      ZL.cntx_pop()
+
+:: Wywołanie z listy ToDo, jest odpowiedni KeyRef, więc kontynuacja redagowania nagłówka
+   |? _mp.pathTodo() & _zl<>null()
+   || {? exec('FindAndGet','#table',ZL,_zl,,"STAT_N",'N')='N'
+      || FUN.info('Nie zakończono rejestracji nagłówka zlecenia.'@);
+         _mp.done()
+      || _il_before:=exec('FindAndGet','#table',ZL,_zl,,"IL",0);
+         _buffer:=exec('buffer','zl_head'); _buffer.bl_void(); _buffer.IL:=_il_before+(_il_before*_in.WSP);
+         _ok:=exec('zl_popraw','zl_head',_zl,1,0,1,_buffer);
+         {? _mp.isMicro()
+         || _mp.cancel()
+         |? _ok
+         || _il_after:=exec('FindAndGet','#table',ZL,_zl,,"IL",0);
+            _mp.save(exec('kind_out','#b_port'),'WSP',(_il_after-_il_before)/_il_before);
+            _mp.save(exec('kind_out','#b_port'),'ZL',_zl);
+            _mp.done()
+         ?}
+      ?}
+
+:: Poprawianie zlecenia (obszar roboczy - zlecenie przekazane kontekstem)
+:: NUCO - zmiany umożliwiające wykonanie tego w procesie
+   |? _mp.akcja()='POPRAW'
+   || _il_before:=exec('FindAndGet','#table',ZL,_zl,,"IL",0);
+      _mag_bfoere:=exec('FindAndGet','#table',ZL,_zl,,"MG",null());
+      _ok:=exec('zl_popraw','zl_head',_zl,1,0);
+      {? _mp.isMicro()
+      || _mp.cancel()
+      |? _ok
+      || _il_after:=exec('FindAndGet','#table',ZL,_zl,,"IL",0);
+         _mag_after:=exec('FindAndGet','#table',ZL,_zl,,"MG",null());
+::         {? _il_before=_il_after & _mp.isBiNew()
+         {? 0
+         || _mp.cancel()
+         || {? _il_before=_il_after
+            || _mp.save(exec('kind_out','#b_port'),'WSP',1)
+            || _mp.save(exec('kind_out','#b_port'),'WSP',(_il_after-_il_before)/_il_before)
+            ?};
+            {? _mag_bfoere<>_mag_after & _mag_after<>null()
+            || _mp.save(exec('kind_out','#b_port'),'RESULT','OK-MAG')
+            || _mp.save(exec('kind_out','#b_port'),'RESULT','OK')
+            ?};
+            _mp.save(exec('kind_out','#b_port'),'ZL',_zl);
+            _mp.done()
+         ?}
+      || _mp.cancel()
+      ?}
+
+   |? _mp.pathProc()
+   || ZL.cntx_psh();
+      ZL.clear();
+      _join:='join ZTP';
+      _where:=
+         'ZL.STAN=''O'' and '
+         'ZTP.WP=''P'' and '
+         'ZL.RODZAJ=''P''';
+      ZL.f_set('SYM',_join,_where);
+      exec('icons_slo_sl','zl_head');
+      ZL.win_sel('SLO_SL');
+      ZL.actions('SLO_SL','XY','W');
+      {? ZL.select()
+      || _il_before:=ZL.IL;
+         _ok:=exec('zl_popraw','zl_head',ZL.ref(),1,0);
+         ZL.get();
+         {? _mp.isMicro()
+         || _mp.cancel()
+         |? _ok
+         || {? _il_before=ZL.IL
+            || _mp.cancel()
+            || _mp.save(exec('kind_out','#b_port'),'WSP',(ZL.IL-_il_before)/_il_before);
+               _mp.save(exec('kind_out','#b_port'),'ZL',ZL.ref());
+               _mp.done()
+            ?}
+         ?}
+      ?};
+      ZL.f_clear();
+      ZL.cntx_pop()
+
+:: Tutaj nie powinno dojść, więc błąd
+   || _mp.error('Nieobsłużony kontekst wywołania czynności %1.'@@['TTE_PZL_MZLE'])
+   ?}
+?};
+~~
+

@@ -1,0 +1,451 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !fks_ewi_drda.fml
+:: Utworzony: 30.10.2015
+:: Autor: PJ
+::======================================================================================================================
+:: Zawartość: Formuły czynności FST_EWI_DRDA - Redakcja dokumentu przyjęcia środka
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Redakcja dokumentu przyjęcia środka - główna formuła czynności FST_EWI_DRDA.
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=FJKS
+::# parses=exec('parses','!fst_ewi_drda')
+::# access=exec('uprawnienia','!fst_ewi_drda')
+:: PARAMETRY WE:
+::# kind=WE, symbol=DOK, type=_DOK, name=Wskazanie na dokument, required=N
+::# kind=WE, symbol=SRSR, type=_SRSR, name=Wskazanie na środek, required=T, keyref=T
+:: PARAMETRY WY:
+::# kind=WY, symbol=SRDO, type=_SRDO, name=Wskazanie na dokument przyjęcia, required=T
+
+_mp:=params_get().mp;
+_args:=params_get();
+_we:=_args.in;
+_wy:=_args.out;
+_akcja:=-_mp.akcja();
+
+exec('init','fst');
+OKRO_F.win_dict('SLO_SR');
+
+_ok:=1;
+{? ~exec('okr_mod','fst') || _ok:=0 ?};
+
+SRSR.cntx_psh();
+SRSR.prefix();
+
+_dok:=null;
+
+{? _ok
+|| {? _mp.pathProc()
+   || {? ~SRSR.seek(_we.SRSR,ref_name(_we.SRSR),1)
+      || _akcja:='dołącz';
+         SRSR.index(NRI_O);
+         {? OPERATOR.DEPT<>null
+         || SRSR.prefix(OPERATOR.DEPT)
+         || SRSR.prefix()
+         ?};
+         _win:=exec('create_win_srsr','fst');
+         SRSR.win_sel(_win);
+         {? ~SRSR.select() || _ok:=0 ?}
+      ?}
+   |? (_mp.pathTodo() | _mp.pathArea()) & var_pres('DOK',_we)>0 & _we.DOK<>null
+   || _akcja:='dołącz2';
+      {? var_pres('SRSR',_we)=type_of(null()) & _we.SRSR<>null() & SRSR.seek(_we.SRSR,ref_name(_we.SRSR),1)
+      || _ok:=1
+      || _ok:=-1
+      ?};
+      _dok:=_we.DOK
+
+   |? _mp.pathTodo()
+   || _akcja:='dołącz';
+      {? var_pres('SRSR',_we)=type_of(null()) & _we.SRSR<>null() & SRSR.seek(_we.SRSR,ref_name(_we.SRSR),1)
+      || {? SRSR.WARF=0
+         || FUN.emsg('Środek wymaga uzupełnienia danych wartościowych. Dołączanie dokumentów nie jest możliwe.'@);
+            _ok:=0
+         ?}
+      || _ok:=-1
+      ?}
+   |? _mp.pathArea()
+   || {? ~SRSR.seek(_we.SRSR,ref_name(_we.SRSR),1) || _ok:=0 ?}
+   ?}
+?};
+
+{? _ok=1 & ~SRD.isDataCompleted()
+|| FUN.emsg('Środek wymaga uzupełnienia danych (dotyczących metody amortyzacji, grupy środka, kont kosztowych).\n'
+            'Dołączanie dokumentów nie jest możliwe.'@);
+   _ok:=0
+?};
+
+{? _ok=1
+|| SRSR.seek(_we.SRSR,ref_name(_we.SRSR),1);
+   SRSR.get();
+   {? _akcja='dołącz' || _ok:=exec('dok_add','!fst_ewi_drda')
+   |? _akcja='dołącz2' || _ok:=exec('dok_add','!fst_ewi_drda',1,_dok)
+   |? _akcja='popraw' || _ok:=exec('dok_edit','!fst_ewi_drda')
+   |? _akcja='usuń' || _ok:=exec('dok_del','!fst_ewi_drda')
+   ?};
+   {? _ok || _ok:=1 ?}
+?};
+
+{? _ok=1
+|| {? ~_mp.isMicro()
+   || {? _akcja<>'usuń'
+      || _wy.SRDO:=SRDO.ref();
+         _mp.keyRef(SRDO.uidref());
+         _mp.save(,_wy)
+      ?}
+   ?};
+   _mp.done()
+|? _ok=-1
+|| _wy.SRDO:=null;
+   _mp.save(,_wy);
+   _mp.done()
+|| _mp.cancel()
+?};
+SRSR.cntx_pop()
+
+
+\dok_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Dołączanie nowego dokumentu
+::   WE: _a - jeśli 0 to akcja grupowego dodawania OT dla serii
+::       _b - DOK.ref(), jeśli podany to od razu podpięta faktura zakupowa
+:: ~OST: INFORK
+::----------------------------------------------------------------------------------------------------------------------
+{? ~SRSR.r_lock(1,1,1) || FUN.emsg('Rekord zablokowany przez innego użytkownika'@); return(null) ?};
+_unref:=SRSR.ref();
+{? _=0 || _a:=1 ?};
+{? (SRSR.WARF=0 & SRSR.WARP=0 & FINFO.TOR_D='N') | (SRSR.WARF=0 & SRSR.WARP=0 & FINFO.TOR_D='T' & SRSR.WARD=0)
+|| _fakzak:=1
+|| _fakzak:=0
+?};
+{? SRSR.GRP='T'
+|| FUN.info('W przypadku zestawów środków dokumenty przyjęcia należy wystawiać '
+            'dla poszczególnych elementów składowych.'@); SRSR.r_unlock();
+   return(null)
+?};
+{? SRD.isDefunct() || SRSR.r_unlock(); return(null) ?};
+SRDO.cntx_psh();
+{? ~(SRSR.GRP='E')
+|| SRDO.index('SRDO');
+   SRDO.prefix(SRSR.ref())
+|| _srsr:=exec('get_srsr_root','fst',SRSR.ref());
+   SRDO.index('SRDOE');
+   SRDO.prefix(_srsr,SRSR.ref())
+?};
+_find:=0;
+_findref:=null;
+{? SRDO.first()
+|| {! |?
+      {? SRDO.TYP().RODZ='P' || _find:=1; _findref:=SRDO.ref() ?};
+      _find=0 & SRDO.next()
+   !}
+?};
+SRDO.cntx_pop();
+{? _find
+|| {? ~(SRSR.GRP='E')
+   || FUN.emsg('W systemie istnieje już dokument przyjęcia zarejestrowany dla bieżącego środka.'@)
+   || FUN.emsg('W systemie istnieje już dokument przyjęcia zarejestrowany dla bieżącego elementu składowego.'@)
+   ?}; SRSR.r_unlock();
+:: jeżeli dokument istnieje to zwraca jego ref co powoduje popchnięcie zadania z Todo
+   return(_findref)
+?};
+{? SRSR.ROK<>SSTALE.AO().RES
+|| FUN.emsg('Dokument przyjęcia można wystawić tylko w roku wprowadzenia środka do ewidencji.'@); SRSR.r_unlock();
+   return(null)
+?};
+_ref:=null;
+_tmp:=EDIT_ES.RODZ;
+EDIT_ES.RODZ:='P';
+SRDT.cntx_psh();
+SRDT.index('SRDT');
+SRDT.prefix('P');
+{? SRDT.first() & SRDT.size()=1
+|| _ref:=SRDT.ref()
+|? SRDT.size()>1
+|| SRDT.win_sel('SELECT');
+   {? SRDT.select() || _ref:=SRDT.ref() ?}
+|| FUN.emsg('W systemie brak definicji dokumentu przyjęcia.'@)
+?};
+
+_srdo:=null;
+
+{? _ref<>null
+|| SRDO.blank();
+   SRDO.ODD_DOK:=SRST.ODD;
+   {? _>1 & var_pres('_b')=type_of(null) & ref_tab(_b)=DOK
+   || DOK.cntx_psh();
+      {? DOK.seek(_b,ref_name(_b)) || SRDO.ODD_DOK:=DOK.ODD ?};
+      DOK.cntx_pop()
+   ?};
+   SRDO.NR:=exec('bl_srdo_nr','fst');
+   SRDO.SYMBOL:=exec('symdok','fst');
+   __T_BLAN:=1;
+   SRDO.TYP:=_ref;
+   {? SRSR.GRP='E'
+   || SRDO.SRSR_E:=SRSR.ref();
+      SRDO.SRSR:=exec('get_srsr_root','fst',SRSR.ref())
+   || SRDO.SRSR:=SRSR.ref()
+   ?};
+   SRDO.DW:=SRSR.DE;
+   SRDO.DO:=SRSR.DE;
+   SRDO.OKRO_F:=SRSR.OKRO_F;
+   SRDO.ROK_F:=SRSR.ROK_F;
+   SRDO.win_edit('RED_P');
+   EDIT_ES.DOK_ZAK:='';
+   exec('przed_red_ot','fst',0);
+   {? _>1 & var_pres('_b')=type_of(null) & ref_tab(_b)=DOK
+   || exec('dol_fak_aut','fst2',_b);
+      EDIT_ES.DOK_ZAK:=exec('symb_fz','fst',0)
+   ?};
+   {? SRDO.edit("exec('chk_dok','!fst_ewi_drda',0)")
+   || exec('mod_rec','fst');
+      {? SRDO.add()
+      || exec('po_red_ot','fst');
+         {? SRDO.SRSR_E=null || _srczyel:='środka'@ || _srczyel:='elementu'@ ?};
+         {? _a & _fakzak & SRDO.DOK_ZAK<>'' &
+            FUN.ask('Czy przypisać wartość netto pozycji faktur jako wartości dla każdego z torów amortyzacji %1?'@
+                    [_srczyel])
+         || exec('fak_zak_add_wart','fst2',SRDO.ref())
+         ?};
+         SRSR.DOKPRZ:=SRDO.ref();
+         _srdo:=SRDO.ref();
+         SRSR.put()
+      ?};
+     {? ~(_>1 & var_pres('_b')=type_of(null) & ref_tab(_b)=DOK)
+     || exec('srst_rfresh','!fst_ewi_drda')
+     ?}
+   ?};
+   __T_BLAN:=0;
+   exec('del_t_srdz','fst')
+?};
+{? _>1 & var_pres('_b')=type_of(null) & ref_tab(_b)=DOK
+|| _uidref:=SRST.uidref();
+   SRST.cntx_psh();
+   SRST.index('AMOR'); SRST.prefix(SRSR.ref());
+   {? SRST.first()
+   || _uidref:=SRST.uidref()
+   ?};
+   SRST.cntx_pop();
+   {? exec('interm','#system')
+   || _params:=exec('obj_ntab_set','#array',,'LINK',_uidref);
+      _link_interm:=link_uri(_params);
+      cli_open_link(_link_interm)
+   || _color:=exec('FindInSet','#table','B_DOMAIN','SYMBOL','FST',,"B_DOMAIN.COLOR",1,,'');
+      mb_fork(,'START_PROCES'
+      ,'color='+exec('color_conv','#convert',_color)
+      ,'LINK',_uidref)
+   ?}
+?};
+SRDT.cntx_pop();
+EDIT_ES.RODZ:=_tmp;
+SRSR.cntx_psh(); SRSR.prefix();
+{? SRSR.seek(_unref) || SRSR.r_unlock() ?};
+SRSR.cntx_pop();
+_srdo
+
+
+\dok_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Edycja dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+{? SRD.isDefunct() || return(null) ?};
+SRDO.win_edit('RED_P');
+_srdo:=null;
+_tmp:=EDIT_ES.RODZ;
+EDIT_ES.RODZ:='P';
+EDIT_ES.DOK_ZAK:=exec('symb_fz','fst',SRDO.ref());
+{? SRDO.r_lock(1,1,1)
+|| exec('przed_red_ot','fst',1);
+   {? SRDO.edit("exec('chk_dok','!fst_ewi_drda',1)")
+   || {? SRDO.OKRO_F=null
+      || SRDO.OKRO_F:=SRSR.OKRO_F;
+         SRDO.ROK_F:=SRSR.ROK_F
+      ?};
+      exec('po_red_ot','fst');
+      exec('mod_rec','fst');
+      {? SRDO.put() || _srdo:=SRDO.ref() ?}
+   ?};
+   exec('del_t_srdz','fst');
+   SRDO.r_unlock()
+|| FUN.emsg('Dokument zablokowany przez innego użytkownika.'@)
+?};
+EDIT_ES.RODZ:=_tmp;
+_srdo
+
+
+\dok_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Usuwanie dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+{? SRD.isDefunct() || return(0) ?};
+_ok:=1;
+{? SRDO.r_lock(1,1)
+|| {? FUN.ask('Usunąć dokument przyjęcia o symbolu: %1?'@[SRDO.SYMBOL])
+   || SRDO.r_unlock();
+      do();
+::       usunięcie powiązania OT z dokumentami ksiegowymi
+         SRDZ.index('SRDZ');
+         SRDZ.prefix(SRDO.ref());
+         {? SRDZ.first() || {! |? SRDZ.del() !} ?};
+
+         {? SRDO.SRSR_E<>null
+         || SRSR.cntx_psh();
+            SRSR.prefix();
+            {? SRSR.seek(SRDO.SRSR_E)
+            || SRSR.DOKPRZ:=null;
+               SRSR.put()
+            ?};
+            {? SRSR.seek(SRDO.SRSR)
+            || SRSR.DOKPRZ:=null;
+               SRSR.put()
+            ?};
+            SRSR.cntx_pop()
+         || SRSR.DOKPRZ:=null;
+            SRSR.put()
+         ?};
+         SRDO.del();
+      end()
+   || SRDO.r_unlock();
+      _ok:=0
+   ?}
+|| FUN.emsg('Dokument zablokowany przez innego użytkownika.'@);
+   _ok:=0
+?};
+{? _ok || exec('srst_rfresh','!fst_ewi_drda') ?};
+_ok
+
+
+\chk_dok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Weryfikacja poprawności dokumentu
+::   WE: _a = 1 - popraw, 0 - dołącz
+::----------------------------------------------------------------------------------------------------------------------
+:: kontrola unikalności numeru i symbolu dokumentu
+_wy:=__CHK.record(SRDO,,'SYMBOL','DW','DO');
+{? _wy=''
+|| {? __CHK.index(SRDO,_a)<>''
+   || {? FUN.ask('Wygenerować nowy numer dokumentu?'@)
+      || SRDO.NR:=exec('bl_srdo_nr','fst',SRDO.NR);
+         SRDO.SYMBOL:=exec('symdok','fst')
+      ?};
+      _wy:='SYMBOL'
+   ?}
+?};
+:: kontrola daty wystawienia
+{? _wy='' & exec('ae_srdo_dw','fst')=0 || _wy:='DW' ?};
+:: kontrola daty operacji
+{? _wy='' & SRDO.OKRO_F<>null
+|| {? exec('test_new_year','fst',SRDO.OKRO_F().ROK)
+   || FUN.emsg('Wskazana data operacji pochodzi z nowo utworzonego roku w obszarze Środków trwałych.\n'
+               'Nowy rok nie ma utworzonych danych w rejestrze stanów środków. Przed dołączaniem zapisów\n'
+               'w nowym roku należy uruchomić Kartotekę środków w nowym roku, system wówczas uruchmomi\n'
+               'mechanizm aktualizacji danych rejestru stanów.'@);
+      _wy:='DO'
+   ?}
+?};
+_wy
+
+
+\uprawnienia
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła na uprawnienia do danych dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menadżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do danych dla czynności
+::       1 - użytkownik ma uprawnienia do danych czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+
+_result:=0;
+USERS.cntx_psh(); USERS.prefix();
+{? USERS.seek(_user)
+||
+:: czy user ma uprawnienia do jednostki księgowej środka
+   SRSR.cntx_psh();
+   SRSR.prefix();
+   {? var_pres('SRSR',_in)=type_of(null()) & _in.SRSR<>null() & SRSR.seek(_in.SRSR,ref_name(_in.SRSR),1)
+   || {? exec('usr_fjks','b_perm',SRSR.ODD,USERS.ref())
+      || _result:=1
+      ?}
+   || _result:=1
+   ?};
+   SRSR.cntx_pop()
+?};
+USERS.cntx_pop();
+_result
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła ustala PARSES dla czynności na podstawie rekordu środka
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_in:=params_get().in;
+_mp:=params_get().mp;
+{? _mp.pathTodo()
+|| {? var_pres('SRSR',_in) & var_pres('SRSR',_in)=type_of(null()) & _in.SRSR<>null
+      & SRSR.seek(_in.SRSR,ref_name(_in.SRSR),1)
+   || __PARSES.setVal('OkresRok',SRSR.OKRO_F);
+      __PARSES.setVal('JednostkaKsięgowa',SRSR.ODD);
+      _result:=1
+   || _result:=1
+   ?}
+|| _result:=1
+?};
+_result
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła na opis czynności na liście ToDo
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+{? var_pres('SRSR',_in)=type_of(null()) & _in.SRSR & SRSR.seek(_in.SRSR,ref_name(_in.SRSR),1)
+|| 'Utwórz dokument przyjęcia OT dla środka: %1'@@ [exec('record','#to_string',_in.SRSR)]
+|| 'Utwórz dokument przyjęcia OT'@@
+?}
+
+
+\srst_rfresh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [18.00]
+:: OPIS: Odświeżanie okna rejestru stanów środków po zmianach w dokumentach przyjęcia
+::----------------------------------------------------------------------------------------------------------------------
+_odd:=exec('odd_count','fst');
+_proces:=~(var_press('__DTREE')>0 | var_press('__LELEM')>0);
+{? EDIT_ES.R='T'
+|| {? var_press('__DTREE')>0 & __DTREE>0
+   || {? OPERATOR.DEPT | _odd=1 || grp_disp(SRST,'DWER_O') || grp_disp(SRST,'DWER') ?}
+   || {? var_pres('__SRST_E')>0 & __SRST_E='WER_E' ||  grp_disp(SRST,'WER_E') |? ~_proces || grp_disp(SRST,'WER') ?}
+   ?}
+|? EDIT_ES.R='N'
+|| {? var_press('__DTREE')>0 & __DTREE>0
+   || {? OPERATOR.DEPT | _odd=1 || grp_disp(SRST,'DWER_N_O') || grp_disp(SRST,'DWER_N') ?}
+   || {? var_pres('__SRST_E')>0 & __SRST_E='WER_E' ||  grp_disp(SRST,'WER_N_E') |? ~_proces || grp_disp(SRST,'WER_N') ?}
+   ?}
+|? EDIT_ES.R=''
+|| {? ~_proces || grp_disp(SRST,'WER_U') ?}
+?}
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 4944f221de8c52f923b1f6ba1ee2a594ceac4fddb87437565e2bf58b4d253eb4cc3de368151f5df5abd3f3dfe3739aa919d74531e3ae85a2308741d96341d2db1673e139da17a869c014d5a9736161f124a843f645d1e9ef27502c9b4104fba147f2134c8695351c98bcf079b53cd5d787d4039fd71e3295f20dbd3da1d32107

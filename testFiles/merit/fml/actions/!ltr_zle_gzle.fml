@@ -1,0 +1,401 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ltr_zle_gzle.fml
+:: Utworzony: 01.08.2019
+:: Autor: Markus
+:: Systemy: Merit
+::======================================================================================================================
+:: Zawartość: Formuły czynności LTR_ZLE_GZLE - Generowanie dyspozycji transportowej
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.42]
+:: OPIS: Formuła główna czynności LTR_ZLE_GZLE
+::   WE: _a - [obj_new] - parametry wejsciowe czynności
+::       _b - [obj_new] - parametry wewnętrzne czynności
+::       _c - [obj_new] - parametry wyjściowe czynności
+::       _d - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# kind=WE,   symbol=RODZ,   type=STRING,  name=Rodzaj dyspozycji,           required=T, fml_val="exec('rodzaj_dyspozycji','!ltr_zle_gzle')"
+::# kind=WE,   symbol=WYM_MOC,type=STRING,  name=Wymagana moc transportowa, required=T, fml_val="exec('wym_moc','!ltr_zle_gzle')"
+::# kind=WE,   symbol=MESSAGE,type=STRING,  name=Włączone komunikaty,       required=N, fml_val="exec('turn_message','!ltr_zle_gzle')"
+::# kind=WE,   symbol=ZLP,    type=_ZLP,    name=Zgłoszenie jednorazowe,    required=N, keyref=T
+::# kind=WE,   symbol=UPMZAD, type=_UPMZAD, name=Przewóz dla usług umowy,   required=N, keyref=T
+::# kind=WY,   symbol=TR_NZL, type=_TR_NZL, name=Dyspozycje transportowe,     required=N, keyref=N
+
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_area:=_mp.pathArea('LTR_ZLE');
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | (_mp.pathArea() & ~_area);
+
+:: Sprawdzenie parametrów pracy dla czynności startowej
+::{? _mp.pathProc()
+::|| {? ST.AR=0 || FUN.info('Ustaw parametry pracy.'@); _wyn:=0; return() ?}
+::?};
+
+exec('init','ltr');
+
+::exec('init','ltr_zle');
+
+:: Sprawdzenie uprawnień
+params_set('in',_in,'user',OPERATOR.USER,'mp',_mp);
+{? exec('permissions','!ltr_zle_gzle')=0
+||
+   _mp.error('Brak uprawnień do uruchomienia czynności.'@);
+   return()
+?};
+
+_message:={? var_pres('MESSAGE',_in)=type_of('') || {? _in.MESSAGE='T' || 1 || 0 ?} || 0 ?};
+_wym_moc:='N';
+{? var_pres('WYM_MOC',_in)=type_of('') & (_in.WYM_MOC='N' | _in.WYM_MOC='T')
+||
+   _wym_moc:=_in.WYM_MOC
+?};
+
+:: dokument źródłowy
+_dok:=null();
+_err:=0;
+{? var_pres('ZLP',_in)=type_of(null()) || _dok:=_in.ZLP ?};
+{? var_pres('UPMZAD',_in)=type_of(null()) || _dok:=_in.UPMZAD ?};
+{? _dok=null()
+||
+
+   {? ~_area & _proc
+   || FUN.info('Czynność należy uruchomić z obszaru zgłoszeń jednorazowych.'@);
+      _mp.cancel()
+   || _mp.error('Nie podano podstawy dyspozycji transportowej.'@)
+   ?};
+   return(~~)
+?};
+_Tab:=ref_tab(_dok);
+_uid:=exec('FindAndGet','#table',_Tab,_dok,,"uidref()",'');
+{? _uid='' || return(~~) ?};
+_Tr_nzl:=exec('get_tr_nzl','transport_zlec',_uid);
+:: rodzaj dyspozycji transportowej
+_rodz:={? var_pres('RODZ',_in)=type_of('') || _in.RODZ || 'R' ?};
+:: parametr 100161 - wyłączona obsługa
+_p100161:=exec('get','#params',100161);
+{? _p100161='N'
+||
+:: wyłączona obsługa dyspozycji transportowych
+   _mp.error('Wyłączona obsługa dyspozycji transportowych (uniwersalny parametry aplikacyjny nr 100161).'@)
+?};
+{? _akcja='Dołącz' & _rodz='A'
+||
+   {? _Tab=ZLP
+   ||
+      _rodz:='';
+      _loop:=_Tr_nzl.first();
+      {!
+      |? _loop
+      |!
+         _rodz+=exec('FindAndGet','#table',TR_NZL,_Tr_nzl.REF,,"TR_NZL.RODZ",'');
+         _loop:=_Tr_nzl.next()
+      !};
+      _ask:=
+         {? (_rodz='' | _rodz='Z')
+               &
+            exec('FindAndGet','#table',ZLP,_dok,,"ZLP.STAT_REJ='Z' & ZLP.SP='T' & ZLP.DP=date(0,0,0)")
+         ||
+            1
+         |? (_rodz='' | _rodz='R')
+               &
+            exec('FindAndGet','#table',ZLP,_dok,,"ZLP.STAT_REJ='Z' & ZLP.DW=date(0,0,0)")
+         ||
+            2
+         ||
+            0
+         ?};
+      {? _ask=1
+      ||
+         _rodz:='A';
+         {? FUN.ask('Czy utworzyć dyspozycję transportu rozładunku dla podstawienia?'@)
+         ||
+            _rodz:='R'
+         ?}
+
+      |? _ask=2
+      ||
+         _rodz:='A';
+         {? FUN.ask('Czy utworzyć dyspozycję transportu załadunku dla zabrania?'@)
+         ||
+            _rodz:='Z'
+         ?}
+      ||
+         FUN.info('Utworzono już dyspozycje transportowe do zgłoszenia.'@)
+      ?};
+      {? _rodz=''
+      ||
+         _rodz:='A'
+      ?}
+   ?};
+
+   {? _Tab=UPMZAD
+   ||
+      _rodz:='';
+      _loop:=_Tr_nzl.first();
+      {!
+      |? _loop
+      |!
+         _rodz+=exec('FindAndGet','#table',TR_NZL,_Tr_nzl.REF,,"TR_NZL.RODZ",'');
+         _loop:=_Tr_nzl.next()
+      !};
+      _ask:=
+      {? _rodz=''
+      ||
+         {? exec('FindAndGet','#table',UPMZAD,_dok,,"UPMZAD.STAT_REJ='Z' & UPMZAD.RODZ='P'")
+         ||
+            1
+         |? exec('FindAndGet','#table',UPMZAD,_dok,,"UPMZAD.STAT_REJ='Z' & UPMZAD.RODZ='Z'")
+         ||
+            2
+         |? exec('FindAndGet','#table',UPMZAD,_dok,,"UPMZAD.STAT_REJ='Z' & UPMZAD.RODZ='W'")
+         ||
+            1
+         ||
+            0
+         ?}
+      ||
+         {? exec('FindAndGet','#table',UPMZAD,_dok,,"UPMZAD.STAT_REJ='Z' & UPMZAD.RODZ='W'")
+         ||
+            {? _rodz='R' || 2 || 0 ?}
+         ||
+            0
+         ?}
+      ?};
+      {? _ask=1
+      ||
+         _rodz:='A';
+         {? FUN.ask('Czy utworzyć dyspozycję transportu rozładunku dla przewozu?'@)
+         ||
+            _rodz:='R'
+         ?}
+
+      |? _ask=2
+      ||
+         _rodz:='A';
+         {? FUN.ask('Czy utworzyć dyspozycję transportu załadunku dla przewozu?'@)
+         ||
+            _rodz:='Z'
+         ?}
+      ||
+         FUN.info('Utworzono już dyspozycje transportowe do przewozu.'@)
+      ?};
+      {? _rodz=''
+      ||
+         _rodz:='A'
+      ?}
+   ?}
+?};
+{? _rodz='A'
+||
+:: użytkownik wycofał się z generowania dyspozycji transportowej
+   return(~~)
+?};
+{? _rodz<>'R' & _rodz<>'Z'
+||
+   _mp.error('Nie obsługiwany rodzaj dyspozycji transportowej (%1).'@[_rodz]);
+   return(~~)
+?};
+:: parametr 100161 - tylko indeksy z rodzajem transportu
+{? _p100161='R'
+||
+   _tr_rodz:=null();
+   {? _Tab=ZLP
+   ||
+      _tr_rodz:=exec('FindAndGet','#table',ZLP,_dok,,"ZLP.MJ().TR_RODZ",null())
+
+   |? _Tab=UPMZAD
+   ||
+      {? _rodz='R'
+      ||
+         _tr_rodz:=exec('FindAndGet','#table',UPMZAD,_dok,,"UPMZAD.NEW_M().TR_RODZ",null())
+      ||
+         _tr_rodz:=exec('FindAndGet','#table',UPMZAD,_dok,,"UPMZAD.OLD_M().TR_RODZ",null())
+      ?}
+   ?};
+   {? _tr_rodz=null()
+   ||
+:: wyłączona obsługa dyspozycji transportowych dla indeksów bez rodzaju tranpsortu
+      _mp.error('Wyłączona obsługa dyspozycji transportowych dla indeksów bez rodzaju tranpsortu '
+         '(uniwersalny parametry aplikacyjny nr 100161).'@)
+   ?}
+?};
+_continue:=1;
+_loop:=_Tr_nzl.first();
+{!
+|? _loop
+|!
+   _continue:=_rodz<>exec('FindAndGet','#table',TR_NZL,_Tr_nzl.REF,,"TR_NZL.RODZ",'');
+   _loop:=_continue & _Tr_nzl.next()
+!};
+{? _continue=0
+||
+   {? _rodz='R'
+   || FUN.info('Jest już powiązana dyspozycja transportwa rozładunku.'@)
+   || FUN.info('Jest już powiązana dyspozycja transportwa załadunku.'@)
+   ?};
+   return(~~)
+?};
+
+_mp.trigRef('TR_NZL',,1,,exec('kind_out','#b_port'),'TR_NZL');
+
+:: zgłoszenia jednorazowe
+_result:=exec('tr_nzl_gen','transport_zlec', _dok, _message, _rodz, _wym_moc);
+{? _result
+||
+   _mp.done()
+||
+   _mp.cancel()
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.42]
+:: OPIS: Opis czynności LTR_ZLE_GZLE
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? type_of(_out)>type_of(~~) & var_pres('TR_ZL',_out)>type_of(~~)
+|| 'Zakończ rejestrację dyspozycji transportowej: %1'@@[exec('record','#to_string',_out.TR_ZL)]
+|| 'Zarejestruj dyspozycję transportową'@@
+?}
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.42]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+_wyn:=1;
+_wyn
+
+
+\turn_message
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.42]
+:: OPIS: Czy włączyć komunikaty?
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask('Czy włączyć komunikaty?'@)
+|| 'T'
+|| 'N'
+?}
+
+
+\rodzaj_dyspozycji
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.42]
+:: OPIS: Rodzaj dyspozycji
+::----------------------------------------------------------------------------------------------------------------------
+_choice:=FUN.choice('Rodzaj dyspozycji transportowej:'@,,'Załadunek'@,'Rozładunek'@);
+{? _choice=1
+|| 'Z'
+|| 'R'
+?}
+
+
+\dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.42]
+:: OPIS: Funkcja generująca dyspozycje transportowe
+::   WE: _a - uidref dok
+::       [_b] - komunikaty [T / N]
+::       [_c] - rodzaj dyspozycji [(Z)aładunek / (R)ozładunek]
+::       [_d] - 'T' wymaganie mocy domyślnie 'byle co'
+::----------------------------------------------------------------------------------------------------------------------
+_moc:={? var_pres('_d')=type_of('') & _d='T' || 1 || 0 ?};
+
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LTR_ZLE_GZLE';
+_params.UIDREF:=ZLP.uidref();
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+
+{? var_pres('_a')=2
+||
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZLP',ZLP.ref());
+   {? var_pres('_b')=2 & _b='T'
+   ||
+      exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'MESSAGE','T')
+   ?};
+   {? var_pres('_c')=2
+   ||
+      exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ',_c)
+   ?};
+   {? _moc || exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'WYM_MOC','T') ?}
+?};
+exec('mp_run','#b__box',_params);
+~~
+
+
+\dolacz_ZLP
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.42]
+:: OPIS: Funkcja generująca dyspozycje transportowe z ZLP
+::----------------------------------------------------------------------------------------------------------------------
+_buf:='';
+_Tr_nzl:=exec('get_tr_nzl','transport_zlec',ZLP.uidref());
+_loop:=_Tr_nzl.first();
+{!
+|? _loop
+|! _buf:=exec('FindAndGet','#table',TR_NZL,_Tr_nzl.REF,,"TR_NZL.RODZ",'');
+   _loop:=_Tr_nzl.next()
+!};
+_rdysp:={? _buf='R' | (ZLP.RODZ='Z' & ZLP.SP='N') || 'Z' || 'R' ?};
+obj_del(_Tr_nzl);
+exec('dolacz','!ltr_zle_gzle',ZLP.uidref(),'T',_rdysp,{? ZLP.MJ().TR_RODZ<>null() || 'T' || 'N' ?})
+
+
+\dolacz_UPMZAD
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.42]
+:: OPIS: Funkcja generująca dyspozycje transportowe z UPMZAD
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LTR_ZLE_GZLE';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'UPMZAD',UPMZAD.ref());
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'MESSAGE','T');
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ','A');
+exec('mp_run','#b__box',_params);
+''
+
+
+\wym_moc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Formuła parametru WYM_MOC czynności LTR_ZLE_GZLE
+::   WE:
+::   WY: T/N
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask('Czy wymagana moc transportowa?'@)
+|| 'T'
+|| 'N'
+?}
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:37 92161d2705f97e203c96bb45ef0a7c75918afce5e5dc492cdc832d2fed368c7715e4daf24f0d659b8fd79bd5eddff3e1fdf555554226e173251353a8c0963d55e1c02ef3dc39d29470ae0de221aad78c4709f6e53305f29d4017ed2711fed053945ec6fc2baf5dcce745c8bf05e8ad2564602b125a34874df1e86bab96a3dc9e

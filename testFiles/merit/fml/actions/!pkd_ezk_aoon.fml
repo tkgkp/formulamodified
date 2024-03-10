@@ -1,0 +1,301 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_ezk_aoon.fml
+:: Utworzony: 07.01.2020
+:: Autor: IS
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PKD_EZK_AOON - Pow. pracowników o końcu orzecz. o niepełn.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [20.14]
+:: OPIS: Pow. pracowników o końcu orzecz. o niepełn. - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP,SERVICE
+::# permissions=F_ZATR,UD_SKL
+::
+:: Czynność wysyła powiadomienia pracownikom, których orzeczenie o niepiełnosprawności traci ważność w okresie
+:: od daty OD do daty DO. Jeżeli data DO nie zostanie podana, będą brane pod uwagę wszystkie orzeczenia kończące
+:: się po dacie OD.
+:: W czynności serwisowej wymagana jest co najmniej data OD.
+::# kind=WE, symbol=OD, type=DATE, name=Data początkowa badanego okresu, required=N
+::# kind=WE, symbol=DO, type=DATE, name=Data końcowa badanego okresu, required=N
+::
+:: Parametr wejściowy UD_SCH pozwala wskazać symbol schematu (typu PODZORG), który posłuży do ustalenia jednostki
+:: organizacyjnej, przekazanej parametrem UD_SKL. Jeżeli parametr nie zostanie przekazany (ustawiony), to wybrany
+:: zostanie schemat domyślny lub (jeżeli domyślny nie został określony) pierwszy (w kolejności alfabetycznej).
+::# kind=WE, symbol=UD_SCH, type=STRING, name=Schemat organizacyjny, required=N, ^
+::#    fml_val="exec('ud_sch_wybierz','schemat',,_a).SYMBOL"
+::
+:: Parametr wejściowy UD_SKL pozwala wskazać jednostkę organizacyjną, do której będzie ograniczony zakres przetwarzania.
+:: Domyślnie przetwarzane będą wszystkie jednostki organizacyjne.
+::# kind=WE, symbol=UD_SKL, type=STRING, name=Jednostka organizacyjna, required=N, ^
+::#    fml_val="exec('ud_skl_wybierz','schemat',,,1,_a)"
+::
+:: Parametr wejściowy SQL_FROM umożliwia zbudowanie dodatkowych relacji na potrzeby dodatkowego warunku
+:: (patrz SQL_WHERE).
+:: Domyślnie przyjmuje wartość pustą.
+::# kind=WE, symbol=SQL_FROM, type=STRING, name=Dodatkowe relacje filtra, required=N
+::
+:: Parametr wejściowy SQL_WHERE umożliwia dodatkowe ograniczenie listy współpracowników. Warunek może odwoływać się
+:: do tabeli pracowników (poprzez alias "P" np. "P".ID>1000) oraz
+:: do tabeli osób (poprzez alias "1OSOBA" np. "1OSOBA".PLEC='K').
+:: Odwołania do innych tabel wymagają odpowiedniego użycia parametru SQL_FROM.
+:: Domyślnie SQL_WHERE przyjmuje wartość pustą.
+::# kind=WE, symbol=SQL_WHERE, type=STRING, name=Dodatkowy warunek filtra, required=N
+::
+:: Parametr wejściowy FML_TEST umożliwia dodatkową weryfikację wyboru współpracownika do przetwarzania. Jest treścią
+:: formuły w formacie napisu. Jeżeli formuła zwróci wartość 0 to dany współpracownik nie będzie przetwarzany.
+:: Formuła jest wykonywana przy ustawionych buforach tabel: P, OSOBA.
+:: Domyślnie przyjmuje wartość '1'.
+::# kind=WE, symbol=FML_TEST, type=STRING, name=Dodatkowy warunek wyboru, required=N
+::
+:: Parametr wejściowy FZ określa badane formy zatrudnienia. Należy podawać formy zatrudnienia po przecinku np. "P,Z"
+:: Domyślnie przyjmuje wartość P.
+::# kind=WE, symbol=FZ, type=STRING, name=Formy współpracy, required=N, fml_val="exec('wybierz','f_zatr',_a,1,'T')"
+::
+::----------------------------------------------------------------------------------------------------------------------
+:: Parametry wyjściowe przyjmują wartości puste jeżeli znaleziony pracownik ma kończące się orzeczenie
+:: w badanym okresie, ale nie udało się znaleźć właściwego dla niego adresu e-mail w tabelach USERS i OS_ADRES.
+::# kind=WY, symbol=SUB, type=STRING, name=Temat, required=N
+::# kind=WY, symbol=RCV, type=MEMO, name=Lista odbiorców, required=N
+::# kind=WY, symbol=BODYH, type=MEMO, name=Treść w formacie HTML, required=N
+::
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+_service:=_mp.isService();
+
+{? _mp.pathProc() | _mp.pathTodo()
+:: Ustawienie domyślnej wartości parametru LOOP (żeby brama się nie zawiesiła).
+|| _mp.save(exec('kind_out','#b_port'),'LOOP','N');
+
+:: Ustalenie / odzyskanie klucza grupującego.
+   _out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+
+   {? ~_mp.loop()
+::    Pierwszy obrót pętli - przygotujmy dane.
+::    Usuwamy wszystkie dotychczasowe klucze, które mogły zostać zapamiętane przy poprzednim uruchomieniu czynności
+::    (zakończonej _mp.keep()).
+   || _mp.grpkeyDelAll();
+      _winT:='Pow. pracowników o końcu orzecz. o niepełn.'@;
+
+::    Przypisanie domyślnych form zatrudnienia jeśli nie podano:
+      {? var_press('FZ',_in)<>type_of('') | _in.FZ=''
+      || _in.FZ:='P'
+      ?};
+
+::    Sprawdzenie parametrów wejściowych:
+      {? (_result:=exec('input_chk_get','personel_alerty',_service,_in,_winT,,0))=''
+      || {? ~exec('first_run','!pkd_ezk_aoon',_in,_mp,_winT)
+::       Jeśli nie znaleziono pracowników spełniających kryteria, zakończ czynność:
+         || _out.RCV:=_out.BODYH:=_out.SUB:='';
+            _mp.save(,_out);
+            _mp.done();
+            return()
+         ?}
+      || {? ~_service
+         || FUN.emsg(_result);
+            _mp.cancel()
+         || _mp.error(_result)
+         ?};
+         return()
+      ?}
+   ?};
+
+:: Jeżeli coś było nie tak (z parametrami wejściowymi, z wyborem), to zostało obsłużone powyżej.
+:: Tutaj jesteśmy już na etapie obsługi pętli.
+
+   P.cntx_psh();
+   P.prefix();
+   do();
+:: Podczytanie kluczowych wartości z GRPKEY:
+   _grpPars:=json_par(_mp.grpkeyGet());
+   _in.OD:=#_grpPars.OD;
+   _in.DO:=#_grpPars.DO;
+
+   {? _grpPars.UIDREF<>~~
+::    Przechodzę po pracownikach odłożonych w GRPKEY:
+   || {? P.seek(_grpPars.UIDREF)
+      || _ret:=exec('run','!pkd_ezk_aoon',_in,_grpPars.MAIL);
+::       Jeżeli RCV jest ciągiem pustym, to znaczy, że nie znaleziono adresu e-mail dla pracownika. Należy to sprawdzić
+::       w procesie. W takim przypadku również BODYH i SUB będą ciągami pustymi.
+         _out.RCV:=_ret.RCV;
+         _out.BODYH:=_ret.BODYH;
+         _out.SUB:=_ret.SUB;
+         _mp.save(,_out)
+      ?};
+      {? _mp.grpkeyDel()
+      || {? _mp.grpkeyGet()<>~~
+::          Jeżeli jest jeszcze choć jeden element do przetworzenia, to pętla powinna być kontynuowana.
+         || _mp.loop_continue()
+         ?}
+      ?}
+   ?};
+   _mp.done();
+   end();
+   P.cntx_pop()
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [20.14]
+:: OPIS:  Pow. pracowników o końcu orzecz. o niepełn. - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Powiadomienie pracowników o kończącej się ważności orzeczenia o niepełnosprawności'@@
+
+
+\first_run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [20.14]
+:: OPIS: Pierwsze uruchomienie czynności (pierwszy obrót pętli)
+::   WE: _a [OBJ] - parametry wejściowe czynności (in)
+::       _b [OBJ] - objekt menedżera procesów (mp)
+::       _c [STRING] - tytuł okienka
+::   WY: 0/1 - Czy znaleziono pracowników z blokadą składek?
+::----------------------------------------------------------------------------------------------------------------------
+_in:=_a;
+_mp:=_b;
+_winT:=_c;
+_service:=_mp.isService();
+
+P.cntx_psh();
+:: Założenie odpowiednich filtrów na tabelę P wg. tego co podano w _in:
+_fZatr:=spli_str(_in.FZ,',');
+exec('fltr_p_ud_sql','personel_alerty',_service,_in,_fZatr);
+obj_del(_fZatr);
+:: Wygenerowanie tabeli z uidref pracowników z wygasającym orzeczeniem o niepełnosprawności w badanym okresie:
+_TAB:=exec('oon_end_p','personel_alerty',_in.OD,_in.DO,_in.FML_TEST,'T');
+P.f_clear();
+P.cntx_pop();
+
+_bMail:=0;
+:: Przepisanie dat OD, DO oraz tabeli uidref pracowników z wygasającym orzeczeniem o niepełnosprawności do GRPKEY:
+{? _TAB.first()
+|| {!
+   |? _par:=obj_new('UIDREF','OD','DO','MAIL');
+::    Struktura tablicy nazwanej przekazywanej w formie JSON do GRPKEY:
+::       * UIDREF [STRING] - P.uidref(), wskazanie na pracownika
+::       * OD     [NUMBER]   - _in.OD, data początkowa badanego okresu
+::       * DO     [NUMBER]   - _in.DO, data końcowa badanego okresu
+::       * MAIL   [STRING] - adres e-mail pracownika
+::    Daty zapisywane w postaci numerycznej, tak aby po odczytaniu przekształcić z powrotem na typ DATE.
+::    Możliwa do zapisania długość to 255 znaków. Obecna długość ciągu JSON to 147 znaków (do poniedziałku,
+::    28 listopada 2738 roku).
+      _par.UIDREF:=_TAB.UID;
+      _par.OD:=#_in.OD;
+      _par.DO:=#_in.DO;
+      _par.MAIL:=_TAB.MAIL;
+      {? _TAB.MAIL='' || _bMail+=1 ?};
+      _mp.grpkeyAdd(json_obj(_par));
+      obj_del(_par);
+      _TAB.next()
+   !}
+?};
+:: Informacja o przygotowniu danych
+{? ~_service
+|| FUN.info(
+      _winT+'\n\n'+
+      'Analiza danych zakończona.'@+'\n'+
+      'Liczba zapisów spełniających kryteria: %1.'@ [$_TAB.size()]+'\n'+
+      'Liczba pracowników bez adresu e-mail: %1.'@ [$_bMail]
+   )
+?};
+
+:: Jeśli nie znaleziono takich pracowników zwróć 0:
+{? ~_TAB.size()
+|| return(0)
+?};
+
+1
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [20.14]
+:: OPIS: Formuła odpowiedzialna za przygotownie danych do wysyłanego powiadomienia. Formuła zakłada, że jest ustawiony
+::       bufor na konkretnym rekordzie tabeli P. Formuła zwraca tablicę nazwaną z elementami potrzebnymi do wysłania
+::       powiadomienia.
+::   WE: _a [OBJ] - parametry wejściowe czynności (in)
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_in:=_a;
+_ret:=obj_new('RCV','BODYH','SUB');
+_ret.RCV:=_ret.BODYH:=_ret.SUB:='';
+
+:: Przypisanie przychodzącego adresu e-mail:
+_ret.RCV:=_b;
+
+:: Jeśli nie ma adresu e-mail, to dalsze wypełnianie nie ma sensu:
+{? _ret.RCV<>''
+|| _th:="'<th [[STYLE_TABLE_TH]]>'+_a+'</th>'";
+   _td:="'<td [[STYLE_TABLE_TD]]>'+_a+'</td>'";
+
+   _ret.SUB:='Powiadomienie o wygaśnięciu orzeczenia o niepełnosprawności'@;
+   OSOBA.cntx_psh();
+   OSOBA.clear();
+   P.OSOBA();
+   P_INFO.cntx_psh();
+   P_INFO.index('S1');
+   P_INFO.prefix(OSOBA.ref());
+   _kobieta:=(OSOBA.PLEC='K');
+
+   _ret.BODYH:=
+      '<p><b>'+
+      'Informuje %1, że złożne przez %1 orzeczenie o niepełnosprawności obowiązuje do dnia zgodnie '
+      'z przedstawionymi poniżej danymi:'@[{? _kobieta || 'Panią'@ || 'Pana'@ ?}]+
+      '</b></p><br>\n'
+
+      '<table [[STYLE_TABLE]]>\n'
+      '<tr [[STYLE_TABLE_TR]]>'+
+         _th('Lp.'@)+
+         _th('Kod orzeczenia'@)+
+         _th('Opis orzeczenia'@)+
+         _th('Od dnia'@)+
+         _th('Do dnia'@)+
+         _th('Orzecznik'@)+
+      '</tr>\n';
+
+   _lp:=0;
+:: Idę po rekordach P_INFO:
+   {? P_INFO.first()
+   || {!
+      |? {? P_INFO.STNP().KOD<>'0' & P_INFO.STNP_DO>=_in.OD & (_in.DO=date(0,0,0) | P_INFO.STNP_DO<=_in.DO)
+         || _lp+=1;
+            _ret.BODYH+=
+            '<tr [[STYLE_TABLE_TR]]>'+
+               _td($_lp)+
+               _td(P_INFO.STNP().KOD)+
+               _td(P_INFO.STNP().LINIA)+
+               _td(P_INFO.STNP_OD$1)+
+               _td(P_INFO.STNP_DO$1)+
+               _td(P_INFO.ORZECZ)+
+            '</tr>\n'
+         ?};
+
+         P_INFO.next()
+      !}
+   ?};
+
+   _ret.BODYH+=
+      '</table>\n'
+      '<p>'+'Ta wiadomość została wygenerowana automatycznie - prosimy na nią nie odpowiadać.'@+'</p>';
+
+   P_INFO.cntx_pop();
+   OSOBA.cntx_pop()
+?};
+
+_ret
+
+:Sign Version 2.0 jowisz:1048 2020/10/16 15:19:16 9fed3f243db9265bcd7d11b5a2bba31d6344fe4e0725a385859ddf05def8d06344eed4c8b05a9513e3b73bfffe62fdeb750a246194f65b22b97e6060c1cbab36a25a37032c93974e21f0212b8df6c768d4ccd9f9f485f9468b475963fdf300e37528fd4279551bd140f47689b348adf55ffba332521a1c16aee6d8aff8f69cac

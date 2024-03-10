@@ -1,0 +1,737 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: elastic_obj.fml
+:: Utworzony: 16.02.2023
+:: Autor: MicKoc
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Obsługa ElasticSearch
+:: uzywanie:   exec('search','elastic','treść_wyszukiwana');
+:: zwraca wyniki z elastica (json string)
+::======================================================================================================================
+
+\elastic
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [23.25]
+:: OPIS: klasa do obsługi ElasticSearch
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('ES',@.CLASS)>0
+|| return()
+?};
+
+obj_decl('ES',
+::======================================================================================================================
+   obj_fld('MIN_ROK','minimalny rok z ograniczeń systemu';1971),
+   obj_fld('MAX_ROK','maksymaly rok z ograniczeń systemu';2037),
+   obj_fld('SYNCHRO','nazwa w synchro';~~),
+   obj_fld('ADDR','adres serwera es';~~),
+   obj_fld('RESULT','wynik odpowiedzi';~~),
+   obj_fld('STATUS', 'kod błędu odpowiedzi';~~),
+   obj_fld('INDEXES','tabela z pobranymi indeksami z json_tparse';~~),
+   obj_fld('MAXRECORDS','ile wynikow zwracac';~~),
+   obj_fld('INFO','przechowuje info serwera';~~),
+   obj_fld('QUERY','cache dla requesta';~~),
+   obj_fld('LOGFILE','plik do zapisywania zapytan do es';~~),
+   obj_fld('SAVERES','czy zapisywać wynik zapytań';~~),
+   obj_fld('ESERROR','jesli 1 to nie ma połączenia z serwerem es';~~),
+   obj_fld('USER','użytkownik do kontroli uprawnień - domyślnie OPERATOR.USER';~~),
+   obj_fld('TBFLDS','tabela tymczasowa z wygenerowanymi polami do zapytania';~~),
+   obj_fld('FIRMY','lista firm 001 002 003 - dla tabel niemaskowanych';~~),
+   obj_fld('OBSZARY','obszary robocze użytkownika';~~),
+   obj_fld('LOGTAB','tabele do logowania';~~),
+   obj_fld('TIKA','url serwera apache-tika';~~),
+   obj_fld('INST','instancja danych es';~~),
+   obj_fld('AKTYWNY','obsługa ES aktywna';~~),
+   obj_fld('BLOBSIZE','ilość wyświetlanych znaków z pola BLOB';~~),
+   obj_fld('SEL_TAB','wybrana do ładowania tabela';~~),
+   obj_fld('AppList',~~),
+   obj_fld('SYNC_NDX',~~),
+   obj_fld('ROK_OD','Ograniczenie zasilania rok od dla IDPUT';0),
+   obj_fld('ROK_DO','Ograniczenie zasilania rok do dla IDPUT';0),
+   obj_fld('KASUJ','Czy kasować dane elasic podczas zasilania, domyślnie TAK=1';1),
+   obj_fld('TRACE','Czy tworzyć plik śledzenia przetwarzania, domyślnie TAK=1';1),
+::======================================================================================================================
+   obj_meth('__init',"
+      .AppList:=obj_new('my','all');
+      .AppList.my:=obj_new('tab','ndx_app');
+      .AppList.my.tab:=app_list(0);
+      .AppList.my.ndx_app:=.AppList.my.tab.ndx_tmp(,,'APP_IDEN',,);
+      {? var_pres('AppList')<0 || AppList:=.AppList ?};
+:   sprawdzenie zmiennej środowiskowej dla administratora
+__develop:=
+         {? var_pres('__develop')=type_of(0) || __develop
+         || exec('is_develop','#var')
+         ?};
+:  obiekty standardowe - ustawienie niezależne od sposobu uruchomienia
+      exec(,'#libfml');
+      exec(,'class');
+      exec(,'_declall');
+      exec('__CHK','#object');
+      exec('VAR_DEL','#object');
+      exec('STR','#object');
+      exec('BIT','#object');
+      exec('MS','#object'); MS.conv:='UTF-8';
+      exec('PROGRESS','#object');
+      exec('FUN','#object');
+      exec('KOMM','#object');
+      exec('__FileLayer','#object');
+      exec('Plugin','#object');
+      exec('firma','#firma',exec('firma_symbol','#firma'));
+      _obj_domarea:=obj_new('TAB','WER');
+      exec('FUN','#object');
+      exec('Plugin','#object');
+      OPERATOR.USER:=exec('users','#users',exec('operatorKod','#users'));
+      exec('tab_area','#b_area',_obj_domarea,2);
+:: pola obiektu
+      .MAXRECORDS:=#exec('get','#parametr',516);
+      .SYNCHRO:='ELASTIC';
+      .QUERY:='';
+      .LOGFILE:='!esquery.es';
+      .SAVERES:='T';
+      .SEL_TAB:='';
+      .AKTYWNY:=exec('get','#parametr',509);
+      .INST:=-{? exec('get','#parametr',512)='T' || exec('get','#parametr',511) || '' ?};
+      .ADDR:='http://localhost:%1/'[exec('get','#parametr',510)];
+      .TIKA:='http://localhost:%1/'[exec('get','#parametr',513)];
+      .BLOBSIZE:=exec('get','#parametr',515);
+      .USER:='';
+      .FIRMY:='';
+      .ESERROR:=0;
+      .RESULT:=obj_new(.MAXRECORDS);
+      .LOGTAB:=tab_tmp(1,'CZAS','STRING[20]','CZAS','TYP','STRING[20]','TYP','LOG','STRING[255]','LOG');
+      FIRMA.cntx_psh();
+      FIRMA.index('SYMBOL');
+      FIRMA.prefix();
+      FIRMA.first();
+      {! |? .FIRMY:=.FIRMY+FIRMA.SYMBOL+' '; FIRMA.next() !};
+      FIRMA.cntx_pop();
+
+      .OBSZARY:='';
+      {! |?
+         .OBSZARY+=maz_utf8(_obj_domarea.TAB.SYMBOL)+',';
+         _obj_domarea.TAB.next()
+      !};
+      .SYNC_NDX:=obj_new('DEF');
+      .SYNC_NDX.DEF:=obj_new('PDAKTLP','PDAKTACR','PDACRREF');
+      .SYNC_NDX.DEF.PDAKTLP:=
+         SYNC_DEF.ndx_tmp('Przeznaczenie, Aktywna, Numer pola',,
+            'SYNC_PD','SYM',,
+            'AKT',,,
+            'LP',,
+         );
+      .SYNC_NDX.DEF.PDAKTACR:=
+         SYNC_DEF.ndx_tmp('Przeznaczenie, Aktywna, Akronim',,
+            'SYNC_PD','SYM',,
+            'AKT',,,
+            'ACR_TAB',,
+         );
+      .SYNC_NDX.DEF.PDACRREF:=
+         SYNC_DEF.ndx_tmp('Przeznaczenie, Akronim, Dołączona',,
+            'SYNC_PD','SYM',,
+            'ACR_TAB',,,
+            'REF_TAB',,
+         );
+      {? .AKTYWNY='T' || .info() || .ESERROR:=-1 ?};
+      1
+   "),
+::======================================================================================================================
+   obj_meth('version','zwraca nr wersji serwera';"
+      {? .INFO=null || .INFO:=.info() ?};
+      .INFO.version.number
+   "),
+
+   obj_meth('call','wywołanie metody es';"
+:: call(_a,_b,_c) wywolanie metody ElasticSearch'a
+:: _a - method GET/POST/PUT/DELETE
+:: _b - path( /)
+:: _c - body (string/json
+      {? .ESERROR || .STATUS:=-1; return(-1) ?};
+      _conn:=inet_get(.ADDR+_b);
+      _conn.append_header('Content-Type:application/json; charset:UTF-8');
+      _resfile:=fopen('!es_result.es','bw',1,,1);
+      on_error(3);
+      no_msg(1);
+      errno();
+      {? _a='POST' || _conn.http_post(_resfile,_c) ?};
+      {? _a='GET' || _conn.http_get(_resfile) ?};
+      {? _a='PUT' || _conn.http_put(_resfile,_c) ?};
+      {? _a='DELETE' || _conn.http_delete() ?};
+      _lasterr:=errno();
+      on_error();
+      {? _lasterr<>0 || .STATUS:=-_lasterr; return(_lasterr) ?};
+      .STATUS:=_conn.get_status();
+      {? .STATUS<>0 | (.STATUS=0 & exec('http_statusok','elastic',_conn.get_header()))
+      || _resfile.fclose(); &_resfile;
+         _resfile:=fopen('!es_result.es','r',1,,1);
+         _pos:=0;
+         _total:=0;
+         _max:=500000;
+         {! _idx:=1 .. .MAXRECORDS |! .RESULT[_idx]:='' !};
+         _idx:=1;
+         {! |? (_part:=_resfile.fread())<>'\n' |!
+            _pos:=+.RESULT[_idx];
+            _total+=+_part;
+            {? ((+_part)+_pos)<_max
+            || .RESULT[_idx]+=_part
+            || {? +_part>_max
+               || .RESULT[_idx]+=(_max-_pos)+_part;
+                  _cpos:=(_max-_pos)
+               || .RESULT[_idx]+=((+_part)-_pos)+_part;
+                  _cpos:=((+_part)-_pos)
+               ?};
+               _idx+=1;
+               .RESULT[_idx]:=_part+(+_part-_cpos)
+            ?}
+         !};
+         _resfile.fclose(); &_resfile;
+         _lasterr:=errno();
+         .STATUS:=200
+      ?};
+      on_error(0);
+      no_msg(0);
+      .STATUS
+   ",type_of(''),type_of('')),
+
+   obj_meth('info','pobranie informacji z es (wersja itp)';"
+      {? .AKTYWNY='N' || .ESERROR:=-1; return(-1) ?};
+      .ESERROR:=0;
+      on_error(3);
+      no_msg(1);
+      errno();
+      _wyn:=.call('GET','','');
+      _lasterr:=errno();
+      on_error();
+      {? _lasterr<>0 | (type_of(_wyn)=type_of(1) & _wyn<0) || .ESERROR:=1; _lasterr:=-_wyn || .ESERROR:=0 ?};
+      {?  type_of(_wyn)=200 || _result:=json_parse(.RESULT[1]); _lasterr:=0 ?};
+      on_error(0);
+      no_msg(0);
+      _lasterr
+   ",-1),
+
+   obj_meth('index_info','pobranie informacji o indeksach';"
+::informacja o istniejacych indeksach - zwraca tabele wygenerowana przez json_tparse
+::_a - 0/1 - wyświetlać komunikaty o błędach
+      {?  type_of(.INDEXES)>0
+      || .INDEXES.erase();
+         _tab:=.INDEXES
+      || _tab:=tab_tmp(1,
+            'INDEX','STRING[40]','INDEKS',
+            'STATUS','STRING[20]','STATUS',
+            'HEALTH','STRING[10]','HEALTH',
+            'COUNT','INTEGER','RECORDS',
+            'DELETED','INTEGER','DELETED',
+            'SIZE','STRING[10]','SIZE'
+         );
+         _tab.index(_tab.ndx_tmp(,,'INDEX',,));
+         .INDEXES:=_tab
+      ?};
+      {? .call('GET','_cat/indices?format=json')=200
+      || _json:=gsub(gsub(.RESULT[1],'docs.','docs_'),'store.','store_');
+         _obj:=json_parse(_json);
+         _max:=obj_len(_obj);
+         {! _idx:=1 .. _max |?
+            {? 1+(_obj[_idx].index)<>'.'
+            || _tab.blank();
+               _tab.INDEX:=_obj[_idx].index;
+               _tab.COUNT:=#_obj[_idx].docs_count;
+               _tab.DELETED:=#_obj[_idx].docs_deleted;
+               _tab.SIZE:=_obj[_idx].store_size;
+               _tab.STATUS:=_obj[_idx].status;
+               _tab.HEALTH:=_obj[_idx].health;
+               _tab.add()
+            ?};
+            1
+         !}
+      || {? _a || FUN.error('Błąd połączenia'@) ?}
+      ?};
+      .INDEXES
+   ",type_of(0)),
+
+   obj_meth('index_delete', 'usunięcie podanego indeksu';"
+:: usuniecie podanego indeksu - 200 = ok, 404 - indeks nie znaleziony
+      .call('DELETE',_a,'')
+   ",type_of('')),
+
+   obj_meth('delete_data', 'usunięcie danych z podanego indeksu';"
+      _query:='%1/_delete_by_query'[_a];
+      {? .INST<>''
+      || _params:='{ \"query\": { \"match\": {  \"metadane.instancja\": \"%1\" }}}'[.INST]
+      || _params:='{ \"query\": { \"match_all\" : {} }}'
+      ?};
+      .call('POST',_query,_params)
+   ",type_of('')),
+
+   obj_meth('clear','usuwa wszystkie dane ze wszystkich indeksow w aktualnej instancji';"
+      SYNC_DEF.cntx_psh();
+      SYNC_PD.index(.SYNC_NDX.DEF.PDAKTLP);
+      SYNC_PD.prefix(.SYNCHRO,'T',1);
+      {? SYNC_PD.first()
+      || {!
+         |? .delete_data(-SYNC_DEF.ACR_TAB+'s');
+            SYNC_PD.next()
+         !}
+      ?};
+      SYNC_DEF.cntx_pop()
+   ",-1),
+
+   obj_meth('reset','usuwa wszystkie indeksy';"
+      SYNC_DEF.cntx_psh();
+      SYNC_DEF.index('PDNR1');
+      SYNC_DEF.prefix(.SYNCHRO,);
+      {? SYNC_DEF.first()
+      || FUN.prg_start(SYNC_DEF.size(),'Usuwanie indeksu: %1'@[SYNC_DEF.ACR_TAB]);
+         {!
+         |? .index_delete(-SYNC_DEF.ACR_TAB+'s');
+            delay(,200);
+            FUN.prg_next(,'Usuwanie indeksu: %1'@[SYNC_DEF.ACR_TAB]);
+            SYNC_DEF.next()
+         !}
+      ?};
+      FUN.prg_stop();
+      SYNC_DEF.cntx_pop();
+      0
+   ",-1),
+
+   obj_meth('synchro_load','ładowanie danych z synchro';"
+:: wywoluje ladowanie danych z synchro z search.fml
+:: _a - czy logowanie
+:: _b - pelne ladowanie (1) czy przyrostowe  (0 - domyslnie)
+:: _c - czy tworzyć plik trace, domyślnie 1
+      {? .ESERROR | .AKTYWNY='N' || return('ERROR: nieaktywny') ?};
+      _log:={? var_pres('_a')=1 & _a=1 || 'T' || 'N' ?};
+      {? var_pres('_b')<0 || _b:=0 ?};
+      _trace:={? var_pres('_c')=type_of(0) || _c || 1 ?};
+      _sym:=exec('get_firmasym','elastic');
+      {? _sym='001' || _sym:='' ?};
+      _res:=exec('load','esearch',.ADDR,_sym,.SYNCHRO, '',0,'T',_log,, _b,_trace);
+      _res
+   "),
+
+   obj_meth('query','template to wyszukiwania';"
+::buduje query do ES
+:: _a - wyszukiwany ciag
+:: _b - from
+      {? .QUERY=''
+      || _query:='';
+::lista indeksow pobierana z definicji synchro
+         SYNC_DEF.cntx_psh();
+         SYNC_DEF.index(.SYNC_NDX.DEF.PDAKTLP);
+         SYNC_DEF.prefix(.SYNCHRO,'T',1);
+         {? SYNC_DEF.first()
+         || {!
+            |?
+               _idxname:=(-SYNC_DEF.ACR_TAB)+'s';
+               _query+='{\"index\":\"%1\"}\n'[_idxname];
+               _fields:=1-.get_fields(SYNC_DEF.ACR_TAB)-1;
+               _terms:=.get_terms(SYNC_DEF.ACR_TAB);
+               {? _terms<>'' || _terms:=','+_terms ?};
+               _query+='{\"query\":{\"bool\":{\"must\":[ {\"simple_query_string\": { %1,'[_fields];
+               _query+='\"query\": \"$$$\",\"default_operator\": \"and\" }} %1 ]}},\"size\":%2, \"from\":%3}\n'
+                  [_terms,$.MAXRECORDS, $_b];
+               SYNC_DEF.next()
+            !};
+            .QUERY:=_query;
+            _query
+         ?};
+         SYNC_DEF.cntx_pop()
+      ?};
+      _query:=gsub(.QUERY,'$$$',_a);
+      _query
+   ",type_of(''),type_of(0)),
+
+   obj_meth('get_fields','lista pól dostępnych dla usera';"
+::get_fields(indeks)
+::zwraca json "fields":["tab.fld1","tab.fld2"]
+::pola po ktorych moze sie odbywac wyszukiwanie (user ma do nich uprawnienia do odczytu)
+      _tab:=tab_tmp(1,
+         'ACR_TAB','STRING[100]','ACR_TAB',
+         'ACR_FLD','STRING[100]','ACR_FLD',
+         'FLD_UPR','STRING[40]','FLD_UPR',
+         'REF_TAB','STRING[100]','REF_TAB',
+         'TYP','STRING[1]','TYP',
+         'FLD_NAM','STRING[100]','FLD_NAM',
+         'PATH','STRING[100]','PATH'
+      );
+::lista pol z indeksu
+      SYNC_DEF.cntx_psh();
+      SYNC_DEF.index(.SYNC_NDX.DEF.PDAKTACR);
+      SYNC_DEF.prefix(.SYNCHRO,'T',_a,);
+      {? SYNC_DEF.first()
+      || {!
+         |? {? SYNC_DEF.REF_TAB<>''
+            || .get_depfields(SYNC_DEF.REF_TAB,_tab,SYNC_DEF.ACR_FLD)
+            || _tab.blank();
+               _tab.ACR_TAB:=SYNC_DEF.ACR_TAB;
+               _tab.ACR_FLD:=SYNC_DEF.ACR_FLD;
+               _tab.FLD_UPR:=SYNC_DEF.FLD_UPR;
+               _tab.TYP:=SYNC_DEF.TYP;
+               _tab.add()
+            ?};
+            SYNC_DEF.next()
+         !}
+      ?};
+      SYNC_DEF.cntx_pop();
+      _tab.blank();
+      _tab.ACR_TAB:='metadane';
+      _tab.ACR_FLD:='tabela';
+      _tab.FLD_NAM:='metadane.tabela';
+      _tab.FLD_UPR:='';
+      _tab.add();
+      _fields:='';
+      {? _tab.first()
+      || {! |?
+            _acrtab:=_tab.ACR_TAB;
+            _acrfld:=_tab.ACR_FLD;
+            _reftab:=_tab.REF_TAB;
+            _fldnam:=_tab.FLD_NAM;
+            _upr:=_tab.FLD_UPR;
+            _kwd:='';
+            _hasaccess:=0;
+::wykluczamy pola LNK.TYT, LNK.WAR itp
+            {? _acrtab='metadane'
+            || _hasaccess:=1;
+               _fields+=_tab.FLD_NAM+','
+            || {? _acrfld*'.'>0
+               || _hasaccess:=0
+               || {? _acrtab*'.'>0
+                  || _path:=spli_str(_acrtab,'.');
+                     _tabnam:=_path[1];
+                     &_path
+                  || _tabnam:=_acrtab
+                  ?};
+                  _fieldexists:=($('var_pres(''%1'',%2)>-1'[_acrfld,_tabnam]))();
+                  {? _fieldexists
+                  || _hasaccess:=($('%1.fld_read(''%2'')'[_tabnam,_acrfld]))()
+                  ||
+:nie ma takiego pola w tabeli - sprawdzam tabelę i pole wskazywane przez FLD_UPR (tabela.pole)
+                     {? _upr<>''
+                     || _uprarr:=spli_str(_upr,'.');
+                        _hasaccess:=($('%1.fld_read(''%2'')'[_uprarr[1],_uprarr[2]]))();
+                        &_uprarr
+                     ||
+:dla metadane.tabela
+                        _hasaccess:=1
+                     ?}
+                  ?}
+               ?};
+               {? _acrtab*'.'>0
+               || _tabnam:='';
+                  _fullpath:='';
+                  _path:=spli_str(_acrtab,'.');
+                  _max:=obj_len(_path);
+                  _ownertab:=_a;
+                  {! _idx:=1 .. _max-1 |!
+                     _tabnam:=_path[_idx];
+                     _tabalias:=.get_acrreftab(_ownertab,_tabnam);
+                     _fullpath+=_tabalias+'.';
+                     _ownertab:=_tabnam
+                  !};
+                  _fullpath+=_fldnam;
+                  _acrtab:=_fullpath;
+                  &_path
+               || _acrtab:={? _fldnam<>'' || _fldnam || _acrtab ?}
+               ?};
+               _tab.PATH:=_acrtab;
+               _tab.put();
+               {? _hasaccess || _fields+=_acrtab + '.'+ _acrfld + _kwd +',' ?}
+            ?};
+            _tab.next
+         !};
+::zachowam na pozniej wygenerowane pola na potrzeby terms
+         {? type_of(.TBFLDS)>100 || obj_del(.TBFLDS) ?};
+         .TBFLDS:=_tab;
+         _obj:=obj_new('fields');
+         _tfields:=spli_str(_fields,',');
+         _obj.fields:=obj_new(obj_len(_tfields)-1);
+         {! _idx:=1 .. obj_len(_tfields)-1 |!
+            _obj.fields[_idx]:=_tfields[_idx]
+         !};
+         json_obj(_obj)
+      ?}
+   ",type_of('')),
+
+   obj_meth('get_terms','dodatkowe ograniczenia dostepu oddziały, stanowiska itp ';"
+      _duble:='';
+      _terms:=exec('get_user_terms','elastic');
+      _len:=obj_len(_terms);
+      _names:=obj_ntab_names(_terms);
+      _result:='';
+      _flag:=0;
+      _tab:=.TBFLDS;
+      _tab.index(_tab.ndx_tmp('',,'ACR_FLD',,,'ACR_FLD',,));
+      {! _idx:=1 .. _len |!
+         _termname:='UPR.'+_names[_idx];
+::sprawdzenie czy warunek potrzebny w podanym indeksie
+         _find:=_tab.find_key(_termname);
+         {!
+         |? (_find & _tab.ACR_FLD=_termname)
+         |! {? type_of(_terms[_idx])=2
+            || _reftab:=_tab.REF_TAB;
+               _acrtab:=_tab.ACR_TAB;
+               _termvalues:=spli_str(_terms[_idx],',');
+               _valuesstr:='';
+               _len2:=obj_len(_termvalues)-1;
+               {! _x:=1 .. _len2 |! _valuesstr+={? _x>1 || ', ' || '' ?} + '\"%1\"'[_termvalues[_x]] !};
+               _termfname:={? _reftab<>'' || _acrtab+'.'+_termname || _acrtab +'.'+ _termname ?};
+               {? _duble*_termfname=0
+               || _duble+=_termfname+',';
+                  _termfname:={? _tab.PATH<>'' & _tab.FLD_NAM<>'' || _tab.PATH+'.'+_termname || _termname ?};
+                  _term:='{ \"terms\": { \"%1.keyword\": [%2]} }'[_termfname, _valuesstr];
+                  _result+={? _flag || ', ' || '' ?} +  _term;
+                  _flag:=1
+               ?};
+               &_termvalues
+            ?};
+            _find:=_tab.next()
+         !}
+      !};
+      _symbol:=exec('get_firmasym','elastic');
+      _term:='{ \"terms\": { \"metadane.firma_symbol\": [\"%1\"]} }'[_symbol];
+      {? .INST<>''
+      || _term+=',{ \"terms\": { \"metadane.instancja\": [\"%1\"]} }'[.INST]
+      ?};
+      _result+={? _flag || ', ' || '' ?} + _term;
+      _result
+   "),
+
+   obj_meth('get_depfields','pobiera rekurencyjnie pola z tabel powiazanych SYNC_DEF.REF_TAB';"
+:_a - akronim tabeli powiazanej
+:_b - tabela tymczasowa do zapisu pól
+:_c - prefix nazwy pola docelowego np. ODB.NAZ
+      _path:=spli_str(_a,'.');
+      _root:='';
+      {? obj_len(_path)>1
+      || _max:=obj_len(_path)-1;
+         {! _idx:=1 .. _max |! _root+=_path[_idx] + '.' !};
+         _a:=_path[_max+1]
+      ?};
+      _tab:=_b;
+:dolaczyc do tabeli przekazanej w parametrze
+      SYNC_DEF.cntx_psh();
+      SYNC_DEF.index(.SYNC_NDX.DEF.PDAKTACR);
+      SYNC_DEF.prefix(.SYNCHRO,'T',_a,);
+      {? SYNC_DEF.first()
+      || {!
+         |? {? SYNC_DEF.REF_TAB<>''
+            || .get_depfields(_a+'.'+SYNC_DEF.REF_TAB,_tab,SYNC_DEF.ACR_FLD)
+            || _tab.blank();
+               _tab.ACR_TAB:=_root+SYNC_DEF.ACR_TAB;
+               _tab.ACR_FLD:=SYNC_DEF.ACR_FLD;
+               _tab.FLD_UPR:=SYNC_DEF.FLD_UPR;
+               _tab.REF_TAB:=_a;
+               _tab.FLD_NAM:=_c;
+               _tab.TYP:=SYNC_DEF.TYP;
+               _tab.add()
+            ?};
+            SYNC_DEF.next()
+         !}
+      ?};
+      SYNC_DEF.cntx_pop()
+   ",type_of(''),type_of(SYSLOG),type_of('')),
+
+   obj_meth('search','wywołuje wyszukiwanie podanego ciągu i zwraca json string';"
+:: _a - szukane wyrazenie
+:: _b - from
+      {? var_pres('_b')<0 || _b:=0 ?};
+      _query:=.query(_a,_b);
+      _file:=fopen(.LOGFILE,'uw',1,,1);
+      {? _file.is_open
+      || fwrite(_file, _query)
+      ?};
+      .call('POST','_msearch', _query);
+
+      {? .STATUS=200
+      || {? .SAVERES='T'
+         || fwrite(_file,%13+%10+'result:'+%13+%10);
+            _idx:=1;
+            {! |?
+               fwrite(_file, .RESULT[_idx]);
+               _idx+=1;
+               (+.RESULT[_idx])>0 & _idx<=20
+            !};
+            fclose(_file)
+         ?};
+         .RESULT[1]
+      || {? .SAVERES='T'
+         || fwrite(_file,%13+%10+'result:'+%13+%10);
+            fwrite(_file,'status:' +.STATUS);
+            fclose(_file)
+         ?};
+         $.STATUS
+      ?}
+   ",type_of(''),type_of(0)),
+
+   obj_meth('init_indexes','inicjalizuje wstepnie indeksy w ES';"
+      {? .ESERROR || return(0) ?};
+      _json:='{\"mappings\": {\"date_detection\": false } }';
+      SYNC_DEF.cntx_psh();
+      SYNC_DEF.index(.SYNC_NDX.DEF.PDAKTLP);
+      SYNC_DEF.prefix(.SYNCHRO,'T',1);
+      {? .KASUJ & SYNC_DEF.first()
+      || {!
+         |? .call('PUT',(-SYNC_DEF.ACR_TAB)+'s',_json);
+            SYNC_DEF.next()
+         !}
+      ?};
+      SYNC_DEF.cntx_pop();
+      1
+   "),
+
+   obj_meth('enable','odblokowuje es z trybu readonly';"
+      .call('PUT','_all/_settings','{\"index.blocks.read_only_allow_delete\": null}')
+   ",-1),
+
+   obj_meth('get_acrreftab','akronim tabeli dołączonej';"
+::akronim tabeli dołączonej
+::WE: _a - tabela
+::    _b - tabela dołączona
+      SYNC_DEF.cntx_psh();
+      SYNC_DEF.index(.SYNC_NDX.DEF.PDACRREF);
+      SYNC_DEF.prefix(.SYNCHRO,_a,_b,);
+      _ret:={? SYNC_DEF.first() || SYNC_DEF.ACR_FLD || '' ?};
+      SYNC_DEF.cntx_pop();
+      _ret
+   ",type_of(''),type_of('')),
+
+   obj_meth('get_resultpart','zwraca podany indeks z tablicy wyniku';"
+:: _a - indeks tablicy .RESULT
+      .RESULT[_a]
+   ",type_of(0)),
+
+   obj_meth('clear_syncidp','usuwa wpisy w SYNCNIDP dla ELASTIC dla wszystkich tabel';"
+      {? .KASUJ
+      || SYNC_DEF.cntx_psh();
+         SYNC_DEF.index('PDNR1');
+         SYNC_DEF.prefix(.SYNCHRO,);
+         {? SYNC_DEF.first()
+         || {!
+            |? .clear_syncidptab(SYNC_DEF.ACR_TAB);
+               SYNC_DEF.next()
+            !}
+         ?};
+         SYNC_DEF.cntx_pop()
+      ?}
+   ",-1),
+
+   obj_meth('clear_syncidptab','usuwa wpis w SYNCNIDP dla podanej tabeli dla ELASTIC';"
+      SYNC_PD.cntx_psh();
+      SYNCNIDP.cntx_psh();
+      SYNC_PD.index('SYM');
+      SYNC_PD.prefix('%1'[.SYNCHRO]);
+      _result:=-1;
+      {? .KASUJ & SYNC_PD.first()
+      || SYNCNIDP.index('ACR');
+         SYNCNIDP.prefix(REF.FIRMA().SYMBOL,SYNC_PD.ref,_a);
+         {? SYNCNIDP.first() & SYNCNIDP.ACR=_a
+         || _result:=SYNCNIDP.del()
+         ?}
+      ?};
+      SYNCNIDP.cntx_pop();
+      SYNC_PD.cntx_pop();
+      _result
+   ",type_of('')),
+
+   obj_meth('init_index','inicjalizacja pojedynczego indeksu';"
+:_a - nazwa indeksu do inicjalizacji
+      {? .ESERROR || return(0) ?};
+      _json:='{\"mappings\": {\"date_detection\": false } }';
+      .call('PUT',_a,_json);
+      1
+   ",type_of('')),
+
+   obj_meth('setRokOd','ustawia pole ROK_OD';"
+      .ROK_OD:=_a
+   ",type_of(0),-1),
+
+   obj_meth('getRokOd','pobiera pole ROK_OD';"
+      return(.ROK_OD)
+   ",-1),
+
+   obj_meth('setRokDo','ustawia pole ROK_DO';"
+      .ROK_DO:=_a
+   ",type_of(0),-1),
+
+   obj_meth('getRokDo','pobiera pole ROK_DO';"
+      return(.ROK_DO)
+   ",-1),
+
+   obj_meth('isRok','czy jest ustawiony zakres dat';"
+      .ROK_OD>0 | .ROK_DO>0
+   ",-1),
+
+   obj_meth('clearRok','czyści ROK_OD i ROK_DO oraz informacje o blokadzie kasowania';"
+      .ROK_OD:=.ROK_DO:=0;
+      .KASUJ:=1
+   ",-1),
+
+   obj_meth('setDel','ustawia znacznik kasowania';"
+      .KASUJ:=_a<>0
+   ",type_of(0),-1),
+
+   obj_meth('editRok','edycja parametrów zasilania';"
+      _tab:=tab_tmp(1,
+         'ROK_OD','INTEGER','Rok od',
+         'ROK_DO','INTEGER','Rok do',
+         'KASUJ','INTEGER','Czy usuwać dane?'
+      );
+      _win:=_tab.mk_edit('Parametry zasilania'@,0,'#editrok_es',,,'normal');
+      _tab.win_esep(_win,'Dane podstawowe'@);
+      _txt:='Rok początkowy zasilania, wartość minimalna %1.'@[$.MIN_ROK];
+      _tab.win_efld(_win,,'ROK_OD',,,5,,,,,_txt);
+      _txt:='Rok końcowy zasilania, wartość maksymalna %1.'@[$.MAX_ROK];
+      _tab.win_efld(_win,,'ROK_DO',,,5,,,,,_txt);
+      _txt:='Kasowanie wszystkich danych ElasicSearch przed zasileniem.'@;
+      _opis:='Usuwa wszystkie dane ElasticSearch'@;
+      _tab.win_efld(_win,,'KASUJ',,,,,,'Kasowanie danych'@,,_txt,'check-box',
+         'left_label=1,check_label=%1'[_opis],$'1',$'0'
+      );
+      exec('ok_esc','#window',_tab,_win);
+      _tab.win_edit(_win);
+      _tab.ROK_OD:=.getRokOd();
+      _tab.ROK_DO:=.getRokDo();
+      _tab.KASUJ:=.KASUJ;
+      _valid:=\"
+         _a:=cur_tab(1,1);
+         _ret:=
+            {? _a.ROK_OD<=0 || 'ROK_OD'
+            |? _a.ROK_DO<=0 || 'ROK_DO'
+            |? _a.ROK_OD>=\"+$.MIN_ROK+\" & _a.ROK_DO>=\"+$.MIN_ROK+\" & _a.ROK_OD>_a.ROK_DO || 'ROK_OD'
+            |? _a.ROK_OD & _a.ROK_OD<\"+$.MIN_ROK+\" || 'ROK_OD'
+            |? _a.ROK_DO & _a.ROK_DO<\"+$.MIN_ROK+\" || 'ROK_DO'
+            |? _a.ROK_OD>\"+$.MAX_ROK+\" || 'ROK_OD'
+            |? _a.ROK_DO>\"+$.MAX_ROK+\" || 'ROK_DO'
+            || ''
+            ?};
+         {? +|_ret || FUN.error('Popraw dane.\nRok początkowy i końcowy muszą być prawidłowo określone.'@) ?};
+         _ret
+      \";
+      {? _tab.edit($_valid)
+      || .setRokOd(_tab.ROK_OD);
+         .setRokDo(_tab.ROK_DO);
+         .setDel(_tab.KASUJ);
+         1
+      || .clearRok();
+         0
+      ?}
+   ",-1),
+
+   obj_meth('runRok','';"
+      {? FUN.ask('Uruchomić w oddzielnym procesie?'@)
+      || _arg:=exec('mp_run_a','#b__box');
+         _arg.ACT_UID:='ZWS_ES__LOAD';
+         _arg.PROC_START:='T';
+         {? .isRok()
+         || _arg.PORTS_IN:=exec('portsIn','#b__box',_arg.ACT_UID);
+            exec('portsInSet','#b__box',_arg.PORTS_IN,_arg.ACT_UID,'ROK_OD',.getRokOd());
+            exec('portsInSet','#b__box',_arg.PORTS_IN,_arg.ACT_UID,'ROK_DO',.getRokDo());
+            exec('portsInSet','#b__box',_arg.PORTS_IN,_arg.ACT_UID,'KASUJ',.KASUJ)
+         ?};
+         exec('mp_run','#b__box',_arg)
+      || exec('load','elastic')
+      ?}
+   ",-1)
+)
+::======================================================================================================================
+
+:Sign Version 2.0 jowisz:1045 2023/10/17 11:55:07 2864d155fafbab6870c5c6d4a4c3a65843d622412f8122199bf33958f6ddd6f49602f453e3b9054b9aa3c193fe442ca9b21d097582569c0fbd26eb7e0c48cee91a33fba4ee4f8a833af7ee612cf865460f13afbd0dcf7989562b9c25f0260f9677238acb5c782e231e83d374d765e366e35c9ae943f912c67daa95a0b7a606e8

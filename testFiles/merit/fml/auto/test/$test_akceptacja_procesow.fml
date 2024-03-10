@@ -1,0 +1,113 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: $test_akceptacja_procesow.fml
+:: Utworzony: 08.04.2019
+:: Autor: ARTSLO
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Test automatyczny dla dzieniny ZPR - akceptacja procesów
+::  AREA: [ZPR_PRO]
+:: TABLE: [B_PROC]
+::    WE: _a - [aktualnie nic, względy historyczne kiedyś był przekazywany obiekt testowy]
+::        _b - wskazanie na zakladke pulpitu
+::        _c - jakie procesy akceptować: 0 - tylko wymienione w pliku csv / 1 - wszystkie
+::    WY: 1/0 - pełne powodzenie testu lub porażka
+::======================================================================================================================
+::GIVEN
+:: inicjalizacja obiektu i jego podstawowych ustawień, zwiekszamy timeout na potrzeby przetwarzań grupowych
+_test_driver:=exec('init','$lib_base','$test_akceptacja_procesow.log');
+_timeout:=_test_driver.timeout;
+_test_driver.timeout:=900000;
+_test_driver.logger.info('START TESTU: $test_akceptacja_procesow.fml (time: '+$date()+' '+(time()$3)+')');
+
+:: wczytujemy potrzebne dane i przygotowujemy środowisko do uruchomienia testu zasdniczego
+_procesy:=exec('importBuff','$lib_base','$procesy_do_akceptacji.csv',exec('bf_proc_akc','$obsluga_procesow'));
+_obszar:=obj_new('PULPIT','OBSLUGA_PROCESOW');
+_obszar.PULPIT:=_test_driver.app_activate(_b);
+_c:={? var_pres('_c')=type_of(0) || _c || 0 ?};
+_wynik:=0;
+
+:: procedura potrzebna do zebrania niezakceptowanych procesów w trybie akceptacji wszystkich
+_procd1:="B_PROC.cntx_psh();
+_ind:= B_PROC.ndx_tmp(,1,'ACCEPTED',,,'FIRMA',,,'SYMBOL',,,'VER',,);
+B_PROC.index(_ind);
+B_PROC.prefix('N',exec('ref_firma','ustawienia'));
+{? _a=1
+|| B_PROC.first();
+   _txt:=B_PROC.SYMBOL+';'+B_PROC.VER
+|| B_PROC.find_key(_b,_c);
+   _txt:={? B_PROC.next() || B_PROC.SYMBOL+';'+B_PROC.VER  || '' ?}
+?};
+B_PROC.prefix();
+B_PROC.ndx_drop(_ind);
+B_PROC.cntx_pop();
+_txt";
+
+::WHEN
+_obszar.OBSLUGA_PROCESOW:=exec('otworz_obszar','$lib_base',_test_driver,'Obsługa procesów');
+{? _c
+|| _wynik:=~exec('akceptuj_proces','$obsluga_procesow',_test_driver,_c)
+|| _proc:=exec('bf_proc_akc','$obsluga_procesow');
+   _procesy.first();
+   {!
+   |? _wynik:=~exec('akceptuj_proces','$obsluga_procesow',_test_driver,_c,_procesy);
+      {? ~_wynik
+      || _proc.WERSJA:=_procesy.WERSJA;
+         _proc.SYMBOL:=_procesy.SYMBOL;
+         _proc.add()
+      ?};
+      _procesy.next()
+   !}
+?};
+
+::THEN
+:: zbieramy danych dotyczące wyników częściowych
+{? _c
+|| _size:=_test_driver.execute("sql('select SYMBOL, VER from B_PROC where FIRMA=:_a',exec('ref_firma','ustawienia')).size()");
+   _proc:=exec('bf_proc_akc','$obsluga_procesow');
+   _sym:=_ver:=_txt:='';
+:: pobranie danych pierwszego niezaakceptowanego procesu
+   _txt:=_test_driver.execute($("_a:=1;"+_procd1));
+   STR.split(_txt,';');
+   _sym:=STR.get_word();
+   _ver:=STR.get_word();
+   {? _sym<>'' & _ver<>'' || _proc.SYMBOL:=_sym; _proc.WERSJA:=_ver; _proc.add() ?};
+:: rozpoczynamy próbe pobrania informacji dla kolejnych niezaakceptowanych procesów ponieważ pętla wyłączam wielokrotne
+:: logowanie akcji execute
+   _test_driver.logger.info('UWAGA: Rozpoczynam petlę iteracyjną dla akcji execute, wyłączam logowanie');
+   _test_driver.logger.log_actions:=0;
+   {!
+   |? _txt:=_test_driver.execute($("_a:=0; _b:='"+_sym+"'; _c:='"+_ver+"';"+_procd1));
+      {? _txt<>''
+      || STR.split(_txt,';');
+         _sym:=STR.get_word();
+         _ver:=STR.get_word();
+         _proc.SYMBOL:=_sym; _proc.WERSJA:=_ver; _proc.add();
+         1
+      || 0
+      ?}
+   !};
+   _test_driver.logger.log_actions:=1;
+   _test_driver.logger.info('UWAGA: Zakończono petlę iteracyjną dla akcji execute, włączam logowanie');
+   _size_akc:=_size-_proc.size()
+|| {? _proc.size() || _wynik:=0 ?};
+   _size:=_procesy.size();
+   _size_akc:=_size-_proc.size()
+?};
+:: kończymy test i logujemy zebrane wyniki
+_test_driver.app_close(_obszar.OBSLUGA_PROCESOW);
+{? _wynik
+|| _test_driver.logger.info('WYNIK TESTU: Test zakończony powodzeniem.')
+|| _test_driver.logger.info('WYNIK TESTU: Test zakończony niepowodzeniem. Zaakceptowano '+$_size_akc+'/'+$_size+' procesów');
+   _proc.first();
+   {!
+   |? _test_driver.logger.info('WYNIK NEGATYWNY: Nie udało się zaakceptować: '+_proc.SYMBOL+' - '+_proc.WERSJA);
+      _proc.next()
+   !}
+?};
+_test_driver.logger.info('KONIEC TESTU: $test_akceptacja_procesow.fml (time: '+$date()+' '+(time()$3)+')');
+_test_driver.timeout:=_timeout;
+return(_wynik)
+
+:Sign Version 2.0 jowisz:1048 2021/04/09 15:23:47 75b906158a6fedda5b2d84c76c20e8f704b8283482bc9f6043b2152470b5ed49fdf577941411d720a9d02dc54f1e5edddf199091446264b913eb0754b80dae72f9f0fb400028bb8d3e62c605215a1595baa24bb99c462cba3160c1ce0e2c867e1d625707e7cd3a3e1e87877fa4760037f27a1692e18fe2e9c69fd05368a75522

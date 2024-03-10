@@ -1,0 +1,1206 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: wyp_zaopatrz.fml
+:: Utworzony: 04.09.2017
+:: Autor: WH
+::======================================================================================================================
+:: Zawartość: Obsługa zaopatrzeń dla wyposażenia
+::======================================================================================================================
+
+
+\select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.02]
+:: OPIS:
+::   WE:
+::   WY:
+::  OLD: \wyklzapo/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+P.clear();
+ODZAM.win_sel('WERG');
+ODZAM.index('SYM');
+ODZAMPT.index('LGTR');
+ODZAM.clear();
+P.fld_attr(,2);
+POMOC.TAT_M:='L';
+
+AreaTitle.setTabWin(ODZAM);
+AreaTitle.setTitle();
+
+ODZAM.select();
+P.fld_attr(,1);
+~~
+
+
+\cr_tzap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Tworzy tabele tymczasowa na dane niezbedne do okreslenia zapotrzebowania
+::       Lista rodzajow wyposazenia
+::       ILW1, ILW2 - ilości wymagane w 2 roznych punktach czasu
+::       ILNP1, ILNP2 - ilosc w normatywach pracownika w obu punktach
+::       ILNO1, ILNO2 - ilosc w normatywach osoby w obu punktach
+::       ILWYN - koncowa ilosc wynikowa (ile brakuje lub gdy ujemna to jaki nadmiar)
+::  OLD: \cr_tzap/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('drop_tzap','wyp_zaopatrz');
+__TMPZAP:=tab_tmp(1,'REF','INTEGER','#MGRP.ref()',
+                    'KOD','STRING[50]','Kod'@,
+                    'NAZ','STRING[100]','Nazwa'@,
+                    'CTRLIL','STRING[1]','Tryb kontroli ilosci'@,
+                    'ILW1','REAL','Ilość wymag 1'@,
+                    'ILW2','REAL','Ilość wymag 2'@,
+                    'ILNP1','REAL','Ilość w norm prac 1'@,
+                    'ILNO1','REAL','Ilość w norm osoby 1'@,
+                    'ILNP2','REAL','Ilość w norm prac 2'@,
+                    'ILNO2','REAL','Ilość w norm osoby 2'@,
+                    'ILP1MIN','REAL','Stan prac min 1'@,
+                    'ILP1MAX','REAL','Stan prac maks 1'@,
+                    'ILP2MAX','REAL','Stan prac maks 2'@,
+                    'ILO1MIN','REAL','Stan os min 1'@,
+                    'ILO1MAX','REAL','Stan os maks 1'@,
+                    'ILO2MAX','REAL','Stan os maks 2'@,
+                    'ILWYN','REAL','Ilość wynikowa'@
+                 );
+~~
+
+
+\drop_tzap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Usuniecie tymczasowej tabeli zapotrzebowania
+::  OLD: \drop_tzap/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__TMPZAP') > 0 || obj_del(__TMPZAP) ?};
+~~
+
+
+\kop_nor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Kopiuje normatyw wynikowy umieszczajac wyniki w jednym z pol tabeli __TMPZAP
+::       w zaleznosci od podanego parametru.
+::       Tabele __WYNNOP __WYNORO musza istniec
+::       Dane tworzone sa na podstawie normatywu wynikowego pracownika.
+::       Przepisywana jest zawartosc pola IL
+::       jednak dla MGRP.CTRLIL='O' dodatkowo sprawdzany jest normatyw wynikowy osoby
+::       i do pola wynikowego wpisywana jest mniejsza wartosc
+::   WE: _a -  1 lub 2 - punkt w ktorym nalezy umiescic wynik [1]
+::       _b - wstawiac informacje o stanach [0]
+::   WY: __TMPZAP.size()
+::  OLD: \kop_nor/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+_fld:={? (_<1) | (_a=~~) | (type_of(_a)<>type_of(0))
+         | ((_a<>1) & (_a<>2))
+      || 1
+      || _a
+      ?};
+{? (_<2) | (_b=~~) || _b:=0 ?};
+{? type_of(_b)<>type_of(0) || &_b; _b:=0 ?};
+_suff:=$_fld;
+{? __WYNNOP.first()
+||
+   {!
+   |?
+      {? __WYNNOP.IL>0
+      ||
+         _il:=__WYNNOP.IL;
+::       jezeli rodzaj kontrolowany na poziomie osoby to dodatkowa korekta ilosci wg normatywu osoby
+         _ilos:=0;
+         {? __WYNNOP.CTRLIL='O'
+         ||
+::          gdybrak w noramtywie osoby to nie ma prawa wydac
+            {? __WYNORO.find_key(__WYNNOP.REF) & (__WYNORO.IL>0)
+            ||
+               _ilos:=__WYNORO.IL;
+               {? __WYNORO.IL<__WYNNOP.IL || _il:=__WYNORO.IL ?}
+            || _il:=0
+            ?};
+::          sprawdzenie, czy nie jest juz w propozycjach dla tej osoby
+            {? _il>0 & var_press('__TMP_ZOD')>0
+            || __TMP_ZOD.cntx_psh();
+               __TMP_ZOD.index(__ndx_zod);
+               __TMP_ZOD.prefix(#P.OSOBA,__WYNNOP.KOD,__WYNNOP.NAZ);
+               {? __TMP_ZOD.first()
+               || _il-=__TMP_ZOD.ILWYN;
+                  _ilos-=__TMP_ZOD.ILWYN
+               ?};
+               __TMP_ZOD.cntx_pop()
+            ?}
+         ?};
+         {? _il>0
+         ||
+            {? ~__TMPZAP.find_key(__WYNNOP.REF)
+            ||
+               __TMPZAP.blank();
+               __TMPZAP.REF:=__WYNNOP.REF;
+               __TMPZAP.KOD:=__WYNNOP.KOD;
+               __TMPZAP.NAZ:=__WYNNOP.NAZ;
+               __TMPZAP.CTRLIL:=__WYNNOP.CTRLIL;
+               __TMPZAP.add()
+            ?};
+            ($('__TMPZAP.ILW'+_suff+':='+$_il))();
+            ($('__TMPZAP.ILNP'+_suff+':=__WYNNOP.IL'))();
+            ($('__TMPZAP.ILNO'+_suff+':='+$_ilos))();
+::            wstawienie wartosci do danych o stanach
+            {? _b
+            ||
+               {? _fld=1
+               || __TMPZAP.ILP1MIN:=__WYNNOP.ILST;
+                  __TMPZAP.ILP1MAX:=__WYNNOP.ILSTM;
+                  {? __TMPZAP.CTRLIL='O'
+                  || __TMPZAP.ILO1MIN:=__WYNORO.ILST;
+                     __TMPZAP.ILO1MAX:=__WYNORO.ILSTM
+                  ?}
+               || __TMPZAP.ILP2MAX:=__WYNNOP.ILSTM;
+                  {? __TMPZAP.CTRLIL='O'
+                  || __TMPZAP.ILO2MAX:=__WYNORO.ILSTM
+                  ?}
+               ?}
+            ?};
+            __TMPZAP.put()
+         ?}
+      ?};
+      __WYNNOP.next()
+   !}
+?};
+__TMPZAP.size()
+
+
+\kopdnor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Kopiuje w dziedzinie tabeli __TMPZAP wartosci z pol punktu  1 do 2
+::  OLD: \kopdnor/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? __TMPZAP.first()
+||
+   {!
+   |?
+      __TMPZAP.ILW2:=__TMPZAP.ILW1;
+      __TMPZAP.ILNP2:=__TMPZAP.ILNP1;
+      __TMPZAP.ILNO2:=__TMPZAP.ILNO1;
+      __TMPZAP.ILP2MAX:=__TMPZAP.ILP1MAX;
+      __TMPZAP.ILO2MAX:=__TMPZAP.ILO1MAX;
+      __TMPZAP.put();
+      __TMPZAP.next()
+   !}
+?};
+~~
+
+
+\ilwyn_tzap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Zwraca __TMPZAP.ILWYN dla rodzaju podanego parametrem
+::   WE: _a - #MGRP.ref()
+::   WY: __TMPZAP.ILWYN lub 0 gdy brak lub ujemna
+::  OLD: \ilwyn_tzap/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) | (_a<0) | type_of(_a)<> type_of(0) || return(0) ?};
+{? __TMPZAP.find_key(_a) & (__TMPZAP.ILWYN>0)
+|| __TMPZAP.ILWYN
+|| 0
+?}
+
+
+\bd_zzaop_s
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.02]
+:: OPIS: Przed wyświetleniem ZZAOP.S
+::  OLD: \bd_zzaop_s/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ODZAM.STAN='N'
+|| ZZAOP.S:='Nieaktywna'@
+|? ODZAM.STAN='T'
+|| ZZAOP.S:='Aktywna'@
+|? ODZAM.STAN='Z'
+|| ZZAOP.S:='Zamknięta'@
+|| ZZAOP.S:='Inny stan'@
+?}
+
+
+\odzam_wer_af
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.02]
+:: OPIS: Po odświeżeniu ODZAM w oknie WERG
+::  OLD: \odzam_wer_af/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+ODZAMPT.prefix(ODZAM.ref());
+ODZAMPT.first();
+grp_disp(ODZAMPT,'WER',1);
+~~
+
+
+\odzampt_mb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.02]
+:: OPIS: przed obsługą ODZAMPT
+::   WE: _a  (standard dla formuły przed obsługą)
+::  OLD: \odzampt_mb/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? grp_empty(ODZAM,'WER')
+|| '#disable'
+|| {? _a
+   || {? exec('blk_lock','#table','ODZAM',ODZAM.ref())
+      || {? ODZAM.STAN<>'T'
+         || ODZAMPT.actions_grayed('WER','PU:')
+         || ODZAMPT.actions_grayed('WER',':')
+         ?}
+      || ODZAMPT.actions_grayed('WER','PU:')
+      ?}
+   ?}
+?}
+
+
+\odzampt_af
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.02]
+:: OPIS: Po odswiez ODZAMPT
+::  OLD: \odzampt_af/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\odzampt_ma
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.02]
+:: OPIS: Po obsłudze ODZAMPT
+::  OLD: \odzampt_ma/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+::jezeli wejscie aktywne do usuniecie normatywow
+{? _a
+|| exec('blk_unlock','#table','ODZAM',ODZAM.ref())
+?};
+~~
+
+
+\czyjest_osnodz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Czy pracownik znajduje sie na liscie wylkuczonych
+::   WE: P.ref lub OSOBA.ref
+::   WY: 1 - jest na liscie pracownikow wykluczonych
+::       2 - jest na liscie osob wytkloczonych
+::       3 - jest na liscie pracownikow lub osob
+::      -1 - bledny parametr
+::  OLD: \czyjest_osnodz/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) | (type_of(_a)<>type_of(null())) || return(-1) ?};
+OSNODZ.cntx_psh();
+OSNODZ.index('OPRAC');
+_czyos:="OSNODZ.prefix(_a); {? OSNODZ.first() || 2 || 0 ?}";
+{? ref_name(_a)=OSOBA.name()
+|| _odp:=_czyos(_a)
+|? ref_name(_a)=P.name()
+|| OSNODZ.prefix(null(),_a);
+   {? OSNODZ.first()
+   || _odp:=1
+   || P.cntx_psh();
+      {? P.seek(_a)
+      || _odp:=_czyos(P.OSOBA)
+      || _odp:=0
+      ?};
+      P.cntx_pop()
+   ?}
+|| _odp:=-1
+?};
+OSNODZ.cntx_pop();
+_odp
+
+
+\odzpo_wp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Wartosc poczatkowa pola ODZAMPT.ODZAM
+::   WY: ODZAM.ref()
+::  OLD: \odzpo_wp/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+ODZAM.ref()
+
+
+\zzaopdwp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Wartosc poczatkowa pola ZZAOP.DATA_W
+::----------------------------------------------------------------------------------------------------------------------
+::dzis plus czas realizacji zamowienia
+date()+exec('get','#params',700522,1,null())
+
+
+\odzamwwp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Przed redakcja ODZAM.DATA_W
+::  OLD: \odzamwwp/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+ODZAM.DATA+exec('get','#params',700522,1,null())
+
+
+\odzpt_il_df
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Format wyswietlania pol ilosci zwiazanych z dana ODZAMPT
+::  OLD: \odzpt_il_df/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+'out'+exec('odzptildokl','wyp_zaopatrz')
+
+
+\odzpt_il_ef
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Format redagowania pol ilosci zwiazanych z dana ODZAMPT
+::  OLD: \odzpt_il_ef/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+'in'+exec('odzptildokl','wyp_zaopatrz')
+
+
+\odzptildokl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Dokladnosc wyswietlania/redagowania KARO.IL
+::  OLD: \odzptildokl/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+'_prec='+$exec('mgrp_m_dokl','wyp',ODZAMPT.MGRP().M)
+
+
+\dataz_bv
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Przed wyswietleniem pola ZZAOP.DATAZAM
+::   WY: kolor
+::  OLD: \dataz_bv/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('zzaopdz','wyp_zaopatrz');
+Color.flddisp('ODZAMPT#DATAZAM#WER#00')
+
+
+\odzpt_nz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Czy lista niezatwierdzona
+::   WY: 1/0
+::  OLD: \odzpt_nz/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+:;{? ODZAM.STAN='N'
+{? 1
+|| 1
+|| FUN.info()('Lista aktywna. Wprowadzanie zmian niedozwolone.'@);
+   0
+?}
+
+
+\odz_rb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Rekord przed ODZAM
+::   WE: _a - standardowy parametr na rekord-przed
+::  OLD: \odz_bp/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _a=1 & ODZAM.STAN<>'T'
+|| ODZAM.actions_grayed('WER','P:')
+|| ODZAM.actions_grayed('WER',':')
+?};
+Color.rekprzed('ODZAM#01#00')
+
+
+\odzpt_rb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Rekord przed ODZAMPT
+::----------------------------------------------------------------------------------------------------------------------
+exec('oblpt','wyp_zaopatrz');
+P.cntx_psh();
+ZNADZOR.OSOBA:=ODZAMPT.P().OSOBA;
+P.cntx_pop();
+{? ODZAMPT.DK_C<>null
+|| DK_C.use(8+$ODZAMPT.DK_C)
+?};
+Color.rekprzed('ODZAMPT#01#00')
+
+
+\odzkrb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: kolorowanie ODZAM
+::       wyroznienie pozycji zamknietych i niezatwierdzonych
+::  OLD: \odzkrb_bp/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ODZAM.STAN='Z'
+|| ''
+|| {? ODZAM.STAN='N' || 'ODZAM#01#02' || 'ODZAM#01#01' ?}
+?}
+
+
+\mcd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Wyznaczenie minimalnego czasu dostawy dla MGRP podanego #refem
+::    WE:  _a - ODZAMPT.ref()
+::    WY:  minimalna liczba dni na realizacje dostawy lub domyslna z parametru gdy bledny parametr
+::  OLD: \mcd/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+_odp:=exec('get','#params',700520,1,null());
+{? (_<1) | (_a=~~) | (type_of(_a)<>type_of(ODZAMPT.ref)) || return(_odp) ?};
+ODZAMPT.cntx_psh();
+{? ODZAMPT.seek(_a)
+|| _mat:={? ODZAMPT.M<>null()
+         || ODZAMPT.M
+         || {? (MGRP.M<>0) & M.seek(MGRP.M,)
+            || M.ref()
+            ?}
+         ?};
+   {? _mat<>null()
+   || _dost:=exec('dost','ceny_mat',_mat,ODZAMPT.ODZAM().DATA_W,INFO.NAROD,0);
+      _odp:=_dost.ILDNI
+   ?}
+?};
+ODZAMPT.cntx_pop();
+_odp
+
+
+\zzaopilo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Obliczenie pola ZZAOP.IL_O
+::  OLD: \zzaopilo/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+::sumowanie z pozycji pracownikow przypisanych do rekordu
+::ZZAOP.IL_O:=0;
+ZZAOP.IL_O:=ODZAMPT.IL;
+::ODZAMPP.cntx_psh();
+::exec('set_pp','zaopatrz');
+::{? ODZAMPP.first() || {! |? ZZAOP.IL_O+=ODZAMPP.IL;ODZAMPP.next() !} ?};
+::ODZAMPP.cntx_pop();
+ZZAOP.IL_O
+
+
+\zzaopilw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Obliczenie pola ZZAOP.IL_W
+::  OLD: \zzaopilw/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+::sumowanie ilosci przewidzianej do zamowienia
+ZZAOP.IL_W:=ZZAOP.IL_O+ODZAMPT.IL_D
+
+
+\zzaopdz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Obliczenie najpozniejszej daty zamowienia
+::  OLD: \zzaopdz/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZZAOP.DATAZAM:=ODZAMPT.ODZAM().DATA_W-exec('mcd','wyp_zaopatrz',ODZAMPT.ref())
+
+
+\xdataz_bv
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Przed wyswietleniem pola ZZAOP.DATAZAM
+::   WY: kolor
+::----------------------------------------------------------------------------------------------------------------------
+Color.flddisp('ODZAMPT#DATAZAM#WER#00')
+
+
+\xodzptkrb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Kolorowanie rekordu ODZAMPT
+::   WY: kolor
+::----------------------------------------------------------------------------------------------------------------------
+{? ODZAMPT.CZYGEN='N' || 'ODZAMPT#01#01' || '' ?}
+
+
+\oblpt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Wykonanie obliczen wartosci tymczasowych dla pozycji ODZAMPT
+::  OLD: \oblpt/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ODZAMPT.get()
+||
+   ZZAOP.ODZAMPT:=ODZAMPT.ref();
+   exec('zzaopilo','wyp_zaopatrz');
+   exec('zzaopilw','wyp_zaopatrz')
+|| ZZAOP.ODZAMPT:=null()
+?}
+
+
+\dataz_cl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Kolorowanie pola ZZAOP.DATAZAM
+::   WY: kolor
+::  OLD: \dataz_cl/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+::jesli lista nie zamknieta i nie dostarczono wszystkiego i data zamowic do wczesniejsza niz dzis to koloruj
+{? (ODZAMPT.ODZAM().STAN<>'Z') & (ZZAOP.DATAZAM<=date())
+|| {? ZZAOP.DATAZAM=date() || 'ODZAMPT#DATAZAM#WER#01' || 'ODZAMPT#DATAZAM#WER#02' ?}
+|| ''
+?}
+
+
+\granice
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: ustawienie granic czasowych analizy (przedzialu obliczeniowego)
+::       Na podstawie daty obliczen i parametru: Wyprzedzenie kontroli zmian normatywow podczas generacji
+::       listy zapotrzebowania wyliacza date koncowa przedzialu w ten sposub powstaje wstepny przedzial czasu analizy
+::       nastepnie koryguje te daty ze wzgledu na mozliwe zmiany w umowie o prace zachodzace w tym wstepnym przedziale
+::       w koncu przesuwa granice tak, aby nie przypadaly w okresie planowanej nieobecnosci w pracy
+::       w efekcie granice wskazuja na przedzial czasowy w jakim ma nastapic dalsza analiza
+::   WE: _a - data obliczen [date()]
+::       _b - ref do OS_VIEV
+::   WY: 0/1 - jest niezerowy obliczeniowy przedzial czasu
+::       zakres czasu analizy wpisywany do pol:
+::       ZOBLICZ.DO_P - data punktu poczatkowego
+::       (zadawana wstepnie przez usera i korygowana gdy miesci sie w zakresie przerwy w pracy)
+::       ZOBLICZ.DO_K - data punktu koncowego
+::        (wyliczana wstepnie na podstawie parametru i korygowana gdy miesci sie w zakresie przerwy w pracy)
+::  OLD: \granice/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) || _a:=date() ?};
+{? type_of(_a)<>type_of(date()) || return(0) ?};
+{? (_<2) | (_b=~~) | (type_of(_b)<>type_of(null())) | (ref_name(_b)<>P.name()) || return(0) ?};
+::wstepne ustawienie wstepnego przedzialu czasu analizy
+H.clear();
+P.cntx_psh(); P.clear();
+ZOBLICZ.DO_P:=_a;
+ZOBLICZ.DO_K:=_a+exec('get','#params',700522,1,null());
+::sprawdzenie, czy wyznaczonym dniu bedzie pracowal
+_odp:=0;
+{? P.seek(_b)
+||
+   _ref:=exec('jaka_umo','normatyw',_a,P.ref());
+   {? _ref<>null()
+   ||
+::       jezeli jest w przedziale zmiana umowy o prace to przesun granice na poczatek nowej
+      H.seek(_ref);
+      {? (#H.DO) & (H.DO<ZOBLICZ.DO_K) || ZOBLICZ.DO_K:=H.DO+1 ?};
+::          uwzglednienie przerw w pracy
+::          tabela tymczasowa z wykazem przerw w pracy wg daty rozpoczecia przerwy
+      _sr:=BIT.refsql(_b);
+      _sql:='select OD, DO from H
+               join H_ZM using (H.KZ, H_ZM.REFERENCE)
+               where (H_ZM.KZ<>\'Z\') and (H.P = \':_a\')
+               order by OD';
+      _TAB:=sql(_sql,_sr);
+      {? _TAB.first()
+      ||
+::           daty przesuwane sa poza okresy przerw, data DO_P w "przod", data DO_K w "tyl"
+         {!
+         |?
+::             jest przerwa w pracy obejmujaca date poczatkowa, przesun poczatek poza przerwe
+::             zabezpieczono w przypadku nie podaniem poczatku lub konca przerwy (co nie powinno sie zdarzyc)
+            {? (#_TAB.OD) & (#_TAB.DO)
+               & (_TAB.OD<=ZOBLICZ.DO_P)
+               & (_TAB.DO>=ZOBLICZ.DO_P)
+            ||
+               ZOBLICZ.DO_P:=_TAB.DO+1
+            ?};
+            _TAB.next()
+         !}
+      ?};
+::        ewentualne sprawdzenie czy data konca przedzialu nie przypada na przerwe
+      {? ZOBLICZ.DO_P<=ZOBLICZ.DO_K
+      ||
+         _TAB.last();
+         {!
+         |?
+::         jest przerwa w pracy obejmujaca date koncowa, przesun poczatek poza przerwe
+::         zabezpieczono w przypadku nie podaniem poczatku lub konca przerwy (co nie powinno sie zdarzyc)
+            {? (#_TAB.OD) & (#_TAB.DO)
+               & (_TAB.OD<=ZOBLICZ.DO_K)
+               & (_TAB.DO>=ZOBLICZ.DO_K)
+            ||
+               ZOBLICZ.DO_K:=_TAB.OD-1
+            ?};
+            _TAB.prev()
+         !}
+      ?};
+      obj_del(_TAB)
+   ||
+::       dla umow zlecen i innych zatrudnien koniec umowy
+      ZOBLICZ.DO_K:=P.DZ
+   ?};
+   _odp:={? ZOBLICZ.DO_K>=ZOBLICZ.DO_P
+         || 1
+         || ZOBLICZ.KOMUN:='Pracownik w sprawdzanym okresie ma przerwe w pracy.';
+            0
+         ?}
+|| ZOBLICZ.KOMUN:='Pracownik niezatrudniony w sprawdzanym dniu.'
+?};
+P.cntx_pop();
+_odp
+
+
+\normat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Okreslenie normatywow na granicach przedzialow
+::       dla kazdej granicy przedzialu ustala normatyw
+::      i wypelnia tabele __TMPZAP
+::   WE: _a - P.ref() [domyslnie biezacy]
+::   WY: rozmiar tabeli wynikowej __TMPZAP jezeli niepusta to moze byc niedobor
+::  OLD: \normat/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) || _a:=P.ref() ?};
+{? (type_of(_a)<>type_of(null())) | (ref_name(_a)<>P.name()) || return(0) ?};
+
+::sprawdzenie, czy wyznaczonym dniu bedzie pracowal
+{? ZOBLICZ.DO_P<=ZOBLICZ.DO_K
+||
+:: sprawdzenie niedoborow w punkcie poczatkowym
+   {? exec('prep_niedobor','wyp_zaopatrz',1,_a,ZOBLICZ.DO_P,1,1)
+   ||
+::    jest normatyw w punkcie poczatkowym
+      exec('kop_nor','wyp_zaopatrz',1,1)
+   ?};
+   exec('drop_niedobor','wyp_zaopatrz');
+:: punkt koncowy
+   {? ZOBLICZ.DO_P<ZOBLICZ.DO_K
+   ||
+      {? exec('prep_niedobor','wyp_zaopatrz',1,_a,ZOBLICZ.DO_K,1,1)
+      ||
+::       jest normatyw w punkcie koncowym
+         exec('kop_nor','wyp_zaopatrz',2,1)
+      ?};
+      exec('drop_niedobor','wyp_zaopatrz')
+   ||
+::    koniec i poczatek w tym samym dniu nie potrzeba zmieniac normatywu
+     exec('kopdnor','wyp_zaopatrz')
+   ?}
+?};
+::wyzerowanie pola wynikowego z ewentualnych pozostalosci
+{? __TMPZAP.first()
+||
+   {! |? __TMPZAP.ILWYN:=0; __TMPZAP.put(); __TMPZAP.next() !}
+?};
+__TMPZAP.size()
+
+
+\analiza
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Wyznaczenie zapotrzebowania na podstawie danych w tabeli __TMPZAP
+::       Obliczana jest wartosc pola ILWYN
+::  OLD: \analiza/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+::Procedura dziala wylacznie na danych zapisanych w __TMPZAP instukcja wiazaca znacznie skraca zapis
+{| __TMPZAP
+|!
+   first();
+   {!
+   |?
+::    jesli zabraknie przy maksymalnej tolerancji dla poczatku przedzialu to uwzglednic
+      {? (ILNP1>ILP1MAX) & ((CTRLIL<>'O') | (ILNO1>ILO1MAX))
+      ||
+         ILWYN:=ILNP1-ILP1MAX;
+         {? (CTRLIL='O') & (ILWYN>ILNO1-ILO1MAX) || ILWYN:=ILNO1-ILO1MAX ?}
+      ?};
+::    jesli zabraknie przy maksymalnej tolerancji dla końcau przedzialu to uwzglednic
+      {? ((ILNP2>(ILP2MAX+ILWYN)) & ((CTRLIL<>'O') | (ILNO2>(ILO2MAX+ILWYN))))
+      ||
+         ILWYN:=ILNP2-(ILP2MAX+ILWYN);
+         {? (CTRLIL='O') & (ILWYN>ILNO2-ILO2MAX) || ILWYN:=ILNO2-ILO2MAX ?}
+      ?};
+::    jesli zabraknie przy minimalnej tolerancji (ale starczy przy maksymalnej) to bardziej szczegolowe rozpatrzenie
+      {? (ILNP1>(ILP1MIN+ILWYN)) & ((CTRLIL<>'O') | (ILNO1>(ILO1MIN+ILWYN)))
+      ||
+::       jesli ilosc na początku jest wieksza od wymaganej na koncu przedzialu to
+         {? ILW1>ILW2
+         ||
+::          na koncu przedzialu wymagania mniejsze
+            {? (ILNP2>(ILP1MIN+ILWYN)) & ((CTRLIL<>'O') | (ILNO2>(ILO1MIN+ILWYN)))
+            ||
+::             brakuje dla konca przedzialu, dodaj tyle aby starczylo
+               _pp:=ILNP2-(ILP1MIN+ILWYN);
+::             wybierana jest mniejsza ilosc pomiedzy deficytem pracownika a osoby, gdy kontrola na poziomie osoby
+               _oo:={? CTRLIL='O' || ILNO2-(ILO1MIN+ILWYN) || _pp ?};
+               ILWYN+={? _pp>_oo || _oo || _pp ?}
+            ||
+::                gdy w przyszlosci braknie dla konca przedzialu to dodaj
+               {? (ILNP2>(ILP2MAX+ILWYN)) & ((CTRLIL<>'O') | (ILNO2>(ILO2MAX+ILWYN)))
+               ||
+                  _pp:=ILNP2-(ILP2MAX+ILWYN);
+                  _oo:={? CTRLIL='O' || ILNO2-(ILO2MAX+ILWYN) || _pp ?};
+                  ILWYN+={? _pp>_oo || _oo || _pp ?}
+               ?}
+            ?}
+         ||
+::          na koncu przedzialu wymagania nie mniejsze
+::          jezeli zabraknie dla konca przedzialu, to zamowic to co braknie przy minimalnej tolerancji
+::          dla poczatku przedzialu
+            {? ((ILNP2>(ILP1MIN+ILWYN))>0) & ((CTRLIL<>'O') | ((ILNO2>(ILO1MIN+ILWYN))>0))
+            ||
+               _pp:=ILNP1-(ILP1MIN+ILWYN);
+               _oo:={? CTRLIL='O' || ILNO1-(ILO1MIN+ILWYN) || _pp ?};
+               ILWYN+={? _pp>_oo || _oo || _pp ?}
+            ?}
+         ?}
+      ?};
+      put();
+      next()
+   !}
+|};
+~~
+
+
+\kas_zer
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Usuwanie pozycji z zerowym ILWYN w  __TMPZAP
+::   WY: liczba rekordow pozostalych w __TMPZAP
+::  OLD: \kas_zer/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? __TMPZAP.first() || {! |? {? __TMPZAP.ILWYN>0 || __TMPZAP.next() || __TMPZAP.del() ?} !} ?};
+__TMPZAP.size()
+
+
+\zapotrz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Okreslenie zapotrzebowania na wyposazenie dla wskazanego pracownika we wskazanym dniu
+::      procedura kompleksowa wyliczajaca zapotrzebowanie z uwzglednieniem ewentualnych przerw w pracy
+::      i zmian warunkow umowy brane sa pod uwage tylko przerwy w pracy zapisane w H
+::       tworzona jest tabela __TMPZAP
+::       wynik umieszczany jest w polu __TMPZAP.ILWYN
+::       ZOBLICZ.KOMUN - zawiera ewentualny komunikat o powodzie braku zapotrzebowania
+::   WE: _a - data obliczen [date()]
+::     _b - P.ref()
+::   WY: liczba rekordow pozostalych w __TMPZAP
+::  OLD: \zapotrz/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) || _a:=date() ?};
+{? type_of(_a)<>type_of(date()) || return(0) ?};
+{? (_<2) | (_b=~~) | (type_of(_b)<>type_of(null())) | (ref_name(_b)<>P.name()) || return(0) ?};
+ZOBLICZ.KOMUN:='';
+exec('cr_tzap','wyp_zaopatrz');
+{? exec('granice','wyp_zaopatrz',_a,_b)
+||
+   {? exec('normat','wyp_zaopatrz',_b)
+   ||
+      exec('analiza','wyp_zaopatrz');
+      {? ~exec('kas_zer','wyp_zaopatrz') || ZOBLICZ.KOMUN:='Brak zapotrzebowania dla pracownika.' ?}
+   || ZOBLICZ.KOMUN:='Normatyw pracownika jest pusty.'
+   ?}
+?};
+__TMPZAP.size()
+
+
+\odz_druk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Wydruki dotyczace wybranej listy
+::  OLD: \odz_druk/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+:rep_exec('wyp_odzam_*')
+exec('rep_exec','#b_report','WYP_LWW_XXXX','wyp_odzam_*','Wydruki wyposażenia',1)
+
+
+\czywaso
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Sprawdza czy podany  MGRP nalezy do danego asortymentu
+::   WE: _a - numer rekordu  - #MGRP.ref()
+::       _b - ref do asortymentu MGR
+::   WY: 1 - nalezy, 0 nie nalezy, -1 bledne parametry
+::  OLD: \czywaso/wyprodzo.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) | (type_of(_a)<>type_of(0)) | (_a<1) || return(-1) ?};
+{? (_<2) | (_b=~~) | (type_of(_b)<>type_of(null())) | (ref_name(_b)<>MGR.name()) || return(-1) ?};
+_odp:=0;
+MGRP.cntx_psh();
+MGRP.clear();
+_kod:=exec('FindAndGet','#table',MGRP,_a,MGRP.name(),"KOD",'');
+{? _kod<>''
+|| MGRP.index('MGR');
+   MGRP.prefix(_b,_kod);
+   _odp:=MGRP.first()
+?};
+MGRP.cntx_pop();
+_odp
+
+
+\get_var4osatr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Zwraca wartosc parametru wymagan danego atrybutu danej osoby
+::   WE: _a - OSOBA.ref()
+::       _b - TAT.ref()
+::   WY: ROZMP.WAR lub '' gdy nie znaleziony
+::  OLD: \get_var4osatr/normatyw.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) | (type_of(_a)<>type_of(null())) | (ref_name(_a)<>OSOBA.name()) || return('') ?};
+{? (_<2) | (_b=~~) | (type_of(_b)<>type_of(null())) | (ref_name(_b)<>TAT.name()) || return('') ?};
+ROZMP.cntx_psh(); ROZMP.index('OSOBA'); ROZMP.clear();
+_odp:={? ROZMP.find_key(_a,_b) || ROZMP.WAR || '' ?};
+ROZMP.cntx_pop();
+_odp
+
+
+\odswrozm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Odzwiezenie pola ODZAMPT.ROZMIAR na podztawie ROZMLT zwiazanych z biezacym ODZAMPT
+:: !!!!: Moze trzebaby usunąć tabelę ROZMLT
+::  OLD: \odswrozm/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+ROZMLT.cntx_psh();
+ROZMLT.index('OP');
+ROZMLT.prefix(ODZAMPT.ref());
+_ll:='';
+{? ROZMLT.first()
+||
+   {! |? _ll+=ROZMLT.WAR+'; '; ROZMLT.next() !}
+?};
+{? ODZAMPT.ROZMIAR<>_ll || ODZAMPT.ROZMIAR:=_ll; ODZAMPT.put() ?};
+ROZMLT.cntx_pop();
+~~
+
+
+::======================================================================================================================
+::funkcje obliczeniowe
+::======================================================================================================================
+
+
+::----------------------------------------------------------------------------------------------------------------------
+::obliczanie spodziewanego niedoboru u pracownika na zadany dzien
+::----------------------------------------------------------------------------------------------------------------------
+
+
+\drop_niedobor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Usuniecie zasobow tymczasowych obliczen niedoborow
+::  OLD: \drop_niedobor/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('drop_norm','normatyw');
+~~
+
+
+\prep_niedobor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Obliczenie ilosci brakujacych na stanie w zadanym dniu w przyszlosci u pracownika
+::   WE: _a - sumowac pozycje niezatwierdzone jakby byly zatwierdzone 1 tak 0 nie [0]
+::       _b - P.ref() [domyslnie biezacy]
+::       _c - data badania stanu [dzis], jesli podana przeszla to zamieniana na biezaca
+::       _d - gdy dla pozycji ZWROT='T' w dniu _c przekroczony termin uzytkowania to uznac za zwrocone 1 tak, 0 nie [0]
+::       _e - uwzglednic stan przy tolerancji maksymalnej [0 -nie] gdy tak to moze byc wiecej rekordow w tabeli
+::   WY: ile pozycji w normatywie pracownika bedzie mialo niedobor w danym dniu u tego pracownika
+::     w __WYNNOP pozostaja tylko pozycje dla ktorych w podanym dniu bedzie niedobor
+::     w __WYNNOP i __WYNORO uzuplnione pole ILST
+::  OLD: \prep_niedobor/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_<1) | (_a=~~) || _a:=0 ?};
+{? (_<2) | (_b=~~) || _b:=P.ref() ?};
+{? (_<3) | (_c=~~) || _c:=date() ?};
+{? (_<4) | (_d=~~) || _d:=0 ?};
+{? (_<5) | (_e=~~) || _e:=0 ?};
+_ok:=(type_of(_a)=type_of(0)) & (ref_name(_b)=P.name())
+     & (type_of(_c)=type_of(date())) & (type_of(_d)=type_of(0)) & (type_of(_e)=type_of(0));
+_odp:=0;
+exec('drop_niedobor','wyp_zaopatrz');
+{? _ok
+|| _stan:=exec('prep_stan','wyp_head',_a,_b,_c,_d,_e);
+   _stp:=(_stan=1) | (_stan=3);
+   _sto:=_stan>1;
+   _norm:=exec('prep_norm','normatyw',_b,_c);
+   _nmp:=(_norm=1) | (_norm=3);
+   _nmo:=_norm>1;
+:: najistotniejszy jest normatyw pracownika, jak czegos tam nie ma to sie nie nalezy
+   {? ((_norm=1) | (_norm=3)) & __WYNNOP.first()
+   ||
+::    przepisanie stanu do pola ILST normatywu
+      {!
+      |?
+::    istotne tylko pozycje normatywu >0
+         {? (__WYNNOP.IL>0) & _stp
+         ||
+            _stan:=exec('find_stan','wyp_head',__WYNNOP.REF);
+            {? (_stan=1) | (_stan=3)
+            || __WYNNOP.ILST:=__KARRSP.IL;
+               {? _e || __WYNNOP.ILSTM:=__KARRSP.ILM ?};
+               __WYNNOP.put()
+            ?}
+         ?};
+         __WYNNOP.next()
+      !};
+::    eliminacja pozycji, ktore po odjeciu stanu nie beda >0
+      {? __WYNNOP.first()
+      ||
+         {!
+         |?
+::          przy sprawdzaniu stanu na koncu przedzialu tolerancji stan moze byc mniejszy i nieddobor powstanie
+            {? (__WYNNOP.ILST<__WYNNOP.IL) | (_e & (__WYNNOP.ILSTM<__WYNNOP.IL))
+            ||
+::          w przypadku gdy wymagane jest sprawdzenie normatywu osoby gdy brak, to usuniecie pozycji
+               {? (__WYNNOP.CTRLIL='O')
+                  & _nmo
+                  & __WYNORO.find_key(__WYNNOP.REF)
+                  & (__WYNORO.IL>0)
+               ||
+                  {? _sto & __KARRSO.find_key(__WYNNOP.REF)
+                  ||
+                     __WYNORO.ILST:=__KARRSO.IL;
+                     {? _e || __WYNORO.ILSTM:=__KARRSO.ILM ?};
+                     __WYNORO.put();
+::                   gdy po uwzglednieniu stanu osoby nie bedzie niedoboru to usuniecie
+                     {? (__WYNORO.ILST<__WYNORO.IL) | (_e & (__WYNORO.ILSTM<__WYNORO.IL))
+                     || __WYNNOP.next()
+                     || __WYNNOP.del()
+                     ?}
+                  ||
+                     __WYNNOP.next()
+                  ?}
+               || __WYNNOP.next()
+               ?}
+            || __WYNNOP.del()
+            ?}
+         !}
+      ?}
+   ?};
+   exec('drop_stan','wyp_head');
+:: w __WYNNOP pozostaja tylko pozycje dla ktorych w podanym dniu bedzie niedobor
+:: w __WYNNOP i __WYNORO uzuplnione pole ILST
+   {? var_pres('__WYNNOP')>0
+   || _odp:=__WYNNOP.size()
+   || _odp:=0
+   ?}
+?};
+_odp
+
+
+\odzsymbe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Przed redakcja ODZAM.SYM
+::       W tej wersji niedostepna redakcja tego pola
+::  OLD: \odzsymbe/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+0
+
+
+\odzamwae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: ODZAM.DATA_W data nie moze byc mniejsza od utworzenia
+::  OLD: \odzamwae/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ODZAM.DATA<fld() & fld()>=date()
+|| 1
+|? fld()<date()
+|| FUN.emsg('Data dostawy nie może być wcześniejsza od daty dzisiejszej i musi być późniejsza od daty utworzenia listy.'@);
+   0
+|| FUN.emsg('Data dostawy musi być późniejsza od daty utworzenia listy.'@);
+   0
+?}
+
+
+\odzampt_m_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.02]
+:: OPIS: Przed redagowaniem ODZAMPT.M
+::----------------------------------------------------------------------------------------------------------------------
+POMOC.RODZ:='T';
+M.win_dict('SLO_M');
+M.actions('SLO_M','O:');
+{? ODZAMPT.MGRP=null()
+|| M.f_set('KTM',,'M.A=\'T\' AND M.RODZ=\'T\'')
+|| M.f_set('KTM',,'M.A=\'T\' AND M.RODZ=\'T\' AND M.MGRP=:_a',ODZAMPT.MGRP)
+?}
+
+
+\odzampt_m_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.02]
+:: OPIS: Po redagowaniu ODZAMPT.M
+::   WE: 1/0 - czy mozna opuscic pole
+::----------------------------------------------------------------------------------------------------------------------
+M.actions('SLO_M','');
+::sprawdzenie wypełnienia i jesli tak to zgodności rodzaju wyposazenia schematu atrybutow
+{? fld<>null()
+|| {? ODZAMPT.M().MGRP=ODZAMPT.MGRP
+   || exec('karo_chkatr','wyp_head')
+   |? ODZAMPT.MGRP=null()
+   || ODZAMPT.MGRP:=ODZAMPT.M().MGRP
+   || FUN.emsg('Materiał nie należy do tej podgrupy materiałowej.'@);
+      ODZAMPT.MGRP:=ODZAMPT.M().MGRP
+   ?}
+?}
+
+::======================================================================================================================
+::OSNODZ - obsluga podstawowa
+::======================================================================================================================
+
+
+\osnodz_p_mb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Przed obsluga wykazu wykluczanych pracownikow
+::  OLD: \osnodz_p_mb/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+OSNODZ.index('OS_VIEW');
+OSNODZ.prefix(null());
+OSNODZ.first();
+~~
+
+
+\osnodz_p_ma
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Po obsludze wykazu wykluczanych pracownikow
+::  OLD: \osnodz_p_ma/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\osnodz_p_rb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Rekord przed wykluczonych pracownikow
+::  OLD: \osnodz_p_rb/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZPGRUPY.INFO:=exec('set_p_info','wyp',OSNODZ.P);
+OSNODZ.P().OSOBA();
+~~
+
+
+\osnodz_p_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Niestandardowa dolacz do wykazu pracownikow wykluczonych
+::  OLD: \osnodz_p_dolacz/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__TABPSG')>0 || obj_del(__TABPSG) ?};
+::zapytanie zwraca dane wszystkich pracownikow aktywnych
+_sql:='select
+         OSOBA.NAZWISKO || \' \' || OSOBA.PIERWSZE || \' \' || OSOBA.DRUGIE PRACOWNIK,
+         P.DZA OD,
+         P.DZ DO,
+         \'--------------------------------------------------------------------------------\' as INFO,
+         P.REFERENCE REF
+      from P
+         join OSOBA using (P.OSOBA, OSOBA.REFERENCE)
+      where P.ZA=\'T\'
+      order by PRACOWNIK asc, OD asc';
+__TABPSG:=sql(_sql);
+exec('uzu_p_info','wyp',__TABPSG);
+_win:=__TABPSG.mk_sel('Wykaz pracowników'@,'P',0,'#osnodzpslo',,,,,'U','T');
+__TABPSG.win_fld(_win,,'PRACOWNI',,,30,,1,'Imię i nazwisko'@);
+__TABPSG.win_fld(_win,,'OD',,,10,,1,'Od dnia'@);
+__TABPSG.win_fld(_win,,'DO',,,10,,1,'Do dnia'@);
+__TABPSG.win_fld(_win,,'INFO',,,30,,1,'Pracownik'@);
+__TABPSG.win_act(_win,,'Formuła','Wybierz'@,,,,"sel_exit()",1);
+__TABPSG.win_sel(_win);
+{? __TABPSG.select()
+||
+   P.cntx_psh();
+   P.clear();
+   {? P.seek(BIT.sqlint(__TABPSG.REF),)
+   ||
+      OSNODZ.blank(1);
+      OSNODZ.P:=P.ref();
+      OSNODZ.add()
+   ?};
+   P.cntx_pop()
+?};
+obj_del(__TABPSG);
+~~
+
+
+\osnodz_p_dr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Drukowanie wykazu wykluczanych pracownikow
+::  OLD: \osnodz_p_dr/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+rep_exec('wyp_osnodz02');
+~~
+
+
+\osnodz_o_mb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Przed obsluga wykazu wykluczanych osob
+::  OLD: \osnodz_o_mb/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+OSNODZ.index('OSOBA');
+OSNODZ.prefix(null());
+OSNODZ.first();
+~~
+
+
+\osnodz_o_ma
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Po obsludze wykazu wykluczanych osob
+::  OLD: \osnodz_o_ma/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\osndz_o_dr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Drukowanie wykazu wykluczanych osob
+::  OLD: \osnodz_o_dr/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+rep_exec('wyp_osnodz01');
+~~
+
+
+\zaop_psw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.10]
+:: OPIS: Wykaz osob/pracownikow wykluczonych z procedury generacji list zapotrzebowania
+::  OLD: \zaop_psw/zaopatrz.fml
+::----------------------------------------------------------------------------------------------------------------------
+OSOBA.cntx_psh(); P.cntx_psh();
+OSOBA.win_sel('SLO');
+OSOBA.win_dict('SLO');
+OSNODZ.index('OSOBA');
+OSNODZ.clear();
+OSNODZ.win_sel('G_WER');
+P.fld_attr(,2);
+OSOBA.fld_attr(,2);
+OSNODZ.select();
+P.fld_attr(,1);
+OSOBA.fld_attr(,1);
+OSOBA.cntx_pop(); P.cntx_pop();
+~~
+
+
+\zzaop_dataw_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Przed redakcją planowanej daty wydania (ZPOLGEN.DATAW) w oknie RED
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+_zzaop:=params_get().zzaop;
+_zzaop.EDIT_DATAW
+
+
+\zzaop_pgrupy_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Przed redakcją planowanej daty wydania (ZPOLGEN.DATAW) w oknie RED
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+_zzaop:=params_get().zzaop;
+_zzaop.EDIT_PGRUPY
+
+
+\zzaop_mgr_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Przed redakcją planowanej daty wydania (ZPOLGEN.DATAW) w oknie RED
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+_zzaop:=params_get().zzaop;
+_zzaop.EDIT_MGR
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:38 76c3960f6f9d734cfbab66fc430fa4088a5f7dc30ce87911e0fbf3f46ca361e94e3822a7f1af374aad37fe6cbf77f3529d7f844b13d5948994675db2b1704bc1e327a38037c2639a67ed2e4269d12bad824fe420d3a0496e36dc71e0b7678c9b8c56b162522cbea09e320c61087d17d0395a11ecc016218159405b56bd9a75f2

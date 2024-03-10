@@ -1,0 +1,297 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !zws_edi_uniw.fml
+:: Utworzony: 17.05.2016
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Obsługa komunikatóW EDI
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP,SERVICE
+::# parses=exec('parses','!zws_edi_uniw')
+::# kind=WE,   symbol=ISTDEF, type=_ISTDEF,  name=komunikat,      required=T, fml_val="NOT_EDITABLE", fml_exp="exec('istdef_export','edi_def',_a)"
+::# kind=WE,   symbol=TYP,    type=STRING,   name=Typ komunikatu, required=T, fml_val="NOT_EDITABLE"
+::# kind=WE,   symbol=BLOB,   type=BLOB,     name=Dokumenty EDI,  required=N
+::# kind=WE,   symbol=OUTSAVE,type=STRING,   name=Zapis parametru wyjściowego, required=N, fml_val="exec('outsave_val','!zws_edi_uniw')"
+::# kind=WY,   symbol=DOKUM,  type=_DOKUM,   name=Załącznik,      required=N
+::# kind=WY,   symbol=ATTA,   type=BLOB,     name=Załącznik,      required=N
+::# kind=WY,   symbol=LOG,    type=BLOB,     name=Log,            required=N
+::# kind=WY,   symbol=BLOB,   type=BLOB,     name=Dokumenty EDI,  required=N
+::# kind=WY,   symbol=RESULT, type=STRING,   name=Wynik czynności,required=N
+::# condition=Błąd,  act_uid=,   auto=N,  formula=_a.RESULT<>~~ & _a.RESULT<>'OK'
+:: RESULT
+::    ='OK' - ok
+::    ='ERROR' - wystąpił probleM
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+{? _mp.isMicro() || FUN.info('Należy zdefiniować proces.'@); return() ?};
+
+{? var_pres('_context')=type_of(~~) || _context:=exec('context_obj_default','edi_wspolne') ?};
+_type_default:=_context.TYPE=exec('context_type_default','edi_wspolne');
+_type_bl:=_context.TYPE=exec('context_type_bl','edi_wspolne');
+
+:: env czynności
+params_set(params_get());
+_edi:=exec('env','edi_wspolne');
+{? ~_edi.init()
+||
+   _mp.error('Nie powiodło się zainicjowanie środowiska czynności.'@);
+   return()
+?};
+_edi.context:=_context;
+
+:: definicja komunikatu
+_istdef:=exec('FindAndGet','#table',B_PREL,_mp.b_prel,,"B_PREL.ISTDEF");
+_typ:=exec('FindAndGet','#table',B_PREL,_mp.b_prel,,"B_PREL.ISTDEF_T",'');
+
+VAR_DEL.delete('__TAB');
+:: Musi być jeden dynamiczny port wyjściowy typu złączeniowego aby ustalić
+:: uchwyt do tabeli, akronim tabeli, symbol portu
+__TAB:=_Tab:=~~;
+_tab_akr:='';
+_port:='';
+B_PORT.index('UNIK');
+B_PORT.prefix(null(),_mp.b_prel,null(),exec('kind_out','#b_port'));
+{? B_PORT.first() & B_PORT.next()=0
+|| _type:=B_PORT.B_TYPE().SYMBOL;
+   {? 1+_type='_'
+   || __TAB:=_Tab:=($(1-_type))();
+      _tab_akr:=1-_type;
+      _port:=B_PORT.SYMBOL
+   ?}
+?};
+{? var_pres('_Tab')=type_of(~~)
+||
+   _mp.error('Brak dynamicznego parametru typu złączeniowego.'@);
+   return()
+?};
+_isGrpkeyFld:=var_pres('GRP_KEY',_Tab)=27;
+:: _ref -   wartość dynamicznego portu wejściowego wykorzystywana:
+::          - (pierwsza instancja czynności) do przetworzenia w czynności;
+::          - (kolejna instacja czynności) do odzyskania klucza grupującego utworzonego w pierwszej instancji czynności.
+_ref:={? var_pres(_port,_in)>0 || ($('_a.'+_port))(_in) || null() ?};
+{? _type_bl
+||
+   {? _typ='R' || exec('dokum2pilki','edi_wspolne',_context.DOKUM)
+   |? _typ='W' || {? _ref=null() || _ref:=($('_a.%1'[_port]))(_context) ?}
+   ?}
+?};
+_edi.REF:=_ref;
+:: _grp_key -  klucz grupujący wykorzystywany do iteracji po obiektach przetworzonych w ramach pierwszej instancji
+::             czynności
+_grp_key:=
+   {? var_pres(_port,_in)>0 & _isGrpkeyFld
+   ||
+      exec('FindAndGet','#table',_Tab,_ref,,"__TAB.GRP_KEY",'')
+   |? _isGrpkeyFld
+   ||
+      $FIRMA.tm_stamp()
+   ||
+      ''
+   ?};
+_out.GRPKEY:=_grp_key:=_mp.grpkey(_in.GRPKEY,{? _grp_key<>'' || _grp_key || _out.GRPKEY ?});
+
+{? _in.OUTSAVE=~~ || _in.OUTSAVE:='T' ?};
+
+:: Ustawienie środowiska pracy
+_fmmain:=exec('FindAndGet','#table',B_PREL,_mp.b_prel,,"B_PREL.ISTDEF().FMMAIN");
+($_fmmain)('setEnv',_mp.b_prel);
+
+VAR_DEL.delete('__TAB');
+{? _mp.loop()=0
+:: Pierwsze uruchomienie
+||
+   {? _in.OUTSAVE='T' || _mp.trigRef(_tab_akr,,1,,exec('kind_out','#b_port'),_port,,,1) ?};
+
+   {? _istdef
+   ||
+      ISTDEF.cntx_psh();
+      ISTDEF.prefix();
+      {? ISTDEF.seek(_istdef)
+      ||
+         _dzien_a:=null();
+         {? _typ='M'
+         ||
+::          Mechanizm importów
+            exec('impmechi','edi_imp',_istdef)
+         ||
+::          dodatkowy zapis w dzienniku inforumujący o starcie odczytu lub zapisu edi
+            _dzien_a:=exec('dzien_add','edi_wspolne',ISTDEF.ref(),_typ,date(),time(),OPERATOR.USER,'LOG','',null()
+               ,'Start','',,,'B');
+::          EDI
+            {? _typ='R'
+            ||
+::             EDI - odczyt
+               exec('edi_read','edi_wspolne',ISTDEF.ref())
+            ||
+::             EDI - zapis
+               exec('edi_write','edi_wspolne',ISTDEF.ref(),_ref)
+            ?}
+         ?};
+::       stemplowanie przetwarzanych obiektów kluczem grupującym
+         {? _in.OUTSAVE='T' & _isGrpkeyFld
+         ||
+            _keyrefs:=_mp.getRefs();
+            _size:=obj_len(_keyrefs);
+            _loop:={? _size & type_of(_keyrefs[1])<>type_of(~~) || 1 || 0 ?};
+            {!
+            |? _loop
+            |!
+               _Tab.cntx_psh();
+               _uidref:=_keyrefs[_loop];
+               _Tab.use(form(8+(_uidref+16)));
+               _Tab.prefix();
+               {? _Tab.seek(_uidref)
+               ||
+                  _Tab.GRP_KEY:=_grp_key;
+                  {? _Tab.put() || _ref:=_Tab.ref() ?}
+               ?};
+               _Tab.cntx_pop();
+               {? _loop<_size || _loop+=1 || _loop:=0 ?}
+            !}
+         ?};
+::       (_out.[port dynamiczny]) przypisanie null do dynamicznego portu wyjściowego
+         ($('_a.'+_port))(_out):=null();
+::       (_out.LOG) - zapisanie na wyjściu komunikatów wygenerowanych podczas działania czynności
+         _edi.logSave(_dzien_a);
+::       (_out.BLOB) - zapisanie nieprzetworzonych blob do ewentualnego ponownego przetworzenia w procesie
+         _edi.blobSave();
+::       (_out.RESULT) - zapisanie wyniku działania czynności
+         _out.RESULT:=_edi.resultGet();
+::       loop
+         _out.LOOP:='N';
+::       zapisanie portów wyjściowych
+         _mp.save(,_out)
+      ?};
+      ISTDEF.cntx_pop()
+   ?}
+?};
+do();
+_ref:=_mp.grpkeyGet();
+_ref:={? _ref=~~ || null() || exec('FindAndGet','#table',_Tab,_ref,,,null()) ?};
+{? _ref=null()
+||
+:: Brak elementu lub nie znaleziono elementu
+   _mp.save(exec('kind_out','#b_port'),_port,null())
+||
+:: (_out.[port dynamiczny]) przypisanie _Tab.ref() do dynamicznego portu wyjściowego
+   ($('_a.'+_port))(_out):=_ref;
+:: (_out.RESULT) - zapisanie wyniku działania czynności
+   _out.RESULT:=_edi.resultGet();
+:: pobranie załączników
+   _dokum:=exec('dokum','edi_wspolne',$_ref,_istdef);
+:: _out.DOKUM
+   _out.DOKUM:=_dokum.REF;
+:: _out.ATTA
+   {? _dokum.DOKUM || _mp.bl_add('ATTA',exec('kind_out','#b_port'),_dokum.DOKUM) ?};
+   {? _dokum.E_DOKUM || _mp.bl_add('ATTA',exec('kind_out','#b_port'),_dokum.E_DOKUM) ?};
+:: zapisanie portów wyjściowych
+   _mp.save(,_out)
+?};
+:: Wykluczenie elementu z pętli, zakończenie czynności
+:: grpkey - _port - del
+{? _mp.grpkeyDel()
+||
+   {? _mp.grpkeyGet()<>~~
+   ||
+::    kontynuacja pętli
+      _mp.loop_continue()
+   ||
+::    lub nie
+      _mp.save(exec('kind_out','#b_port'),'LOOP','N')
+   ?}
+?};
+_edi.done();
+_mp.done();
+end()
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+_desc:='';
+
+_port:='';
+_ref:=null();
+B_PORT.cntx_psh();
+B_PORT.index('UNIK');
+B_PORT.prefix(null(),_mp.b_prel,null(),exec('kind_out','#b_port'));
+{? B_PORT.first() & B_PORT.next()=0
+||
+   _type:=B_PORT.B_TYPE().SYMBOL;
+   {? 1+_type='_'
+   ||
+      _port:=B_PORT.SYMBOL
+   ?}
+?};
+B_PORT.cntx_pop();
+_ref:={? var_pres(_port,_in)>0 || ($('_a.'+_port))(_in) || null() ?};
+{? _ref || _desc:='%1'@[exec('record','#to_string',_ref)] ?};
+'%1'@@[exec('FindAndGet','#table',B_PREL,_mp.b_prel,,"
+       _desc:='%1'@[_b];
+       @.ISTDEF.cntx_psh();
+       {? B_PREL.ISTDEF
+       ||
+          B_PREL.ISTDEF();
+          _desc+=' - %1'@[@.ISTDEF.N];
+          _desc1:='%1'@[{? @.ISTDEF.IST_ISTK='M' || '' |? @.ISTDEF.R='T' || 'odczyt'@ || 'zapis'@ ?}];
+          {? _desc1<>'' * _desc*_desc1=0 || _desc+=' - %1'@[_desc1] ?}
+       ?};
+       @.ISTDEF.cntx_pop();
+       _desc
+    ",_desc,_desc)]
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_fmmain:=exec('FindAndGet','#table',B_PREL,_mp.b_prel,,"B_PREL.ISTDEF().FMMAIN");
+{? _fmmain<>''
+|| params_set(params_get());
+   ($_fmmain)('parses',_mp.b_prel)
+|| 1
+?}
+
+
+\outsave_val
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.42]
+:: OPIS: formuła parametru OUTSVAE czynności ZWS_EDI_UNIW
+::   WE:
+::   WY: T/N
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask('Czy zapisać parametr wyjściowy?'@) || 'T' || 'N' ?}
+
+:Sign Version 2.0 jowisz:1048 2020/10/16 15:19:22 d8db0ce9c03cb0d63fc97a2cc770469142d38cb9bffb153abbd8b9e866f7ca789f92bfb7e63d3d3835d910703acce26bf97998985e5abd2225993301d95c1c0b5c24ab94d9be1383e8f852233b1d795876e4db3255aaeddcd59cc685a036e4f65778c25b1a2efae1b5715ab72f0dc710869bc245518f9940b7c02b0f7f64c466

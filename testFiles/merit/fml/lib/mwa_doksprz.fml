@@ -1,0 +1,787 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: mwa_doksprz.fml
+:: Utworzony: 16.12.2019
+:: Autor: PD
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi dokumentów sprzedaży przez MacroWebAPI
+::======================================================================================================================
+
+
+\serialize_doksprz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Serializuje dokument/dokumenty sprzedaży
+::       Kontekst wywołania: ustawiona dziedzina lub bufor tabeli FAKS
+::   WE: _a - buffer - czy wywołanie dla bufora tabeli (1), czy dla całej dziedziny (0)
+::       _b - JSON z błędami/informacjami dodatkowymi
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=params_get();
+_lib:=exec('lib','__mwa');
+::_response:=_lib.Response.open('c:\\!\\response.xml');
+_response:=_lib.Response.open();
+_lib.Response.begin(_response);
+
+:: status:
+_response.fwrite('\n<%1:status>OK</%1:status>\n'[_args.OUTPREF]);
+
+:: data: z tabeli dokumentów i pozycji
+_lib.Response.getTableType.asString(_response,'data','FAKS',,_a);
+
+:: result: z JSON do XML
+{? var_pres('_b')=type_of('') || _json:=_b || _json:='{}' ?};
+json_tparse(_json).json_tconvert(_response,,,,'result',_args.OUTPREF,,'noheader=1,nodata=1,indentation=1');
+
+_lib.Response.end(_response);
+_response
+
+
+\pozycje
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Serializuje pozycje dokumentu magazynowego (wołane dla elementu DK w typie ND)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_lib:=exec('lib','__mwa');
+FAP.cntx_psh();
+FAP.index('FAP');
+FAP.prefix(FAKS.ref());
+_lib.Response.getTableType.asString(params_get().FILE,_a,'FAP');
+FAP.cntx_pop();
+return('')
+
+
+\ID_sym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera zewnętrzny symbol dokumentu przechowywany w dodatkowych strukturach
+::----------------------------------------------------------------------------------------------------------------------
+_id_sym:='';
+
+_id_tab:=exec('get_id','#sync_id','MWA_FAKS_SYM',FAKS.uidref());
+
+{? type_of(_id_tab)>0
+|| {? _id_tab.first()
+   || _id_sym:=_id_tab.ID
+   ?}
+?};
+
+xml_value(_id_sym)
+
+
+\read_doksprz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Odczytuje dokumenty sprzedaży - implementacja metody 'List'
+::       Odczytywane są dokumenty z aktualnego okresu (roku) wg bieżącej daty
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_oddz:=exec('get_option','mwapi',_par,'Oddz').value;
+{? _oddz='' || _oddz:='c' ?};
+_rok:=#exec('get_option','mwapi',_par,'Rok').value;
+{? _rok=0 || _rok:=date()~1 ?};
+_sts:=exec('get_option','mwapi',_par,'Sts').value;
+_sts_r:=exec('FindInSet','#table','STS','K',_sts,,,1,,null);
+_wymaga:=exec('get','#params',2102,2,OPERATOR.USER);
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? _wymaga='T' & _sts_r=null
+||
+   _wsenv.add_error('Wymagane przekazanie poprawnego kodu stanowiska sprzedaży.'@)
+?};
+
+{? _wymaga='N' & _sts_r=null & _sts<>''
+||
+   _wsenv.add_error('Niepoprawny kod stanowiska sprzedaży.'@)
+?};
+
+
+{? _sts_r<>null() & ~exec('spr_upr','users','STS',_sts_r,0)
+||
+   _wsenv.add_error('Brak uprawnień do stanowiska sprzedaży.'@)
+?};
+{? _wsenv.has_errors()||mwa_status(400)?};
+
+{? exec('authorized','mwa_doksprz',_par) & exec('chk_oddz','mwapi',_oddz) & ~_wsenv.has_errors()
+||
+   __PARSES.setVal('OddzialLogProd',_oddz);
+   _args:=__PARSES.args('OkresRok');
+   _args.OBSZAR:='LSP';
+   _args.AR:=_rok;
+   _args.AM:=1;
+   _set_okres:=__PARSES.setVal('OkresRok',_args);
+   __PARSES.setEnv('LSP_FAK');
+
+   {? _set_okres
+   || FAKS.cntx_psh();
+:ewentualne prefixy
+      FAKS.index('FAK_STS');
+      {? _wymaga='N' & _sts=''
+      ||
+         FAKS.prefix('S')
+      ||
+         FAKS.prefix('S',_sts_r)
+      ?};
+      _resp:=_wsenv.to_json();
+      _result:=params_exec('serialize_doksprz','mwa_doksprz',0,_resp);
+      FAKS.cntx_pop()
+   || _msg:='Nie udało się ustawić parametrów pracy.'@;
+      mwa_status(400,_msg);
+      _wsenv.add_error(_msg);
+      _resp:=_wsenv.to_json();
+      _result:=exec('serialize_res','mwapi',_par,_resp)
+   ?}
+||
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_result
+
+
+\read_doksprz_uidref
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Odczytuje dokument magazynowy - implementacja metody 'Get'
+::       Odczytywane jest dokument wg parametru 'uidref'
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_uidref:=exec('get_option','mwapi',_par,'uidref').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_uidref<>48 | type_of(ref_tab(_uidref))<0
+|| _msg:='Niepoprawna wartość parametru \'%1\'.'@['uidref'];
+   mwa_status(400,_msg);
+   _wsenv.add_error(_msg);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+
+|? exec('authorized','mwa_doksprz',_par)
+||
+:: Ustalenie kontekstu rekordu
+   FAKS.cntx_psh();
+   FAKS.prefix();
+   {? ~FAKS.seek(_uidref, ref_name(_uidref))
+   ||
+      _msg:='Nie odnaleziono rekordu o identyfikatorze %1.'@[_uidref];
+      mwa_status(204,_msg);
+      _wsenv.add_error(_msg)
+   ||
+      _oddz:=exec('FindAndGet','#table',FAKS,_uidref,,"FAKS.ODDZ",'');
+      _rok:=exec('FindAndGet','#table',FAKS,_uidref,,"FAKS.AR",date()~1);
+      _miesiac:=exec('FindAndGet','#table',FAKS,_uidref,,"FAKS.AM",date()~2)
+   ?};
+   FAKS.cntx_pop();
+
+   {? ~_wsenv.has_errors() & exec('chk_oddz','mwapi',_oddz)
+   ||
+      __PARSES.setVal('OddzialLogProd',_oddz);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LSP';
+      _args.AR:=_rok;
+      _args.AM:=_miesiac;
+      _set_okres:=__PARSES.setVal('OkresRok',_args);
+      __PARSES.setEnv('LSP_FAK');
+
+      {? _set_okres
+      || FAKS.cntx_psh();
+         FAKS.prefix();
+         {? FAKS.seek(_uidref)
+         || _resp:=_wsenv.to_json();
+            _result:=params_exec('serialize_doksprz','mwa_doksprz',1,_resp)
+         || _msg:='Nie odnaleziono rekordu o identyfikatorze %1.'@[_uidref];
+            mwa_status(204,_msg);
+            _wsenv.add_error(_msg);
+            _resp:=_wsenv.to_json();
+            _result:=exec('serialize_res','mwapi',_par,_resp)
+         ?};
+         FAKS.cntx_pop()
+      || _msg:='Nie udało się ustawić parametrów pracy dla roku %1.'@[$_rok];
+         mwa_status(400,_msg);
+         _wsenv.add_error(_msg);
+         _resp:=_wsenv.to_json();
+         _result:=exec('serialize_res','mwapi',_par,_resp)
+      ?}
+   || _resp:=_wsenv.to_json();
+      _result:=exec('serialize_res','mwapi',_par,_resp)
+   ?}
+?};
+
+_result
+
+
+\create_doksprz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Dodaje dokument sprzedaży - implementacja metody 'Add'
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+:: Ustala zawartość pól nagłówka dokumentu i pozycji (zapis do tablic buforowych)
+_buffers:=exec('set_buffers','mwa_doksprz',_par.DATA,_par.METHOD);
+
+:: Uzupełnia pola w tablicy buforowej i podstawowe zabezpieczenia
+exec('update_buffers','mwa_doksprz',_buffers);
+
+{? ~_wsenv.has_errors()
+||
+   {? exec('create_chk','mwa_doksprz',_buffers)
+   ||
+::    parametry pracy dla czynności
+      __PARSES.setVal('OddzialLogProd',_buffers.FAKS.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LSP';
+      _args.AR:=_buffers.FAKS.DW~1;
+      _args.AM:=_buffers.FAKS.DW~2;
+      __PARSES.setVal('OkresRok',_args);
+      obj_del(_args);
+
+      {? type_of(_buffers.FAKS.MAG)
+      ||
+         _act_uid:='LSP_FAK_DGDM'
+      ||
+         _act_uid:='LSP_FAK_DRFP'
+      ?};
+
+::    uruchomienie czynności, czynność jest kończona
+      _args:=exec('mp_run_a','#b__box');
+
+      _args.ACT_UID:=_act_uid;
+      _args.AKCJA:='DołączMWA';
+      _args.PROC_START:='T';
+      _args.QUIET:='T';
+      _context:=obj_new('BUFFERS'); _context.BUFFERS:=_buffers;
+      _args.CONTEXT:=_context;
+
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'TYPYSP',_buffers.FAKS.T);
+
+      exec('mp_run','#b__box',_args);
+::    uzupełnienie identyfikatorów "portalowych"
+      {? _wsenv.IDADD<>''
+      || FAKS.index('IDADD');
+         FAKS.prefix(_wsenv.IDADD);
+         {? FAKS.first()
+         || exec('add_id','#sync_id','MWA_FAKS_SYM',FAKS.uidref(),_context.BUFFERS.FAKS.ID_sym)
+         ?}
+      ?};
+      ~~
+   ?}
+?};
+
+{? ~_wsenv.has_errors() & _wsenv.IDADD<>''
+||
+   FAKS.index('IDADD');
+   FAKS.prefix(_wsenv.IDADD);
+::Sprawdzenie czy kontrolne wartości przesłane w nagłówku są zgodne z utworzoną fakturą
+   {? _buffers.FAKS.NETTO<>0  & _buffers.FAKS.NETTO<>FAKS.NETTO
+   || _wsenv.add_info('Wartość netto faktury (%1) różni się od tej w komunikacie (%2).'[$FAKS.NETTO,$_buffers.FAKS.NETTO])
+   ?};
+   {? _buffers.FAKS.VAT<>0  & _buffers.FAKS.VAT<>FAKS.VAT
+   || _wsenv.add_info('Wartość VAT faktury (%1) różni się od tej w komunikacie (%2).'[$FAKS.VAT,$_buffers.FAKS.VAT])
+   ?};
+   {? _buffers.FAKS.BRUTTO<>0  & _buffers.FAKS.BRUTTO<>FAKS.BRUTTO
+   || _wsenv.add_info('Wartość brutto faktury (%1) różni się od tej w komunikacie (%2).'[$FAKS.BRUTTO,$_buffers.FAKS.BRUTTO])
+   ?};
+
+   mwa_status(201);
+   _resp:=_wsenv.to_json();
+   _result:=params_exec('serialize_doksprz','mwa_doksprz',0,_resp)
+|| mwa_status(400);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_result
+
+
+\delete_doksprz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Usuwa dokument magazynowy - implementacja metody 'Delete'
+::       Usuwany jest dokument wg parametru 'uidref'
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_uidref:=exec('get_option','mwapi',_par,'uidref').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_uidref<>48 | type_of(ref_tab(_uidref))<0
+||
+   _msg:='Niepoprawna wartość parametru \'%1\'.'@['uidref'];
+   mwa_status(400,_msg);
+   _wsenv.add_error(_msg)
+|? exec('FindAndGet','#table',FAKS,_uidref,,"ref()",null())=null()
+||
+   _msg:='Nie odnaleziono rekordu o identyfikatorze %1.'@[_uidref];
+   mwa_status(204,_msg);
+   _wsenv.add_error(_msg)
+||
+:: Ustalenie kontekstu rekordu
+   _oddz:=exec('FindAndGet','#table',FAKS,_uidref,,"FAKS.ODDZ",'');
+   _rok:=exec('FindAndGet','#table',FAKS,_uidref,,"FAKS.D~1",date()~1);
+   _miesiac:=exec('FindAndGet','#table',FAKS,_uidref,,"FAKS.D~2",date()~2);
+
+   {? exec('chk_oddz','mwapi',_oddz)
+   ||
+      __PARSES.setVal('OddzialLogProd',_oddz);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LSP';
+      _args.AR:=_rok;
+      _args.AM:=_miesiac;
+      _set_okres:=__PARSES.setVal('OkresRok',_args);
+      __PARSES.setEnv('LSP_FAK');
+      obj_del(_args);
+
+      {? _set_okres
+      ||
+         FAKS.cntx_psh();
+         FAKS.prefix();
+         {? FAKS.seek(_uidref)
+         ||
+            BEER.SZ:='S';
+            _act_uid:=exec('faks_dolacz_act_uid','faktury_nag',FAKS.WHERE,FAKS.T().KOR,FAKS.T().HIS,FAKS.OPAK,
+                      FAKS.SYMF)
+         ||
+            _act_uid:=''
+         ?};
+         FAKS.cntx_pop();
+
+         {? _act_uid='LSP_FAK_DRFP' | _act_uid='LSP_FAK_DGDM'
+         ||
+            FAKS.cntx_psh();
+            FAKS.prefix();
+            {? FAKS.seek(_uidref)
+            ||
+::             uruchomienie czynności, czynność jest kończona
+               _args:=exec('mp_run_a','#b__box');
+               _args.ACT_UID:=_act_uid;
+               _args.AKCJA:='UsuńMWA';
+               _args.PROC_START:='N';
+               _args.QUIET:='T';
+               _args.UIDREF:=FAKS.uidref();
+               _args.CONTEXT:=obj_new('RESULT'); _args.CONTEXT.RESULT:=0;
+               exec('mp_run','#b__box',_args);
+               {? _args.CONTEXT.RESULT=0
+               ||
+                  _msg:='Nie usunięto dokumentu.'@;
+                  mwa_status(400,_msg);
+                  _wsenv.add_error(_msg)
+               ?}
+            ||
+               _msg:='Nie odnaleziono rekordu o identyfikatorze %1.'@[_uidref];
+               mwa_status(204,_msg);
+               _wsenv.add_error(_msg)
+            ?};
+            FAKS.cntx_pop()
+         ||
+            _msg:='Obługiwane jest tylko usuwanie dokumentów sprzedaży pozostałych lub z rezerwacją.'@;
+            mwa_status(400,_msg);
+            _wsenv.add_error(_msg)
+         ?}
+      ||
+         _msg:='Nie udało się ustawić parametrów pracy.'@;
+         mwa_status(400,_msg);
+         _wsenv.add_error(_msg)
+      ?}
+   ?}
+?};
+
+_resp:=_wsenv.to_json();
+_result:=exec('serialize_res','mwapi',_par,_resp,~_wsenv.has_errors());
+
+_result
+
+
+\set_buffers
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Ustala zawartość bufora nagłówka i tablicy buforów pozycji zamówienia (funkcja dedykowana)
+::   WE: _a - [FILE] lub [TEXT] zawiera analizowany XML
+::       _b - request method
+::   WY: obj_new('FAKS','POZ') - bufor nagłówka i tablica buforów pozycji
+::----------------------------------------------------------------------------------------------------------------------
+_xml:=_a;
+_method:=_b;
+_buffers:=obj_new('FAKS','POZ');
+_buffers.FAKS:=exec('FAKS','buffer',"'T_T','Kh_KOD','ID_sym','Pl_KOD','Sts_KOD','Mag_SYM','Kh_odb_KOD'");
+_buffers.FAKS.T_T:=_buffers.FAKS.Kh_KOD:=_buffers.FAKS.ID_sym:=_buffers.FAKS.Pl_KOD:=_buffers.FAKS.Sts_KOD:=
+_buffers.FAKS.Mag_SYM:=_buffers.FAKS.Kh_odb_KOD:=~~;
+_tab:=xml_tparse(_xml);
+:: Podgląd drzewka - do włączenia dla debugowania
+::_wer:=_tab.mk_sel(,'P',1,'qwerty',,,,1);
+::_tab.win_sel(_wer);
+::_tab.select();
+
+{? _tab.find_tab(,'NAME',,'=',_method+'Request')
+||
+:: Pętla po zawartości parametru 'Doksprz'
+   {? _tab.find_tab(,'NAME',,'=','Doksprz')
+   || _node:=_tab.ref();
+      _tab.prefix(_node);
+      _size:=_tab.size();
+
+      {? _tab.first()
+      || {!
+         |?
+::          Pola tabeli FAKS (nagłówek dokumentu)
+            {? _tab.NAME<>'FAP'
+            || _size-=1;
+               exec('set_field','mwapi',_tab,FAKS,_buffers.FAKS)
+            ?};
+            _tab.next()
+         !}
+      ?};
+
+::    Pozycje
+      _buffers.POZ:=obj_new(_size); _it:=0;
+      _tab.prefix(_node);
+      {? _tab.first()
+      || {!
+         |? {? _tab.NAME='FAP'
+            || _it+=1;
+               _buffers.POZ[_it]:=exec('FAP','buffer',"'M_KTM','Sv_KOD'");
+               _tab.cntx_psh();
+               _tab.prefix(_tab.ref());
+               {? _tab.first()
+               || {!
+                  |?
+::                   Pola tabeli FAP (pozycja dokumentu)
+                     exec('set_field','mwapi',_tab,FAP,_buffers.POZ[_it]);
+                     _tab.next()
+                  !}
+               ?};
+               _tab.cntx_pop()
+            ?};
+            _tab.next()
+         !}
+      ?}
+   ?}
+?};
+_buffers
+
+
+\update_buffers
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Uzupełnia pola w tablicy buforowej
+::   WE: _a - _buffers
+::       _c - Oddz
+::----------------------------------------------------------------------------------------------------------------------
+_buffers:=_a;
+exec('czytaj','#stalesys',,INFO);
+exec('czytaj','#stalesys',,XINFO,'SLWYDZIA','SLP','SLJEZYK','SLWAL');
+
+_wsenv:=exec('wsenv','#mwapi');
+
+:: Uzupełnienie danych w tablicy buforowej - nagłówek
+{? type_of(_buffers.FAKS.ODDZ)=0
+||
+   _wsenv.add_error('Brak przekazanego kodu oddziału.'@)
+||
+   exec('chk_oddz','mwapi',_buffers.FAKS.ODDZ)
+?};
+
+{? type_of(_buffers.FAKS.T_T)=0
+||
+   _wsenv.add_error('Należy podać symbol typu dokumentu sprzedaży.'@)
+||
+   _buffers.FAKS.T:=exec('FindInSet','#table','TYPYSP','TYPYKOD',_buffers.FAKS.T_T,,,1,,);
+   {? type_of(_buffers.FAKS.T)=0
+   ||
+      _wsenv.add_error('Nieprawidłowy symbol typu dokumentu sprzedaży.'@)
+   ||
+      {? exec('FindAndGet','#table',TYPYSP,_buffers.FAKS.T,,"TYPYSP.KOR='T'",1)
+      ||
+         _wsenv.add_error('Nieprawidłowy symbol typu dokumentu sprzedaży.'@)
+      ?}
+   ?}
+?};
+
+{? type_of(_buffers.FAKS.Kh_KOD)=0
+||
+   _wsenv.add_error('Brak przekazanego kodu kontrahenta.'@)
+||
+   _buffers.FAKS.KH:=exec('FindInSet','#table','KH','KOD1',_buffers.FAKS.Kh_KOD,,,1,,);
+   {? type_of(_buffers.FAKS.KH)=0
+   ||
+      _wsenv.add_error('Nieprawidłowy kod kontrahenta.'@)
+   ?}
+?};
+
+{? type_of(_buffers.FAKS.Kh_odb_KOD)=2 & _buffers.FAKS.Kh_odb_KOD<>'' &  ~_wsenv.has_errors()
+||
+   _buffers.FAKS.KH_ODB:=exec('FindInSet','#table','KH_ODB','KH_ODB',_buffers.FAKS.Kh_odb_KOD,_buffers.FAKS.KH,,1,,);
+   {? type_of(_buffers.FAKS.KH_ODB)=0
+   ||
+      _wsenv.add_error('Nieprawidłowy kod odbiorcy kontrahenta.'@)
+   ?}
+?};
+
+{? type_of(_buffers.FAKS.Sts_KOD)=0 & (exec('get','#params',2102,2,OPERATOR.USER)='T')
+||
+   _wsenv.add_error('Brak przekazanego kodu stanowiska sprzedaży.'@)
+|? type_of(_buffers.FAKS.Sts_KOD)=2
+||
+   STS.cntx_psh();
+   STS.index('KOD');
+   STS.prefix('S',_buffers.FAKS.ODDZ,_buffers.FAKS.Sts_KOD,);
+   {? STS.first() & exec('spr_upr','users','STS',STS.ref(),0)
+   ||
+      _buffers.FAKS.STS:=STS.ref()
+   ||
+      _wsenv.add_error('Nieprawidłowy kod stanowiska sprzedaży lub brak uprawnień.'@)
+   ?};
+   STS.cntx_pop()
+||
+   _buffers.FAKS.STS:=null()
+?};
+
+{? type_of(_buffers.FAKS.D)=0
+||
+   _buffers.FAKS.D:=date()
+|? type_of(_buffers.FAKS.D)<>4
+||
+   _wsenv.add_error('Należy podać datę sprzedaży w formie RRRR/MM/DD.'@)
+?};
+
+{? type_of(_buffers.FAKS.DW)=0
+||
+   _buffers.FAKS.DW:=date()
+|? exec('FindInSet','#table','OKRO','UNIK',_buffers.FAKS.DW~2,REF.FIRMA,"0",0,_buffers.FAKS.DW~1,1)
+||
+   _wsenv.add_error('Należy podać datę obsługiwanego okresu'@)
+?};
+
+{? type_of(_buffers.FAKS.TZ)<>4
+||
+   _wsenv.add_error('Należy podać temin zapłaty w formie RRRR/MM/DD.'@)
+?};
+
+{? type_of(_buffers.FAKS.TZ)=4 & type_of(_buffers.FAKS.DW)=4 & (_buffers.FAKS.TZ<_buffers.FAKS.DW)
+||
+   _wsenv.add_error('Termin płatności wcześniejszy od daty wystawienia dokumentu.'@)
+?};
+
+{? type_of(_buffers.FAKS.Pl_KOD)=0
+||
+   _wsenv.add_error('Brak przekazanego kodu sposobu płatności.'@)
+||
+   SLO.cntx_psh();
+   SLO.index('SL');
+   SLO.prefix(XINFO.SLP,_buffers.FAKS.Pl_KOD,);
+   {? SLO.first()
+   ||
+      _buffers.FAKS.PL:=SLO.ref()
+   ||
+      _wsenv.add_error('Nieprawidłowy kod sposobu płatności.'@)
+   ?};
+   SLO.cntx_pop()
+?};
+
+_buffers.FAKS.WHERE:='P';
+
+{? type_of(_buffers.FAKS.Mag_SYM)=2 & _buffers.FAKS.Mag_SYM<>'' & ~_wsenv.has_errors()
+|| _mag:=exec('FindInSet','#table','MG','MAG',_buffers.FAKS.Mag_SYM,_buffers.FAKS.ODDZ,,1,,);
+   {? type_of(_mag)<>0
+   || _buffers.FAKS.MAG:=_mag;
+      _buffers.FAKS.WHERE:='G'
+   || _wsenv.add_info('Nie znaleziono magazynu'@)
+   ?}
+|| _buffers.FAKS.MAG:=null()
+?};
+:: Przypisanie domyślnych wartości
+{? type_of(_buffers.FAKS.UWAGI)<>type_of('') || _buffers.FAKS.UWAGI:='' ?};
+{? type_of(_buffers.FAKS.NETTO)<>type_of(0) || _buffers.FAKS.NETTO:=0 ?};
+{? type_of(_buffers.FAKS.VAT)<>type_of(0) || _buffers.FAKS.VAT:=0 ?};
+{? type_of(_buffers.FAKS.BRUTTO)<>type_of(0) || _buffers.FAKS.BRUTTO:=0 ?};
+
+{? (exec('get','#params',300802,2)='T') &
+((type_of(_buffers.FAKS.ID)=2 & _buffers.FAKS.ID='') | type_of(_buffers.FAKS.ID)=0)
+||
+   _wsenv.add_error('Należy podać zewnętrzny symbol faktury'@)
+?};
+
+_buffers.FAKS.AR:=_buffers.FAKS.D~1;
+_buffers.FAKS.AM:=_buffers.FAKS.D~2;
+
+:: --- Komunikaty kontrolne - można włączyć do debugowania
+::c
+:_wsenv.add_info($_buffers.FAKS.TZ);
+:_wsenv.add_info($type_of(_buffers.FAKS.PL));
+::_wsenv.add_info('Mag_SYM:'+_buffers.ND.Mag_SYM);
+::_wsenv.add_info('MAG:'+$_buffers.ND.MAG);
+::_wsenv.add_info('D:'+$_buffers.ND.D);
+::_wsenv.add_info('Kh_KOD:'+_buffers.ND.Kh_KOD);
+::_wsenv.add_info('KH:'+$_buffers.ND.KH);
+::_wsenv.add_info('AR:'+$_buffers.ND.AR);
+::_wsenv.add_info('AM:'+$_buffers.ND.AM);
+
+:: Uzupełnienie pól w tablicy buforowej - pozycje
+{! _it:=1.. obj_len(_buffers.POZ)
+|!
+   {? type_of(_buffers.POZ[_it].M_KTM)=0
+   ||
+      _wsenv.add_error('Brak przekazanego kodu materiału pozycji.'@)
+   ||
+      _buffers.POZ[_it].M:=exec('FindInSet','#table','M','MATKTM',_buffers.POZ[_it].M_KTM,,,1);
+      {? _buffers.POZ[_it].M=0
+      ||
+         _wsenv.add_error('Nieprawidłowy kod materiału pozycji.'@)
+      ?}
+   ?};
+
+   {? type_of(_buffers.POZ[_it].Sv_KOD)=0
+   ||
+      _wsenv.add_error('Brak przekazanego kodu stawki VAT pozycji.'@)
+   ||
+      SLO.cntx_psh();
+      _slu:=exec('FindInSet','#table','SLU','NAZ','~STAWKI VAT '+INFO.KRAJ().KOD);
+      SLO.index('SL');
+      SLO.prefix(_slu,_buffers.POZ[_it].Sv_KOD,);
+      {? SLO.first()
+      ||
+         _buffers.POZ[_it].SV:=SLO.ref()
+      ||
+         SLO.prefix(_slu,' '+_buffers.POZ[_it].Sv_KOD,);
+         {? SLO.first()
+         ||
+            _buffers.POZ[_it].SV:=SLO.ref()
+         ||
+            _wsenv.add_error('Nieprawidłowy kod stawki VAT.'@)
+         ?}
+      ?};
+      SLO.cntx_pop()
+   ?};
+
+   {? type_of(_buffers.POZ[_it].IL)=0
+   ||
+      _wsenv.add_error('Brak przekazanej ilości pozycji.'@)
+   |? type_of(_buffers.POZ[_it].IL)=1 & _buffers.POZ[_it].IL<=0
+   ||
+      _wsenv.add_error('Ilość produktu powinna być większa od zera.'@)
+   ?};
+
+   {? type_of(_buffers.POZ[_it].CPR)=0
+   ||
+      _wsenv.add_error('Brak przekazanej ceny przed rabatem produktu.'@)
+   |? type_of(_buffers.POZ[_it].CPR)=1 & _buffers.POZ[_it].CPR<=0
+   ||
+      _wsenv.add_error('Cena produktu powinna być większa od zera.'@)
+   ?};
+
+   {? type_of(_buffers.POZ[_it].RAB)=0
+   ||
+      _buffers.POZ[_it].RAB:=0
+   |? type_of(_buffers.POZ[_it].RAB)=1 & (_buffers.POZ[_it].RAB>99.99 | _buffers.POZ[_it].RAB<0)
+   ||
+      _wsenv.add_error('Nieprawidłowa wartość rabatu.'@)
+   ?}
+
+!};
+~~
+
+
+\create_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: sprawdzenie poprawności danych
+::   WE: _a - buffers
+::   WY: [0/1]
+::----------------------------------------------------------------------------------------------------------------------
+_buffers:=_a;
+
+1
+
+
+\prolog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Formuła startowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+exec('prolog','mwapi',_par);
+~~
+
+
+\epilog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Fomuła końcowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+exec('epilog','mwapi');
+~~
+
+
+\authorized
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Sprawdza uprawnienia do odglądania dokumentów magazynowych (w kontekście aktualnego OPERATOR.USER)
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('authorized','#b__box','LSP_FAK','LSP')
+|| 1
+|| _msg:='Brak uprawnień do przeglądania dokumentów sprzedaży.'@;
+   mwa_status(401,_msg);
+   _wsenv:=exec('wsenv','#mwapi');
+   _wsenv.add_error(_msg);
+   0
+?}
+
+
+\dokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [23.25]
+:: OPIS: Serializuje załączniki faktury
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_lib:=exec('lib','__mwa');
+{? exec('get_option','mwapi',params_get(),'Pdf').value='1'
+||
+   DOKUM.cntx_psh();
+   DOKUM.index('DOKUM');
+   DOKUM.prefix(REF.FIRMA,$FAKS.ref());
+   {? DOKUM.first()|| _lib.Response.getTableType.asString(params_get().FILE,_a,'DOKUM') ?};
+   DOKUM.cntx_pop()
+?};
+return('')
+
+
+\dokum_nrksef
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [23.25]
+:: OPIS: Numer ksef
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:='';
+_NAMES:=DOKUM.names();
+DOKUM.cntx_psh();
+{? ~_NAMES.first  || return(_wyn) ?};
+{!|?
+   {? _NAMES.SIZE<>-1
+   ||
+      DOKUM.use(_NAMES.NAME);
+      DOKUM.index('DOKUM');
+      DOKUM.prefix(REF.FIRMA,$FAKS.ref(),);
+      {? DOKUM.first()
+      ||
+         {!|?
+            _wyn:=DOKUM.NRKSEF;
+            _wyn='' & DOKUM.next()
+         !}
+      ?}
+   ?};
+   _wyn='' & _NAMES.next()
+!};
+DOKUM.cntx_pop();
+_wyn
+
+:Sign Version 2.0 jowisz:1045 2023/09/29 13:20:50 b1786c64e18e080463d8f22409a541033ab99a18052b4f7a6726bcf8b32bb750fdbc3a6fdb644c05210ea0ff522b6f355f72ec7e2f20b5a0f9abecb7c502f04862eca4772537929591bf1959fee7a487a56ab023d2a005a7f1d162465bd2e846ce9b9654359d9f6bee510b54be1e27d6a2df31eedfa906d3fd995be69ce6f10c

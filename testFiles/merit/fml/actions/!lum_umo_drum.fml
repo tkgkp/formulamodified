@@ -1,0 +1,617 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lum_umo_drum.fml
+:: Utworzony: 11.01.2019
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Formuły czynności LUM_UMO_DRUM
+::            Rejestracja umowy cyklicznej
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Czynność LUM_UMO_DRUM - formuła główna
+::   WE: _a - [obj_new] - parametry wejsciowe czynności
+::       _b - [obj_new] - parametry wewnętrzne czynności
+::       _c - [obj_new] - parametry wyjściowe czynności
+::       _d - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ
+::# kind=WE,   symbol=STU, type=_STU, name=Status umowy,        required=N, keyref=N, fml_val="exec('wyb_stu','!lum_umo_drum')"
+::# kind=WE,   symbol=FAS, type=_FAS, name=Sposób fakturowania, required=N, keyref=N, fml_val="exec('wyb_fas','!lum_umo_drum')"
+::# kind=WE,   symbol=KH,  type=_KH,  name=Kontrahent,          required=N, keyref=N
+::# kind=WY,   symbol=UM,  type=_UM,  name=Umowa cykliczna,     required=N
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+exec('init','lum');
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_area:=_mp.pathArea('LUM_UMO');
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | _mp.pathArea() & ~_area;
+_autoakc:=exec('autoAkc','#b__box',_mp,100080,'LUM_UMO_EAUM');
+
+_stu:={?  var_pres('STU',_in)=type_of(null()) & _in.STU || _in.STU || null() ?};
+_kh:={?  var_pres('KH',_in)=type_of(null()) & _in.KH || _in.KH || null() ?};
+_fas:={?  var_pres('FAS',_in)=type_of(null()) & _in.FAS || _in.FAS || null() ?};
+
+{? _mp.pathProc()
+:: Sprawdzenie parametrów pracy dla czynności startowej
+|| {? ST.AR=0 | ST.ODDZ_KOD='' || FUN.info('Ustaw parametry pracy.'@); _wyn:=0; return() ?}
+?};
+
+{? _mp.pathTodo()
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('UM',_out)=type_of(null()) & _out.UM
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego UM.')
+   ?}
+?};
+
+:: Sprawdzenie uprawnień
+params_set('in',_in,'user',OPERATOR.USER,'mp',_mp);
+{? exec('permissions','!lum_umo_drum')=0
+|| _mp.error('Brak uprawnień do uruchomienia czynności.');
+   return()
+?};
+
+_mp.trigRef('UM',,1,,exec('kind_out','#b_port'),'UM');
+
+{? _akcja='Dołącz'
+   | _mp.pathProc()
+   | _akcja='START_TODO'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+||
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   params_set('out',_out,'mp',_mp,'akcja',_akcja);
+   {? _mp.pathProc() | _akcja='START_TODO' || ZAKR.T:='A' ?};
+   exec('um_new','umowy',_kh,_stu,_fas);
+
+   _krefs:=_mp.getRefs();
+   {? var_pres('[1]',_krefs)<>type_of(~~)
+:: Dodano dokument
+   || UM.cntx_psh();
+      UM.prefix();
+      {? UM.seek(_krefs[1])
+::    Zapisanie _out.UM jeśli wcześniej nie zakończono rejestracji dokumentu
+      || {? UM.STAT_REJ='N'
+         || _out.UM:=UM.ref();
+            _mp.save(,_out)
+         || _out.UM:=UM.ref();
+            _mp.save(,_out);
+            _mp.done()
+         ?}
+::    Brak dokumentu w tabeli mimo zapisanego parametru wyjściowego UM oznacza wycofanie czynności
+      || _mp.cancel()
+      ?};
+      UM.cntx_pop()
+:: Wycofanie czynności bo nie dodano dokumentu
+   || _mp.cancel()
+   ?};
+:: Ustawienie się na dodanym dokumencie w widoku obszaru
+   {? _mp.pathArea()
+   || _outa:=_mp.load(exec('kind_out','#b_port'));
+      {? var_pres('UM',_outa)=type_of(null()) & _outa.UM
+      || {? exec('FindAndGet','#table',UM,_outa.UM,,"STAT_REJ",'N')<>'N' || _mp.done() ?};
+         UM.seek(_outa.UM)
+      ?}
+   ?}
+
+|? _akcja='Popraw'
+   | _todo
+|| {? var_pres('UM',_out)=type_of(null())
+:: Uruchomione w procesie
+   || UM.cntx_psh();
+      UM.prefix();
+      {? UM.seek(_out.UM)
+      ||
+         params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('um_pop','umowy');
+
+         _mp.descTodo();
+         {? exec('FindAndGet','#table',UM,_out.UM,,"STAT_REJ",'N')<>'N' || _mp.done() ?}
+      ?};
+      UM.cntx_pop()
+   |? _todo
+:: Uruchomione zadanie z listy todo i brak _out.UM wtedy zadanie wycofujemy
+   || _mp.cancel()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      exec('um_pop','umowy');
+      {? UM.STAT_REJ<>'N' || _mp.done() ?}
+   ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('UM',_out)=type_of(null())
+:: Uruchomione w procesie
+   || _um:=null();
+      UM.cntx_psh();
+      _rec:=exec('rec_after_del','#table',UM);
+      UM.prefix();
+      {? UM.seek(_out.UM)
+      ||
+         _wyn:=exec('um_del','umowy');
+
+         {? ~UM.seek(_out.UM)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _um:=UM.ref()
+      ?};
+      UM.cntx_pop();
+      {? _wyn=1 & _rec<>null() || UM.seek(_rec) ?};
+::    Ustawienie się na kolejnej ofercie w widoku obszaru
+      {? _area || {? _um || UM.seek(_um) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   || exec('um_del','umowy')
+   ?}
+
+|? _akcja='Kopiuj'
+|| _ref_um:=UM.ref();
+   {? exec('um_kop_n','umowy',_kh,_stu)
+   || _out.UM:=ref_new;
+      _mp.save(,_out);
+      params_set('out',_out,'mp',_mp,'akcja','Popraw');
+      _copy:=exec('um_pop','umowy',1);
+      {? _copy='esc' & FUN.ask('Zrezygnowano z edycji kopiowanej umowy.\nCzy ją usunąć?'@)
+      || exec('um_del','umowy',1);
+         UM.seek(_ref_um);
+         _mp.cancel()
+      ?};
+      {? exec('FindAndGet','#table',UM,_out.UM,,"STAT_REJ",'N')<>'N' || _mp.done() ?}
+   ?}
+
+|? _akcja='Zakończ_wer' & _area
+|| exec('zakoncz','umowy',_autoakc);
+   {? UM.STAT_REJ<>'N' || _mp.done() ?}
+|| _mp.error('Nieobsługiwana ścieżka.')
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? var_pres('UM',_out)<>type_of(~~) & _out.UM
+|| 'Zakończ rejestrację umowy cyklicznej: %1'@@[exec('record','#to_string',_out.UM)]
+|| 'Zarejestruj umowę cykliczną'@@
+?}
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+_wyn:=1;
+_wyn
+
+
+\umowa_zakoncz_up
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Zakonczenie redakcji oferty - zmiana statusu
+::   WE: [_a] - powołane z okienka=1, domyślnie nie=0
+::   WY: klawisz zatwierdzenia
+::----------------------------------------------------------------------------------------------------------------------
+exec('btn_EndPosition','okienka','LUM_UMO_DRUM',UM.uidref(),UM
+ ,'Zakończ_wer','Zakończyć rejestrację umowy cyklicznej %1?'@[UM.SYM])
+
+
+\be_um_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: sprowadza czy mozna redagowac kontrahenta w umowie
+::  OLD: \be_um_kh/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+{? UMO.RKH<>'N' & exec('FindInSet','#table','UP','UM',UM.ref())=null()
+|| _wyn:=1
+?};
+_wyn
+
+
+\ae_um_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji pola UM.KH
+::  OLD: \ae_um_kh/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=1;
+_wyn:=exec('ae_kh','kontrahent');
+{? UM.HAN=null() & exec('get','#params',100178,2)='T' || UM.HAN:=exec('han_blank','users') ?};
+{? UM.HAN=null() || UM.HAN:=__War_f('KH_DOD','HAN',UM.KH) ?};
+_wyn
+
+
+\be_um_od
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: przed edycja daty umowy - mozna edytowac jezeli nie ma aneksu
+::  OLD: \be_um_od/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=UM.AN=0;
+_wyn
+
+
+\ae_um_od
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: przepisuje date do pola DPO
+::  OLD: \ae_um_od/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+UM.DPO:=fld()
+
+
+\ae_um_do
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: kontrola daty
+::  OLD: \ae_um_do/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+{? fld()<>date(0,0,0)
+|| {? fld()>UM.OD
+   || _wyn:=1
+   || FUN.info('Data musi być późniejsza od daty rozpoczęcia umowy.')
+   ?}
+|| _wyn:=1
+?};
+_wyn
+
+
+\umlock
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Po redakcji pola UM.FAS
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_lockum:=1;
+{? UM.STU().KOD<>'N'
+|| UM.cntx_psh();
+   UP.cntx_psh();
+   UP.index('UM');
+   UP.clear;
+   UP.prefix(UM.ref);
+   {? UP.first
+   || {!
+      |? {? UP.R='T' || _lockum:=0 ?};
+         UP.next
+      !}
+   ?};
+   UP.cntx_pop();
+   UM.cntx_pop()
+?};
+_lockum
+
+
+\wz_um_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2011]
+:: OPIS: wzorzec UM.KH_ODB
+::  OLD: \wz_um_kh/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+BEER.KH:=UM.KH;
+''
+
+
+\be_umodb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2011]
+:: OPIS: przed redakcja UM.KH_ODB
+::  OLD: \be_umodb/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('kh_odb_f_set','kontrahent');
+UM.KH<>null()
+
+
+\be_thr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: przed redakcja pola typ umowa/ryczalt UM.TYP_HR
+::  OLD: \be_thr/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+UP.index('UM');
+UP.prefix(UM.ref());
+UM.FAS().KOD<>'D' &
+~UP.first()
+
+
+\um
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS: UM.ref
+::  OLD: \um/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+UM.ref()
+
+
+\ae_uppos
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: uzupelnianie zmiennych tymczasowych - UL i MIA po red pola numer
+::  OLD: \ae_uppos/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+{? fld()
+|| POS.seek(fld());
+   UMO.MIA:=POS.UL().MIA().ref();
+   UMO.UL:=POS.UL().ref();
+   _wyn:=1
+?};
+{? UP.POS().UL().REJO<>null()
+|| HA.REJO:=UP.POS().UL().REJO().ref()
+|| HA.REJO:=null()
+?};
+HA.TYP:=UP.USL().TYP;
+_wyn
+
+
+\ae_upusl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: po redakcji pola
+::  OLD: \ae_upusl/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? fld()<>null()
+|| {? -menu_txt()='popraw' || UP.ZM:='T' ?}
+?};
+{? UP.MJ().USL<>UP.USL & UP.USL<>null() || UP.MJ:=null ?};
+exec('up_umo','umowy');
+win_disp();
+1
+
+
+\ae_up_il
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji pola UP.IL
+::  OLD: \ae_up_il/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+Plugin.run('UP_EDIT_001');
+exec('up_umo','umowy');
+win_disp();
+1
+
+
+\kst_dusl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: domyslna usluga dla umow/zgloszen - wartosc poczatkowa USL
+::   WY: USL.ref()
+::  OLD: \kst_dusl/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=null;
+_fo:=exec('get','#params',100120,2);
+_wyn:={? _fo<>'' || exec('FindInSet','#table','USL','USL',_fo,_fo) || null() ?};
+_wyn
+
+
+\bl_uptar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [Mario] [2005]
+:: OPIS: podpowiada taryfę na pozycji umowy
+::  OLD: \bl_uptar/um3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=null();
+TAR.cntx_psh();
+TAR.clear;
+{? TAR.size=1 & TAR.first()
+|| _wyn:=TAR.ref
+?};
+TAR.cntx_pop();
+_wyn
+
+
+
+\ae_up_m
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji pola UP.M_D
+::  OLD: \ae_up_m/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UP.M<>null
+|| UP.R:='T';
+   Plugin.run('UP_EDIT_001')
+|| UP.ILM:=UP.C_R:=0;
+   UP.R:='N';
+   Plugin.run('UP_EDIT_001')
+?};
+exec('up_umo','umowy');
+exec('set_efld_opt_up','umowy');
+win_disp();
+1
+
+
+\be_upc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprwdza czy mozna edytowac cene i podpowiada z cennika
+::  OLD: \be_upc/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=exec('get','#params',100101,2)='T';
+_wyn
+
+
+\ae_up_md
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji pola UP.M_D
+::  OLD: \ae_up_md/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UP.M_D<>null
+|| UP.DOD:=exec('get','#params',100114,2);
+   Plugin.run('UP_EDIT_001')
+|| UP.ILD:=UP.C_D:=0;
+   UP.DOD:='N';
+   Plugin.run('UP_EDIT_001')
+?};
+exec('up_umo','umowy');
+exec('set_efld_opt_up','umowy');
+win_disp();
+1
+
+
+\ae_up_m2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji pola UP.M_2
+::  OLD: \ae_up_m2/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UP.M_2<>null
+|| UP.DOD:='T'
+|| UP.DOD:='N'
+?};
+exec('up_umo','umowy');
+exec('set_efld_opt_up','umowy');
+win_disp();
+1
+
+
+\ae_up_mj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji pola UP.MJ
+::  OLD: \ae_up_mj/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UP.MJ=null
+|| UP.IL:=UP.C:=0;
+   Plugin.run('UP_EDIT_001')
+||
+   Plugin.run('UP_EDIT_001')
+?};
+exec('up_umo','umowy');
+exec('set_efld_opt_up','umowy');
+win_disp();
+1
+
+
+\ae_upwal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji waluty dla pozycji umowy
+::  OLD: \ae_upwal/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('up_umo','umowy');
+1
+
+
+\bl_umst
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2010]
+:: OPIS: Wartość poczakowa pola UM.STU
+::  OLD: \bl_umst/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+UMO.STU
+
+
+\wyb_stu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Wybór statusu
+::----------------------------------------------------------------------------------------------------------------------
+exec('stu_wyb','params',null(),"STU.RODZ='N'",-1)
+
+
+\wyb_fas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Wybór sposobu fakturowania
+::----------------------------------------------------------------------------------------------------------------------
+exec('fas_wyb','params',null(),"FAS.WYS='T'",-1)
+
+
+
+\ae_up_dm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji pola UP.M_D
+::  OLD: \ae_up_dm/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UP.DM<>null
+|| UP.DR:=exec('get','#params',100114,2);
+   Plugin.run('UP_EDIT_001')
+|| UP.DILM:=UP.DC_R:=0;
+   UP.DR:='N';
+   Plugin.run('UP_EDIT_001')
+?};
+exec('up_umo','umowy');
+exec('set_efld_opt_up','umowy');
+win_disp();
+1
+
+
+\ae_um_fas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: po redakcji pola UM.FAS
+::----------------------------------------------------------------------------------------------------------------------
+{? UM.FAS().KOD='D'
+ & UM.TYP_HR<>'C'
+|| FUN.info('Zmieniono typ umowy na: [Tylko harmonogram].');
+   UM.TYP_HR:='C'
+?};
+1
+
+
+\ae_up_f
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: po redakcji pola UP.F
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_efld_opt_up','umowy');
+win_disp();
+1
+
+
+\ae_up_ild
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [19.42]
+:: OPIS: po redakcji pola UP.ILD
+::----------------------------------------------------------------------------------------------------------------------
+Plugin.run('UP_EDIT_001');
+1
+
+
+\ae_up_ilm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [19.42]
+:: OPIS: po redakcji pola UP.ILM
+::----------------------------------------------------------------------------------------------------------------------
+Plugin.run('UP_EDIT_001');
+1
+
+
+\ae_up_dilm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [19.42]
+:: OPIS: po redakcji pola UP.DILM
+::----------------------------------------------------------------------------------------------------------------------
+Plugin.run('UP_EDIT_001');
+1
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:41 67475e731951180d403e724888f12c5c49ae53f3299bb7b734d4c8baf124c7e095f97674e7842ac32fe39222e78a2b07b09858dc9210123cdedd3185df8e7263466934c3e2cbbfd407e6f64c0ae57b4763facc7077b68c17ff76d1d7e2c87ec014076453ff2c778cb49bf36288eb2f714e5970bb8a04a4fde1f1c8b8ad8e32fd

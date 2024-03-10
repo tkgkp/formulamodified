@@ -1,0 +1,3198 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: zl_partie.fml
+:: Utworzony: 08.07.2015
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Obsługa parti produkcyjnych do zlecenia
+::======================================================================================================================
+
+
+\buffer
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Tworzy bufor - tablice nazwana odwzorowujaca tabele ZPARN
+::   WY: obj_new - tabelica nazwana reprezentujaca rekorod ZPARN
+::  OLD: \buffer/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('ZPARN','buffer')
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.30]
+:: OPIS: Kasuje podany rekord tabeli ZPARN (wykonywane w transakcji!!!)
+::   WE: _a - ZPARN.ref()
+::       [_b] - INTEGER - 0/1 czy dodawac komunikaty do KOMM [domyslnie=0]
+::   WY: >0 -wyczyszczone,
+::      <=0 -niewyczyszczone
+::UWAGA: Parametry bez [] sa wymagane, formula moze nie sprawdzac czy zostaly podane i moze wystapic blad.
+::  OLD: \delete/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+:: jeżeli transakcja została zerwana, to nie ma sensu przetwarzać formuły
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+_komm:=0;
+
+{? var_pres('_b')=type_of(0)
+|| _komm:=_b
+?};
+
+_result:=0;
+_can_continue:=0;
+
+ZL.cntx_psh();
+ZTP.cntx_psh();
+ZPARN.cntx_psh(); ZPARN.clear();
+{? ZPARN.seek(_ref)
+||
+:: Sprawdzam czy mozna usunac
+   _can_continue:=exec('chk_depend','zl_partie',ZPARN.ref(),1);
+
+   {? _can_continue>0
+   ||
+      {? exec('clean','zl_partie',_ref)>0
+      || {? ZPARN.SCEAN<>'' || exec('mkodkadd','kody_kresk',ZPARN.ZL().KTM,ZPARN.SCEAN,$ZPARN.ref(),1) ?};
+         {? ZPARN.ZPEAN<>'' & ZPARN.ZPEAN<>ZPARN.SCEAN
+         || exec('mkodkadd','kody_kresk',ZPARN.ZL().KTM,ZPARN.ZPEAN,$ZPARN.ref(),1)
+         ?};
+::       Usuwam numerek z mechanizmu numeracji
+         oldnumer:=1;
+         numer:=ZPARN.NR;
+         POM.TAB:='ZPARN';
+         POM.TYPDOK:=ZPARN.ZL().TYP().KOD_PAR;
+
+         exec('add_grnr','numery','PTR');
+         exec('nr_old','numery');
+
+         {? ZPARN.del(,1)>0
+         || _result:=1
+         || undo();
+            _result:=-3
+         ?}
+      || _result:=-2
+      ?}
+   ?}
+|| _result:=-1
+?};
+
+ZPARN.cntx_pop();
+ZL.cntx_pop();
+ZTP.cntx_pop();
+_result
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+:: UTW: WH [12.30]
+:: OPIS: Czysci powiazania do rekordu tabeli ZPARN
+:: WE: _a - ZPARN.ref()
+:: WY: >0 -wyczyszczone,
+:: <=0 -niewyczyszczone
+::UWAGA: Parametry bez [] sa wymagane, formula moze nie sprawdzac czy zostaly podane i moze wystapic blad.
+::  OLD: \clean/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? do_state()=2 || return(-100) ?};
+
+_zparn:=_a;
+
+_result:=1;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+:: --- powiązania do ---
+
+:: 1. DK_C - usuwam nie powiazane z
+DK_C.cntx_psh();
+DK_C.index('PARTIA');
+DK_C.prefix(_zparn);
+{? DK_C.first()
+||
+   _can_continue:=0;
+   {!
+   |?
+::    Usuwam powiazanie z partia
+      DK_C.cntx_psh(); DK_C.clear();
+      DK_C.ZPARN:=null();
+      DK_C.KOD:=exec('kod2matr','mat_atr');
+      _can_continue:=DK_C.put();
+
+      {? _can_continue>0 & DK_C.count()=0
+      || _can_continue:=DK_C.del()
+      ?};
+      DK_C.cntx_pop();
+
+      DK_C.first() & _can_continue>0
+   !}
+?};
+DK_C.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+|| _result:=0;
+   undo()
+?};
+
+:: --- wszystkie powiazania usuniete? ---
+{? _mydo || _result:=end()?};
+_result
+
+
+\get_ilosc_rp
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ilosc dla partii ktora zostala rozliczona na dokumentach klasy RP we wszystkich maskach
+::   WE: _a - ZPARN.ref() - partia
+::       _b - DK.ref() - dokument ktory ominac podczas zliczania (przydatne podczas poprawiania tego dok.)
+::   WY: REAL - ilosc wykonana dla partii
+::  OLD: \get_ilosc_rp/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+_omit:=null();
+
+{? var_pres('_b')=type_of(DK.ref())
+|| _omit:=_b
+?};
+
+_result:=0;
+
+ZPARN.cntx_psh(); ZPARN.clear();
+ZL.cntx_psh();
+{? ZPARN.seek(_zparn)
+||
+:: Zliczam ilosc dla partii w dokumentach z masek od powolania zlecenia
+   _args:=exec('ilosc_dk_a','zl_partie');
+   _args.ZPARN:=ZPARN.ref();
+   _args.RP:=1;
+   _args.OMIT:=_omit;
+   ZPARN.ZL();
+   _name:=5+DK.name();
+   _msk_start:=_name+ZL.ODDZ+(2-$(ZL.OD~1));
+   _msk_end:=~~;
+   {? ZL.STAN='Z'
+   || _rok:=exec('max','#math',ZL.ROK_MAX,ZL.DO~1);
+      _msk_end:=_name+ZL.ODDZ+(2-$(_rok))
+   || _rok:=exec('max','#math',ZL.ROK_MAX,date()~1,ST.AR);
+      _msk_end:=_name+ZL.ODDZ+(2-$(_rok))
+   ?};
+
+:: Formula do wykonania w kazdej masce DK poczawszy od maski poczatkowej
+   _rule:="exec('ilosc_dk','zl_partie',_b)";
+
+:: Zliczam ilosc dla partii na DK w kazdej masce
+   exec('for_each_mask','#table',DK,_rule,_msk_start,_msk_end,_args);
+
+   _result:=_args.RESULT
+?};
+ZL.cntx_pop();
+ZPARN.cntx_pop();
+_result
+
+
+\get_ilosc_zlgd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [20.42]
+:: OPIS: Zwraca ilosc dla partii ktora jest powiązana z robocizną tworzącą dokumenty magazynowe
+::       we wszystkich maskach
+::   WE: _a - ZPARN.ref() - partia
+::       [_b] - ZGP.ref - pozycja przewodnika
+::       [_c] - INTEGER - [0]/1 - czy pomijać ilość na ZLGD na którą utworzono RP?
+::       [_d] - INTEGER - [0]/1 - czy sprawdzać zapisy robocziny w rozbicu wg produktów (ZL_WYRGD)
+::       [_e] - INTEGER -  0/[1] - czy sprawdzać robociznę tworzącą dokumenty, czy każdą
+::   WY: REAL - ilosc wykonana dla partii
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+_zgp:=null;
+{? var_pres('_b')=type_of(ZGP.ref())
+|| _zgp:=_b
+?};
+_minus_rp:=0;
+{? var_pres('_c')=type_of(0)
+|| _minus_rp:=_c
+?};
+_czy_wyr:=0;
+{? var_pres('_d')=type_of(0)
+|| _czy_wyr:=_d
+?};
+_czy_dok:=1;
+{? var_pres('_e')=type_of(0)
+|| _czy_dok:=_e
+?};
+
+_result:=0;
+
+ZPARN.cntx_psh(); ZPARN.clear();
+ZL.cntx_psh();
+ZGP.cntx_psh();
+{? ZPARN.seek(_zparn)
+||
+:: Zliczam ilosc dla partii w dokumentach z masek od powolania zlecenia
+   _args:=obj_new('ZPARN','ZGP','MINUS_RP','CZY_WYR','CZY_DOK','RESULT');
+   _args.ZPARN:=ZPARN.ref();
+   _args.ZGP:=_zgp;
+   _args.MINUS_RP:=_minus_rp;
+   _args.CZY_WYR:=_czy_wyr;
+   _args.CZY_DOK:=_czy_dok;
+   _args.RESULT:=0;
+
+:: Formula do wykonania w kazdej masce ZLGD poczawszy od maski poczatkowej
+   _rule:="
+      _args:=_b;
+      ZLGD.cntx_psh();
+      ZLGD.index('ZPARN');
+      {? _args.ZGP<>null()
+      || ZLGD.prefix(_args.ZPARN,_args.ZGP)
+      || ZLGD.prefix(_args.ZPARN)
+      ?};
+      {? ZLGD.first()
+      || {!
+         |?
+            {? _args.CZY_DOK>0
+            ||
+               {? ZLGD.ZGP().DOK<>null()
+               ||
+                  _ilosc:=ZLGD.IL;
+                  {? _args.MINUS_RP>0
+                  || _ilosc-=ZLGD.ILGEN;
+                     _ilosc:=exec('max','#math',0,_ilosc)
+                  ?};
+                  _args.RESULT+=_ilosc
+               ?}
+            || _args.RESULT+=ZLGD.IL
+            ?};
+            ZLGD.next()
+         !}
+      ?};
+      ZLGD.cntx_pop();
+::    Podlizcenie roboiczny z zapisów rozbitych wg produktów
+      {? _args.CZY_WYR>0
+      || ZL_WYRGD.cntx_psh();
+         ZL_WYRGD.use((5+ZL_WYRGD.name())+(ZLGD.name()+3));
+         ZL_WYRGD.index('ZPARN');
+         {? _args.ZGP<>null()
+         || ZL_WYRGD.prefix(_args.ZPARN,_args.ZGP)
+         || ZL_WYRGD.prefix(_args.ZPARN)
+         ?};
+         {? ZL_WYRGD.first()
+         || {!
+            |?
+::             Podczytanie ZLGD
+               ZLGD.cntx_psh();
+               ZLGD.clear();
+               ZL_WYRGD.ZLGD();
+               {? _args.CZY_DOK>0
+               ||
+                  {? ZLGD.ZGP().DOK<>null()
+                  ||
+                     _ilosc:=ZL_WYRGD.IL;
+                     {? _args.MINUS_RP>0
+                     || _ilosc-=ZL_WYRGD.ILGEN;
+                        _ilosc:=exec('max','#math',0,_ilosc)
+                     ?};
+                     _args.RESULT+=_ilosc
+                  ?}
+               || _ilosc:=ZL_WYRGD.IL;
+                  _args.RESULT+=_ilosc
+               ?};
+               ZLGD.cntx_pop();
+               ZL_WYRGD.next()
+            !}
+         ?};
+         ZL_WYRGD.cntx_pop()
+      ?};
+      ~~
+   ";
+
+:: Zliczam ilosc dla partii na ZLGD (i ZL_WYRGD) w kazdej masce
+   exec('for_each_mask','#table',ZLGD,_rule,,,_args);
+   _result:=_args.RESULT
+?};
+ZGP.cntx_pop();
+ZL.cntx_pop();
+ZPARN.cntx_pop();
+_result
+
+
+\get_zlgd_tab
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [21.14]
+:: OPIS: Zwraca robocizne dla partii ktora we wszystkich maskach
+::   WE: _a - ZPARN.ref() - partia
+::       [_b] - ZGP.ref - pozycja przewodnika
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+_zgp:=null;
+{? var_pres('_b')=type_of(ZGP.ref())
+|| _zgp:=_b
+?};
+_minus_rp:=0;
+{? var_pres('_c')=type_of(0)
+|| _minus_rp:=_c
+?};
+
+_result:=tab_tmp(1,'ZLGD','STRING[16]','Nazwa pola 1');
+
+ZPARN.cntx_psh(); ZPARN.clear();
+ZL.cntx_psh();
+ZGP.cntx_psh();
+{? ZPARN.seek(_zparn)
+||
+:: Zliczam ilosc dla partii w dokumentach z masek od powolania zlecenia
+   _args:=obj_new('ZPARN','ZGP','MINUS_RP','RESULT');
+   _args.ZPARN:=ZPARN.ref();
+   _args.ZGP:=_zgp;
+   _args.MINUS_RP:=_minus_rp;
+   _args.RESULT:=_result;
+
+:: Formula do wykonania w kazdej masce ZLGD poczawszy od maski poczatkowej
+   _rule:="
+      _args:=_b;
+      _tab:=_args.RESULT;
+      ZLGD.cntx_psh();
+      ZLGD.index('ZPARN');
+      {? _args.ZGP<>null()
+      || ZLGD.prefix(_args.ZPARN,_args.ZGP)
+      || ZLGD.prefix(_args.ZPARN)
+      ?};
+      {? ZLGD.first()
+      || {!
+         |? _tab.prefix($ZLGD.ref());
+            {? _tab.first()=0
+            || _tab.blank();
+               _tab.ZLGD:=$ZLGD.ref();
+               _tab.add()
+            ?};
+            ZLGD.next()
+         !}
+      ?};
+      ZLGD.cntx_pop();
+      _tab.prefix();
+      ~~
+   ";
+
+:: Zbieram ZLGD w kazdej masce
+   exec('for_each_mask','#table',ZLGD,_rule,,,_args)
+?};
+ZGP.cntx_pop();
+ZL.cntx_pop();
+ZPARN.cntx_pop();
+_result.prefix();
+_result
+
+
+\get_zl_wyrgd_tab
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [23.25]
+:: OPIS: Zwraca robocizne dla partii w rozbiciu na produkty we wszystkich maskach
+::   WE: _a - ZPARN.ref() - partia
+::       [_b] - ZGP.ref - pozycja przewodnika
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+_zgp:=null;
+{? var_pres('_b')=type_of(ZGP.ref())
+|| _zgp:=_b
+?};
+_minus_rp:=0;
+{? var_pres('_c')=type_of(0)
+|| _minus_rp:=_c
+?};
+
+_result:=tab_tmp(1,'ZL_WYRGD','STRING[16]','Nazwa pola 1');
+
+ZPARN.cntx_psh(); ZPARN.clear();
+ZL.cntx_psh();
+ZGP.cntx_psh();
+{? ZPARN.seek(_zparn)
+||
+:: Zliczam ilosc dla partii w dokumentach z masek od powolania zlecenia
+   _args:=obj_new('ZPARN','ZGP','MINUS_RP','RESULT');
+   _args.ZPARN:=ZPARN.ref();
+   _args.ZGP:=_zgp;
+   _args.MINUS_RP:=_minus_rp;
+   _args.RESULT:=_result;
+
+:: Formula do wykonania w kazdej masce ZLGD poczawszy od maski poczatkowej
+   _rule:="
+      _args:=_b;
+      _tab:=_args.RESULT;
+      ZL_WYRGD.cntx_psh();
+      ZL_WYRGD.index('ZPARN');
+      {? _args.ZGP<>null()
+      || ZL_WYRGD.prefix(_args.ZPARN,_args.ZGP)
+      || ZL_WYRGD.prefix(_args.ZPARN)
+      ?};
+      {? ZL_WYRGD.first()
+      || {!
+         |? _tab.prefix($ZL_WYRGD.ref());
+            {? _tab.first()=0
+            || _tab.blank();
+               _tab.ZL_WYRGD:=$ZL_WYRGD.ref();
+               _tab.add()
+            ?};
+            ZL_WYRGD.next()
+         !}
+      ?};
+      ZL_WYRGD.cntx_pop();
+      _tab.prefix();
+      ~~
+   ";
+
+:: Zbieram ZLGD w kazdej masce
+   exec('for_each_mask','#table',ZL_WYRGD,_rule,,,_args)
+?};
+ZGP.cntx_pop();
+ZL.cntx_pop();
+ZPARN.cntx_pop();
+_result.prefix();
+_result
+
+
+\ilosc_dk_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.30]
+:: OPIS: Tablica parametrów dla ilosc_dk
+::   WY: _args
+::  OLD: \ilosc_dk_a/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new( 'blank'
+               ,'RESULT'
+               ,'ZPARN'
+               ,'ZGP'
+::              DK.ref - dokument ktorego nie uwzgledniac podczas zliczania
+::                       (przydatne aby nie uwzględniac dokumentu ktory aktualnie poprawiam)
+               ,'OMIT'
+               ,'RP'
+               ,'RW');
+:: - - - - ponizej ustawienie wartosci domyslnych
+_args.blank:="
+       .RESULT:=0;
+       .ZPARN:=null();
+       .ZGP:=null();
+       .OMIT:=null();
+       .RW:=0;
+       .RP:=0;
+       ~~
+      ";
+:: - - - - koniec ustalania wartosci domyslnych
+_args.blank();
+_args
+
+
+\ilosc_dk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.30]
+:: OPIS: Zlicza ilosc na DK dla podanej partii, wynik jest zwracany w _args
+::   WE: _args
+::  OLD: \ilosc_dk/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+{?_=1
+|| _args:=_a
+|| _args:=exec('ilosc_dk_a','zl_partie')
+?};
+
+DK.cntx_psh();
+DK.index('PARTIA');
+DK.prefix(_args.ZPARN);
+{? DK.first()
+|| {!
+   |?
+      _can_continue:=1;
+      {? _args.OMIT<>null() & _args.OMIT=DK.ref()
+      || _can_continue:=0
+      ?};
+
+      {? _can_continue>0
+      ||
+         {? _args.RW>0
+         || {? exec('dk_is_rw','magdok_wspolne',DK.ref())>0
+            || _args.RESULT+=DK.IL
+            ?}
+         ?};
+         {? _args.RP>0
+         || {? exec('dk_is_rp','magdok_wspolne',DK.ref())>0
+            || _args.RESULT+=DK.IL
+            ?}
+         ?}
+      ?};
+      DK.next()
+   !}
+?};
+DK.cntx_pop();
+~~
+
+
+\dkc_partia_ref
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ZPARN.ref na podstawie wartosci (symbolu partii) danego DK_C
+::   WE: _a - DK_C.ref()
+::   WY: ZPARN.ref() - ref partii jezeli jest, lub null
+::  OLD: \dkc_partia_ref/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dkc:=_a;
+
+_result:=null();
+
+ZPARN.cntx_psh();
+DK_C.cntx_psh(); DK_C.clear();
+{? DK_C.seek(_dkc)
+||
+   _symbol:=exec('dkc_partia_sym','zl_partie',DK_C.ref());
+   {? _symbol<>''
+   ||
+      ZPARN.index('SYM');
+      ZPARN.prefix(_symbol,_symbol);
+      {? ZPARN.first()
+      || _result:=ZPARN.ref()
+      ?}
+   ?}
+?};
+DK_C.cntx_pop();
+ZPARN.cntx_pop();
+_result
+
+
+\dkc_partia_sym
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca symbol partii z danego DK_C
+::   WE: _a - DK_C.ref()
+::   WY: STRING - symbol partii jezeli jest, lub ''
+::  OLD: \dkc_partia_sym/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dkc:=_a;
+
+_result:='';
+
+DK_C.cntx_psh(); DK_C.clear();
+M_ATR.cntx_psh();
+TAT.cntx_psh();
+{? DK_C.seek(_dkc)
+|| _max:=exec('il_atr','mat_atr');
+   {! _it:=1.._max
+   |? _result=''
+   |! _rule_chk:=$('DK_C.M_ATR().SL_'+form(_it,-2)+'().TYP');
+      _rule_get:=$('DK_C.WAR'+form(_it,-2));
+      {? _rule_chk()='P'
+      || _result:=_rule_get()
+      ?}
+   !}
+?};
+TAT.cntx_pop();
+DK_C.cntx_pop();
+M_ATR.cntx_pop();
+_result
+
+
+\zl_delete_chk
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Sprawdza partie zlecenia, lub jego podrzednych posiadaja partie ktorych nie mozna usunac
+::   WE: _a - ZL.ref()
+::       _b - INTEGER - tryb komunikowania:
+::                                           0 - komunikaty na ekran
+::                                           1 - komunikaty do KOMM
+::   WY: 0 - zlecenia posiada partie nieusuwalne
+::       1 - zlecenie nie ma partii ktorych nie daloby sie usunac
+::  OLD: \zl_delete_chk/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+
+_dialog:=0;
+{? var_pres('_b')=type_of(0)
+|| _dialog:=_b
+?};
+
+_result:=1;
+
+ZPARN.cntx_psh();
+ZPARN.index('ZL2');
+ZL.cntx_psh(); ZL.clear();
+{? ZL.seek(_zl)
+||
+:: Sprawdzam czy zlecenie posiada podzlecenia
+   {? exec('subzlec_exist','zl_link',ZL.ref())>0
+   ||
+::    Zlecenie zlozone
+      ZL.cntx_psh();
+      ZL.index('NRNZL');
+      ZL.prefix(ZL.UNRZL);
+      {? ZL.first()
+      || {!
+         |?
+::          !!! REKURENCJA !!!
+            {? exec('zl_delete_chk','zl_partie',ZL.ref(),_dialog)=0
+            || _result:=0
+            ?};
+            ZL.next()
+         !}
+      ?};
+      ZL.cntx_pop()
+   ||
+::    Zlecenie proste
+      ZPARN.prefix(ZL.ref());
+      {? ZPARN.first()
+      || {!
+         |? {? exec('chk_depend','zl_partie',ZPARN.ref(),_dialog)=0
+            || _result:=0
+            ?};
+            ZPARN.next()
+         !}
+      ?}
+   ?}
+?};
+
+ZL.cntx_pop();
+ZPARN.cntx_pop();
+_result
+
+
+\chk_depend
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Sprawdza czy można usunąć/zmodyfikować partie - czy są jakieś kluczowe powiązania
+::   WE: _a - ZPARN.ref()
+::       [_b] - INTEGER - 1  - dodawac komunikaty do KOMM
+::                       [0] - wyswietlac komunikaty na ekran
+::                       -1 - w ogóle nie dodawać
+::       [_c] - INTEGEER - Czy sprawdzać wszystkie powiązania niezależnie od parametrów
+::                       [0] - brać pod uwagę parametry (pomijać wybrane powiązania)
+::                       [1] - sprawdza wszystkie powiązania
+::   WY: 1 - brak powiazan, mozna usuwac
+::       0 - sa powiazania, nie mozna usuwac
+::  OLD: \chk_depend/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+
+_komm:=0;
+{? var_pres('_b')=type_of(0)
+|| _komm:=_b
+?};
+_full_check:=0;
+{? var_pres('_c')=type_of(0)
+|| _full_check:=_c
+?};
+_result:=1;
+
+ZPARN.cntx_psh(); ZPARN.prefix();
+ZL.cntx_psh();
+{? ZPARN.seek(_zparn)
+||
+   _sect:=exec('record','#to_string',ZPARN.ZL);
+   {? ZPARN.ZL<>null() & ( exec('get','#params',500771,2)='N' | _full_check )
+   ||
+::    Sprawdzam powiazania z tabela ZPARS - powiazania partii z dostawami surowca
+      ZPARS.cntx_psh();
+
+::    Podczytanie zlecenia
+      ZPARN.ZL();
+
+      _names:=ZPARS.names();
+
+      _name:=5+ZPARS.name();
+      _msk_start:=_name+ZL.ODDZ+(2-$(ZL.OD~1));
+
+      _can_continue:=0;
+
+      {? _msk_start<>''
+      || _can_continue:=_names.find_ge(_msk_start)
+      || _can_continue:=_names.first()
+      ?};
+      {? _can_continue>0
+      || {!
+         |?
+            ZPARS.use(_names.NAME);
+            ZPARS.index('PARTIA');
+            ZPARS.prefix(ZPARN.ref());
+            {? ZPARS.size()>0
+            || _result:=0;
+               _msg:='Niedozwolone modyfikacje partii: %1 — powiązana z rozchodami surowców.'@[ZPARN.SYM];
+               {? _komm>0
+               || {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+                  KOMM.add(_msg,'xwin16.png:3');
+                  KOMM.sect_end()
+               |? _komm=0
+               || FUN.emsg(_msg)
+               ?}
+            ?};
+            _names.next()
+         !}
+      ?};
+      ZPARS.cntx_pop()
+   ?};
+
+:: Sprawdzam powiazania z tabela DK_C
+   DK_C.cntx_psh();
+   DK_C.index('PARTIA');
+   DK_C.prefix(ZPARN.ref());
+   {? DK_C.first()
+   || {!
+      |?
+         {? DK_C.count()>0
+         || _result:=0;
+            _msg:='Niedozwolone modyfikacje partii: %1 — powiązana z cechami dokumentów magazynowych.'@[ZPARN.SYM];
+            {? _komm>0
+            || {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+               KOMM.add(_msg,'xwin16.png:3');
+               KOMM.sect_end()
+            |? _komm=0
+            || FUN.emsg(_msg)
+            ?}
+         ?};
+         DK_C.next()
+      !}
+   ?};
+   DK_C.cntx_pop();
+
+:: Sprawdzam powiazania z rejestracja robocizny
+   {? ((exec('get','#params',500770,2)='N' &  exec('get','#params',500771,2)='N' ) | _full_check)
+   || ZLGD.cntx_psh();
+      {? var_pres('_names')>100
+      || obj_del(_names)
+      ?};
+      _names:=ZLGD.names();
+
+      _name:=5+ZLGD.name();
+      _msk_start:=_name+ZL.ODDZ+(2-$(ZL.OD~1));
+
+      _can_continue:=0;
+
+      {? _msk_start<>''
+      || _can_continue:=_names.find_ge(_msk_start)
+      || _can_continue:=_names.first()
+      ?};
+      {? _can_continue>0
+      || {!
+         |?
+            ZLGD.use(_names.NAME);
+            ZLGD.index('ZPARN');
+            ZLGD.prefix(ZPARN.ref());
+            {? ZLGD.size()>0
+            || _result:=0;
+               _msg:='Niedozwolone modyfikacje partii: %1 — powiązana z zarejestrowaną robocizną.'@[ZPARN.SYM];
+               {? _komm>0
+               || {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+                  KOMM.add(_msg,'xwin16.png:3');
+                  KOMM.sect_end()
+               |? _komm=0
+               || FUN.emsg(_msg)
+               ?}
+            ?};
+            _names.next()
+         !}
+      ?};
+      ZLGD.cntx_pop()
+   ?};
+:: Sprawdzam powiazania z rejestracja robocizny w rozbiciu na wyroby
+   {? ((exec('get','#params',500770,2)='N' &  exec('get','#params',500771,2)='N' ) | _full_check)
+   || ZL_WYRGD.cntx_psh();
+      {? var_pres('_names')>100
+      || obj_del(_names)
+      ?};
+      _names:=ZL_WYRGD.names();
+
+      _name:=5+ZL_WYRGD.name();
+      _msk_start:=_name+ZL.ODDZ+(2-$(ZL.OD~1));
+
+      _can_continue:=0;
+
+      {? _msk_start<>''
+      || _can_continue:=_names.find_ge(_msk_start)
+      || _can_continue:=_names.first()
+      ?};
+      {? _can_continue>0
+      || {!
+         |?
+            ZL_WYRGD.use(_names.NAME);
+            ZL_WYRGD.index('ZPARN');
+            ZL_WYRGD.prefix(ZPARN.ref());
+            {? ZL_WYRGD.size()>0
+            || _result:=0;
+               _msg:='Niedozwolone modyfikacje partii: %1 — powiązana z zarejestrowaną robocizną '
+                     'w rozbiciu na produkty.'@[ZPARN.SYM];
+               {? _komm>0
+               || {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+                  KOMM.add(_msg,'xwin16.png:3');
+                  KOMM.sect_end()
+               |? _komm=0
+               || FUN.emsg(_msg)
+               ?}
+            ?};
+            _names.next()
+         !}
+      ?};
+      ZL_WYRGD.cntx_pop()
+   ?};
+
+   PL_WYK.cntx_psh();
+   PL_WYK.index('ZPARN');
+   PL_WYK.prefix(ZPARN.ref());
+   {? PL_WYK.size()>0
+   || _result:=0;
+      _msg:='Niedozwolone modyfikacje partii: %1 — powiązana z zarejstrowanymi wykonaniami do planu oper.'@[ZPARN.SYM];
+      {? _komm>0
+      || {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+         KOMM.add(_msg,'xwin16.png:3');
+         KOMM.sect_end()
+      |? _komm=0
+      || FUN.emsg(_msg)
+      ?}
+   ?};
+   PL_WYK.cntx_pop();
+   ~~
+?};
+ZL.cntx_pop();
+ZPARN.cntx_pop();
+_result
+
+
+\zl_delete
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Usuwa wszystkie partie nalezace do zlecenia (lub zlecen podrzednych)
+::   WE: _a - ZL.ref()
+::   WY: 0 / 1
+::  OLD: \zl_delete/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+ZPARN.cntx_psh();
+ZPARN.index('ZL2');
+ZL.cntx_psh(); ZL.clear();
+{? ZL.seek(_zl)
+||
+:: Sprawdzam czy zlecenie posiada podzlecenia
+   {? exec('subzlec_exist','zl_link',ZL.ref())>0
+   ||
+::    Zlecenie zlozone
+      ZL.cntx_psh();
+      ZL.index('NRNZL');
+      ZL.prefix(ZL.UNRZL);
+      {? ZL.first()
+      || {!
+         |?
+::          !!! REKURENCJA !!!
+            _can_continue:=exec('zl_delete','zl_partie',ZL.ref());
+            ZL.next() & _can_continue>0
+         !}
+      ?};
+      ZL.cntx_pop()
+   ||
+::    Zlecenie proste
+      ZPARN.prefix(ZL.ref());
+      {? ZPARN.first()
+      || {!
+         |? _can_continue:=exec('delete','zl_partie',ZPARN.ref(),1);
+            ZPARN.next() & _can_continue
+         !}
+      ?}
+   ?}
+?};
+
+{? _can_continue>0
+|| _result:=1
+?};
+
+ZL.cntx_pop();
+ZPARN.cntx_pop();
+_result
+
+
+\zwrref_part
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JSz [12.30]
+:: OPIS: Zwraca ref partii
+::   WE: _a - _ref sql partii
+::   WY: ref partii produkcyjnej
+::  OLD: \zwrref_part/partie.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=null();
+ZPARN.cntx_psh();
+ZPARN.clear();
+{? ZPARN.seek(_a)
+|| _wyn:=ZPARN.ref()
+?};
+ZPARN.cntx_pop();
+_wyn
+
+
+\delete4zgh
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Usuwa wszystkie partie powiązane z przewodnikiem, pod warunkiem że partie powiązane z przewodnikiem powstały
+::       automatycznie na podstawie tego przewodnika. W przeciwnym razie usunięcie się nie powiedzie
+::   WE: _a - ZGH.ref
+::       [_b] - STRING -  'T' - dodawać komunikat o niepowodzeniu do KOMM
+::                       ['N'] - wyswietlać komunikat o niepowodzeniu na ekran
+::       [_c] - tylko sprawdzenie 'T', faktyczne usuwanie ['N']
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \delete4zgh/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zgh:=_a;
+_komm:='N';
+_chk:='N';
+
+{? var_pres('_b')=type_of('')
+|| _komm:=_b
+?};
+{? var_pres('_c')=type_of('')
+|| _chk:=_c
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGH.cntx_psh(); ZGH.clear();
+{? ZGH.seek(_zgh)
+|| ZPARN.cntx_psh();
+   ZPARN.index('ZGH');
+   ZPARN.prefix(ZGH.ref());
+   {? ZPARN.first()
+   || {!
+      |?
+         {? ZPARN.AUTO='N'
+         || _can_continue:=0;
+            _msg:='Przewodnik: %1 jest powiązany z partiami, które zostały utworzone ręcznie. Usunięcie niemożliwe.'@
+                  [ZGH.NRPRZ];
+            {? _komm='T'
+            || KOMM.add(_msg,'xwin16.png:81',,1)
+            |? _komm='N'
+            || FUN.emsg(_msg)
+            ?}
+         |? ZPARN.AUTO='T'
+         ||
+            {? _chk='T'
+            || _can_continue:=exec('chk_depend','zl_partie',ZPARN.ref())
+            || _can_continue:=exec('delete','zl_partie',ZPARN.ref())
+            ?};
+            {? _can_continue=0
+            || _msg:='Przewodnik: %1 jest powiązany z partiami, które są używane w systemie. Usunięcie niemożliwe.'@
+                     [ZGH.NRPRZ];
+               {? _komm='T'
+               || KOMM.add(_msg,'xwin16.png:81',,1)
+               |? _komm='N'
+               || FUN.emsg(_msg)
+               ?}
+            ?}
+         ?};
+         {? _chk='T' || ZPARN.next() || ZPARN.first() ?} & _can_continue>0
+      !}
+   ?};
+   ZPARN.cntx_pop()
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+ZGH.cntx_pop();
+_result
+
+
+\clean4zgh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Czyści powiązania partii z przewodnikiem, jeżeli powstały nieautomatycznie/ręcznie, czyli: ZPARN.AUTO='N'
+::       UWAGA: Do użycia wyłacznie w funkcji usuwającej przewodniki
+::   WE: _a - ZGH.ref()
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_zgh:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+ZGH.cntx_psh(); ZGH.clear();
+{? ZGH.seek(_zgh)
+|| ZPARN.cntx_psh();
+   ZPARN.index('AUTO');
+   ZPARN.prefix(ZGH.ref(),'N');
+   {? ZPARN.first()
+   || {!
+      |? ZPARN.ZGH:=null();
+         ZPARN.cntx_psh(); ZPARN.prefix(); ZPARN.put(); ZPARN.cntx_pop();
+         ZPARN.first()
+      !}
+   ?};
+   ZPARN.cntx_pop()
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+ZGH.cntx_pop();
+_result
+
+
+\zl_ile_part
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ilość która jest popartiowana na zleceniu
+::   WE: [_a] - ZL.ref
+::   WY: REAL - ilość w partiach zlecenia
+::  OLD: \zl_ile_part/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZL.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZL.cntx_psh();
+{? _ref<>null()
+|| ZL.prefix();
+   {? ZL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| ZPARN.cntx_psh();
+   ZPARN.index('ZL');
+   ZPARN.prefix(ZL.ref());
+   {? ZPARN.first()
+   || {!
+      |? _result+=ZPARN.IL;
+         ZPARN.next()
+      !}
+   ?};
+   ZPARN.cntx_pop()
+?};
+ZL.cntx_pop();
+_result
+
+
+\zl_ile_part_free
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.28]
+:: OPIS: Zwraca ilość która jest popartiowana na zleceniu, ale tylko na partiach 'wolnych' czyli takich
+::       które jeszcze nie są z niczym związne
+::   WE: _a - ZL.ref
+::   WY: REAL - ilość w partiach zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZL.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZL.cntx_psh();
+{? _ref<>null()
+|| ZL.prefix();
+   {? ZL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| ZPARN.cntx_psh();
+   ZPARN.index('ZL');
+   ZPARN.prefix(ZL.ref());
+   {? ZPARN.first()
+   || {!
+      |? {? exec('chk_depend','zl_partie',ZPARN.ref(),-1)
+         || _result+=ZPARN.IL
+         ?};
+         ZPARN.next()
+      !}
+   ?};
+   ZPARN.cntx_pop()
+?};
+ZL.cntx_pop();
+_result
+
+
+\zgh_ile
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [20.42]
+:: OPIS: Zwraca ilośc partii dla przewodnika
+::   WE: _a - ZGH.ref()
+::   WY: REAL - ilość partii
+::----------------------------------------------------------------------------------------------------------------------
+_zgh:=_a;
+
+_result:=0;
+ZGH.cntx_psh(); ZGH.clear();
+{? ZGH.seek(_zgh)
+|| ZPARN.cntx_psh();
+   ZPARN.index('ZGH');
+   ZPARN.prefix(ZGH.ref());
+   _result:=ZPARN.size();
+   ZPARN.cntx_pop()
+?};
+ZGH.cntx_pop();
+_result
+
+
+\zgh_ile_part
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ilośc która jest popartiowana na przewodniku
+::   WE: _a - ZGH.ref()
+::   WY: REAL - ilość w partiach przewodnika
+::  OLD: \zgh_ile_part/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zgh:=_a;
+
+_result:=0;
+ZGH.cntx_psh(); ZGH.clear();
+{? ZGH.seek(_zgh)
+|| ZPARN.cntx_psh();
+   ZPARN.index('ZGH');
+   ZPARN.prefix(ZGH.ref());
+   {? ZPARN.first()
+   || {!
+      |? _result+=ZPARN.IL;
+         ZPARN.next()
+      !}
+   ?};
+   ZPARN.cntx_pop()
+?};
+ZGH.cntx_pop();
+_result
+
+
+\zgh_ile_part_free
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.28]
+:: OPIS: Zwraca ilośc która jest popartiowana na przewodniku, ale tylko na partiach 'wolnych' czyli takich
+::       które jeszcze nie są z niczym związne
+::   WE: _a - ZGH.ref()
+::       _b - REAL - ilość do zmniejszenia
+::   WY: REAL - ilość w partiach przewodnika
+::----------------------------------------------------------------------------------------------------------------------
+_zgh:=_a;
+_decrease:=_b;
+
+_result:=0;
+ZGH.cntx_psh(); ZGH.clear();
+{? ZGH.seek(_zgh)
+|| ZPARN.cntx_psh();
+   ZPARN.index('ZGH');
+   ZPARN.prefix(ZGH.ref());
+   {? ZPARN.first()
+   || {!
+      |?
+         {? ZPARN.IL>_decrease
+         ||
+::          Partia na większą ilość niż wymagane zmniejszenie, więc będzie tylko korygowana
+::          a póki limity nie są do partii to nie ma jak sprawdzić czy można ją skorygować
+::          o podaną ilość, więc zakładamy że można ją skorygować zawsze
+            _result+=_decrease
+         ||
+::          Partia ma mniejszą ilość niż zmniejszenie więc będzie usuwana
+            {? exec('chk_depend','zl_partie',ZPARN.ref(),-1)
+            || _result+=ZPARN.IL
+            ?}
+         ?};
+         ZPARN.next()
+      !}
+   ?};
+   ZPARN.cntx_pop()
+?};
+ZGH.cntx_pop();
+_result
+
+
+\add4zgh
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Dodaje partie na podstawie przewodnika zlecenia
+::   WE: _a - ZGH.ref
+::       [_b] - INTEGER - 0/[1] - czy umożliwiać generowanie za pomocą wtyczki
+::       [_c] - INTEGER - 0/[1] - czy wyświetlać dialogi
+::   WY: 0 - porazka
+::       1 - sukces
+::  OLD: \add4zgh/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zgh:=_a;
+_plugin:=1;
+{? var_pres('_b')=type_of(0)
+|| _plugin:=_b
+?};
+
+_dialog:=1;
+{? var_pres('_c')=type_of(0)
+|| _dialog:=_c
+?};
+
+_result:=1;
+
+ZGH.cntx_psh(); ZGH.clear();
+{? ZGH.seek(_zgh)
+||
+   _args:=exec('buffer','zl_partie');
+   _args.ZL:=ZGH.ZLEC;
+   _args.OPIS:='Utw. automatycznie na podstawie przewodnika: %1'[ZGH.NRPRZ];
+   _args.AUTO:='T';
+
+:: Sprawdzam jaka ilosc przewodnika jest juz popartiowana
+   _ilzgh:=ZGH.ILNPRZ;
+   _ilparted:=exec('zgh_ile_part','zl_partie',ZGH.ref());
+   _il_part:=_ilzgh-_ilparted;
+
+:: Jesli cos zostalo to partiuje
+   {? _il_part>0
+   ||
+      _tab_plugin:=~~;
+      _is_ktm:=_is_dkc:=0;
+      {? _plugin>0
+      ||
+::       Generowanie na podstawie wtyczki jeżeli jest
+         ZL.cntx_psh();
+         ZGH.cntx_psh();
+         _var_zlec:=VAR.A_ZLEC;
+         _json:=Plugin.run('PARTIE_F_ILGEN_001',ZL.ref(),_zgh,_dialog,_il_part);
+
+         {? type_of(_json)=type_of('') & _json<>''
+         ||
+            _tab_plugin:=json_parse(_json);
+            {? type_of(_tab_plugin)>100 & obj_len(_tab_plugin)>0 & type_of(_tab_plugin[1])>100
+               & obj_len(_tab_plugin[1])>=2
+            ||
+::             Podana tabela z ilościami, materiałem i cechą, którą przypisać do partii
+               _is_ktm:=1;
+               {? obj_len(_tab_plugin[1])=3
+               || _is_dkc:=1
+               ?};
+               exec('gen_tab_norm','zl_partie',_tab_plugin,_is_dkc)
+            ||
+::             Podana tabela tylko z ilościami
+               exec('array_force_numbers','#array',_tab_plugin);
+               exec('array_round','#array',_tab_plugin,ZL.KTM().DOKL);
+               exec('array_del_minus','#array',_tab_plugin)
+            ?}
+         ?};
+
+         ZL.cntx_pop();
+         ZGH.cntx_pop();
+         VAR.A_ZLEC:=_var_zlec
+      ?};
+
+      {? var_pres('_tab_plugin')>100
+      ||
+         _left:=_il_part;
+         _size:=obj_len(_tab_plugin);
+::       Na podstawie wtyczki
+         {! _it.._size
+         |? _left>0
+         |! _il_part:={? _is_ktm>0 || _tab_plugin[_it].IL || _tab_plugin[_it] ?};
+::           Normalizacja ilosci - nie moze byc wiecej niz na przewodniku
+            _il_part:=exec('min','#math',_il_part,_left);
+            {? _il_part>0
+            ||
+               _args.ZGH:=ZGH.ref();
+               _args.IL:=_il_part;
+               _args.KTM:=null();
+               _args.DK_C:=null();
+::             Przypiasnie materiału do partii
+               {? _is_ktm>0 & _tab_plugin[_it].KTM<>''
+               || _ktm:=exec('FindInSet','#table','M','MATKTM',_tab_plugin[_it].KTM,,,1,,null());
+                  {? _ktm<>null()
+                  || _args.KTM:=_ktm
+                  ?}
+               ?};
+::             Przypiasnie cechy do partii
+               {? _is_dkc>0 & _tab_plugin[_it].DK_C<>''
+               || _dk_c:=exec('FindInSet','#table','DK_C','SYM',_tab_plugin[_it].DK_C,,,1,,null());
+                  {? _dk_c<>null()
+                  || _args.DK_C:=_dk_c
+                  ?}
+               ?};
+               _result:=exec('add','zl_partie',_args);
+               _left-=_il_part
+            ?}
+         !};
+         _args.KTM:=null();
+         _args.DK_C:=null()
+      ?};
+
+::    Po ewentualnym uruchomieniu wtyczki sprawdzam czy coś jeszcze zostało do popartiowania i jeżeli tak
+::    uruchamiam std obsługę która dogeneruje resztę
+      _ilparted:=exec('zgh_ile_part','zl_partie',ZGH.ref());
+      _il_part:=_ilzgh-_ilparted;
+      {? _il_part>0
+      ||
+::       Normalizacja ilosci - nie moze byc wiecej niz na przewodniku
+         _il_part:=exec('min','#math',_il_part,_ilzgh);
+
+         _args.ZGH:=ZGH.ref();
+         _args.IL:=_il_part;
+
+         _result:=exec('add','zl_partie',_args)
+      ?}
+   ?}
+?};
+
+ZGH.cntx_pop();
+_result
+
+
+\add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Dodaje rekord do tabeli ZPARN na podstawie tablicy nazwanej bedaca buforem
+::   WE: _a - _args - exec('buffer','zparn')
+::   WY: 0 - porazka
+::       1 - sukces
+::  OLD: \add/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:={? var_pres('_a')>100 || _a || exec('buffer','zl_partie') ?};
+
+_result:=0;
+_can_continue:=0;
+
+ZPARN.cntx_psh(); ZPARN.clear();
+ATR.ZL:=null();
+ATR.ZGH:=null();
+ATR.KTM:=null();
+ZPARN.blank();
+:: przepisujemy wartosci z tablicy buforowej do bufora tabeli
+_args.set();
+
+:: Przed dodaniem partii podmieniam zlecenie, jeśli zostało przekazane niewłaściwe (ważne w przypadku zleceń złożonych)
+ZPARN.ZL:=exec('party_first','zl_link',_args.ZL);
+
+:: przepisujemy wartosci z rekordu z powrotem do bufora (bo byc moze ilosci zostaly zaokraglone na rekordzie)
+_args.get();
+
+ZPARN.SCEAN:=exec('blpp_sce','kody_kresk');
+ZPARN.ZPEAN:=exec('blpp2sce','kody_kresk');
+{? ZPARN.KTM=null()
+|| ZPARN.KTM:=ZPARN.ZL().KTM
+?};
+{? ZPARN.KTM().TWD>0 || ZPARN.TW:=ZPARN.ZL().DTR+ZPARN.KTM().TWD ?};
+_result:=ZPARN.add();
+
+{? _result>0
+|| {? ZPARN.SCEAN<>'' || exec('mkodkadd','kody_kresk',ZPARN.ZL().KTM,ZPARN.SCEAN,$ZPARN.ref()) ?};
+   {? ZPARN.ZPEAN<>'' & ZPARN.ZPEAN<>ZPARN.SCEAN
+   || exec('mkodkadd','kody_kresk',ZPARN.ZL().KTM,ZPARN.ZPEAN,$ZPARN.ref())
+   ?};
+:: Mechanizm numeracji partii
+   _can_continue:=exec('partsym','zl_partie')
+?};
+ZPARN.cntx_pop();
+_result
+
+
+\partsym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MKO [2006]
+:: OPIS: Ustala symbol partii.
+::   WE:
+::   WY: Symbol
+::  OLD: \partsym/partie.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZL.get();
+POM.TAB:='ZPARN';
+POM.TYPDOK:=ZL.TYP().KOD_PAR;
+
+_result:=0;
+
+ZPARN.NR:=0;
+ZPARN.NR:=exec('numer_new','numery','PARTIA',,0);
+{? exec('znak','numery','ZPARN',1)>0
+|| {? ZPARN.SCEAN='' || ZPARN.SCEAN:=exec('blpp_sce','kody_kresk') ?};
+   {? ZPARN.ZPEAN='' || ZPARN.ZPEAN:=exec('blpp2sce','kody_kresk') ?};
+   _result:=ZPARN.put();
+   {? ZPARN.SCEAN<>'' || exec('mkodkadd','kody_kresk',ZPARN.ZL().KTM,ZPARN.SCEAN,$ZPARN.ref()) ?};
+   {? ZPARN.ZPEAN<>'' & ZPARN.ZPEAN<>ZPARN.SCEAN
+   || exec('mkodkadd','kody_kresk',ZPARN.ZL().KTM,ZPARN.ZPEAN,$ZPARN.ref())
+   ?}
+||
+:: Jezeli nie udalo sie nadac numeru, to usuwam partie
+   {? ZPARN.SCEAN<>'' || exec('mkodkadd','kody_kresk',ZPARN.ZL().KTM,ZPARN.SCEAN,$ZPARN.ref(),1) ?};
+   {? ZPARN.ZPEAN<>'' & ZPARN.ZPEAN<>ZPARN.SCEAN
+   || exec('mkodkadd','kody_kresk',ZPARN.ZL().KTM,ZPARN.ZPEAN,$ZPARN.ref(),1)
+   ?};
+   exec('delete','zl_partie',ZPARN.ref());
+   _result:=0
+?};
+_result
+
+
+\tie2zgh
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Wiaze podana partie z przewodnikiem o danym symbolu
+::   WE: _a - ZPARN.ref()
+::       _b - STRING - symbol przewodnika z ktorym powiazac partie - ZGH.NRPRZ
+::   WY: 0 - porazka
+::       1 - sukces
+::  OLD: \tie2zgh/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+_zgh_sym:=_b;
+
+_result:=0;
+
+ZGH.cntx_psh();
+ZGH.index('NRPRZ');
+ZPARN.cntx_psh(); ZPARN.clear();
+{? ZPARN.seek(_zparn)
+|| ZGH.prefix(_zgh_sym);
+   {? ZGH.first()
+   ||
+      ZPARN.ZGH:=ZGH.ref();
+      _result:=ZPARN.put()
+   ?}
+?};
+ZPARN.cntx_pop();
+ZGH.cntx_pop();
+_result
+
+
+\select_zl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.30]
+:: OPIS: Pokazuje partie produktu przypisane do zlecenia
+::   WE: _a - ZL.ref()
+::       [_b] - INTEGER - rodzaj okna: [0] - okno wertowania, 1 - okno slownika
+::       [_c] - INTEGER - 0/[1] czy pokazujemy akcje edycyjne, czy nie
+::       [_d] - INTEGER - [0]/1 - czy uruchomiono w procesie (1) czy poza
+::       [_e] - ZPARN.ref - partia na której się ustawić w oknie
+::   WY: INTEGER - wynik funkcji select
+::  OLD: \select_zl/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+
+_win_kind:=0;
+{? var_pres('_b')=type_of(0)
+|| _win_kind:=_b
+?};
+_edit:=1;
+{? var_pres('_c')=type_of(0)
+|| _edit:=_c
+?};
+_proces:=0;
+{? var_pres('_d')=type_of(0)
+|| _proces:=_d
+?};
+_view:=null();
+{? var_pres('_e')=type_of(ZPARN.ref())
+|| _view:=_e
+?};
+
+_result:=0;
+
+ZL.cntx_psh(); ZL.clear();
+{? ZL.seek(_zl)
+||
+:: Jesli przekazane zlecenie jest naglowkiem zlecenia zlozonego, to zamieniam ten naglowek
+:: na podzlecenie montazowe tego zlecenia zlozonego
+   {? ZL.RODZAJ='Z'
+   || _zl:=exec('party_down','zl_link')
+   || _zl:=exec('party_first','zl_link')
+   ?};
+   {? type_of(_zl)>0
+   ||
+      {? _zl<>null()
+      ||
+         _act_reset:=0;
+
+         {? _win_kind=0
+         ||
+::          Sprawdzam czy zlecenie jest zamknięte
+            {? ZL.STAN='Z'
+            || _edit:=0
+            ?};
+            ZGH.win_dict('SEL');
+            ZPARN.win_sel('WER_ZL');
+            {? _edit=0
+            ||
+::             Jesli tryb do podgladu to wycinam akcje z menu
+               ZPARN.actions('WER_ZL','ZpPuUGL:GZ');
+               _act_reset:=1
+            ?};
+            {? _proces=0
+            || ZPARN.actions_grayed('WER_ZL','Z:Z')
+            || ZPARN.actions_grayed('WER_ZL','')
+            ?}
+         || ZPARN.win_sel('SLO');
+            {? _edit>0
+            || ZPARN.actions('SLO')
+            || ZPARN.actions('SLO','L')
+            ?}
+         ?};
+
+::       Jesli okno slownika to nie odkladam kontekstow
+         {? _win_kind=0
+         || ZPARN.cntx_psh()
+         ?};
+         ZPARN.index('ZL2');
+         ZPARN.prefix(_zl);
+         {? _view<>null()
+         || ZPARN.seek(_view)
+         || ZPARN.first()
+         ?};
+
+         _old:=VAR.A_ZLEC;
+         VAR.A_ZLEC:=_zl;
+
+         _result:=ZPARN.select(,1);
+
+::       Przywracam usuniete akcje
+         {? _act_reset>0
+         || ZPARN.actions('WER_ZL')
+         ?};
+::       Jesli okno slownika to nie przywracam kontekstow
+         {? _win_kind=0
+         || ZPARN.cntx_pop()
+         ?};
+         VAR.A_ZLEC:=_old;
+         ~~
+      || _msg:='Brak zlecenia dla którego można wyświetlić partie.\n'
+               'Dla zleceń złożonych powinny zostać najpierw wygenerowane podzlecenia.'@;
+         FUN.emsg(_msg)
+      ?}
+   ?}
+?};
+ZL.cntx_pop();
+_result
+
+
+\select_zgh
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Pokazuje partie produktu przypisane do przewodnika
+::   WE: _a - ZGH.ref()
+::       [_b] - INTEGER - rodzaj okna: [0] - okno wertowania, 1 - okno slownika
+::       [_c] - INTEGER - 0/[1] czy pokazujemy akcje edycyjne, czy nie
+::       [_d] - INTEGER - [0]/1 - czy uruchomiono w procesie (1) czy poza
+::       [_e] - ZPARN.ref - partia na której się ustawić w oknie
+::   WY: INTEGER - wynik funkcji select
+::  OLD: \select_zgh/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zgh:=_a;
+
+_win_kind:=0;
+{? var_pres('_b')=type_of(0)
+|| _win_kind:=_b
+?};
+_edit:=1;
+{? var_pres('_c')=type_of(0)
+|| _edit:=_c
+?};
+_proces:=0;
+{? var_pres('_d')=type_of(0)
+|| _proces:=_d
+?};
+_view:=null();
+{? var_pres('_e')=type_of(ZPARN.ref())
+|| _view:=_e
+?};
+
+_result:=0;
+
+ZL.cntx_psh();
+ZGH.cntx_psh(); ZGH.clear();
+{? ZGH.seek(_zgh)
+||
+   {? exec('material_party','material',ZGH.ZLEC().KTM)>0
+   ||
+::    Sprawdzam czy zlecenie przewodnika jest proste - nie wyswietlam okna partii dla
+::    przewodnika nalezacego do nadzlecenia, poniewaz takie zlecenie nigdy nie ma partii
+      {? ZGH.ZLEC().RODZAJ='P'
+      ||
+::       Sprawdzam czy zlecenie przewodnika jest raportowane na magazyn
+         {? ZL.RP='T'
+         ||
+            _act_reset:=0;
+
+::          Sprawdzam czy zlecenie jest zamknięte
+            {? ZL.STAN='Z'
+            || _edit:=0
+            ?};
+::          Jesli okno slownika to nie odkladam kontekstow
+            {? _win_kind=0
+            || ZPARN.cntx_psh()
+            ?};
+
+            {? _win_kind=0
+            ||
+               ZPARN.win_sel('WER_ZGH');
+               {? _edit=0
+               ||
+::             Jesli tryb do podgladu to wycinam akcje z menu
+                  ZPARN.actions('WER_ZGH','ZpPuUGL:GZ');
+                  _act_reset:=1
+               ?};
+               {? _proces=0
+               || ZPARN.actions_grayed('WER_ZGH','Z:Z')
+               || ZPARN.actions_grayed('WER_ZGH','')
+               ?}
+
+            || ZPARN.win_sel('SLO');
+               {? _edit>0
+               || ZPARN.actions('SLO')
+               || ZPARN.actions('SLO','L')
+               ?}
+            ?};
+
+            ZPARN.index('ZGH');
+            ZPARN.prefix(ZGH.ref());
+            {? _view<>null()
+            || ZPARN.seek(_view)
+            || ZPARN.first()
+            ?};
+            _old:=VAR.A_ZLEC;
+            VAR.A_ZLEC:=ZGH.ZLEC;
+
+            _result:=ZPARN.select(,1);
+
+            VAR.A_ZLEC:=_old;
+::          Przywracam usuniete akcje
+            {? _act_reset>0
+            || ZPARN.actions('WER_ZGH')
+            ?};
+::          Jesli okno slownika to nie przywracam kontekstow
+            {? _win_kind=0
+            || ZPARN.cntx_pop()
+            ?}
+         || _msg:='Tylko przewodnik zlecenia raportowanego na magazyn mieć partie.'@;
+            FUN.emsg(_msg)
+         ?}
+      ||
+         _msg:='Przewodnik: %1 jest przewodnikiem zlecenia nadrzędnego.\n'
+               'Przewodniki takie nie posiadają partii, należy ich szukać na przewodnikach zleceń podrzędnych.'@
+               [ZGH.NRPRZ];
+         FUN.emsg(_msg)
+      ?}
+   ||
+      _msg:='Produkt zlecenia nie jest powiązany z atrybutem dostawy typu \'Partia\'.\n'
+            'Nie można wyświetlić partii zlecenia.'@;
+      FUN.emsg(_msg)
+   ?}
+?};
+ZGH.cntx_pop();
+ZL.cntx_pop();
+_result
+
+
+\zparn_bl
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.30]
+:: OPIS: Blank w tabeli ZPARN
+::   WY: ANY
+::  OLD: \zparn_bl/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_field:=cur_afld();
+
+{? _field='ZL'
+|| ATR.ZL
+|? _field='ZGH'
+|| ATR.ZGH
+|? _field='KTM'
+|| ATR.KTM
+?}
+
+
+\be_zparn_sym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JSz [12.30]
+:: OPIS: Przed redagowaniem pola ZPARN.SYM
+::   WY: 1/0
+::  OLD: \be_zparn_sym/partie.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (menu_pth()+1)='P' & exec('parnadkc','mat_atr',ZPARN.ref())
+|| 0
+|| ZPARN.ZL=null()
+?}
+
+
+\party_transfer
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Jeżeli istnieją partie dla zlecenia nadrzędnego podanego zlecenia montażowego, to przepina
+::       te partie na zlecenie montażowe jednocześnie generując im nowe numery
+::   WE: _a - ZL.ref() - zlecenie montażowe
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+
+_result:=1;
+{? exec('is_main_podzlec','zl_link',_zl)
+||
+   _top_level:=exec('top_level','zl_link',_zl);
+   _top_rodzaj:=exec('FindAndGet','#table',ZL,_top_level,,"RODZAJ",'');
+   {? _top_rodzaj='Z'
+   || ZPARN.cntx_psh();
+      ZPARN.index('ZL2');
+      ZPARN.prefix(_top_level);
+      {? ZPARN.first()
+      || {!
+         |? ZPARN.cntx_psh();
+            ZPARN.prefix();
+            ZPARN.ZL:=_zl;
+            _can_continue:=exec('partsym','zl_partie');
+            {? _can_continue
+            || _can_continue:=ZPARN.put()
+            ?};
+            ZPARN.cntx_pop();
+            ZPARN.first() & _can_continue>0
+         !}
+      ?};
+      ZPARN.cntx_pop()
+   ?}
+?};
+~~
+
+
+\creator_zl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Dla zlecenia uruchamia mechanizm przyporządkowujący pobrania surowców (RW) do partii na zleceniu.
+::----------------------------------------------------------------------------------------------------------------------
+exec('creator_run','magdok_partie',,ZL.ref(),1,0)
+
+
+\zl_party_menu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.30]
+:: OPIS: Sprawdza czy akcje dotyczące partiowania powinny być dostępne na zleceniu
+::   WE: _a - ZL.ref()
+::   WY: 0 / 1
+::  OLD: \zl_party_menu/zparn.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+
+_result:=0;
+
+ZL.cntx_psh(); ZL.clear();
+{? ZL.seek(_zl)
+|| {? ZL.RODZAJ='Z' & exec('material_party','material',ZL.KTM)>0
+   || _result:=1
+   || _result:=exec('zlec_party','zl_common',_zl)
+   ?}
+?};
+ZL.cntx_pop();
+_result
+
+
+\correction_decrease
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.28]
+:: OPIS: Koryguje bieżącą dziedzinę partii, zmniejszając im ilości od końca, a te z zerową ilością usuwa
+::       Kontekst pracy - zaprefiksowana dziedzina ZPARN
+::   WE: _a - REAL - ilość do korekty
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_il:=_a;
+
+_result:=1;
+{? ZPARN.last()
+|| {!
+   |? _next:=0;
+      _ref_nxt:=null();
+      ZPARN.cntx_psh();
+      {? ZPARN.prev()
+      || _ref_nxt:=ZPARN.ref()
+      ?};
+      ZPARN.cntx_pop();
+
+      {? ZPARN.IL>_il
+      || _can_correct:=1
+      || _can_correct:=exec('chk_depend','zl_partie',ZPARN.ref(),-1)
+      ?};
+
+      {? _can_correct>0
+      || {? ZPARN.IL>_il
+         || ZPARN.IL-=_il;
+            _il:=0;
+            _can_continue:=ZPARN.put()
+         ||
+            _il:=_il-ZPARN.IL;
+            _can_continue:=exec('delete','zl_partie',ZPARN.ref())
+         ?};
+
+         {? _il>0 & _can_continue>0
+         || _can_continue:=1
+         || _can_continue:=0
+         ?}
+      || _can_continue:=1
+      ?};
+      {? _ref_nxt<>null()
+      || _next:=ZPARN.seek(_ref_nxt)
+      ?};
+      _next>0 & _can_continue>0
+   !}
+|| _il:=0
+?};
+:: Sprawdzam czy skorygowałem całą ilość
+{? _il>0
+|| _result:=0
+?};
+_result
+
+
+\generuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Generuje partie
+::   WE: _a - ZL.ref() - zlecenie
+::       [_b] - ZGH.ref() - przewodnik
+::       [_c] - INTEGER - komunikaty - na ekran: [0], do KOMMa: 1, brak: -1
+::       [_d] - INTEGER - 0/[1] - czy pokazywać okno generowania, czy generować jedną partię na dostępną ilość
+::       [_e] - REAL - ilość zlecenia jaką popartiować
+::       [_f] - REAL - ilość jaka ma być na jednej partii
+::       [_g] - REAL - czy możliwe generowanie na podstawie wtyczki
+::   WY: 0 - porażka
+::       1 - sukces
+::       2 - sukces, ale należy przeładować okno bo nastąpiła zmiana zlecenia
+::  TAG: <PRYWATNA>
+::  OLD: \generuj/!tte_pzl_dgpa.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+_zgh:=null();
+
+{? var_pres('_b')=type_of(ZGH.ref())
+|| _zgh:=_b
+?};
+
+_komm:=0;
+{? var_pres('_c')=type_of(0)
+|| _komm:=_c
+?};
+
+_dialog:=1;
+{? var_pres('_d')=type_of(0)
+|| _dialog:=_d
+?};
+
+_il_zl:=0;
+{? var_pres('_e')=type_of(0)
+|| _il_zl:=_e
+?};
+
+_il_part:=0;
+{? var_pres('_f')=type_of(0)
+|| _il_part:=_f
+?};
+_plugin:=1;
+{? var_pres('_g')=type_of(0)
+|| _plugin:=_g
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZL.cntx_psh(); ZL.clear();
+{? ZL.seek(_zl)
+||
+:: Jezeli zlecenie podrzedne (ma naglowek) to umozliwiam generowanie partii tylko dla zlecenia
+:: montazowego - partie na pozostalych zleceniach podrzednych nie wystepuja
+:: Ograniczenie to jest konieczne ze wzgledu na powiazania partii z przewodnikami, a przewodniki sa jednorodne na wszystkich
+:: podzleceniach
+   {? ZL.NRNZL>0
+   ||
+      _ktm_pod:=ZL.KTM;
+      ZL.cntx_psh(); ZL.clear();
+      ZL.index('UNRZL');
+      ZL.prefix(ZL.NRNZL);
+      {? ZL.first()
+      ||
+::       Stoje na zleceniu nadrzednym
+         {? ZL.RODZAJ<>'N' & ZL.GENPRZEW<>'P'
+         ||
+::          Sprawdzam czy zlecenie podrzedne jest glownym zleceniem montazowym, jezeli nie to nie mozna generowac partii
+            {? ZL.KTM<>_ktm_pod
+            || _msg0:='';
+               _msg:='Zlecenie należy do zlecenia nadrzędnego: %1'
+                     '\nPartie można generować tylko na zleceniu nadrzędnym, lub na podzleceniu \'montażowym\'.'@[ZL.SYM];
+               {? _komm=0
+               || FUN.emsg(_msg)
+               |? _komm>0
+               || KOMM.add(_msg,2,,1)
+               ?};
+               _can_continue:=0
+            ?}
+         ?}
+      ?};
+      ZL.cntx_pop()
+   ?};
+
+   _zgh_count:=0;
+   ZGH.cntx_psh();
+   ZGH.index('ZLNR');
+   ZGH.prefix(ZL.ref());
+   _zgh_count:=ZGH.size();
+   ZGH.cntx_pop();
+
+:: Sprawdzam czy zlecenie ma jeszcze jakas ilosc ktora nalezy popartiowac
+   {? _can_continue>0
+   ||
+      _ilzl:=ZL.IL;
+      _ilpart:=exec('zl_ile_part','zl_partie',ZL.ref());
+
+      {? _ilzl<=_ilpart
+      ||
+         _msg:='Cała ilość zlecenia: %1 została już podzielona na partie.'@[ZL.SYM];
+         {? _komm=0
+         || FUN.emsg(_msg)
+         |? _komm>0
+         || KOMM.add(_msg,2,,1)
+         ?};
+         _can_continue:=0
+      ?}
+   ?};
+
+   {? _can_continue>0
+   ||
+::    Sprawdzam czy zlecenie jest w Planie operacyjnym - jezeli tak, to nie mozna generowac partii bo
+::    zaloza sie same podczas generowania przewodnikow zlecenia
+      _il_plan:=exec('zlec_planned','po_plan',$ZL.ref());
+
+      {? _il_plan>0 & _zgh_count=0
+      || _msg:='Zlecenie: %1 znajduje się w planie operacyjnym.\n\n'
+               'Partie do zlecenia założą się automatycznie podczas generowania przewodników zlecenia.'@[ZL.SYM];
+         {? _komm=0
+         || FUN.emsg(_msg)
+         |? _komm>0
+         || KOMM.add(_msg,2,,1)
+         ?};
+         _can_continue:=0
+      ?}
+   ?};
+
+   {? _can_continue>0
+   ||
+      {? _zgh<>null()
+      ||
+         _ilzgh:=ZGH.ILNPRZ;
+         _ilparted:=exec('zgh_ile_part','zl_partie',ZGH.ref());
+         _il_part:=_ilzgh-_ilparted;
+         {? _il_part>0
+         ||
+::          Generuje na podstawie podanego przewodnika
+            _result:=exec('gen_zgh','zl_partie',ZL.ref(),_zgh,_plugin,_dialog)
+         || _msg:='Cała ilość przewodnika: %1 została już podzielona na partie.'@[ZGH.NRPRZ];
+            {? _komm=0
+            || FUN.emsg(_msg)
+            |? _komm>0
+            || KOMM.add(_msg,2,,1)
+            ?}
+         ?};
+         _can_continue:=0
+      ||
+::       Sprawdzam czy zlecenie ma przewodniki, jezeli tak to generuje na ich podstawie
+
+         {? _zgh_count>0
+         ||
+            _result:=exec('gen_zgh','zl_partie',ZL.ref(),,_plugin,_dialog);
+
+::          Sprawdzam czy wszystko zostało popartiowane, jeśli tak to kończę,
+::          jeśli nie to uruchamiam ręczne partiowanie reszty
+            {? exec('zl_ile_part','zl_partie',ZL.ref())=ZL.IL
+            || _can_continue:=0
+            ?}
+         ?}
+      ?}
+   ?};
+
+   {? _can_continue>0
+   ||
+::    Generowanie reczne
+      _result:=exec('gen_manual','zl_partie',ZL.ref(),_dialog,_il_zl,_il_part)
+   ?}
+?};
+ZL.cntx_pop();
+_result
+
+
+\gen_zgh
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Generuje partie do zlecenia - na podstawie przewodnikow zlecenia
+::   WE: _a - ZL.ref()
+::       [_b] - ZGH.ref() - przewodnik dla którego generować, jeśli nie podane to dla wszystkich
+::       [_c] - INTEGER - 0/[1] - czy umożliwiać generowanie z wtyczki
+::       [_d] - INTEGER - 0/[1] - czy wyświetlać dialogi
+::   WY: 0 - porazka
+::       1 - sukces
+::  OLD: \gen_zgh/zparn.fml
+::  OLD: \gen_zgh/!tte_pzl_dgpa.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+_zgh:=null();
+{? var_pres('_b')=type_of(ZGH.ref())
+|| _zgh:=ZGH.ref()
+?};
+_plugin:=1;
+{? var_pres('_c')=type_of(0)
+|| _plugin:=_c
+?};
+
+_dialog:=1;
+{? var_pres('_d')=type_of(0)
+|| _dialog:=_d
+?};
+
+_result:=0;
+_can_continue:=0;
+
+ZPARN.cntx_psh();
+ZGH.cntx_psh();
+ZGH.index('ZLNR');
+ZL.cntx_psh();
+ZL.clear();
+
+{? ZL.seek(_zl)
+||
+   {? _zgh<>null()
+   || _can_continue:=exec('add4zgh','zl_partie',_zgh,_plugin,_dialog)
+   ||
+      ZGH.prefix(ZL.ref());
+      {? ZGH.first()
+      || {!
+         |?
+            _can_continue:=exec('add4zgh','zl_partie',ZGH.ref(),_plugin,_dialog);
+            ZGH.next() & _can_continue>0
+         !}
+      ?}
+   ?}
+?};
+
+{? _can_continue>0
+|| _result:=1
+?};
+
+ZL.cntx_pop();
+ZGH.cntx_pop();
+ZPARN.cntx_pop();
+_result
+
+
+\gen_manual
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Generuje partie do zlecenia - tryb ręczny
+::   WE: _a - ZL.ref()
+::       [_b] - INTEGER - 0/[1] - czy pokazywać okno generowania, czy generować jedną partię na dostępną ilość
+::       [_c] - REAL - ilość zlecenia jaką popartiować
+::       [_d] - REAL - ilość jaka ma być na jednej partii
+::       [_e] - INTEGER - 0/[1] - czy umożliwiać generowanie z wtyczki
+::   WY: 0 - porazka
+::       1 - sukces
+::       2 - sukces, ale należy przeładować okno bo nastąpiła zmiana zlecenia
+::  OLD: \gen_manual/zparn.fml
+::  OLD: \gen_manual/!tte_pzl_dgpa.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+
+_dialog:=1;
+{? var_pres('_b')=type_of(0)
+|| _dialog:=_b
+?};
+
+_il_zl:=0;
+{? var_pres('_c')=type_of(0)
+|| _il_zl:=_c
+?};
+
+_il_part:=0;
+{? var_pres('_d')=type_of(0)
+|| _il_part:=_d
+?};
+_plugin:=1;
+{? var_pres('_e')=type_of(0)
+|| _plugin:=_e
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZPARN.cntx_psh();
+M.cntx_psh();
+ZL.cntx_psh(); ZL.clear();
+{? ZL.seek(_zl)
+||
+:: Sprawdzam czy produkt zlecenia jest partiowany
+   {? exec('zlec_party','zl_common',ZL.ref())=0
+   || _msg:='Produkt zlecenia nie jest powiązany z atrybutem dostawy typu \'Partia\''
+            '\nlub zlecenie jest podzleceniem zlecenia złożonego.'
+            '\nNie można wygenerować partii zlecenia.'@;
+      {? _dialog>0
+      || FUN.emsg(_msg)
+      ?};
+      _can_continue:=0
+   ?};
+
+   {? _can_continue>0
+   ||
+::    Obliczam ilosc juz popartiowana
+      _parted:=exec('zl_ile_part','zl_partie',ZL.ref());
+
+::    A tyle mi zostalo do popartiowania
+      _to_part:=ZL.IL-_parted;
+
+::    Normalizacja
+      _to_part:=exec('max','#math',0,_to_part);
+      _to_part:=exec('min','#math',ZL.IL,_to_part);
+
+      _args:=exec('buffer','zl_partie');
+      _args.ZL:=ZL.ref();
+
+      _tab_plugin:=~~;
+      _is_ktm:=_is_dkc:=0;
+      {? _plugin>0
+      ||
+::       Generowanie na podstawie wtyczki jeżeli jest
+         ZL.cntx_psh();
+         ZGH.cntx_psh();
+         _var_zlec:=VAR.A_ZLEC;
+         _json:=Plugin.run('PARTIE_F_ILGEN_001',ZL.ref(),,_dialog,_to_part);
+         {? type_of(_json)=type_of('') & _json<>''
+         ||
+            _tab_plugin:=json_parse(_json);
+            {? type_of(_tab_plugin)>100 & obj_len(_tab_plugin)>0 & type_of(_tab_plugin[1])>100
+               & obj_len(_tab_plugin[1])>=2
+            ||
+::             Podana tabela z ilościami oraz materiałem, którą przypisać do partii
+               _is_ktm:=1;
+               {? obj_len(_tab_plugin[1])=3
+               || _is_dkc:=1
+               ?};
+               exec('gen_tab_norm','zl_partie',_tab_plugin,_is_dkc)
+            ||
+::             Podana tabela tylko z ilościami
+               exec('array_force_numbers','#array',_tab_plugin);
+               exec('array_round','#array',_tab_plugin,ZL.KTM().DOKL);
+               exec('array_del_minus','#array',_tab_plugin)
+            ?}
+         ?};
+
+         ZL.cntx_pop();
+         ZGH.cntx_pop();
+         VAR.A_ZLEC:=_var_zlec
+      ?};
+
+      {? var_pres('_tab_plugin')>100
+      ||
+         _left:=_to_part;
+         _size:=obj_len(_tab_plugin);
+::       Na podstawie wtyczki
+         {! _it.._size
+         |? _left>0
+         |! _il_plug:={? _is_ktm>0 || _tab_plugin[_it].IL || _tab_plugin[_it] ?};
+::          Normalizacja ilosci - nie moze byc wiecej niz na zleceniu
+            _il_part:=exec('min','#math',_il_plug,_left);
+            {? _il_part>0
+            ||
+               _args.IL:=_il_plug;
+               _args.KTM:=null();
+               _args.DK_C:=null();
+::             Przypiasnie materiału do partii
+               {? _is_ktm>0 & _tab_plugin[_it].KTM<>''
+               || _ktm:=exec('FindInSet','#table','M','MATKTM',_tab_plugin[_it].KTM,,,1,,null());
+                  {? _ktm<>null()
+                  || _args.KTM:=_ktm
+                  ?}
+               ?};
+::             Przypiasnie cechy do partii
+               {? _is_dkc>0 & _tab_plugin[_it].DK_C<>''
+               || _dk_c:=exec('FindInSet','#table','DK_C','SYM',_tab_plugin[_it].DK_C,,,1,,null());
+                  {? _dk_c<>null()
+                  || _args.DK_C:=_dk_c
+                  ?}
+               ?};
+               _result:=exec('add','zl_partie',_args);
+               _left-=_il_plug
+            ?}
+         !};
+         _args.KTM:=null();
+         _args.DK_C:=null()
+      ?};
+
+::    Po ewentualnym uruchomieniu wtyczki sprawdzam czy coś jeszcze zostało do popartiowania i jeżeli tak
+::    uruchamiam std obsługę która dogeneruje resztę
+      _parted:=exec('zl_ile_part','zl_partie',ZL.ref());
+      _to_part_new:=ZL.IL-_parted;
+      {? _to_part_new>0
+      || _can_continue:=exec('generuj_get_ilosc','zl_partie',,_dialog,_il_zl,_il_part)
+      ?};
+      {? _can_continue>0
+      ||
+::       Ponownie obliczam ilosc juz popartiowana, gdyby coś się zmieniło
+         _parted:=exec('zl_ile_part','zl_partie',ZL.ref());
+         _to_part_new:=ZL.IL-_parted;
+
+         _ilosc:=ZLEC.IL_ZL;
+         _il_part:=ZLEC.IL_PART;
+
+::       Normalizacja ilosci
+         _ilosc:=exec('max','#math',0,_ilosc);
+         _ilosc:=exec('min','#math',_to_part_new,_ilosc);
+
+         _il_part:=exec('max','#math',0,_il_part);
+         _il_part:=exec('min','#math',_to_part_new,_il_part);
+
+         _ask:=1;
+         {? _dialog>0 & var_pres('_tab_plugin')<100 & _to_part_new>0 & _to_part<>_to_part_new
+         || _msg:='Zmieniła się ilość partii na zleceniu: %1. Zostaną wygenerowane partie na pozostałą ilość.'
+                  '\nKontynuować?'@[ZL.SYM];
+            _ask:=FUN.ask(_msg)
+         ?};
+
+         {? _ilosc>0 & _ask>0
+         ||
+            {!
+            |?
+               {? _il_part>_ilosc
+               || _il_part:=_ilosc
+               ?};
+               _args.IL:=_il_part;
+
+               _can_continue:=exec('add','zl_partie',_args);
+::             Odejmuje ilosc ktora dodalem na partii (byc moze jest zaokraglona)
+               {? _can_continue>0
+               || _ilosc-=_args.IL
+               ?};
+               _ilosc>0 & _can_continue>0
+            !}
+         ?};
+
+         {? _can_continue>0
+         || {? _zl<>_args.ZL
+            ||
+::             Nastąpiła zmiana zlecenia
+               _result:=2
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+{? _result=0 & _can_continue>0
+|| _result:=1
+?};
+
+ZPARN.cntx_pop();
+ZL.cntx_pop();
+M.cntx_pop();
+_result
+
+
+\generuj_get_ilosc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Wyznacza ilość na jaką generować partie:
+::       Albo wyświetla okno z pytaniem o ilość na jaką generować partie zlecenia
+::       Albo wyznacza automatem z tego co zostało do podzielenia na partie uwzględniając serie itp
+::   WE: [_a] - ZL.ref() - ref zlecenia lub bieżący rekord
+::       [_b] - INTEGER - 0/[1] - czy wyświetlać dialogi
+::       [_c] - REAL - ilość zlecenia jaką popartiować
+::       [_d] - REAL - ilość jaka ma być na jednej partii
+::   WY: obj_new().IL_ZGH - ilość na pojedynczym przewodniku
+::       obj_new().IL_ZL - jaką ilość ze zlecenia dzielić:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZL.ref())
+|| _ref:=_a
+?};
+_dialog:=1;
+{? var_pres('_b')=type_of(0)
+|| _dialog:=_b
+?};
+
+_il_zl:=0;
+{? var_pres('_c')=type_of(0)
+|| _il_zl:=_c
+?};
+
+_il_part:=0;
+{? var_pres('_d')=type_of(0)
+|| _il_part:=_d
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZL.cntx_psh();
+{? _ref<>null()
+|| ZL.prefix();
+   {? ZL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+:: Sprawdzam czy produkt zlecenia jest partiowany
+   {? exec('zlec_party','zl_common',ZL.ref())=0
+   || _msg:='Produkt zlecenia nie jest powiązany z atrybutem dostawy typu \'Partia\''
+            '\nlub zlecenie jest podzleceniem zlecenia złożonego.'
+            '\nNie można wygenerować partii zlecenia.'@;
+      {? _dialog>0
+      || FUN.emsg(_msg)
+      ?};
+      _can_continue:=0
+   ?};
+
+   {? _can_continue>0
+   ||
+::    Obliczam ilosc juz popartiowana
+      _parted:=exec('zl_ile_part','zl_partie',ZL.ref());
+
+::    A tyle mi zostalo do popartiowania
+      _to_part:=ZL.IL-_parted;
+
+::    Normalizacja
+      _to_part:=exec('max','#math',0,_to_part);
+      _to_part:=exec('min','#math',ZL.IL,_to_part);
+
+::    Pytam uzytkownika na jaka ilosc maja byc partie
+::    Podczytanie jednostki miary
+      ZL.KTM().J();
+
+      _tktl:=null();
+      {? ZL.RTKTL<>''
+      || _tktl:=exec('FindAndGet','#table',TKTL,ZL.RTKTL,,,null())
+      |? ZL.RKTL<>''
+      || _tktl:=exec('FindAndGet','#table',TKTL,ZL.RKTL,,,null())
+      ?};
+
+      {? _il_zl>0
+      || ZLEC.IL_ZL:=_il_zl
+      || ZLEC.IL_ZL:=_to_part
+      ?};
+      {? _il_part>0
+      || ZLEC.IL_PART:=_il_part
+      || ZLEC.IL_PART:=_to_part
+      ?};
+      ZLEC.SERIA:=exec('FindAndGet','#table',TKTL,_tktl,,"SERIA",0);
+      ZLEC.IL_GEN:=_to_part;
+
+      {? _dialog>0
+      ||
+         ZLEC.win_edit('PART_GEN');
+         _validate:="_result:='';
+                     {? ZLEC.IL_ZL<=0
+                     || FUN.emsg('Ilość do partiowania musi być wieksza od zera.'@);
+                        _result:='IL_ZL'
+                     ?};
+                     {? ZLEC.IL_ZL>ZL.IL
+                     || FUN.emsg('Ilość do partiowania nie może być większa od ilości zlecenia.'@);
+                        _result:='IL_ZL'
+                     ?};
+                     {? ZLEC.IL_PART<=0
+                     || FUN.emsg('Ilość na partii musi być wieksza od zera.'@);
+                        _result:='IL_PART'
+                     ?};
+                     {? ZLEC.IL_PART>ZLEC.IL_ZL
+                     || FUN.emsg('Ilość na partii nie może być większa od ilości do partiowania.'@);
+                        _result:='IL_PART'
+                     ?};
+                     _result";
+         _can_continue:=ZLEC.edit(_validate)
+      ?}
+   ?}
+?};
+ZL.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\split
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [18.02]
+:: OPIS: Dzieli partię o ile włączone jest dzielenie (parametr 500770), zlecenie ma tylko surowce nielimitowane
+::       i dzielona partia nie ma jeszcze rozliczanych surowców
+::   WE: _a - ZPARN.ref()
+::       _b - ilość pozostawiona na źródłowej partii
+::       [_c] - czy sprawdzać limity do zlecenia i parametr 500770 - domyślnie tak (1)
+::              0 - gdy podział z poziomu selekcji partii
+::       [_d] - M.ref() - indeks materiałowy, na jaki wydzielić partię, jak nie podany to brany produkt zlecenia
+::       [_e] - czy możliwe wydzielenie partii na dodatkową ilość (powyżej ilości z przewodnika): [0] - nie, 1 - tak
+::       [_f] - ilość dodatkowa na nowej partii (tylko gdy _e=1)
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+_residue:=_b;
+_chk_podz:={? var_pres('_c')=type_of(0) || _c || 1 ?};
+_ktm:={? var_pres('_d')=type_of(null()) || _d || null() ?};
+_over:={? var_pres('_e')=type_of(0) || _e || 0 ?};
+_il_over:={? _over>0 & var_pres('_f')=type_of(0) || _f || 0 ?};
+:: Sprawdza, czy włączone jest dzielenie partii
+{? _chk_podz>0
+|| _auto_split:=exec('get','#params',500770,2);
+   {? _auto_split='N' || return(1) ?}
+?};
+
+:: Sprawdza, czy zlecenie ma tylko surowce nielimitowane
+{? _chk_podz>0
+|| _zlim:=exec('czy_sa_limity','zl_limit',exec('FindAndGet','#table',ZPARN,_zparn,,"ZL",null()),1);
+   {? _zlim>0 || return(1) ?}
+?};
+
+:: Sprawdza, czy partia powiązana z przewodnikiem, który ma operację planowaną grupowo
+::{? exec('chk_plgrp','zl_partie',_zparn,-1)=0 || return(1) ?};
+
+:: Uwaga: nie jest sprawdzane, czy dzielona partia nie ma jeszcze rozliczonych surowców - nie ma takiej potrzeby
+
+_result:=0;
+_can_continue:=0;
+
+ZPARN.cntx_psh(); ZPARN.prefix();
+{? ZPARN.seek(_zparn)
+||
+:: Ilość oryginalna
+   _org:=ZPARN.IL;
+
+   {? _residue>0 & (_over=1 | (_over=0 &_residue<ZPARN.IL))
+   ||
+      _args:=exec('buffer','zl_partie');
+
+::    Oryginalnej partii zapodaję nową ilość
+      _args.get();
+      _args.IL:=_residue;
+
+::    Podzielone partie nie są automatyczne, żeby nie zostały usunięte przypadkowo podczas usuwania przewodnika
+      _args.AUTO:='N';
+
+      _args.set();
+      _can_continue:=ZPARN.put();
+::    Pobieram ponownie ilość z rekordu bo mogła zostać zaokrąglona
+      _args.get();
+      _residue:=_args.IL;
+
+      _src_sym:=ZPARN.SYM;
+      _src_id:=ZPARN.IDADD;
+
+::    Na resztę ilości tworzę nową partię
+      {? _can_continue>0
+      ||
+         _ilosc:=_org-_residue+_il_over;
+::         FUN.info('(komunikat testowy)\nPartia podzielona, pozostało na starej: %1, nowa: %2.'@[$_residue,$_ilosc]);
+         {? _ilosc>0
+         ||
+            _args.IL:=_ilosc;
+            _args.OPIS:='Utworzona w wyniku podzielenia partii: '+_src_sym;
+            _args.IDSRC:=_src_id;
+            {? _ktm<>null()
+            || _args.KTM:=_ktm
+            ?};
+
+            _can_continue:=exec('add','zl_partie',_args)
+         ?}
+      ?}
+   ?}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+ZPARN.cntx_pop();
+_result
+
+
+\chk_plgrp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [18.02]
+:: OPIS: Sprawdza, czy partia powiązana jest z przewodnikiem z operacją grupową
+::   WE: _a - ZPARN.ref()
+::       [_b] - INTEGER - 1  - dodawac komunikaty do KOMM
+::                       [0] - wyswietlac komunikaty na ekran
+::                       -1 - w ogóle nie dodawać
+::   WY: 1 - ok, brak powiązania, 0 - źle, są powiązania
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+
+_komm:=0;
+{? var_pres('_b')=type_of(0)
+|| _komm:=_b
+?};
+
+_result:=1;
+
+ZPARN.cntx_psh();
+ZPARN.prefix();
+{? ZPARN.seek(_zparn)
+||
+   {? ZPARN.ZL<>null()
+   ||
+::    Podczytanie zlecenia
+      ZPARN.ZL();
+      _sect:=exec('ZL','#to_string',ZL.ref());
+
+      {? ZPARN.ZGH<>null()
+      || {? exec('zgh_has_plgrp','zl_guide',ZPARN.ZGH)
+         || _result:=0;
+            _msg:='Niedozwolone modyfikacje partii: %1 — powiązana z operacjami grupowymi.'@[ZPARN.SYM];
+            {? _komm>0
+            || {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect) ?};
+               KOMM.add(_msg,'xwin16.png:3');
+               KOMM.sect_end()
+            |? _komm=0
+            || FUN.emsg(_msg)
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+ZPARN.cntx_pop();
+
+_result
+
+
+\chk_zpars
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.14]
+:: OPIS: Sprawdza, czy partia powiązana jest z  dostawami surowca
+::   WE: _a - ZPARN.ref()
+::   WY: 1 - brak powiązania, 0 - są powiązania
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+
+ZPARN.cntx_psh();
+ZPARN.prefix();
+ZL.cntx_psh();
+_result:=1;
+{? ZPARN.seek(_zparn)
+||
+   {? ZPARN.ZL<>null()
+   ||
+      ZPARS.cntx_psh();
+      ZPARN.ZL();
+
+      _sect:=exec('ZL','#to_string',ZL.ref());
+
+      _names:=ZPARS.names();
+
+      _name:=5+ZPARS.name();
+      _msk_start:=_name+ZL.ODDZ+(2-$(ZL.OD~1));
+
+      _can_continue:=0;
+
+      {? _msk_start<>''
+      || _can_continue:=_names.find_ge(_msk_start)
+      || _can_continue:=_names.first()
+      ?};
+      {? _can_continue>0
+      || {!
+         |?
+            ZPARS.use(_names.NAME);
+            ZPARS.index('PARTIA');
+            ZPARS.prefix(ZPARN.ref());
+            {? ZPARS.size()>0
+            || _result:=0
+            ?};
+            _names.next()
+         !}
+      ?};
+      ZPARS.cntx_pop()
+   ?}
+?};
+ZPARN.cntx_pop();
+ZL.cntx_pop();
+_result
+
+
+\merge_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.14]
+:: OPIS: Usuwa partie pochodne i zlicza ilość na nowej partii po scaleniu (bierze pod uwagę tylko te partie pochodne,
+::       do których nie zarejestrowano robocizny oraz nie rozliczono surowców)
+::   WE: ZPARN.ref()
+::   WY: obiekt o polach:
+::       RES - czy posiada partie pochodne: 2 - nie, <>2 - tak
+::       ILE - łączna ilość na nowej partii
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+_result:=obj_new('RES','ILE');
+ZPARN.cntx_psh();
+{? ZPARN.seek(_zparn)
+|| _tw:=ZPARN.TW;
+   _noctrl:=0;
+   _break:=0;
+   _result.RES:=0;
+   _result.ILE:=ZPARN.IL;
+
+   ZPARN.cntx_psh();
+   ZPARN.index('IDSRC');
+   ZPARN.prefix(ZPARN.IDADD);
+   {? ZPARN.first()
+   || {!
+      |?
+         {? ~_noctrl & ZPARN.TW<>date(0,0,0) & ZPARN.TW<>_tw
+         || {? FUN.ask('Różne terminy ważności na partiach produkcyjnych?\n\nCzy pomimo to scalić partie?'@)
+            || _noctrl:=1
+            || _break:=1
+            ?}
+         ?};
+         _result.RES:=~_break & exec('chk_depend','zl_partie',ZPARN.ref,-1,1);
+
+         {? _result.RES
+         ||
+::       Sprawdza partie pochodne
+::             !!! REKURENCJA !!!
+            {? var_press('_tmp')>100 || obj_del(_tmp) ?};
+            ZPARN.cntx_psh();
+            _tmp:=exec('merge_chk','zl_partie',ZPARN.ref());
+            ZPARN.cntx_pop();
+            {? _tmp.RES
+            ||
+::             usuwanie partii pochodnych
+              _del:=exec('delete','zl_partie',ZPARN.ref());
+              {? _del>0
+              || _result.ILE+=_tmp.ILE;
+                 _result.RES:=1
+              ?}
+            || _result.RES:=0
+            ?}
+         ?};
+         ZPARN.next
+      !}
+   || _result.RES:=2
+   ?};
+   ZPARN.cntx_pop()
+?};
+ZPARN.cntx_pop();
+_result
+
+
+\merge
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.14]
+:: OPIS: Scala partię i partie z niej wydzielone w jedną całość o ile w żadnej partii nie zarejestrowano robocizny lub
+::       rozliczenia surowców
+::   WE: _a - ZPARN.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+
+ZPARN.cntx_psh();
+ZPARN.prefix();
+_result:=1;
+{? ZPARN.seek(_zparn)
+||
+   _res:=exec('merge_chk','zl_partie',_zparn);
+   {? _res.RES<>2
+   ||
+      {? _res.ILE<>ZPARN.IL
+      || ZPARN.IL:=_res.ILE;
+         ZPARN.put
+      || FUN.info('Scalenie partii nie powiodło się.\n'
+                  'Partie pochodne posiadają powiązania z rozchodami surowców, \n'
+                  'mają zarejestrowaną robociznę lub inne terminy ważności.'@)
+      ?}
+   || FUN.info('Wybrana partia nie posiada żadnych partii pochodnych.'@)
+
+   ?}
+?};
+ZPARN.cntx_pop();
+_result
+
+
+\dkc_copy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Kopiuje podaną cechę podmieniając jej partię na przekazaną
+::   WE: _a - DK_C.ref - cecha
+::       _b - ZPARN.ref - partia
+::   WY: DK_C lub null
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_dk_c:=_a;
+_zparn:=_b;
+
+_result:=null();
+
+{? _dk_c<>null & _zparn<>null()
+||
+   DK_C.cntx_psh(); DK_C.prefix();
+   {? DK_C.seek(_dk_c)
+   || _buf:=exec('buffer','mat_atr');
+      _buf.get_dkc();
+      _can_continue:=_buf.set_part(_zparn);
+
+      {? _can_continue>0
+      ||
+::       Zakładam ceche, lub zwracam istniejącą
+         _result:=exec('m_atr_sprdod','mat_atr',_buf.WAR01
+                                               ,_buf.WAR02
+                                               ,_buf.WAR03
+                                               ,_buf.WAR04
+                                               ,_buf.WAR05
+                                               ,_buf.WAR06
+                                               ,_buf.WAR07
+                                               ,_buf.WAR08
+                                               ,_buf.WAR09
+                                               ,_buf.WAR10
+                                               ,_buf.M_ATR
+                                               ,_zparn
+                                               )
+      ?}
+   ?};
+   DK_C.cntx_pop()
+?};
+_result
+
+
+\dkc_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Tworzę nową cechę powiązaną z przekazaną partią, ale tylko jeżeli produkt zlecenia jest partiowany
+::   WE: _a - ZPARN.ref - partia
+::   WY: DK_C lub null
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_zparn:=_a;
+
+_result:=null();
+
+DK_C.cntx_psh();
+M_ATR.cntx_psh();
+ZL.cntx_psh();
+M.cntx_psh();
+ZPARN.cntx_psh(); ZPARN.prefix();
+{? ZPARN.seek(_zparn)
+||
+   ZPARN.ZL().KTM().M_ATR();
+   _buf:=exec('buffer','mat_atr');
+   _buf.get_matr();
+   {? ZL.DK_C<>null()
+   || ZL.DK_C();
+      _buf.get_dkc()
+   ?};
+   {? _buf.count()>0 & _buf.can_part()
+   || _can_continue:=_buf.set_part(_zparn);
+      {? _can_continue>0
+      ||
+::       Zakładam ceche, lub zwracam istniejącą
+         _result:=exec('m_atr_sprdod','mat_atr',_buf.WAR01
+                                               ,_buf.WAR02
+                                               ,_buf.WAR03
+                                               ,_buf.WAR04
+                                               ,_buf.WAR05
+                                               ,_buf.WAR06
+                                               ,_buf.WAR07
+                                               ,_buf.WAR08
+                                               ,_buf.WAR09
+                                               ,_buf.WAR10
+                                               ,_buf.M_ATR
+                                               ,_zparn
+                                               )
+      ?}
+   ?}
+?};
+DK_C.cntx_pop();
+ZPARN.cntx_pop();
+M.cntx_pop();
+ZL.cntx_pop();
+M_ATR.cntx_pop();
+_result
+
+
+\zparn_gen_wyk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja 'Generuj wykonania' od strony partii
+::   WE:
+::   WY:
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('rej_zparn','zl_wyk');
+~~
+
+
+\zparn_gen_wyk_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja grupa przed 'Generuj wykonania' od strony partii
+::   WY: 0/1
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('rej_zparn','zl_wyk');
+0
+
+
+\zparn_gen_wyk_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja grupa po 'Generuj wykonania' od strony partii
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\zparn_gen_rap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja 'Generuj raporty' od strony partii
+::   WE:
+::   WY:
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('action_zparn_generate','!tte_wyk_dgrp');
+~~
+
+
+\zparn_gen_rap_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja grupa przed 'Generuj raporty' od strony partii
+::   WY: 0/1
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('action_zparn_generate','!tte_wyk_dgrp');
+0
+
+
+\zparn_gen_rap_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja grupa po 'Generuj raporty' od strony partii
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\can_over_rap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Czy umożliwiać raportowanie ponad ilość partii
+::   WY: 0/1
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+1
+
+
+\zparn_dok_mag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja 'Dokumenty magazynowe' od strony partii
+::----------------------------------------------------------------------------------------------------------------------
+exec('pozrap','magdok_prod',1,1,0,,0)
+
+
+\zparn_wyk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Wyświetla wykonania do wybranej partii
+::----------------------------------------------------------------------------------------------------------------------
+ZPARN.cntx_psh();
+__Opcja:=1;
+_zgp_godz:=exec('zgp_godz','zl_wyk',0,1);
+exec('zgp_godz','zl_wyk',0,_zgp_godz.TAB);
+_zgp_godz.TAB.win_sel(_zgp_godz.WER);
+::_zgp_godz.TAB.hdr_sel({? _a || ' — '+'PODGLĄD'@ || '' ?});
+::_zgp_godz.TAB.select(,,,{? _a || 'PUG' || '' ?};
+_zgp_godz.TAB.select();
+ZPARN.cntx_pop();
+VAR_DEL.delete('__Opcja');
+~~
+
+
+\ilosc_left
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Zwraca ilość do zaraportowania na partii
+::   WE: [_a] - ZPARN.ref lub bieżący rekord
+::       _b - STRING - wartiant: 'M' - magazynowy, 'W' - robocizna z dokumentami, 'R' - robocizna bez dokumentów (dla szybkiej rejstracji wykonań)
+::       [_c] - ZGP.ref() - dla wariantu 'W' pozycja przewodnika dla którego zliczać robociznę
+::   WY: REAL
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZPARN.ref())
+|| _ref:=_a
+?};
+_wariant:=_b;
+_zgp:=null();
+{? var_pres('_c')=type_of(ZGP.ref())
+|| _zgp:=_c
+?};
+
+_zparn_left:=0;
+_can_continue:=1;
+
+ZPARN.cntx_psh();
+{? _ref<>null()
+|| ZPARN.prefix();
+   {? ZPARN.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? _wariant='M'
+   ||
+      _zparn_il:=ZPARN.IL;
+      _args:=exec('ilosc_dk_a','zl_common');
+      _args.ZL:=ZPARN.ZL;
+      _args.ZPARN:=ZPARN.ref();
+
+      _args.RP:=1;
+      _zparn_rp:=exec('get_ilosc_dk','zl_common',_args);
+
+      _args.RP:=0;
+      _args.ZP:=1;
+      _zparn_zp:=exec('get_ilosc_dk','zl_common',_args);
+
+      _bilans:=_zparn_rp;
+      {? _zparn_rp>0
+      || _bilans:=_zparn_rp-_zparn_zp;
+         _bilans:=exec('max','#math',0,_bilans)
+      ?};
+
+      _zparn_left:=_zparn_il-_bilans;
+      _zparn_left:=exec('max','#math',0,_zparn_left)
+   |? _wariant='W'
+   || _il_zlgd:=exec('get_ilosc_zlgd','zl_partie',ZPARN.ref(),_zgp,1,exec('zl_czy_wyr','zl_wyr',ZPARN.ZL));
+      _zparn_left:=exec('max','#math',0,_il_zlgd)
+   |? _wariant='R'
+   || _il_zlgd:=exec('get_ilosc_zlgd','zl_partie',ZPARN.ref(),_zgp,,exec('zl_czy_wyr','zl_wyr',ZPARN.ZL),0);
+      _zparn_left:=ZPARN.IL-_il_zlgd;
+      _zparn_left:=exec('max','#math',0,_zparn_left)
+   ?}
+?};
+ZPARN.cntx_pop();
+_zparn_left
+
+
+\first_not_completed
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Zwraca pierwszą partię na której zostało coś jeszcze do wykonania
+::   WE: [_a] - ZL.ref
+::       [_b] - ZGH.ref
+::       _c - STRING - wartiant: 'M' - magazynowy, 'W' - robocizna z dokumentami, 'R' - robocizna bez dokumentów
+::       [_d] - ZGP.ref() - dla wariantu 'W' i 'R' - pozycja przewodnika dla której zliczać robociznę
+::   WY: ZPARN.ref lub null
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=null();
+{? var_pres('_a')=type_of(ZL.ref())
+|| _zl:=_a
+?};
+_zgh:=null();
+{? var_pres('_b')=type_of(ZPARN.ref())
+|| _zgh:=_b
+?};
+_wariant:=_c;
+_zgp:=null();
+{? var_pres('_d')=type_of(ZGP.ref())
+|| _zgp:=_d
+?};
+
+_result:=null();
+_can_continue:=1;
+
+ZPARN.cntx_psh();
+{? _zgh<>null()
+|| ZPARN.index('ZGH');
+   ZPARN.prefix(_zgh)
+|? _zl<>null()
+|| ZPARN.index('ZL2');
+   ZPARN.prefix(_zl)
+|| _can_continue:=0
+?};
+
+{? _can_continue>0
+|| {? ZPARN.first()
+   || {!
+      |? _zparn_left:=exec('ilosc_left','zl_partie',ZPARN.ref(),_wariant,_zgp);
+         {? _zparn_left>0
+         || _result:=ZPARN.ref()
+         ?};
+         ZPARN.next() & _result=null()
+      !}
+   ?}
+?};
+ZPARN.cntx_pop();
+_result
+
+
+\zlec_fld_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14]
+:: OPIS: Formuła po redagowaniu pól zmiennej ZLEC: IL_PART1, IL_PARTP, SPL_TYPE
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_afld:=cur_afld();
+{? _afld='SPL_TYPE'
+|| exec('zlec_efld_opt','zl_partie')
+|? _afld='IL_PART1'
+|| ZLEC.IL_PART:=ZLEC.IL_PART1
+|? _afld='IL_PARTP'
+|| ZLEC.IL_PART:=ZLEC.IL_PARTP
+?};
+_result
+
+
+\zlec_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14]
+:: OPIS: Ustawia opcje pól zmiennej ZLEC: IL_PART1, IL_PARTP, KTM_PART
+::   WE: [_a] - INTEGER - 0/1 - czy pole ZLEC.SPL_TYPE dostępne do redakcji
+::----------------------------------------------------------------------------------------------------------------------
+_red_spl_type:=1;
+{? var_pres('_a')=type_of(0)
+|| _red_spl_type:=_a
+?};
+{? _red_spl_type>0
+|| ZLEC.efld_opt('PART_SP','editable=1',,'SPL_TYPE')
+|| ZLEC.efld_opt('PART_SP','editable=grayed',,'SPL_TYPE')
+?};
+
+{? ZLEC.SPL_TYPE=1
+|| ZLEC.efld_opt('PART_SP','enable=1',,'IL_PART1');
+   ZLEC.efld_opt('PART_SP','enable=0',,'IL_PARTP');
+   ZLEC.efld_opt('PART_SP','enable=0',,'KTM_PART','KTM');
+   ZLEC.efld_opt('PART_SP','enable=0',,'KTM_PART','N')
+|| ZLEC.efld_opt('PART_SP','enable=0',,'IL_PART1');
+   ZLEC.efld_opt('PART_SP','enable=1',,'IL_PARTP');
+   ZLEC.efld_opt('PART_SP','enable=1',,'KTM_PART','KTM');
+   ZLEC.efld_opt('PART_SP','enable=1',,'KTM_PART','N');
+   {? exec('zl_czy_wyr','zl_wyr',ZPARN.ZL)>0
+   || ZLEC.efld_opt('PART_SP','mark=1,editable=1',,'KTM_PART','KTM');
+      ZLEC.efld_opt('PART_SP','mark=1,editable=1',,'KTM_PART','N')
+   || ZLEC.efld_opt('PART_SP','mark=0,editable=0',,'KTM_PART','KTM');
+      ZLEC.efld_opt('PART_SP','mark=0,editable=0',,'KTM_PART','N')
+   ?}
+?};
+~~
+
+
+\ktm_f_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Ustawia filtr dla pola ZPARN.KTM - ustala listę półwybrobów, które można przypisać jako produkt danej partii
+::----------------------------------------------------------------------------------------------------------------------
+_where:='A=\'T\' and R_PROD=\'T\' and RODZ=\'T\' and ZL_WYR.ZL=:_a';
+_sort:='KTM';
+_from:='join ZL_WYR using (M.REFERENCE,ZL_WYR.KTM)';
+
+M.clear();
+M.f_set(_sort,_from,_where,ZPARN.ZL);
+~~
+
+
+\gen_tab_norm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Normalizuje wartości pól przekazanej przez wtyczkę PARTIE_F_ILGEN_001 tablicy.
+::       Formuła wywoływana, gdy w tabeli znajduje się informacja o ilości, materiale i/lub cesze,
+::       na jaki ma powstać partia. Działa na aktualnym buforze tabebli ZL.
+::   WE: _a - sprawdzany obiekt
+::       [_b] - czy sprawdzać poprawnośc danych dotyczących cechy partii: [0] - nie, 1 - tak
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(obj_new(1))
+|| _is_dkc:={? var_pres('_b')=type_of(0) || _b || 0 ?};
+   _tab:=_a;
+   _dokl:=ZL.KTM().DOKL;
+   _size:=obj_len(_tab);
+   {! _it:=1.._size
+   |! _val1:=#_tab[_it].IL;
+      _val2:=_tab[_it].KTM;
+      {? _is_dkc>0 || _val3:={? var_pres('DK_C',_tab[_it])>0 || _tab[_it].DK_C || '' ?} ?};
+::    Wymuszenie w polach odpowiednich typów (NUMBER dla pierwszego elementu, STRING dla drugiego).
+::    Dla niezgodnych typów ustalana jest wartość domyślna (0 dla liczby, '' dla stringa)
+      _tab[_it].IL:={? type_of(_val1)=type_of(0) || _val1 || 0 ?};
+      _tab[_it].KTM:={? type_of(_val2)=type_of('') || _val2 || '' ?};
+      {? _is_dkc>0 || _tab[_it].DK_C:={? type_of(_val3)=type_of('') || _val3 || '' ?} ?};
+::    Zaokrąglenie ilości
+      _tab[_it].IL:=_tab[_it].IL$_dokl;
+::    Zerowanie ujemnych elementów tablicy
+      {? _tab[_it].IL<0
+      || _tab[_it].IL:=0
+      ?};
+::    Sprawdzenie czy przekazany indeks materiałowy znajduje się na liście wyrobów zlecenia
+      {? _tab[_it].IL>0 & _tab[_it].KTM<>''
+      || _ktm:=exec('FindInSet','#table','M','MATKTM',_tab[_it].KTM,,,1,,null());
+         {? _ktm<>null()
+         || ZL_WYR.cntx_psh();
+            ZL_WYR.index('ZL');
+            ZL_WYR.prefix(ZL.ref(),_ktm);
+            {? ~ZL_WYR.first()
+            || _tab[_it].KTM:=''
+            ?};
+            ZL_WYR.cntx_pop()
+         || _tab[_it].KTM:=''
+         ?}
+      ?};
+::    Sprawdzenie, czy przekazana cecha ma zgodny wzorzec co materiał
+      {? _is_dkc>0 &_tab[_it].KTM<>'' & _tab[_it].DK_C<>''
+      || _matr_ktm:=exec('FindInSet','#table','M','MATKTM',_tab[_it].KTM,,"M.M_ATR",1,,null());
+         _matr_dkc:=exec('FindInSet','#table','DK_C','SYM',_tab[_it].DK_C,,"DK_C.M_ATR",1,,null());
+         {? _matr_dkc<>_matr_ktm
+         || _tab[_it].DK_C:=''
+         ?}
+      ?}
+   !}
+?};
+~~
+
+
+\be_zparn_ktm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Przed redagowaniem pola ZPARN.KTM
+::   WY: 1/0
+::----------------------------------------------------------------------------------------------------------------------
+_res:=0;
+{? exec('zl_czy_wyr','zl_wyr',ZPARN.ZL)>0
+|| _res:=1;
+   exec('slo_m_ok','material','T',0,,'WEDPIUORJN(ZS)');
+   exec('ktm_f_set','zl_partie')
+?};
+_res
+
+
+\ae_zparn_ktm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Po redagowaniu pola ZPARN.KTM
+::----------------------------------------------------------------------------------------------------------------------
+{? M.f_active() || M.f_clear() ?};
+:: Podczytanie M_ATR
+{? ZPARN.KTM<>null() || ZPARN.KTM().M_ATR() ?};
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:36 3b5d0ec70901860d2d838382e1fe63499eca6006788ca34a1f75660c079eb61bea5c848fe95b7ab1121e43a6bfd0f8fa5055518586cb472b72cb673c5a6a213f436b55d9f618eec44cdc5ba0b605a3803af15ae183941e1fe7d8d3013e082b4cd30e9cd4ea72d62f6ae15399f14946c3e899972f33f0074ab254bc2eb4601bdd

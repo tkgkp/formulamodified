@@ -1,0 +1,676 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !fst_inp_ddok.fml
+:: Utworzony: 30.03.2016
+:: Autor: PJ
+::======================================================================================================================
+:: Zawartość: Formuły czynności FST_INP_DDOK - Utw. dok. poinwent. Środków
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Utw. dok. poinwent. Środków - główna formuła czynności FST_INP_DDOK.
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=FJKS
+_akcja:=-menu_txt();
+{? _akcja='generuj' || exec('ddok_generuj','!fst_inp_ddok')
+|? _akcja='anuluj' || exec('ddok_anuluj','!fst_inp_ddok')
+?}
+
+
+\ddok_generuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła generuje dokumenty poinwentaryzacyjne korygujące stan środków w bazie
+::----------------------------------------------------------------------------------------------------------------------
+{? SRXI.STATUS='T'
+|| FUN.emsg('Bieżąca inwentaryzacja jest zamknięta, modyfikacje nie są możliwe.'@);
+   return()
+?};
+:: kontrola czy wprowadzono datę wykonania inwnetaryzacji
+{? SRXI.DZ=date(0,0,0)
+|| FUN.emsg('Dla bieżącej inwentaryzacji (nr %1) nie wprowadzono daty wykonania.'@[$SRXI.NR]);
+   return()
+?};
+:: kontrola czy zamknięte arkusze spisowe
+SRXA.cntx_psh();
+SRXA.index('SRXI');
+SRXA.prefix(SRXI.ref());
+_arkusz:=0;
+{? SRXA.first()
+|| {! |?
+      {? SRXA.STATUS='N' || _arkusz:=SRXA.NR ?};
+      _arkusz=0 & SRXA.next()
+   !}
+|| _arkusz:=-1
+?};
+SRXA.cntx_pop();
+
+{? _arkusz<0
+|| FUN.emsg('Brak arkuszy spisowych, generowanie dokumentów nie jest możliwe.'@);
+   return()
+|? _arkusz>0
+|| FUN.emsg('Arkusz spisowy nr %1 nie jest zamknięty, generowanie dokumentów nie jest możliwe.'@[$_arkusz]);
+   return()
+?};
+
+{? SRXI.r_lock(1,1,1)
+||
+   {? SRDO.size()>0 || _srdo:=SRDO.ref() || _srdo:=null ?};
+:: tabela tymczasowa na potencjalne dokumenty poinwentaryzacyjne
+   VAR_DEL.delete('__SRDO');
+   __SRDO:=tab_tmp(1,'NRI','STRING[20]','Nr inwentarzowy',
+                     'NST','STRING[100]','Nazwa',
+                     'ARKUSZ','INTEGER','Arkusz spisowy',
+                     'KOREKTA','STRING[1]','Rodzaj korekty',
+                     'KOROPIS','STRING[25]','Rodzaj korekty opisowo',
+                     'REF','INTEGER','Ref pozycji arkusza',
+                     'OKRO_F','INTEGER','Okres',
+                     'OKRES','STRING[30]','Okres opisowo',
+                     'DO','DATE','Data operacji',
+                     'DW','DATE','Data wystawienia',
+                     'GEN','STRING[1]','Wygenerowane',
+                     'KONPOD','INTEGER','Zestaw kont pod.',
+                     'KONDOD','INTEGER','Zestaw kont dod.',
+                     'KONFIN','INTEGER','Zestaw kont bil.');
+
+   _win:=__SRDO.mk_sel('Pozycje arkuszy spisowych z korektami do wygenerowania'@,'P',0,'__srdotmp',5,5,12,,'U');
+   __SRDO.win_fld(_win,,'NRI',,,18,,,'Nr inwentarzowy'@);
+   __SRDO.win_fld(_win,,'NST',,,30,,,'Nazwa'@);
+   __SRDO.win_fld(_win,,'ARKUSZ',,,6,,,'Nr arkusza'@);
+   __SRDO.win_fld(_win,,'KOROPIS',,,25,,,'Rodzaj korekty'@);
+   __SRDO.win_fld(_win,,'OKRES',,,30,,,'Okres obowiązywania'@);
+   __SRDO.win_fld(_win,,'DO',,,10,,,'Data operacji'@);
+   __SRDO.win_fld(_win,,'DW',,,10,,,'Data wystawienia'@);
+   __SRDO.win_fld(_win,,'GEN',,,12,,,'Wygenerowano?'@,,'',2,,"'T'","'N'");
+   _help:='Generowanie dokumentu poinwentaryzacyjnego'@;
+   _after:="exec('ddok_gen_one','!fst_inp_ddok')";
+   _grp_b:="exec('grp_ddok_b','!fst_inp_ddok')";
+   _grp_a:="exec('grp_ddok_a','!fst_inp_ddok')";
+   __SRDO.win_act(_win,,'Formuła','Generuj dokument'@@,,_help,,_after,1,1,_grp_b,_grp_a,'G');
+   __SRDO.win_btn(_win,'text=%1,panel=right,align=begin'['Generuj'@],'menu:G');
+   _after:="exec('ddok_popraw','!fst_inp_ddok')";
+   _help:='Edycja parametrów dokumentu poinwentaryzacyjnego'@;
+   __SRDO.win_act(_win,,'Formuła','Popraw'@@,,_help,,_after,,,,,'P');
+   __SRDO.win_btn(_win,'text=%1,panel=right,align=begin'['Popraw'@],'menu:P');
+   __SRDO.win_sel(_win);
+
+:: kontrola czy są dokumenty do wygenerowania, weryfikuje pozycje arkuszy o statusie
+:: niedobór - 'Z' , zatwierdzony ze zmianami - 'P'
+   SRXD.cntx_psh();
+   SRXD.index('STATUS');
+:: likwidacje
+   SRXA.cntx_psh();
+   SRXA.index('SRXI');
+   SRXA.prefix(SRXI.ref());
+   {? SRXA.first()
+   || {! |?
+         SRXD.prefix(SRXA.ref(),'Z');
+         {? SRXD.first()
+         || {! |?
+               {? SRXD.DOK_W='N'
+               || __SRDO.blank();
+                  __SRDO.REF:=#SRXD.ref();
+                  __SRDO.NRI:=SRXD.NRI;
+                  __SRDO.NST:=SRXD.NST;
+                  __SRDO.ARKUSZ:=SRXD.SRXA().NR;
+                  __SRDO.KOREKTA:='W';
+                  __SRDO.KOROPIS:='Likwidacja środka';
+                  __SRDO.GEN:='N';
+                  __SRDO.OKRO_F:=#SRXI.OKRO_F;
+                  __SRDO.OKRES:=SRXI.OKRO_F().NAZ+' '+SRXI.ROK_F().NAZ;
+                  __SRDO.DO:=SRXI.OKRO_F().KON;
+                  __SRDO.DW:=SRXI.DZ;
+                  __SRDO.add()
+               ?};
+               SRXD.next()
+            !}
+         ?};
+:: zmiany właściwości
+         SRXD.prefix(SRXA.ref(),'P');
+         {? SRXD.first()
+         || {! |?
+               {? SRXD.DOK_L='N'
+               || __SRDO.blank();
+                  __SRDO.REF:=#SRXD.ref();
+                  __SRDO.NRI:=SRXD.NRI;
+                  __SRDO.NST:=SRXD.NST;
+                  __SRDO.ARKUSZ:=SRXD.SRXA().NR;
+                  __SRDO.KOREKTA:='L';
+                  __SRDO.KOROPIS:='Zmiana właściwości środka';
+                  __SRDO.GEN:='N';
+                  __SRDO.OKRO_F:=#SRXI.OKRO_F;
+                  __SRDO.OKRES:=SRXI.OKRO_F().NAZ+' '+SRXI.ROK_F().NAZ;
+                  __SRDO.DO:=SRXI.DZ;
+                  __SRDO.DW:=SRXI.DZ;
+                  SRST.cntx_psh();
+                  SRST.index('OKR_O_W');
+                  SRST.prefix(SRXI.OKRO_F,SRXD.ODD,SRXD.NRI);
+                  {? SRST.first()
+                  || __SRDO.KONPOD:=#SRST.KONPOD;
+                     __SRDO.KONFIN:=#SRST.KONFIN;
+                     __SRDO.KONDOD:=#SRST.KONDOD
+                  ?};
+                  SRST.cntx_pop();
+                  __SRDO.add()
+               ?};
+               SRXD.next()
+            !}
+         ?};
+         SRXA.next()
+      !}
+   ?};
+   SRXA.cntx_pop();
+   {? __SRDO.size()>0
+   || __SRDO.select()
+   || FUN.emsg('Nie znaleziono niewygenerowanych korekt poinwentaryzacyjnych dla bieżącej inwentaryzacji.'@)
+   ?};
+   SRXD.cntx_pop();
+
+   SRDO.index('SRXI');
+   SRDO.prefix(SRXI.ref());
+   {? _srdo<>null || SRDO.seek(_srdo) || SRDO.first() ?};
+   SRXI.r_unlock()
+|| FUN.emsg('Inwentaryzacja zablokowana przez innego użytkownika.'@)
+?}
+
+
+\ddok_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Edycja parametrów generowania dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+EDIT_ES.win_edit('INW');
+OKRO_F.cntx_psh();
+OKRO_F.prefix();
+{? OKRO_F.seek(__SRDO.OKRO_F,)
+|| EDIT_ES.OKRO_F:=OKRO_F.ref();
+   EDIT_ES.ROK_F:=OKRO_F.ROK
+|| EDIT_ES.OKRO_F:=null;
+   EDIT_ES.ROK_F:=null
+?};
+OKRO_F.cntx_pop();
+EDIT_ES.DO:=__SRDO.DO;
+EDIT_ES.DW:=__SRDO.DW;
+{? EDIT_ES.edit("exec('chk_srdo','!fst_inp_ddok')")
+|| __SRDO.OKRO_F:=#EDIT_ES.OKRO_F;
+   __SRDO.OKRES:=EDIT_ES.OKRO_F().NAZ+' '+EDIT_ES.ROK_F().NAZ;
+   __SRDO.DO:=EDIT_ES.DO;
+   __SRDO.DW:=EDIT_ES.DW;
+   __SRDO.put()
+?}
+
+
+\chk_srdo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Weryfikacja zawartości okna edycji parametrów generowania dokumentu
+::   WY: '' lub akronim pola do poprawnienia
+::----------------------------------------------------------------------------------------------------------------------
+_wy:='';
+{? EDIT_ES.OKRO_F=null
+|| FUN.emsg('Należy wskazać okres obowiązywania dla dokumentu.'@);
+   _wy:='OKRO_F'
+?};
+{? _wy=''
+|| {? EDIT_ES.DO=date(0,0,0)
+   || FUN.emsg('Należy wskazać datę obowiązywania dla dokumentu.'@);
+      _wy:='DO'
+   ?}
+?};
+{? _wy=''
+|| {? EDIT_ES.DW=date(0,0,0)
+   || FUN.emsg('Należy wskazać datę wprowadzenia dla dokumentu.'@);
+      _wy:='DW'
+   ?}
+?};
+_wy
+
+
+\ddok_gen_one
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Generowanie dokumentu dla bieżącej pozycji arkusza spisowego wymagającej korekty
+::----------------------------------------------------------------------------------------------------------------------
+{? __SRDO.GEN='T'
+|| _txt:='Pozycja: %1 typ korekty: %2, została już przetworzona '
+         '(dokument wygenerowano lub dokumentu nie można wygenerować).'@[__SRDO.NRI,__SRDO.KOROPIS];
+   {? __SRDO.sel_size()=0 || FUN.emsg(_txt) || KOMM.add(_txt) ?};
+   return()
+?};
+
+:: kontrola czy wskazany dla dokumentu okres w środkach jest otwarty
+_okr_zam:=0;
+_okres:='';
+OKRO_F.cntx_psh(); ROK_F.cntx_psh();
+OKRO_F.prefix();
+{? OKRO_F.seek(__SRDO.OKRO_F,)
+|| {? OKRO_F.AMOR='T'
+   || _okr_zam:=1;
+      _okres:=OKRO_F.NAZ+' '+OKRO_F.ROK().NAZ
+   ?}
+?};
+OKRO_F.cntx_pop(); ROK_F.cntx_pop();
+{? _okr_zam
+|| _txt:='Okres %1 wskazany jako obowiązujący dla dokumentu wystawianego dla środka %2\n '
+         'jest zamknięty dla obszaru środków trałych.'@[_okres,__SRDO.NRI];
+   {? __SRDO.sel_size()=0 || FUN.emsg(_txt) || KOMM.add(_txt) ?};
+   return()
+?};
+
+{? __SRDO.KOREKTA='W'
+|| _proceed:=1;
+   SRSR.cntx_psh(); SRXD.cntx_psh(); SRST.cntx_psh();
+   SRXD.prefix();
+   SRSR.prefix();
+   {? SRXD.seek(__SRDO.REF,)
+   || SRST.index('OKR_O_W');
+      SRST.prefix(__SRDO.OKRO_F,SRXD.ODD,SRXD.NRI);
+      {? SRST.first()
+      || _ref:=SRST.SRSR;
+         OKRO_F.cntx_psh(); OKRO_F.prefix();
+         {? OKRO_F.seek(__SRDO.OKRO_F)
+         || _rok:=OKRO_F.RES;
+            _okr:=OKRO_F.OES
+         || _rok:=SRXI.OKRO_F().RES;
+            _okr:=SRXI.OKRO_F().OES
+         ?};
+         OKRO_F.cntx_pop();
+         SRST.cntx_psh();
+         SRST.index('PODAT');
+         SRST.prefix(_ref);
+         {? SRST.find_key(_rok,_okr)
+         || {! |?
+               {? SRST.prev()
+               || {? SRST.OKRO_F().POCZ<>date(0,0,0) || _dalej:=0 || _dalej:=1 ?}
+               || _dalej:=0
+               ?};
+               _dalej
+            !};
+            {? SRST.OKRO_F().POCZ<>date(0,0,0) & SRST.NAL<>'T'
+            || _txt:='Nie naliczono amortyzacji dla środka %1 do ostatniego okresu eksploatacji.\n'@[__SRDO.NRI]+
+                     'Likwidacja środka (lub korekta ujemna) '@+
+                     'będzie możliwa po naliczeniu amortyzacji do okresu poprzedzającego okres '@+
+                     'obowiązywania dokumentu.'@;
+               {? __SRDO.sel_size()=0 || FUN.emsg(_txt) || KOMM.add(_txt) ?};
+               _proceed:=0
+            ?}
+         ?};
+         SRST.cntx_pop()
+      ?}
+   ?};
+   SRSR.cntx_pop(); SRXD.cntx_pop(); SRST.cntx_pop();
+   {? _proceed
+   || _wy:=exec('lt','!fst_inp_ddok')
+   || return()
+   ?}
+|? __SRDO.KOREKTA='L'
+|| _wy:=exec('mt','!fst_inp_ddok')
+?};
+{? _wy=1
+|| __SRDO.GEN:='T';
+   __SRDO.put();
+   SRXD.cntx_psh();
+   SRXD.index('SRXINRI');
+   SRXD.prefix();
+   {? SRXD.seek(__SRDO.REF,)
+   || {? __SRDO.KOREKTA='W' || SRXD.DOK_W:='T'
+      |? __SRDO.KOREKTA='L' || SRXD.DOK_L:='T'
+      ?};
+      SRXD.put()
+   ?};
+   SRXD.cntx_pop()
+|? _wy=-1
+|| _txt:='Środek: %1 jest już zlikwidowany lub zbyty.'@[__SRDO.NRI];
+   {? __SRDO.sel_size()=0 || FUN.emsg(_txt) || KOMM.add(_txt) ?};
+   __SRDO.GEN:='T';
+   __SRDO.put()
+|| _txt:='Wystąpił problem podczas generowania dokumentu dla pozycji: %1 typ korekty: %2.'@[__SRDO.NRI,__SRDO.KOROPIS];
+   {? __SRDO.sel_size()=0 || FUN.emsg(_txt) || KOMM.add(_txt) ?}
+?}
+
+
+\lt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Generowanie dokumentu likwidacji
+::----------------------------------------------------------------------------------------------------------------------
+{? FINFO.SRXI_LT<>null
+|| _wy:=1
+|| _txt:='Pozycja: %1: Brak ustawionego typu dokumentu likwidacji w parametrach programu.'@[__SRDO.NRI];
+   {? __SRDO.sel_size()=0 || FUN.emsg(_txt) || KOMM.add(_txt) ?};
+
+   _wy:=0
+?};
+
+{? _wy
+|| SRDT.cntx_psh();
+   SRST.cntx_psh();
+   SRSR.cntx_psh();
+   SRDO.cntx_psh();
+   SRXD.cntx_psh();
+   EDIT_ES.cntx_psh();
+   SRXD.prefix();
+   SRSR.prefix();
+   {? SRXD.seek(__SRDO.REF,)
+   || SRST.index('OKR_O_W');
+      SRST.prefix(SRXI.OKRO_F,SRXD.ODD,SRXD.NRI);
+      {? SRST.first()
+      || SRST.SRSR();
+         _zb_sr:=0;
+         {? FINFO.SPR_GRP='T'
+         || SRDO.cntx_psh();
+            SRDO.index('SRODZAJ');
+            SRDO.prefix(SRSR.ref(),'W');
+            {? SRDO.first()
+            || {! |?
+                  {? SRDO.P='S' || _zb_sr:=1 ?};
+                  ~_zb_sr & SRDO.next()
+               !}
+            ?};
+            SRDO.cntx_pop()
+         ?};
+         {? SRSR.Z<>'T' & SRST.R<>'S' & ~_zb_sr
+         || FINFO.SRXI_LT();
+            EDIT_ES.RODZ:='W';
+            SRDO.index('AUTO');
+            SRDO.prefix();
+            SRDO.blank();
+            {? SRSR.GRP='E'
+            || SRDO.SRSR_E:=SRSR.ref();
+               SRSR.cntx_psh(); SRSR.prefix();
+               {? SRSR.seek(SRSR.TREE) || SRDO.SRSR:=SRSR.ref() ?};
+               SRSR.cntx_pop()
+            || SRDO.SRSR:=SRSR.ref()
+            ?};
+            OKRO_F.cntx_psh();
+            OKRO_F.prefix();
+            {? OKRO_F.seek(__SRDO.OKRO_F,)
+            || SRDO.OKRO_F:=OKRO_F.ref()
+            || SRDO.OKRO_F:=null
+            ?};
+            OKRO_F.cntx_pop();
+            SRDO.ROK_F:=SRDO.OKRO_F().ROK;
+            SRDO.DO:=__SRDO.DO;
+            SRDO.DW:=__SRDO.DW;
+            SRDO.ROK:=SRDO.OKRO_F().RES;
+            {? SRDO.ODD_DOK<>SRST.ODD
+            || SRDO.ODD_DOK:=SRST.ODD
+            ?};
+            SRDO.NR:=exec('bl_srdo_nr','fst');
+            exec('be_srdo_symbol','fst');
+            SRDO.UWAGI:='Wygenerowany automatycznie w wyniku korekty poinwentaryzacyjnej';
+            SRDO.SRXI:=SRXI.ref();
+:: wartości pól z rejestru stanu we wskazanym okresie
+            exec('set_field_wart','fst');
+:: dokument automatyczny
+            SRDO.AUTO:='T';
+            SRDO.Z:='T';
+            SRDO.P:='-';
+            {? SRSR.GRP='T' || SRDO.WARF:=SRDO.UMOF:=SRDO.WARP:=SRDO.UMOP:=SRDO.WARD:=SRDO.UMOD:=0 ?};
+:: zapis dokumentu i uaktualnienie rejestru stanów
+            _wy:=SRDO.add();
+            {? _wy
+            || SRXD.SRDO:=SRDO.ref();
+               SRXD.put();
+               SRD.updateRecState(SRDO.OKRO_F,1);
+               {? SRD.isSet() || SRD.updateElements(SRDO.OKRO_F,1) ?};
+               {? SRD.isElement() || SRD.rootUpdate(SRSR.TREE, SRDO.OKRO_F,1) ?}
+            ?}
+         || _wy:=-1
+         ?}
+      ?}
+   ?};
+   EDIT_ES.cntx_pop();
+   SRXD.cntx_pop();
+   SRDO.cntx_pop();
+   SRSR.cntx_pop();
+   SRST.cntx_pop();
+   SRDT.cntx_pop()
+?};
+_wy
+
+
+\mt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Generowanie dokumentu zmiany właściwości
+::----------------------------------------------------------------------------------------------------------------------
+{? FINFO.SRXI_MT<>null
+|| _wy:=1
+|| _txt:='Pozycja: %1: Brak ustawionego typu dokumentu zmiany właściwości w parametrach programu.'@[__SRDO.NRI];
+   {? __SRDO.sel_size()=0 || FUN.emsg(_txt) || KOMM.add(_txt) ?};
+   _wy:=0
+?};
+
+{? _wy
+|| SRDT.cntx_psh();
+   SRST.cntx_psh();
+   SRSR.cntx_psh();
+   SRDO.cntx_psh();
+   SRXD.cntx_psh();
+   EDIT_ES.cntx_psh();
+   SRXD.prefix();
+   SRSR.prefix();
+   {? SRXD.seek(__SRDO.REF,)
+   || SRST.index('OKR_O_W');
+      SRST.prefix(SRXI.OKRO_F,SRXD.ODD,SRXD.NRI);
+      {? SRST.first()
+      || SRST.SRSR();
+         FINFO.SRXI_MT();
+         EDIT_ES.RODZ:='L';
+         SRDO.index('AUTO');
+         SRDO.prefix();
+         SRDO.blank();
+         SRDO.SRSR:=SRSR.ref();
+         OKRO_F.cntx_psh();
+         OKRO_F.prefix();
+         {? OKRO_F.seek(__SRDO.OKRO_F,)
+         || SRDO.OKRO_F:=OKRO_F.ref()
+         || SRDO.OKRO_F:=null
+         ?};
+         OKRO_F.cntx_pop();
+         SRDO.ROK_F:=SRDO.OKRO_F().ROK;
+         SRDO.DO:=__SRDO.DO;
+         SRDO.DW:=__SRDO.DW;
+         ZSKON.cntx_psh();
+         ZSKON.prefix();
+         SRDO.KONPOD:={? ZSKON.seek(__SRDO.KONPOD,) || ZSKON.ref || null ?};
+         SRDO.KONFIN:={? ZSKON.seek(__SRDO.KONFIN,) || ZSKON.ref || null ?};
+         SRDO.KONDOD:={? ZSKON.seek(__SRDO.KONDOD,) || ZSKON.ref || null ?};
+         ZSKON.cntx_pop();
+         SRDO.ROK:=SRDO.OKRO_F().RES;
+         {? SRDO.ODD_DOK<>SRST.ODD
+         || SRDO.ODD_DOK:=SRST.ODD
+         ?};
+         SRDO.NR:=exec('bl_srdo_nr','fst');
+         exec('be_srdo_symbol','fst');
+         SRDO.UWAGI:='Wygenerowany automatycznie w wyniku korekty poinwentaryzacyjnej';
+         SRDO.SRXI:=SRXI.ref();
+:: wartości pól
+         {? SRDO.TYP().JORG='T' || SRDO.JORG:=SRXD.JORG_N ?};
+         {? SRDO.TYP().ODD='T' | SRDO.TYP().JORG='T' || SRDO.ODD:=SRXD.ODD_N ?};
+         {? SRDO.TYP().POM='T' || SRDO.POM:=SRXD.POM_N ?};
+         {? SRDO.TYP().OSOBA='T'
+         || SRDO.OSOBA:=SRDO_POM.OSOBA:=SRXD.OSOBA_N;
+            SRDO_POM.PRCD:=SRXD.PRC().OSOBA().NAZWISKO;
+            SRDO_POM.PRC:=SRXD.PRC;
+            SRDO_POM.PSTN:=SRXD.PRC().ST().ST;
+            SRDO_POM.PWYD:=SRXD.PRC().WYDZIAL().SYMBOL;
+            EDIT_ES.PRCNAZ:=SRXD.PRC_N().OSOBA().NAZWISKO;
+            EDIT_ES.STNAZ:=SRXD.PRC_N().ST().ST;
+            EDIT_ES.WYDZNAZ:=SRXD.PRC_N().WYDZIAL().SYMBOL;
+            {? SRDO.PRC=null()
+            || SRDO.PRC:=SRXD.PRC_N
+            ?}
+         ?};
+:: dokument automatyczny
+         SRDO.AUTO:='T';
+:: zapis dokumentu i uaktualnienie rejestru stanów
+         _wy:=SRDO.add();
+         {? _wy
+         || {? SRDO.SRSR().POJAZD='T' & exec('poj_srsr','samochody',SRDO.SRSR)
+            ||
+::             środek jest zasobem w kartotece pojazdów - dołączany jest zapis zmiany dla zasoby
+               exec('zsb_blank','zasoby_wspolne',SRDO.SRSR);
+               ZASOB_ZM.DATAOD:=SRDO.DO;
+               ZASOB_ZM.OSOBA:=SRDO.OSOBA;
+               ZASOB_ZM.JORG:=SRDO.JORG;
+               ZASOB_ZM.SRDO_Z:=SRDO.ref();
+               ZM_ZASOB.ZASOBY:=ZASOB_ZM.ZASOBY;
+               {? ZASOB_ZM.add()
+               || exec('zam_poprz','zasoby_wspolne')
+               ?}
+            ?};
+            SRXD.SRDO:=SRDO.ref();
+            SRXD.put();
+            SRD.updateRecState(SRDO.OKRO_F,4);
+            {? SRD.isSet() || SRD.updateElements(SRDO.OKRO_F,4) ?}
+         ?}
+      ?}
+   ?};
+   EDIT_ES.cntx_pop();
+   SRXD.cntx_pop();
+   SRDO.cntx_pop();
+   SRSR.cntx_pop();
+   SRST.cntx_pop();
+   SRDT.cntx_pop()
+?};
+_wy
+
+
+\grp_ddok_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła przed akcją grupową generowania dokumentów
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask('Wygenerować dokumenty dla zaznaczonych pozycji?'@)
+|| KOMM.init(150,,'Uwagi dotyczące generowania dokumentów poinwenaryzacyjnych.'@);
+   SRD.KOMM:='T';
+   1
+|| 0
+?}
+
+
+\grp_ddok_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła po akcji grupowej generowania dokumentów
+::----------------------------------------------------------------------------------------------------------------------
+{? ~KOMM.empty() || KOMM.select() ?};
+SRD.KOMM:='N'
+
+
+\ddok_anuluj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła anuluje dokumenty poinwentaryzacyjne korygujące stan środków w bazie
+::----------------------------------------------------------------------------------------------------------------------
+{? SRXI.STATUS='T'
+|| FUN.emsg('Bieżąca inwentaryzacja jest już zamknięta, nie można anulować dokumentów.'@);
+   return()
+?};
+
+{? SRXI.r_lock(1,1,1)
+||
+   {? ~FUN.ask('Anulować wygenerowane dokumenty poinwentaryzacyjne?'@)
+   || SRXI.r_unlock();
+      return()
+   ?};
+
+   KOMM.init(150,,'Uwagi dotyczące anulowania dokumentów poinwentaryzacyjnych.'@);
+   SRD.KOMM:='T';
+
+   SRDO.cntx_psh();
+   SRDO.index('SRXI');
+   SRDO.prefix(SRXI.ref());
+   {? SRDO.first()
+   || _dalej:=0;
+      {! |?
+         {? SRDO.K='T'
+         || KOMM.add('Dokument %1 został zaksięgowany i nie można go anulować.'@[SRDO.SYMBOL])
+         |? SRDO.OKRO_F().AMOR='T'
+         || KOMM.add(
+                  'Okres obowiązywania dokumentu %1 został w systemie zamknięty, anulowanie niemożliwe.'@[SRDO.SYMBOL])
+         || SRXD.cntx_psh();
+            SRXD.index('SRXIDOK');
+            SRXD.prefix(SRDO.SRXI,SRDO.ref());
+            {? SRXD.first()
+            || SRXD.cntx_psh();
+               do();
+               SRXD.prefix();
+               SRXD.SRDO:=null;
+               SRXD.DOK_W:=SRXD.DOK_L:='N';
+               SRXD.put();
+               SRXD.cntx_pop();
+               SRDO.SRSR();
+               _okr:=SRDO.OKRO_F;
+               {? SRDO.SRSR_E<>null
+               || SRDO.SRSR_E();
+                  _tree:=SRSR.TREE
+               || _tree:=SRSR.ref()
+               ?};
+               {? SRDO.RODZ='W'
+               || _dalej:=0;
+                     SRSR.DOKSKR:=null;
+                     SRSR.Z:='N';
+                     SRSR.DES:=date(0,0,0);
+                     SRSR.put();
+                     {? SRDO.count()=0 & SRDO.del(1,1) || _dalej:=1 ?};
+                  {? _dalej
+                  || SRD.updateRecState(_okr,1);
+                     {? SRSR.GRP='E' || SRD.rootUpdate(_tree,_okr,1) ?};
+                     {? SRSR.GRP='T' || SRD.updateElements(_okr,1) ?}
+                  || KOMM.add('Podczas usuwania dokumentu pojawił się problem uniemożliwiający zakończenie operacji.'@);
+                     undo()
+                  ?}
+               |? SRDO.RODZ='L'
+               || SRDO.SRSR();
+                  {? SRDO.count()=0 & SRDO.del(1,1)
+                  || _dalej:=1;
+                     SRD.updateRecState(_okr);
+                     {? SRD.isSet() || SRD.updateElements() ?}
+                  || KOMM.add('Podczas usuwania dokumentu pojawił się problem uniemożliwiający zakończenie operacji.'@);
+                     undo(); _dalej:=0
+                  ?}
+               ?};
+               end()
+            ?};
+            SRXD.cntx_pop()
+         ?};
+         _dalej=1 & SRDO.first()
+      !}
+   || KOMM.add('Brak dokumentów do anulowania.'@)
+   ?};
+   SRDO.cntx_pop();
+
+   {? ~KOMM.empty() || KOMM.select() ?};
+   SRD.KOMM:='N';
+   SRXI.r_unlock()
+|| FUN.emsg('Inwentaryzacja zablokowana przez innego użytkownika.'@)
+?}
+
+
+\srxd_dok_show
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła wyświetla dokument poinwentaryzacyjny dla bieżącej pozycji arkusza
+::----------------------------------------------------------------------------------------------------------------------
+{? SRXD.SRDO=null
+|| FUN.emsg('Dla bieżącej pozycji arkusza nie wygenerowano dokumentu poinwentaryzacyjnego.'@);
+   return()
+?};
+SRDO.cntx_psh();
+SRDO.prefix();
+SRXD.SRDO();
+{? SRDO.TYP().RODZ='W'
+|| exec('dok_show_drdf','fst')
+|? SRDO.TYP().RODZ='L'
+|| exec('dok_show_drdz','fst')
+?};
+SRDO.cntx_pop()
+
+:Sign Version 2.0 jowisz:1045 2023/10/12 07:20:52 d45243a3a60a68a70a49c6cbce929deaecedf93eb6e1c8b96aac1017065ce6c132a388e2f237d241e0866c9db6ff5c308674e561a4edb1abb943f955db8bc43c15488a56fe26c8134a15b0cb3b0afc16ca3b866247402c02d956dd3bf7f04d5ed7549abf281927da36c3e7556652ed5b8c1d82f2fb24d32e3b719a8ac31b2a8e

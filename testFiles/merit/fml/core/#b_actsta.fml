@@ -1,0 +1,218 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #b_actsta.fml
+:: Utworzony: 16.07.2019
+:: Autor: AWI
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Obsługa czynności statrtowych i portów wyjściowych zdarzeń startowych nieoznaczonych
+::======================================================================================================================
+
+
+\port4event
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Porty wyjściowe zdarzeń startowych nieoznaczonych
+::   WE: _a - B_PROC.ref()
+::       _b - 'create'-tworzenie, 'remove'-usuwanie
+::       _c - T/N - STARTACT - uruchamiać czynność startową
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: iteracja po zdarzeniach startowych procesu
+_proc:=_a;
+_oper:=_b;
+_startact:={? var_pres('_c')=type_of('') || _c || 'T' ?};
+
+_result:=1;
+
+B_PREL.cntx_psh();
+B_PREL.index('PROCSTAR');
+B_PREL.prefix(_proc,'T');
+_loop:=B_PREL.first();
+{!
+|? _loop
+|!
+   {? exec('FindInSet','#table','B_EVENT','ELEMENT',B_PREL.B_ELE,,"B_EVENT.KIND",,,'')=exec('kind_none','#b_event')
+   ||
+:: tylko zdarzenia startowe nieoznaczone
+      {? _oper='remove'
+      ||
+:: usunięcie portów
+         _result:=exec('port4event_rm','#b_actsta',_proc,B_PREL.ref())
+      ||
+:: tworzenie portów
+         _result:=exec('port4event_cre','#b_actsta',_proc,B_PREL.ref(),~~,_startact)
+      ?}
+   ?};
+   _loop:=_result & B_PREL.next()
+!};
+B_PREL.cntx_pop();
+_result
+
+
+\port4event_cre
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Porty wyjściowe zdarzeń startowych nieoznaczonych - tworzenie
+::   WE: _a - B_PROC.ref()
+::       _b - B_PREL.ref()
+::       _c - parametry
+::       _d - T/N - STARTACT - uruchamiać czynność startową
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_proc:=_a;
+_prel:=_b;
+_params:=_c;
+_startact:=_d;
+
+_result:=1;
+
+{? type_of(_params)=type_of(~~)
+||
+   _params:=obj_new('PREL_EVE','VISITED');
+:: B_PREL któremu tworzymy porty wyjściowe
+   _params.PREL_EVE:=_prel;
+   _params.VISITED:=''
+?};
+{? _params.VISITED*($_prel)
+||
+:: element procesu już odwiedzony - pomijamy go
+   return(1)
+?};
+_params.VISITED+=$_prel;
+_buf_port:=exec('buffer','#b_port');
+_buf_pocon:=exec('buffer','#b_poconn');
+
+B_PREL.cntx_psh();
+B_CONN.cntx_psh();
+B_CONN.index('PROC');
+B_CONN.prefix(_proc,_prel);
+_loop:=B_CONN.first();
+{!
+|? _loop
+|!
+   {? B_CONN.TO
+   ||
+::    ustawienie bufora B_PREL
+      B_CONN.TO();
+      _to:=B_CONN.TO;
+      _ele:=B_PREL.B_ELE;
+      _class:=B_PREL.CLASS;
+      {? _ele=null() | _class=''
+      ||
+:: nieokreślony B_PREL - błędna sytuacja
+         _result:=0
+
+      |? _class='B_ACTION'
+      ||
+:: oznaczenie czynności w procesie jako startowa
+         B_PREL.cntx_psh();
+         B_PREL.prefix();
+         B_PREL.STARTACT:=_startact;
+         B_ACTSTA.index('UNIK');
+         B_ACTSTA.prefix(_params.PREL_EVE,_to);
+         {? ~B_ACTSTA.first()
+         ||
+            B_ACTSTA.PREL_EVE:=_params.PREL_EVE;
+            B_ACTSTA.PREL_ACT:=_to;
+            B_ACTSTA.ELE_ACT:=_ele;
+            B_ACTSTA.add()
+         ?};
+         {? B_PREL.put()
+         ||
+:: kopiowanie portów wejściowych czynności jako porty wyjściowe zdarzenia startowego
+            _pocon:=null();
+            B_PORT.cntx_psh();
+            B_PORT.index('B_ELE');
+            B_PORT.prefix('T',_ele,'IN');
+            _loop:=B_PORT.first();
+:: iteracja po portach czynności
+            {!
+            |? _loop
+            |!
+               _buf_port.get();
+               _buf_port.B_ELE:=null();
+               _buf_port.KIND:='OUT';
+               _buf_port.B_PREL:=_params.PREL_EVE;
+               _buf_port.B_ACTELE:=_ele;
+:: dodanie portu wyjściowego zdarzenia
+               _from:=exec('add','#b_port',_buf_port);
+               {? _from<>null()
+               ||
+                  _buf_pocon.blank();
+                  _buf_pocon.B_PROC:=_proc;
+                  _buf_pocon.B_CONN:=B_CONN.ref();
+                  _buf_pocon.FROM:=_from;
+                  _buf_pocon.TO:=B_PORT.ref();
+                  _buf_pocon.PREL_SRC:=_params.PREL_EVE;
+                  _buf_pocon.PREL_DST:=_to;
+:: powiązania portów
+                  {? exec('add','#b_poconn',_buf_pocon)=null()
+                  ||
+                     _result:=0
+                  ?}
+               ?};
+               _loop:=_result & B_PORT.next()
+            !};
+            B_PORT.cntx_pop()
+         ?};
+         B_PREL.cntx_pop()
+
+      |? _class='B_GATE'
+      ||
+:: dalsza analiza jeśli kolejny element jest bramą
+         _result:=exec('port4event_cre','#b_actsta',_proc,_to,_params,_startact)
+      ?}
+   ?};
+   _loop:=_result & B_CONN.next()
+!};
+B_CONN.cntx_pop();
+B_PREL.cntx_pop();
+_result
+
+
+\port4event_rm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Porty wyjściowe zdarzeń startowych nieoznaczonych - usuwanie
+::   WE: _a - B_PROC.ref()
+::       _b - B_PREL.ref()
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_proc:=_a;
+_prel:=_b;
+
+_result:=1;
+
+:: usunięcie portów wyjściowych zdarzenia startowego _prel
+B_PORT.cntx_psh();
+B_PORT.index('UNIK');
+B_PORT.prefix(null(),_prel);
+_loop:=B_PORT.first();
+{!
+|? _loop
+|!
+   _loop:=0;
+   {? exec('delete','#b_port',B_PORT.ref(),1)>0
+   ||
+      _loop:=B_PORT.first()
+   ||
+      _result:=0
+   ?}
+!};
+B_PORT.cntx_pop();
+:: usunięcie czynności startowych zdarzenia startowego _prel
+B_ACTSTA.cntx_psh();
+B_ACTSTA.index('UNIK');
+B_ACTSTA.prefix(_prel);
+_loop:=B_ACTSTA.first();
+{!
+|? _loop
+|!
+   _loop:=B_ACTSTA.del()
+!};
+B_ACTSTA.cntx_pop();
+_result
+
+:Sign Version 2.0 jowisz:1048 2021/04/09 15:24:21 92e51d988f1c901bc26ba45eac353cafbd984aac15a75aed94befd8c5948dae2cc8c130508c204a2819fba9974ec44530e2e7282af3901dfa52309053cdcff44798ac5c5b02e2e4722783e92a50a9bf20fccf6a83bdaee62af7285ce093d1cf25d34e1973a8674429721863c8ca017f27de901fda6378e3cd6e10123b776fb57

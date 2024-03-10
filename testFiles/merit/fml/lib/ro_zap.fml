@@ -1,0 +1,4175 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: ro_zap.fml
+:: Utworzony: 23.01.2018
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Formuły na zapominanie danych osobowych.
+::            Zapominanie może odbywać się poprzez zamazywanie wartości pól przechowujących dane osobowe lub poprzez
+::            utworzenie nowego rekordu z zamazanymi wartościami i zmianę powiązań wszystkich rekordów podrzędnych.
+::            W tym drugim przypadku formuła związana z daną tabelą powinna zwrócić informacje o utworzonym rekordzie.
+::======================================================================================================================
+:: Formuła jest wykonywana w transakcji założonej na zewnątrz (przez silnik).
+::======================================================================================================================
+:: Do formuł wywoływanych przez silnik (lub z obsługi grupowej) przekazywane są parametry:
+::    RODO     - Obiekt klasy RODO.
+::    DATA     - Data badania.
+::    SRC      - Tablica nazwana (patrz \ref_arg/ro_cfg.fml) z informacją o rekordzie, który ma zostać zapomniany.
+::    PROB     - Maksymalna licz prób losowania wartości unikalnych.
+::    RET      - Tablica nazwana (patrz \ret_val/ro_cfg.fml) do umieszczenia statusu przetwarzania.
+::               Uwaga: w polu RET.DATA znajduje się informacyjnie data, po której możliwe jest zapomnienie danych.
+::======================================================================================================================
+
+
+\_set_fval
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła-pętla wykonująca wskazaną formułę dla wszystkich rekordów we wszystkich maskach wskazanej tabeli.
+::   WE:  _a  [TABLE]  - Uchwyt przetwarzanej tabeli.
+::       [_b] [STRING] - SQL: fragment zapytania SQL po klauzuli FROM [domyślnie:''].
+::       [_c] [STRING] - SQL: fragment zapytania SQL po klauzuli WHERE [domyślnie:''].
+::       [_d] [ANY]    - SQL: parametr lub tablica parametrów [domyślnie:~~].
+::        _e  [RULE]   - Formuła do wykonania na każdym rekordzie (w każdej masce) przetwarzanej tabeli.
+::       [_f] [ANY]    - Parametr lub tablica parametrów przekazywana do wykonywanej formuły [domyślnie:~~].
+::       [_g] [NUMBER] - Czy usuwać zapisy z dziennika systemu:
+::                       0 - Nie [domyślnie];
+::                       1 - Tak.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(SYSLOG)
+|| _TAB:=_a
+|| return()
+?};
+
+_from:={? var_pres('_b')=type_of('') || _b || '' ?};
+_where:={? var_pres('_c')=type_of('') || _c || '' ?};
+:: _d - poniżej
+{? var_pres('_e')=type_of("")
+|| _rule:=_e
+|| return()
+?};
+_par:={? var_pres('_f')>0 || _f || ~~ ?};
+_del_log:=var_pres('_g')=type_of(0) & _g;
+
+_sql_body:=
+   'select "'+(2-!_TAB)+'".REFERENCE as REF '+
+   'from @'+(2-!_TAB)+' '+_from+' '+
+   {? _where='' || '' || 'where '+_where+' ' ?}+
+   'order by REF';
+
+_sql_rule:='sql(_a';
+
+_vp:=var_pres('_d');
+{? _vp>0
+|| _sql_par:=_d;
+   {? _vp<100
+   || _sql_rule+=',_b'
+   || {! _lp:=1 .. obj_len(_sql_par)
+      |! _sql_rule+=',_b['+$_lp+']'
+      !}
+   ?}
+|| _sql_par:=~~
+?};
+_sql_rule+=')';
+
+_REFS:=($_sql_rule)(_sql_body,_sql_par);
+
+_TAB.cntx_psh();
+_loop:=_REFS.first();
+{!
+|? _loop
+|! _name:=form(8+_REFS.REF);
+   _nr:=BIT.sqlint(_REFS.REF);
+   _TAB.use(_name);
+   _TAB.prefix();
+   {? _TAB.seek(_nr,)
+   || _crc:=_TAB.crc();
+      _rule(_par);
+      {? _TAB.crc()<>_crc
+      || _TAB.put()
+      ?};
+      {? _del_log
+      || exec('_del_syslog','ro_zap',_name,_nr)
+      ?}
+   ?};
+   _loop:=_REFS.next()
+!};
+_TAB.cntx_pop();
+
+~~
+
+
+\_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła-pętla usuwająca rekordy określone parametrami we wszystkich maskach wskazanej tabeli.
+::   WE:  _a  [TABLE]  - Uchwyt tabeli, z której będą usuwane rekordy.
+::       [_b] [STRING] - SQL: fragment zapytania SQL po klauzuli FROM [domyślnie:''].
+::       [_c] [STRING] - SQL: fragment zapytania SQL po klauzuli WHERE [domyślnie:''].
+::       [_d] [ANY]    - SQL: parametr lub tablica parametrów [domyślnie:~~].
+::       [_e] [RULE]   - Formuła do wykonania na każdym rekordzie (w każdej masce) przetwarzanej tabeli,
+::                       przed jego usunięciem [domyślnie:"1"];
+::       [_f] [ANY]    - Parametr lub tablica parametrów przekazywana do wykonywanej formuły [domyślnie:~~].
+::       [_g] [NUMBER] - Czy usuwać zapisy z dziennika systemu:
+::                       0 - Nie [domyślnie];
+::                       1 - Tak.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(SYSLOG)
+|| _TAB:=_a
+|| return()
+?};
+
+_from:={? var_pres('_b')=type_of('') || _b || '' ?};
+_where:={? var_pres('_c')=type_of('') || _c || '' ?};
+:: _d - poniżej
+_rule:={? var_pres('_e')=type_of("") || _e || "1" ?};
+_par:={? var_pres('_f')>0 || _f || ~~ ?};
+_del_log:=var_pres('_g')=type_of(0) & _g;
+
+_sql_body:=
+   'select "'+(2-!_TAB)+'".REFERENCE as REF '+
+   'from @'+(2-!_TAB)+' '+_from+' '+
+   {? _where='' || '' || 'where '+_where+' ' ?}+
+   'order by REF';
+
+_sql_rule:='sql(_a';
+
+_vp:=var_pres('_d');
+{? _vp>0
+|| _sql_par:=_d;
+   {? _vp<100
+   || _sql_rule+=',_b'
+   || {! _lp:=1 .. obj_len(_sql_par)
+      |! _sql_rule+=',_b['+$_lp+']'
+      !}
+   ?}
+|| _sql_par:=~~
+?};
+_sql_rule+=')';
+
+_REFS:=($_sql_rule)(_sql_body,_sql_par);
+
+_TAB.cntx_psh();
+_loop:=_REFS.first();
+{!
+|? _loop
+|! _name:=form(8+_REFS.REF);
+   _nr:=BIT.sqlint(_REFS.REF);
+   _TAB.use(_name);
+   _TAB.prefix();
+   {? _TAB.seek(_nr,)
+   || _rule(_par);
+      {? _TAB.del(1)>0 & _del_log
+      || exec('_del_syslog','ro_zap',_name,_nr)
+      ?}
+   ?};
+   _loop:=_REFS.next()
+!};
+_TAB.cntx_pop();
+
+~~
+
+
+\_del_syslog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Dla wskazanego parametrami rekordu, formuła usuwa zapisy z dziennika systemowego.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [STRING]           - Maska tabeli, z której pochodzi rekord.
+::       _b [NUMBER/REFERENCE] - Numer lub wskazanie rekordu.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _name:=_a
+|| return()
+?};
+{? var_pres('_b')=type_of(null())
+|| _nr:=#_b
+|? var_pres('_b')=type_of(0)
+|| _nr:=_b
+|| return()
+?};
+
+_LOG:=sql(
+   'select L.REFERENCE as REF '
+   'from @SYSLOG as L '
+   'where L.DBF=\':_a\' and L.RECNO=:_b '
+   'order by REF',
+   _name,_nr
+);
+
+SYSLOG.cntx_psh();
+_loop:=_LOG.first();
+{!
+|? _loop
+|! SYSLOG.use(form(8+_LOG.REF));
+   {? SYSLOG.seek(_LOG.REF)
+   || SYSLOG.del(1)
+   ?};
+   _loop:=_LOG.next()
+!};
+SYSLOG.cntx_pop();
+obj_del(_LOG);
+
+_LOG:=sql(
+   'select L.REFERENCE as REF '
+   'from @SYSSLG as L '
+   'where L.DBF=\':_a\' and L.RECNO=:_b '
+   'order by REF',
+   _name,_nr
+);
+
+SYSSLG.cntx_psh();
+_loop:=_LOG.first();
+{!
+|? _loop
+|! SYSSLG.use(form(8+_LOG.REF));
+   {? SYSSLG.seek(_LOG.REF)
+   || sysslg_del()
+   ?};
+   _loop:=_LOG.next()
+!};
+SYSSLG.cntx_pop();
+~~
+
+
+\_global
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła bada lokalność tabeli.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [TABLE] - Uchwyt tabeli.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('czy_tab_glob','#table',_a)
+
+
+\_test
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła testowa, do podłączenia do dowolnej konfiguracji.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+FUN.info(
+   'Zapominanie danych dla rekordu %1 na dzień %2.\nData okresu retencji upłynęła %3.'@
+   [_arg.SRC.SQL_REF,$_arg.DATA,$_ret.DATA]
+);
+_ret.STATUS:=500;
+_ret.INFO:='Formuła testowa.';
+
+~~
+
+
+\_vat_dek_pit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła biblioteczna - zeruje pola bieżącego rekordu tabeli VAT_DEK.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [ARRAY] - Tablica elementów nazwanych (patrz _osoba w \umprac i \umzlec).
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+VAT_DEK.memo_set(,'OPISKOR');
+VAT_DEK.memo_put(,'OPISKOR');
+
+exec('_set_fval','ro_zap',E_DEK,,'ZRODLO=:_a',VAT_DEK.ref(),
+   "  _fh:=fopen(null(),'Uw',,,1);
+      {? _fh.is_open()
+      || _fh.fwrite('Załącznik został usunięty.');
+         E_DEK.bl_put('PLIK_GEN',_fh,,,'empty.txt');
+         E_DEK.bl_put('PLIK_AKC',_fh,,,'empty.txt');
+         _fh.fclose()
+      ?};
+      obj_del(_fh)
+   ");
+VAT_DEK.US:=null();
+VAT_DEK.NAZWISKO:=_a.NAZWISKO;
+VAT_DEK.PIERWSZE:=_a.PIERWSZE;
+{? VAT_DEK.PESEL<>''
+|| VAT_DEK.PESEL:=_a.PESEL
+?};
+{? VAT_DEK.NIP<>''
+|| VAT_DEK.NIP:=_a.NIP
+?};
+VAT_DEK.DATA_UR:=date(0,0,0);
+VAT_DEK.WOJEWODZ:=VAT_DEK.POWIAT:=VAT_DEK.GMINA:=
+   VAT_DEK.ULICA:=VAT_DEK.DOM:=VAT_DEK.LOKAL:=
+   VAT_DEK.MIASTO:=VAT_DEK.KOD:=VAT_DEK.POCZTA:='';
+{? var_pres('OJCIEC',VAT_DEK)=27
+|| VAT_DEK.OJCIEC:=''
+?};
+{? var_pres('MATKA',VAT_DEK)=27
+|| VAT_DEK.MATKA:=''
+?};
+{? var_pres('UR_MIEJ',VAT_DEK)=27
+|| VAT_DEK.UR_MIEJ:=''
+?};
+{? var_pres('ZNIP',VAT_DEK)=27
+|| VAT_DEK.ZNIP:=''
+?};
+{? var_pres('RZNIP',VAT_DEK)=26
+|| VAT_DEK.RZNIP:=null()
+?};
+{? var_pres('KRAJZNIP',VAT_DEK)=26
+|| VAT_DEK.KRAJZNIP:=null()
+?};
+~~
+
+
+\_zz_dok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Anonimizacja w tebeli ZZ_DOK.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [REFERENCE] - Wskazanie rekordu tabeli ZZ_DOK.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_zz_dok:=_a;
+
+ZZ_DOK.cntx_psh();
+:: Czy tabela ZZ_DOK jest maskowalna?
+{? ZZ_DOK.name(1)*'?'
+|| ZZ_DOK.use('zz_do'+($REF.FIRMA+1))
+?};
+ZZ_DOK.prefix();
+{? ZZ_DOK.seek(_zz_dok)
+|| ZZ_DOK.memo_set(,'NOTA');
+   ZZ_DOK.memo_put(,'NOTA');
+   exec('_del','ro_zap',ZZ_DOKZ,,'ZZ_LINK=:_a',ZZ_DOK.ref())
+?};
+ZZ_DOK.cntx_pop();
+
+~~
+
+
+\_zz_osoba
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Anonimizacja danych związanych z bieżącym rekorderm tabeli ZZ_OSOBA. Zapis rekordu odbywa się w formule
+::       zewnętrznej.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [ARRAY] - Tablica z informacjami o osobach: "nowej", aninimizowanej, ...
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_osoba:=_a;
+
+_tTABLE:=type_of(ZZ_OSOBA);
+
+ZZ_OSOBA.NAZWISKO:=_osoba.NAZWISKO;
+ZZ_OSOBA.RODOWE:='';
+ZZ_OSOBA.PIERWSZE:=_osoba.PIERWSZE;
+ZZ_OSOBA.DRUGIE:=_osoba.DRUGIE;
+ZZ_OSOBA.PESEL:=_osoba.PESEL;
+
+exec('_zz_dok','ro_zap',ZZ_OSOBA.ZZ_DOK);
+
+{? var_pres('ZZ_KTO',ZA_FORM)=26
+|| exec('_set_fval','ro_zap',ZA_FORM,,'ZZ_KTO=:_a or ZZ_KOGO=:_a',ZZ_OSOBA.ref(),
+      "  exec('_set_fval','ro_zap',ZA_NOTA,,'ZA_FORM=:_a',ZA_FORM.ref(),""exec('_zz_dok','ro_zap',ZA_NOTA.ZZ_DOK)"");
+         exec('_zz_dok','ro_zap',ZA_FORM.ZZ_DOK)
+      "
+   )
+?};
+
+exec('_set_fval','ro_zap',ZO_FORM,,'ZZ_KTO=:_a or ZZ_KOGO=:_a',ZZ_OSOBA.ref(),
+   "  exec('_set_fval','ro_zap',ZO_NOTA,
+         'left join ZO_KOMP using(ZO_NOTA.ZO_KOMP,ZO_KOMP.REFERENCE) ',
+         'ZO_KOMP.ZO_FORM=:_a',
+         ZO_FORM.ref(),
+         "" exec('_set_fval','ro_zap',ZO_NOTAO,,'ZO_NOTA=:_a',ZO_NOTA.ref(),
+               """"ZO_NOTAO.memo_set(,'OPIS'); ZO_NOTAO.memo_put(,'OPIS')""""
+            );
+            exec('_zz_dok','ro_zap',ZO_NOTA.ZZ_DOK)
+         ""
+      );
+      exec('_zz_dok','ro_zap',ZO_FORM.ZZ_DOK)
+   "
+);
+
+exec('_set_fval','ro_zap',ZO_OSOBA,,'ZZ_OSOBA=:_a',ZZ_OSOBA.ref(),"exec('_zz_dok','ro_zap',ZO_OSOBA.ZZ_DOK)");
+
+exec('_set_fval','ro_zap',ZO_TEST,,'ZZ_OSOBA=:_a',ZZ_OSOBA.ref(),
+   "  {? var_pres('ZO_DOD')=type_of(ZO_TEST)
+      || exec('_set_fval','ro_zap',ZO_DOD,
+            'left join ZO_ASP using(ZO_DOD.ZO_ASP,ZO_ASP.REFERENCE) '+
+            'left join ZF_WYK using(ZO_ASP.ZF_WYK,ZF_WYK.REFERENCE) ',
+            'ZF_WYK.ZZ_LINK=:_a',
+            ZO_TEST.ZZ_DOK,
+            ""exec('_zz_dok','ro_zap',ZO_DOD.ZZ_DOK)""
+         )
+      ?};
+      exec('_zz_dok','ro_zap',ZO_TEST.ZZ_DOK)
+   "
+);
+
+{? var_pres('ZZ_TODO')=_tTABLE
+|| exec('_set_fval','ro_zap',ZZ_TODO,,'KTO=:_a or KOMU=:_a',ZZ_OSOBA.ref(),
+      "ZZ_TODO.TRESC:=_a.RODO.los_str(255,'A','ą')",_osoba
+   )
+?};
+~~
+
+
+\_dokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła biblioteczna realizująca zapomnienie załączników z tabel: DOKUM i DOKUMZ, które nie są związane z
+::       osobą lub kontrahentem. Nie wymagają więc podmiany pól relacyjnych, ale wymagają usunięcie treści.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [STRING] - Wskazanie rekordu właściciela (SQL-ref).
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('_set_fval','ro_zap',DOKUM,,'FIRMA=\''+$REF.FIRMA+'\' and REFSQL=\':_a\'',_a,
+   "  exec('dokumzdl','ro_zap');
+      DOKUM.memo_set(,'OPIS');
+      DOKUM.memo_put(,'OPIS');
+      DOKUM.NAZWA:=DOKUM.LOK:=DOKUM.EM:=DOKUM.OSOBA:=DOKUM.KR_OP:='';
+      DOKUM.DOKUM:=DOKUM.E_DOKUM:=null()
+   "
+)
+
+
+\_p
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła biblioteczna realizująca zapomnienie osoby na poziomie tabeli P (bez względu na forme współpracy).
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [ARRAY]  - Tablica z informacjami o osobach: "nowej", aninimizowanej, ...
+::       _b [STRING] - Kod obsługiwanej formy współpracy.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_osoba:=_a;
+_RODO:=_a.RODO;
+
+_fzatr:=_b;
+
+_tTABLE:=type_of(OSOBA);
+
+:: Dedykowana obsługa zestawień zbiorczych.  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+ZB_TYP.cntx_psh();
+ZB_TYP.index('NAZWA');
+ZB_TYP.prefix('nazwisko, imię, pesel',);
+{? ZB_TYP.first()
+|| ZB_OPIS.cntx_psh();
+   ZB_OPIS.index('TYP');
+   ZB_OPIS.prefix(ZB_TYP.ref());
+   {? ZB_OPIS.first()
+   || _key:=obj_new('SRC','NEW');
+      OSOBA.cntx_psh();
+      OSOBA.prefix();
+      _key.SRC:={? OSOBA.seek(_osoba.SRC_REF) || OSOBA.NAZWISKO+', '+OSOBA.PIERWSZE+', '+OSOBA.PESEL || '' ?};
+      _key.NEW:={? OSOBA.seek(_osoba.NEW_REF) || OSOBA.NAZWISKO+', '+OSOBA.PIERWSZE+', '+OSOBA.PESEL || '' ?};
+      OSOBA.cntx_pop();
+      {? _key.SRC<>'' & _key.NEW<>''
+      || O.cntx_psh();
+         O.prefix();
+         ZB_DEF.cntx_psh();
+         {!
+         |? ZB_DEF.use('d_zb'+('0'+$ZB_OPIS.LISTA().R+2)+('0'+$ZB_OPIS.LISTA().M+2));
+            ZB_DEF.prefix();
+            ZB_DEF.f_set('OPIS,WARTOSC',,'OPIS=:_a and WARTOSC=\':_b\'',ZB_OPIS.ref(),_key.SRC);
+            _loop:=ZB_DEF.f_first();
+            {!
+            |? _loop
+            |! ZB_DEF.WARTOSC:='_'+_key.NEW;
+               {? ZB_DEF.put()
+               || exec('_del_syslog','ro_zap',ZB_DEF.name(),ZB_DEF.ref())
+               ?};
+               _loop:=ZB_DEF.f_next()
+            !};
+            ZB_DEF.f_clear();
+            ZB_OPIS.next()
+         !};
+         ZB_DEF.cntx_pop();
+         O.cntx_pop()
+      ?}
+   ?};
+   ZB_OPIS.cntx_pop()
+?};
+ZB_TYP.cntx_pop();
+:: Koniec obsługi zestawień zbiorczych.  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+exec('_set_fval','ro_zap',A_OKRP,,'P=:_a',P.ref(),"A_OKRP.OSOBA:=_a",_osoba.NEW_REF,1);
+{? var_pres('A_RWN')=_tTABLE
+|| exec('_set_fval','ro_zap',A_RWN,,'P=:_a',P.ref(),
+      "  A_RWN.OPIS:=_a;
+         exec('_dokum','ro_zap',$A_RWN.ref())
+      ",_osoba.NAZWISKO+' '+_osoba.PIERWSZE+' IP:'+$P.IP,1
+   )
+?};
+{? var_pres('BHP_H')=_tTABLE
+|| exec('_set_fval','ro_zap',BHP_H,,'P=:_a',P.ref(),
+      "  BHP_H.memo_set(,'ROZP');
+         BHP_H.memo_put(,'ROZP');
+         exec('_dokum','ro_zap',$BHP_H.ref())
+      ",,1
+   )
+?};
+{? var_pres('BHP_I')=_tTABLE
+|| exec('_set_fval','ro_zap',BHP_I,,'P=:_a',P.ref(),
+      "  BHP_I.memo_set(,'INFO');
+         BHP_I.memo_put(,'INFO');
+         exec('_dokum','ro_zap',$BHP_I.ref())
+      ",,1
+   )
+?};
+{? var_pres('BHP_PP')=_tTABLE
+|| exec('_set_fval','ro_zap',BHP_PP,,'P=:_a',P.ref(),"BHP_PP.memo_set(,'INFO'); BHP_PP.memo_put(,'INFO')",,1)
+?};
+{? var_pres('BHP_W')=_tTABLE
+|| exec('_set_fval','ro_zap',BHP_W,,'P=:_a',P.ref(),
+      "  BHP_W.memo_set(,'OKOLICZN');
+         BHP_W.memo_put(,'OKOLICZN');
+         BHP_W.memo_set(,'SKUTKI');
+         BHP_W.memo_put(,'SKUTKI');
+         exec('_dokum','ro_zap',$BHP_W.ref())
+      ",,1
+   )
+?};
+exec('_set_fval','ro_zap',DEKL_POD,,'PRAC_ET=:_a',P.ref(),"DEKL_POD.OS_PODAT:=_a",_osoba.NEW_REF,1);
+:: Usuwamy powiązanie, aby móc usunąć rekord tabeli OS_ADRES.
+{? var_pres('OS_ADRES',H)=26
+|| exec('_set_fval','ro_zap',H,,'P=:_a',P.ref(),"H.OS_ADRES:=null()",,1)
+?};
+{? var_pres('KZP_P')=_tTABLE
+|| {? var_pres('P',KZP_P)=26
+   || exec('_set_fval','ro_zap',KZP_P,,'P=:_a',P.ref(),"KZP_P.OSOBA:=_a.NEW_REF",_osoba,1)
+   ?}
+?};
+{? var_pres('NEZLA')=_tTABLE
+|| _par:=obj_new(3);
+   _par[1]:=REF.FIRMA;
+   _par[2]:=_osoba.SRC_REF;
+   _par[3]:=_fzatr;
+   exec('_set_fval','ro_zap',NEZLA,,'FIRMA=:_a and OSOBA=:_b and F_ZATR=\':_c\'',_par,
+      "  NEZLA.OSOBA:=_a.NEW_REF;
+         NEZLA.PESEL:=_a.PESEL;
+         NEZLA.PIERWSZE:=_a.PIERWSZE;
+         NEZLA.DRUGIE:=_a.DRUGIE;
+         NEZLA.NAZWISKO:=_a.NAZWISKO;
+         NEZLA.PASZPORT:='';
+         NEZLA.UR_DATA:=_a.UR_DATA;
+         NEZLA.KOD:=NEZLA.MIASTO:=NEZLA.ULICA:=NEZLA.DOM:=NEZLA.LOKAL:='';
+         NEZLA.SERIA:=NEZLA.NUMER:=NEZLA.UB_W:='';
+         NEZLA.LEK_WSK:=NEZLA.KODY:=NEZLA.NUM_STAT:='';
+         NEZLA.LEK_ID:=NEZLA.LEK_IM:=NEZLA.LEK_NAZ:='';
+         NEZLA.R_STPK:='';
+         NEZLA.R_DA:=date(0,0,0);
+         NEZLA.DESCR:=''
+      ",_osoba,1);
+   obj_del(_par);
+   &_par
+?};
+{? var_pres('NBK')=_tTABLE
+|| exec('_set_fval','ro_zap',NBK,,'P=:_a',P.ref(),"NBK.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('OS_VIEW')=_tTABLE & var_pres('OSOBA',OS_VIEW)=26
+|| _fml:="
+      OS_VIEW.OSOBA:=_a.NEW_REF;
+      OS_VIEW.NAZWISKO:=_a.NAZWISKO;
+      OS_VIEW.PIERWSZE:=_a.PIERWSZE;
+      OS_VIEW.DRUGIE:=_a.DRUGIE;
+      ~~
+   ";
+   exec('_set_fval','ro_zap',OS_VIEW,,'P=:_a',P.ref(),_fml,_osoba,1)
+?};
+{? var_pres('OV_UPR')=_tTABLE
+|| exec('_set_fval','ro_zap',OV_UPR,,'P=:_a',P.ref(),"OV_UPR.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('P_KAP')=_tTABLE
+|| exec('_set_fval','ro_zap',P_KAP,,'P=:_a',P.ref(),"P_KAP.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('P_OSO',P_PZ)=26 & var_pres('PZ_OSO',P_PZ)=26
+|| exec('_set_fval','ro_zap',P_PZ,,'P=:_a or PZ=:_a',P.ref(),
+      "  {? P_PZ.P_OSO=_a.SRC_REF || P_PZ.P_OSO:=_a.NEW_REF ?};
+         {? P_PZ.PZ_OSO=_a.SRC_REF || P_PZ.PZ_OSO:=_a.NEW_REF ?}
+      ",
+      _osoba,1
+   )
+?};
+{? var_pres('P_UPR')=_tTABLE
+|| exec('_set_fval','ro_zap',P_UPR,,'P=:_a',P.ref(),"P_UPR.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('PIT12O')=_tTABLE
+|| exec('_del','ro_zap',PIT12O,,'P=:_a',P.ref(),"exec('_dokum','ro_zap',$PIT12O.ref())",,1)
+?};
+exec('_set_fval','ro_zap',PL_RES,,'FROM_PRA=:_a',P.ref(),"PL_RES.SYM:=_a",_osoba.NAZWISKO+' '+_osoba.PIERWSZE,1);
+{? var_pres('PM_DOMP')=_tTABLE
+|| exec('_set_fval','ro_zap',PM_DOMP,,'P=:_a',P.ref(),"PM_DOMP.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('PM_DYSP')=_tTABLE
+|| exec('_set_fval','ro_zap',PM_DYSP,,'P=:_a',P.ref(),"PM_DYSP.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('PM_NAG')=_tTABLE
+|| exec('_set_fval','ro_zap',PM_NAG,,'P=:_a',P.ref(),"PM_NAG.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('PM_PREM')=_tTABLE
+|| exec('_set_fval','ro_zap',PM_PREM,,'P=:_a',P.ref(),"PM_PREM.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('PM_RODZ')=_tTABLE
+|| exec('_set_fval','ro_zap',PM_RODZ,,'P=:_a',P.ref(),"PM_RODZ.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('PROJGD')=_tTABLE
+|| exec('_set_fval','ro_zap',PROJGD,,'P=:_a',P.ref(),"PROJGD.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+exec('_set_fval','ro_zap',PROJREZE,,'P=:_a',P.ref(),"PROJREZE.OSOBA:=_a",_osoba.NEW_REF,1);
+exec('_set_fval','ro_zap',PROJREZZ,,'P=:_a',P.ref(),"PROJREZZ.OSOBA:=_a",_osoba.NEW_REF,1);
+exec('_set_fval','ro_zap',PROJZAS,,'P=:_a',P.ref(),"PROJZAS.OSOBA:=_a",_osoba.NEW_REF,1);
+{? var_pres('P_WEB_CL')=_tTABLE
+|| exec('_del','ro_zap',P_WEB_CL,,'P=:_a',P.ref(),,,1)
+?};
+{? var_pres('P_WEB_CX')=_tTABLE
+|| exec('_del','ro_zap',P_WEB_CX,,'P=:_a',P.ref(),,,1)
+?};
+{? var_pres('R_ODN')=_tTABLE
+|| exec('_set_fval','ro_zap',R_ODN,,'P=:_a',P.ref(),"exec('_dokum','ro_zap',$R_ODN.ref())")
+?};
+{? var_pres('RD_OKR')=_tTABLE
+|| exec('_set_fval','ro_zap',RD_OKR,,'P=:_a',P.ref(),
+      "  RD_OKR.OSOBA:=_a;
+         exec('_dokum','ro_zap',$RD_OKR.ref())
+      ",_osoba.NEW_REF,1
+   )
+?};
+{? var_pres('P',RP7_OS)=26 & RP7_OS.P<>null()
+|| exec('_del','ro_zap',RP7_OS,,'P=:_a',P.ref(),
+      "  exec('_del','ro_zap',RP7_NB,,'OSOBA=:_a',RP7_OS.ref(),,,1);
+         exec('_del','ro_zap',RP7_KP,,'OSOBA=:_a',RP7_OS.ref(),""
+            exec('_del','ro_zap',RP7_KW,,'ZAPIS=:_a',RP7_KP.ref(),,,1)
+         "",,1)
+      ",,1
+   )
+|| _uni:=obj_new('PESEL','NIP','DOWOD','PASZPORT');
+   _uni.PESEL:=_RODO.unify('PESEL',OSOBA.PESEL);
+   _uni.NIP:=_RODO.unify('NIP',OSOBA.NIP);
+   _uni.DOWOD:=_RODO.unify('DOWOD',OSOBA.DOWOD);
+   _uni.PASZPORT:=_RODO.unify('PASZPORT',OSOBA.PASZPORT);
+   RP7_OS.cntx_psh();
+   RP7_OS.prefix();
+   {? RP7_OS.first()
+   || {!
+      |? {? _RODO.equal('PESEL',_uni.PESEL,RP7_OS.PESEL) |
+            _RODO.equal('NIP',_uni.NIP,RP7_OS.NIP) |
+            _RODO.equal('DOWOD',_uni.DOWOD,RP7_OS.DOWOD) |
+            _RODO.equal('PASZPORT',_uni.PASZPORT,RP7_OS.PASZPORT)
+         || exec('_del','ro_zap',RP7_NB,,'OSOBA=:_a',RP7_OS.ref(),,,1);
+            exec('_del','ro_zap',RP7_KP,,'OSOBA=:_a',RP7_OS.ref(),
+               "exec('_del','ro_zap',RP7_KW,,'ZAPIS=:_a',RP7_KP.ref(),,,1)",,1
+            );
+            _name:=RP7_OS.name();
+            _ref:=RP7_OS.ref();
+            {? RP7_OS.del(1)>0
+            || exec('_del_syslog','ro_zap',_name,_ref);
+               1
+            ?}
+         || RP7_OS.next()
+         ?}
+      !}
+   ?};
+   RP7_OS.cntx_pop();
+   obj_del(_uni)
+?};
+{? var_pres('RP_ETOC')=_tTABLE
+|| exec('_set_fval','ro_zap',RP_ETOC,,'DOD_P=:_a',P.ref(),
+      "exec('_zz_dok','ro_zap',RP_ETOC.ZZ_DOK); RP_ETOC.DOD_OS:=_a",
+      _osoba.NEW_REF,1
+   )
+?};
+{? var_pres('RP_OSET')=_tTABLE
+|| exec('_set_fval','ro_zap',RP_OSET,,'WER_P=:_a',P.ref(),
+      "exec('_zz_dok','ro_zap',RP_OSET.ZZ_DOK); RP_OSET.WER_OS:=_a",
+      _osoba.NEW_REF,1
+   )
+?};
+{? var_pres('RP_PRET')=_tTABLE
+|| exec('_set_fval','ro_zap',RP_PRET,,'WER_P=:_a',P.ref(),
+      "exec('_zz_dok','ro_zap',RP_PRET.ZZ_DOK); RP_PRET.WER_OS:=_a",
+      _osoba.NEW_REF,1
+   )
+?};
+{? var_pres('RP_PROC')=_tTABLE
+|| exec('_set_fval','ro_zap',RP_PROC,,'WER_P=:_a',P.ref(),"RP_PROC.WER_OS:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('RP_ZAP')=_tTABLE
+|| _pref:=P.ref();
+   P.cntx_psh();
+:: Niestety, wyzwalacz "put - po" tabeli RP_ZAP zmienia zawartość bufora tabeli P.
+   exec('_set_fval','ro_zap',RP_ZAP,,'ZAP_P=:_a',_pref,
+      "exec('_zz_dok','ro_zap',RP_ZAP.ZZ_DOK); RP_ZAP.ZAP_OS:=_a",
+      _osoba.NEW_REF,1
+   );
+   exec('_set_fval','ro_zap',RP_ZAP,,'WER_P=:_a',_pref,
+      "exec('_zz_dok','ro_zap',RP_ZAP.ZZ_DOK); RP_ZAP.WER_OS:=_a",
+      _osoba.NEW_REF,1
+   );
+   exec('_set_fval','ro_zap',RP_ZAP,,'AKC_P=:_a',_pref,
+      "exec('_zz_dok','ro_zap',RP_ZAP.ZZ_DOK); RP_ZAP.AKC_OS:=_a",
+      _osoba.NEW_REF,1
+   );
+   P.cntx_pop()
+?};
+exec('_set_fval','ro_zap',R_PRACDN,,'P=:_a',P.ref(),"R_PRACDN.I_USERS:=_a",_osoba.NEW_REF,1);
+{? var_pres('R_SZYCH')=_tTABLE
+|| exec('_set_fval','ro_zap',R_SZYCH,,'P=:_a',P.ref(),"R_SZYCH.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+exec('_set_fval','ro_zap',STRST_P,,'P=:_a',P.ref(),"STRST_P.OSOBA:=_a",_osoba.NEW_REF,1);
+exec('_set_fval','ro_zap',SZB_WYK,,'P=:_a',P.ref(),"SZB_WYK.OSOBA:=_a",_osoba.NEW_REF,1);
+{? P.ZZ_DOK<>null()
+|| exec('_set_fval','ro_zap',SZK_TREN,'join ZZ_OSOBA','ZZ_OSOBA.ZZ_LINK=:_a',P.ZZ_DOK,
+      "exec('_zz_dok','ro_zap',SZK_TREN.ZZ_DOK)"
+   );
+   exec('_set_fval','ro_zap',ZZ_OSOBA,,'ZZ_LINK=:_a',P.ZZ_DOK,"exec('_zz_osoba','ro_zap',_a)",_osoba,1)
+?};
+{? var_pres('SZK_PSZK')=_tTABLE & var_pres('P',SZK_PSZK)=26 & var_pres('OSOBA',SZK_PSZK)=26
+|| exec('_set_fval','ro_zap',SZK_PSZK,,'P=:_a',P.ref(),"SZK_PSZK.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+exec('_set_fval','ro_zap',SZK_PRAC,,'P=:_a',P.ref(),
+   "  SZK_PRAC.memo_set(,'UWAGI');
+      SZK_PRAC.memo_put(,'UWAGI');
+      {? var_pres('ZZ_DOK',SZK_PRAC)=26
+      || exec('_zz_dok','ro_zap',SZK_PRAC.ZZ_DOK)
+      ?}
+   "
+);
+{? var_pres('SZK_ZAP')=_tTABLE
+|| {? var_pres('OSOBA',SZK_ZAP)=26
+   || exec('_set_fval','ro_zap',SZK_ZAP,,'P=:_a',P.ref(),"SZK_ZAP.OSOBA:=_a",_osoba.NEW_REF,1)
+   ?};
+   {? var_pres('ZGL_OS',SZK_ZAP)=26
+   || exec('_set_fval','ro_zap',SZK_ZAP,,'ZGL_KTO=:_a',P.ref(),"SZK_ZAP.ZGL_OS:=_a",_osoba.NEW_REF,1)
+   ?};
+   {? var_pres('WER_OS',SZK_ZAP)=26
+   || exec('_set_fval','ro_zap',SZK_ZAP,,'WER_KTO=:_a',P.ref(),"SZK_ZAP.WER_OS:=_a",_osoba.NEW_REF,1)
+   ?}
+?};
+exec('_set_fval','ro_zap',VAT_DEK,,'P=:_a',P.ref(),
+   "  {? VAT_DEK.OS_PODAT=_a.SRC_REF
+      || VAT_DEK.OS_PODAT:=_a.NEW_REF
+      ?};
+      exec('_vat_dek_pit','ro_zap',_a)
+   ",
+   _osoba,1
+);
+{? var_pres('WT_NWU')=_tTABLE
+|| exec('_del','ro_zap',WT_NWU,,'P=:_a',P.ref(),,,1)
+?};
+exec('_del','ro_zap',ZALACZ,,'P=:_a',P.ref(),,,1);
+exec('_set_fval','ro_zap',ZALICZ,,'P=:_a',P.ref(),"ZALICZ.OSOBA:=_a",_osoba.NEW_REF,1);
+{? var_pres('ZP_DET')=_tTABLE
+|| exec('_set_fval','ro_zap',ZP_DET,,'P=:_a',P.ref(),"ZP_DET.OSOBA:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('ZP_OKR')=_tTABLE
+|| exec('_set_fval','ro_zap',ZP_OKR,,'AKC_P=:_a',P.ref(),"ZP_OKR.AKC_OS:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('ZP_POZ')=_tTABLE
+|| exec('_set_fval','ro_zap',ZP_POZ,,'RED_P=:_a',P.ref(),"ZP_POZ.RED_OS:=_a",_osoba.NEW_REF,1);
+   exec('_set_fval','ro_zap',ZP_POZ,,'AKC_P=:_a',P.ref(),"ZP_POZ.AKC_OS:=_a",_osoba.NEW_REF,1)
+?};
+{? var_pres('OSNODZ')=_tTABLE & var_pres('P',OSNODZ)=26
+|| exec('_del','ro_zap',OSNODZ,,'P=:_a',P.ref())
+?};
+{? var_pres('POZPG')=_tTABLE & var_pres('P',POZPG)=26
+|| exec('_set_fval','ro_zap',POZPG,,'P=:_a',P.ref(),"POZPG.OSOBA:=_a",_osoba.NEW_REF)
+?};
+{? var_pres('KE')=_tTABLE & var_pres('P',KE)=26
+|| exec('_del','ro_zap',KE,,'P=:_a',P.ref())
+?};
+{? var_pres('KM')=_tTABLE & var_pres('P',KM)=26
+|| exec('_del','ro_zap',KM,,'P=:_a',P.ref())
+?};
+{? var_pres('KTRL')=_tTABLE & var_pres('P',KTRL)=26
+|| exec('_del','ro_zap',KTRL,,'P=:_a',P.ref())
+?};
+{? var_pres('ZLAK')=_tTABLE & var_pres('P',ZLAK)=26
+|| exec('_del','ro_zap',ZLAK,,'P=:_a',P.ref())
+?};
+{? var_pres('ZLBS')=_tTABLE & var_pres('P',ZLBS)=26
+|| exec('_del','ro_zap',ZLBS,,'P=:_a',P.ref())
+?};
+~~
+
+
+\_rd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła biblioteczna realizująca zapomnienie członka rodziny.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [REFERENCE] - Wskazanie osoby.
+::       _b [OBJECT]    - Uchwyt obiektu klasy RODO.
+::       _c [NUMBER]    - Liczba prób anonimizacji.
+::   WY: Wynik operacji: [1/0].
+::----------------------------------------------------------------------------------------------------------------------
+_osoba:=_a;
+_RODO:=_b;
+_lprob:=_c;
+
+_ret:=0;
+
+_lp:=0;
+_again:=1;
+{!
+|? _again
+|! RD.blank();
+:: "Zerujemy" wszystkie pola i nadejemy wartości tylko tym, które wchodzą do indeksu unikalnego.
+:: Kod powinien być zsynchronizowany z zapominaniem pracownika.
+   RD.OSOBA:=_osoba;
+   RD.NA:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+   RD.IM:=^8258+_RODO.los_str(255,'ą');
+   RD.DA:=_RODO.los_dt();
+   {? var_pres('OJCIEC',RD)=27
+   || RD.OJCIEC:=RD.OJCIECN:=''
+   ?};
+   {? var_pres('MATKA',RD)=27
+   || RD.MATKA:=''
+   ?};
+   {? RD.put(1)
+   || _again:=0;
+      exec('_del_syslog','ro_zap',RD.name(),RD.ref());
+      exec('add','ro_map','U',RD.ref(),RD.ref(),REF.FIRMA);
+      _ret:=1
+   || _lp+=1;
+      {? _lprob<=_lp
+      || _again:=0
+      ?}
+   ?}
+!};
+
+_ret
+
+
+\_osoba
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła biblioteczna realizująca zapomnienie osoby na poziomie tabeli OSOBA.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::        _b  [ARRAY]  - Tablica z informacjami o osobach: "nowej", anonimizowanej, ...
+::        _c  [TABLE]  - Tablica z informacjami o wszystkich rekordach związanych z bieżącym rekordem tabeli OSOBA
+::                       (tabela - wynik metody OSOBA.testlink()).
+::       [_d] [STRING] - Kod formy współpracy (jeżeli usuwanie osoby następuję w związku z anonimizacją części
+::                       personelowej) [domyślnie:''].
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_osoba:=_b;
+_TL:=_c;
+_fzatr:={? var_pres('_d')=type_of('') || 1+_d || '' ?};
+
+_FLD:=exec('fld','ro_zap','OSOBA');
+
+:: Czy analizowana osoba jest wykorzystywana w innych firmach.
+_oso_fir:=exec('oso_fir','ro_ret',_TL);
+
+:: Czy analizowana osoba jest wykorzystywana personelowo w innych firmach / w bieżącej firmie?
+_personex:=0;
+_personel:=0;
+_PRAC:=sql('select distinct P.FIRMA as "FIRMA" from P where P.OSOBA=:_a order by FIRMA',OSOBA.ref());
+{? _PRAC.first()
+|| {!
+   |? {? _PRAC.FIRMA=$REF.FIRMA
+      || _personel+=1
+      || _personex+=1
+      ?};
+      (~_personex | ~_personel) & _PRAC.next()
+   !}
+?};
+
+{? ~_personel
+|| exec('add','ro_map','U',OSOBA.ref(),OSOBA.ref(),REF.FIRMA)
+?};
+
+_tTABLE:=type_of(OSOBA);
+
+:: Obiekt do obsługi użytkowników.
+_su:=exec(,'__sysusr');
+
+_RODO:=_osoba.RODO;
+_loop:=_TL.first();
+{!
+|? _loop
+|! _TAB:=($_TL.TABELA)();
+   _TAB.cntx_psh();
+   _TAB.use(_TL.MASKA);
+   _TAB.prefix();
+   {? _TAB.seek(_TL.REF,)
+   || _del:=0;
+      _skip:=0;
+      _run:="";
+      {? '|P|P_UPR|PRZ|PRZ_UPR|GIODO'
+         '|A_OKRP|DEKL_POD|NBK|OS_VIEW|P_PZ|P_WEB_CX|PM_DOMP|PM_DYSP|PM_NAG|PM_PREM|PM_RODZ|R_SZYCH|RD_OKR'
+         '|RP_ETOC|RP_OSET|RP_PRET|RP_PROC|RP_ZAP|STRST_P|SZB_WYK|SZK_PSZK|SZK_ZAP|VAT_DEK|WT_NWU|ZC'
+         '|ZP_DET|ZP_OKR|ZP_POZ'
+         '|'*('|'+_TL.TABELA+'|')
+::       Te tabele pomijamy - są obsługiwane specjalnie.
+      || _skip:=1
+
+      |? _TL.TABELA='DOKUM'
+      || _run:="exec('dokumzdl','ro_zap');
+                DOKUM.memo_set(,'OPIS');
+                DOKUM.memo_put(,'OPIS');
+                DOKUM.REFSQL:='';
+                DOKUM.NAZWA:=DOKUM.LOK:=DOKUM.EM:=DOKUM.OSOBA:=DOKUM.KR_OP:='';
+                DOKUM.DOKUM:=DOKUM.E_DOKUM:=null()
+              ";
+         _del:=~exec('fir_tab','ro_ret',_TL,($_TL.TABELA)())
+      |? _TL.TABELA='EDOKUM'
+      || _run:="{? var_pres('UL',EDOKUM)>0 || EDOKUM.UL:='' ?};
+                {? var_pres('MIASTO',EDOKUM)>0 || EDOKUM.MIASTO:='' ?};
+                {? var_pres('POCZ',EDOKUM)>0 || EDOKUM.POCZ:='' ?};
+                {? var_pres('KH_FULL',EDOKUM)>0 || EDOKUM.KH_FULL:='' ?};
+                {? var_pres('DOM',EDOKUM)>0 || EDOKUM.DOM:=EDOKUM.LOKAL:=EDOKUM.KPOCZ:='' ?};
+                exec('edz_del','ro_zap',EDOKUM.ref());
+                exec('eda_del','ro_zap',EDOKUM.ref())
+              ";
+         _skip:=exec('fir_odd','ro_ret',_TL,($_TL.TABELA)())
+      |? _TL.TABELA='EMER_REN' & EMER_REN.FIRMA=REF.FIRMA
+      || _run:="EMER_REN.NRE:=_a.RODO.los_str(20,'0')";
+         _skip:=_personel
+      |? _TL.TABELA='USERS'
+      || {? ~(_oso_fir | _personel)
+         || {? USERS.KH=null() & USERS.HAN=null()
+            || _lp:=0;
+               _again:=1;
+               _guid:=USERS.GUID;
+               USERS.blank();
+               {!
+               |? _again
+               |! USERS.KOD:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+                  USERS.DANE:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+                  USERS.AKT:='N';
+                  {? USERS.put(1)
+                  || _su.delUser(_guid);
+                     exec('_del_syslog','ro_zap',_TL.MASKA,_TL.REF);
+                     _again:=0
+                  || _lp+=1;
+                     {? _arg.PROB<=_lp
+                     || _again:=0;
+                        undo()
+                     ?}
+                  ?}
+               !}
+            || USERS.OSOBA:=null();
+               USERS.put()
+            ?}
+         ?};
+         _skip:=1
+      |? _TL.TABELA='I_USERS'
+      || {? ~(_oso_fir | _personel)
+         || _lp:=0;
+            _again:=1;
+            {!
+            |? _again
+            |! I_USERS.LOGIN:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+               I_USERS.LAST_IP:='';
+               I_USERS.EMAIL:=_RODO.los_str(20,'a')+'@'+_RODO.los_str(20,'a')+'.pl';
+               I_USERS.AKT_PORT:='N';
+               I_USERS.HASLOTMP:=I_USERS.HASLO:='';
+               I_USERS.OSOBA:=null();
+               {? I_USERS.put(1)
+               || exec('_del_syslog','ro_zap',_TL.MASKA,_TL.REF);
+                  _again:=0
+               || _lp+=1;
+                  {? _arg.PROB<=_lp
+                  || _again:=0;
+                     undo()
+                  ?}
+               ?}
+            !}
+         ?};
+         _skip:=1
+      |? _TL.TABELA='KAL_KORN'
+      || _skip:=_personel
+      |? _TL.TABELA='KART_DOD'
+      || _run:="KART_DOD.OPIS:=_a.RODO.los_str(255,'A','ą'); KART_DOD.memo_set(,'UWAGI'); KART_DOD.memo_put(,'UWAGI')";
+         _skip:=_personel | (var_pres('FIRMA',KART_DOD)=26 & KART_DOD.FIRMA<>REF.FIRMA)
+      |? _TL.TABELA='KOM_OS'
+      || _run:="KOM_OS.WIE:=KOM_OS.KOM:=null(); KOM_OS.SYG:=''";
+         _skip:=_personel | (var_pres('FIRMA',KOM_OS)=26 & KOM_OS.FIRMA<>REF.FIRMA)
+      |? _TL.TABELA='KU'
+      || _skip:=_personel | (var_pres('FIRMA',KU)=26 & KU.FIRMA<>REF.FIRMA)
+      |? _TL.TABELA='KZP_P'
+      || _skip:=_personel | (var_pres('P',KZP_P)=26 & KZP_P.P<>null())
+      |? _TL.TABELA='NEZLA'
+      || _skip:=_personel | (var_pres('FIRMA',NEZLA)=26 & NEZLA.FIRMA<>REF.FIRMA)
+      |? _TL.TABELA='NWU'
+      || _skip:=_personel | (exec('_global','ro_zap',_TAB) & _personex)
+      |? _TL.TABELA='OS_ADRES'
+      || _run:="
+            {? OS_ADRES.count()
+            || OS_US.cntx_psh();
+               OS_US.prefix();
+               OS_US.f_set('OSOBA,OD',,'OSOBA=:_a and OS_ADRES=:_b',OS_ADRES.OSOBA,OS_ADRES.ref());
+               {? OS_US.f_first()
+               || {!
+                  |? OS_US.OS_ADRES:=null();
+                     OS_US.put();
+                     OS_US.f_next()
+                  !}
+               ?};
+               OS_US.f_clear();
+               OS_US.cntx_pop()
+            ?}
+         ";
+         {? _oso_fir | _personel | _personex
+         || _skip:=1
+         || _del:=1
+         ?}
+      |? _TL.TABELA='OS_DNAUK'
+      || _run:="OS_DNAUK.OPIS:=''; OS_DNAUK.memo_set(,'UWAGI'); OS_DNAUK.memo_put(,'UWAGI')";
+         _skip:=_personel | (exec('_global','ro_zap',_TAB) & _personex)
+      |? _TL.TABELA='OS_N'
+      || _skip:=_fzatr<>'Z' | (var_pres('FIRMA',OS_N)=26 & OS_N.FIRMA<>REF.FIRMA)
+      |? _TL.TABELA='OS_NOTKA'
+      || {? (_fzatr='Z' & OS_NOTKA.RODZAJ='Z') | (_fzatr='P' & OS_NOTKA.RODZAJ='P') | (~_personel & OS_NOTKA.RODZAJ='O')
+         || _del:=1
+         || _skip:=1
+         ?}
+      |? _TL.TABELA='OS_PAB'
+      || {? _personel | (exec('_global','ro_zap',_TAB) & _personex)
+         || _skip:=1
+         || _del:=1
+         ?}
+      |? _TL.TABELA='OS_ROR' | _TL.TABELA='OS_TYT' | _TL.TABELA='OS_US'
+      || {? _personel | _personex
+         || _skip:=1
+         || _del:=1
+         ?}
+      |? _TL.TABELA='OS_ZNIP'
+      || {? _personel | (exec('_global','ro_zap',_TAB) & _personex)
+         || _skip:=1
+         || _del:=1
+         ?}
+      |? _TL.TABELA='OS_SZKOL'
+      || {? _personel
+         || _skip:=1
+         || _del:=1
+         ?}
+      |? _TL.TABELA='OV_UPR'
+      || _skip:=(var_pres('P',OV_UPR)=26 & OV_UPR.P<>null()) | (var_pres('PRZ',OV_UPR)=26 & OV_UPR.PRZ<>null())
+      |? _TL.TABELA='P_INFO'
+      || _skip:=_personel | (var_pres('FIRMA',P_INFO)=26 & P_INFO.FIRMA<>REF.FIRMA)
+      |? _TL.TABELA='P_KAP'
+      || _skip:=var_pres('P',P_KAP)=26 & P_KAP.P<>null()
+      |? _TL.TABELA='P_NSKL'
+      || _skip:=_personel | (var_pres('FIRMA',P_NSKL)=26 & P_NSKL.FIRMA<>REF.FIRMA)
+      |? _TL.TABELA='PB'
+      || _kd:=
+            {? PB.KD*'KALI: komornik'=1 | PB.KD*'PPL: Komornik'=1
+            || 'K'
+            |? PB.KD*'KALI: płace'=1 | PB.KD*'PPL: Płace'=1
+            || 'P'
+            |? PB.KD*'KALI: umowa'=1 | PB.KD*'PPL: Umowy'=1
+            || 'Z'
+            || ''
+            ?};
+         {? exec('fir_odd','ro_ret',_TL,PB) |
+::          Jeżeli osoba jest jeszcze personelowa i jest to przelew do komornika, to pomiń (przelewy komornicze
+::          usuwamy w ostanim kroku).
+            (_personel & _kd='K') |
+::          Tutaj osoba już nie jest używana personelowo, albo to nie jest przelew do komornika.
+            (_fzatr='P' & _kd<>'K' & _kd<>'P') |
+            (_fzatr='Z' & _kd<>'K' & _kd<>'Z')
+         || _skip:=1
+         || _run:="PB.W:=_a.NAZWISKO+' '+_a.PIERWSZE+' '+_a.DRUGIE; PB.TYT:=PB.KP:=PB.M:=PB.UL:=''"
+         ?}
+      |? _TL.TABELA='POZPG'
+      || _skip:=var_pres('P',POZPG)=26 & POZPG.P<>null()
+      |? _TL.TABELA='PROJGD'
+::       W tabeli PROJGD są dwa pola zrelacjonowane z tabelą OSOBA (HAN,OSOBA). Jeżeli trafiliśmy tutaj ze względu na
+::       zawartość pola OSOBA, to nic nie robimy - ten przypadek obsłużony będzie z poziomu tabeli P.
+      || _skip:=PROJGD.OSOBA=OSOBA.ref()
+      |? _TL.TABELA='PROJREZE'
+      || _skip:=PROJREZE.P<>null() | PROJREZE.PRZ<>null()
+      |? _TL.TABELA='PROJREZZ'
+      || _skip:=PROJREZZ.P<>null() | PROJREZZ.PRZ<>null()
+      |? _TL.TABELA='PROJZAS'
+      || _skip:=PROJZAS.P<>null()
+      |? _TL.TABELA='PIT12O'
+      || _skip:=PIT12O.P<>null() | _personel
+      |? _TL.TABELA='PKO'
+      || {? _personel
+         || _skip:=1
+         || _run:="
+               FIRMA.cntx_psh();
+               FIRMA.prefix();
+               SKID_RBK.cntx_psh();
+               SKID_RBK.prefix();
+               _jest:=var_pres('FIRMA',SKID_RBK)=26;
+               SKID_RBK.f_set(
+                  {? _jest || 'FIRMA,' || '' ?}+'TAB,REF,SLO,N',,
+                  {? _jest || 'FIRMA is null and ' || '' ?}+'TAB='':_a'' and REF=:_b and SLO is null and N='':_c''',
+                  REF.FIRMA().SYMBOL+'OSOBA',
+                  #PKO.OSOBA,
+                  PKO.N
+               );
+               {? SKID_RBK.f_first()
+               || _name:=SKID_RBK.name();
+                  {!
+                  |? {? SKID_RBK.count()=0
+                     || _ref:=SKID_RBK.ref();
+                        SKID_RBK.del();
+                        exec('_del_syslog','ro_zap',_name,_ref)
+                     ?};
+                     SKID_RBK.f_next()
+                  !}
+               ?};
+               SKID_RBK.f_clear();
+               SKID_RBK.cntx_pop();
+               FIRMA.cntx_pop()
+            ";
+            _del:=1
+         ?}
+      |? _TL.TABELA='POZPG'
+      || {? POZPG.P=null()
+         || _del:=1
+         || _skip:=1
+         ?}
+      |? _TL.TABELA='PRACW'
+      || _run:="PRACW.NA:=_a.NAZWISKO; PRACW.IM:=_a.PIERWSZE; PRACW.PRAC:=PRACW.NA+' '+PRACW.IM";
+         _skip:=_personel
+      |? _TL.TABELA='PROJGD'
+      || {? PROJGD.FIRMA=REF.FIRMA & ~_personel
+         || {? PROJGD.P=null() & PROJGD.OSOBA=OSOBA.ref()
+            || _del:=1
+            |? PROJGD.HAN=OSOBA.ref()
+            || PROJGD.HAN:=null();
+               PROJGD.put();
+               _skip:=1
+            ?}
+         || _skip:=1
+         ?}
+      |? _TL.TABELA='R_KDOD'
+      || _run:="R_KDOD.OPIS:=_a.RODO.los_str(255,'A','ą'); R_KDOD.memo_set(,'UWAGI'); R_KDOD.memo_put(,'UWAGI')";
+         _skip:=_personel
+      |? _TL.TABELA='RD'
+      || {? ~(_personel | (exec('_global','ro_zap',_TAB) & _personex))
+         || {? ~exec('_rd','ro_zap',_osoba.NEW_REF,_RODO,_arg.PROB)
+            || undo()
+            ?}
+         ?};
+         _skip:=1
+      |? _TL.TABELA='STAZ'
+      || {? var_pres('USPKOD',STAZ)=26
+         || _run:="STAZ.F:=STAZ.USPPPRAT:=''; STAZ.STN:=STAZ.ROU:=STAZ.USPKOD:=STAZ.USPPPRAK:=STAZ.USPSTR:=null()"
+         || _run:="STAZ.F:=''; STAZ.STN:=STAZ.ROU:=null()"
+         ?};
+         _skip:=_personel | (var_pres('FIRMA',STAZ)=26 & STAZ.FIRMA<>REF.FIRMA)
+      |? _TL.TABELA='UPR_ZAWO'
+      || _run:="UPR_ZAWO.NR:=UPR_ZAWO.DOK_NR:=''; UPR_ZAWO.memo_set(,'UWAGI'); UPR_ZAWO.memo_put(,'UWAGI')";
+         _skip:=_personel | _personex
+      |? _TL.TABELA='VAT_DEK'
+      || _run:="exec('_vat_dek_pit','ro_zap',_a)";
+         _skip:=_personel
+      |? _TL.TABELA='WOJ' | _TL.TABELA='ZJ'
+      || {? _personel | _personex
+         || _skip:=1
+         || _del:=1
+         ?}
+      |? _TL.TABELA='ZALACZ'
+      || {? _personel | (exec('_global','ro_zap',_TAB) & _personex)
+         || _skip:=1
+         || {? var_pres('ZAL_POBH')=_tTABLE
+            || _run:="exec('_del','ro_zap',ZAL_POBH,,'ZALACZ=:_a',ZALACZ.ref())"
+            ?};
+            _del:=1
+         ?}
+      |? _TL.TABELA='ZALICZ'
+      || _skip:=ZALICZ.P<>null()
+      |? _TL.TABELA='ZUS_RAP'
+      || _skip:=(_fzatr='Z' & ZUS_RAP.ZC=null()) | (_fzatr='P' & ZUS_RAP.ZC<>null())
+      |? _TL.TABELA='ZAOHI'
+::       Struktura hierarchiczna - najpierw usuńmy rekordy podrzędne
+      || _del:=exec('del_tree_branch','#tree',ZAOHI,'ZAOHI',,ZAOHI.ref())=1
+
+::       |IS_WYPL|KOM_SKL|KAL_KORN|NEZLA|PROJEKTY|PROJETAP|PRZETARG|R_PRACDN|SROD|SRDO|SZK_PLAN|ULGI_POD|ZC_INFO
+::       |ZSB_BAD|ZSB_CZYU|ZL|
+      || _skip:=_personel | _personex | (exec('_global','ro_zap',_TAB) & _oso_fir)
+      ?};
+
+      {? _del
+      || _run(_osoba);
+         {? ~_TAB.count()
+         || _TAB.del(1)
+         ?}
+      |? ~_skip
+      || _crc:=_TAB.crc();
+         _FLD.prefix(_TL.TABELA,);
+         _loop:=_FLD.first();
+         {!
+         |? _loop
+         |! _fld:=_FLD.TABELA+'.'+_FLD.POLE;
+            {? ($_fld)()=_osoba.SRC_REF
+            || ($(_fld+':=_a'))(_osoba.NEW_REF)
+            ?};
+            _loop:=_FLD.next()
+         !};
+         _run(_osoba);
+         {? _crc<>_TAB.crc()
+         || _TAB.put()
+         ?}
+      ?};
+
+      {? _del | ~_skip
+      || exec('_del_syslog','ro_zap',_TL.MASKA,_TL.REF)
+      ?}
+
+::   || 'Co jeżeli nie ma tego rekordu?!'
+::       No może się zdarzyć, że rekordu nie znajdziemy - np. gdy był elementem struktury drzewiastej i został usunięty
+::       wcześniej - w ramach usuwania rodzica. Ale nie jest to powód do paniki.
+   ?};
+   _TAB.cntx_pop();
+   obj_del(_TAB);
+   _loop:=_TL.next()
+!};
+
+{? ~_personel
+|| exec('_del','ro_zap',GIODO,,'OSOBA=:_a',OSOBA.ref())
+?};
+
+~~
+
+
+\_add_osoba
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła tworzy nowy, zanonimizowany rekord w tabeli OSOBA.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: Wskazanie utworzonego rekordu lub null().
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+
+_new_ref:=null();
+_lp:=0;
+_again:=1;
+OSOBA.cntx_psh();
+{!
+|? _again
+|! OSOBA.blank();
+   OSOBA.NAZWISKO:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+   OSOBA.PIERWSZE:=^8258+_RODO.los_str(255,'ą');
+   OSOBA.PLEC:={? rand()<0.5 || 'K' || 'M' ?};
+   OSOBA.PESEL:='999'+_RODO.los_str(11-3,'0');
+   OSOBA.NIP:='999'+_RODO.los_str(10-3,'0');
+   OSOBA.PASZPORT:=^8258+_RODO.los_str(3,'A')+_RODO.los_str(20-4,'0');
+   OSOBA.DOWOD:=^8258+_RODO.los_str(3,'A')+_RODO.los_str(11-4,'0');
+   OSOBA.UR_DATA:=_RODO.los_dt();
+   OSOBA.REJ_DATA:=date(0,0,0);
+   OSOBA.REJ_INFO:='';
+   {? OSOBA.add(1)
+   || _again:=0;
+      _new_ref:=OSOBA.ref();
+      exec('add','ro_map','U',OSOBA.ref(),OSOBA.ref(),'*')
+   || _lp+=1;
+      _again:=_lp<_arg.PROB
+   ?}
+!};
+OSOBA.cntx_pop();
+_new_ref
+
+
+\umprac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z realizacją postanowień umowy o pracę (OSOBA).
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+exec('_ump','ro_zap',_a,'P')
+
+
+\kontrakt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z realizacją postanowień umowy o pracę (OSOBA).
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+exec('_ump','ro_zap',_a,'K')
+
+
+\rcp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ARTSLO [19.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z ewidencją czasu pracy (OSOBA).
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+exec('_ump','ro_zap',_a,'R')
+
+
+\tymczas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ARTSLO [19.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z realizacją postanowień umowy o pracę tymczasową (OSOBA).
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+exec('_ump','ro_zap',_a,'T')
+
+
+\_ump
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z realizacją postanowień umowy o pracę (OSOBA).
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::        _b  [STRING] - Kod obsługiwanej formy współpracy.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_fzatr:=_b;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=OSOBA
+|| OSOBA.cntx_psh();
+   OSOBA.prefix();
+   {? OSOBA.seek(_arg.SRC.REF)
+::    Cały czas bieżącym rekorderm w tabeli OSOBA będzie źródłowy rekord anonimizowany.
+   || _new_ref:=exec('_add_osoba','ro_zap',_arg);
+      {? _new_ref=null()
+      || _ret.STATUS:=-2;
+         _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+      |? OSOBA.cntx_psh();
+         OSOBA.prefix();
+         {? OSOBA.seek(_new_ref)
+::          Zapamiętanie wybranych informacji o docelowym rekordzie.
+         || _osoba:=obj_new('RODO','SRC_REF','NEW_REF','NEW_REF_SQL','NAZWISKO','PIERWSZE','DRUGIE','PESEL','NIP',
+               'PASZPORT','DOWOD','UR_DATA'
+            );
+            _osoba.RODO:=_RODO;
+            _osoba.SRC_REF:=_arg.SRC.REF;
+            _osoba.NEW_REF:=OSOBA.ref();
+            _osoba.NEW_REF_SQL:=$_osoba.NEW_REF;
+            _osoba.NAZWISKO:=OSOBA.NAZWISKO;
+            _osoba.PIERWSZE:=OSOBA.PIERWSZE;
+            _osoba.DRUGIE:=OSOBA.DRUGIE;
+            _osoba.PESEL:=OSOBA.PESEL;
+            _osoba.NIP:=OSOBA.NIP;
+            _osoba.PASZPORT:=OSOBA.PASZPORT;
+            _osoba.DOWOD:=OSOBA.DOWOD;
+            _osoba.UR_DATA:=OSOBA.UR_DATA
+         ?};
+         OSOBA.cntx_pop();
+         var_pres('_osoba')<0
+      || _ret.STATUS:=-3;
+         _ret.INFO:='Odnalezienie zanonimizowanego wiersza nie powiodło się.'
+      || _tTABLE:=type_of(OSOBA);
+
+         P.cntx_psh();
+         P.prefix();
+         {? var_pres('F_ZATR',P)=26
+         || {? var_pres('FIRMA',P)=26
+            || P.f_set('FIRMA,OSOBA,F_ZATR(KOD)',,'"P".FIRMA=:_a and "P".OSOBA=:_b and "3F_ZATR".KOD=\':_c\'',
+                  REF.FIRMA,_osoba.SRC_REF,_fzatr)
+            || P.f_set('OSOBA,F_ZATR(KOD)',,'"P".OSOBA=:_a and "2F_ZATR".KOD=\':_b\'',_osoba.SRC_REF,_fzatr)
+            ?}
+         || P.f_set('OSOBA',,'"P".OSOBA=:_a',_osoba.SRC_REF)
+         ?};
+         _loop:=P.f_first();
+         {!
+         |? _loop & _ret.STATUS=0
+         |! P.OSOBA:=_osoba.NEW_REF;
+            {? var_pres('KH',P)=26
+            || P.KH:=null()
+            ?};
+::          Powyżej podmieniamy wskazanie na OSOBA, ale nie podczytujemy "nowego" rekordu - cały czas stoimy na
+::          źródłowym rekordzie anonimizowanym.
+            {? P.put()
+            || exec('_p','ro_zap',_osoba,_fzatr);
+               exec('_del_syslog','ro_zap',P.name(),P.ref())
+            || _ret.STATUS:=-2;
+               _ret.INFO:='Zapis danych na dysk nie powiódł się.'
+            ?};
+            _loop:=P.f_next()
+         !};
+         P.f_clear();
+         P.cntx_pop();
+
+         {? _ret.STATUS=0
+         || exec('_osoba_pow','ro_zap',_a,_osoba);
+            _TL:=OSOBA.testlink();
+            {? type_of(_TL)<>type_of(~~)
+            || exec('_osoba','ro_zap',_arg,_osoba,_TL,_fzatr)
+            ?}
+         ?};
+         {? ~OSOBA.count()
+         || _ref:=OSOBA.ref();
+            {? ~exec('oso_slo','ro_ret')
+            || {? OSOBA.del(1,1)
+               || exec('del_org_all','ro_map',_ref);
+                  exec('_del_syslog','ro_zap',OSOBA.name(),_ref)
+               ?}
+            || {? exec('_put_osoba','ro_zap',_arg,OSOBA.IMEX)
+               || exec('_del_syslog','ro_zap',OSOBA.name(),_ref)
+               ?}
+            ?}
+         ?};
+         obj_del(_osoba)
+      ?}
+
+   || _ret.STATUS:=-1;
+      _ret.INFO:='Odnalezienie danych osobowych do zapomnienia nie powiodło się.'
+   ?};
+   OSOBA.cntx_pop()
+?};
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\_osoba_pow
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Obsługuje retencję dla osób powiązanych z zapisami w SLO
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::        _b - obiekt dotyczący anonimizacji osoby
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+_Fld:=exec('fld','ro_zap','SLO');
+_ret.STATUS:=0;
+
+OSOBA.cntx_psh(); OSOBA.prefix();
+{? OSOBA.seek(_b.SRC_REF)
+|| OS.cntx_psh(); SLO.cntx_psh();
+   _ndx1:=SLO.ndx_tmp(,1,'SLU',,0,'KOD',,0,'KOD',,0);
+   SLU.cntx_psh();
+:: Słowniki o wzorcach Kartoteka osób i Osoba
+   {! _i:=1..2
+   |! {? _i=1
+      || _wz:='Kartoteka osób'; _dalej:=1
+      |? _i=2
+      || _wz:='Osoba';
+         OS.index('OSOBA'); OS.prefix(OSOBA.ref()); _dalej:=OS.first()
+      ?};
+      {? _dalej & _ret.STATUS>=0
+      || SLU.index('WZORZEC'); SLU.prefix(_wz);
+         {? SLU.first()
+         || {! |?
+               _kod:={? _i=1
+                     || form(OSOBA.IMEX,-SLU.DL,,'1')
+                     |? _i=2
+                     || SLU.DL+form(OS.KOD)
+                     ?};
+               SLO.index(_ndx1); SLO.prefix(SLU.ref(),_kod,_kod);
+               exec('_osoba_pow1','ro_zap',_a,_Fld);
+               _ret.STATUS>=0 & SLU.next()
+            !}
+         ?}
+      ?}
+   !};
+
+   _ndx2:=SLO_OSOB.ndx_tmp(,1,'OSOBA',,0);
+:: Słowniki o wzorcu Pracownik
+   {? _ret.STATUS>=0
+   || SLO_OSOB.cntx_psh();
+      SLO_OSOB.index(_ndx2); SLO_OSOB.prefix(OSOBA.ref());
+      {? SLO_OSOB.first()
+      || SLU.index('WZORZEC'); SLU.prefix('Pracownik');
+         {! |?
+            {? SLU.first()
+            || {! |?
+                  _kod:=form(SLO_OSOB.ID,-SLU.DL,,'1');
+                  {? REF.WFIRM
+                  || {? +_kod>5 || _kod:=_kod+5 ?};
+                     _kod:=REF.S_FIRMA().SYMBOL+_kod
+                  ?};
+                  SLO.index(_ndx1); SLO.prefix(SLU.ref(),_kod,_kod);
+                  exec('_osoba_pow1','ro_zap',_a,_Fld);
+                  _ret.STATUS>=0 & SLU.next()
+               !}
+            ?};
+            SLO_OSOB.next()
+         !}
+      ?};
+      SLO_OSOB.cntx_pop()
+   ?};
+
+:: Słowniki o wzorcu Zleceniobiorca
+   {? _ret.STATUS>=0
+   || SLO_OSOB.cntx_psh();
+      SLO_OSOB.index(_ndx2); SLO_OSOB.prefix(OSOBA.ref());
+      {? SLO_OSOB.first()
+      || SLU.index('WZORZEC'); SLU.prefix('Zleceniobiorca');
+         {! |?
+            {? SLU.first()
+            || {! |?
+                  _kod:=form(SLO_OSOB.ID,-SLU.DL,,'1');
+                  {? REF.WFIRM
+                  || {? +_kod>5 || _kod:=_kod+5 ?};
+                     _kod:=REF.S_FIRMA().SYMBOL+_kod
+                  ?};
+                  SLO.index(_ndx1); SLO.prefix(SLU.ref(),_kod,_kod);
+                  exec('_osoba_pow1','ro_zap',_a,_Fld);
+                  _ret.STATUS>=0 & SLU.next()
+               !}
+            ?};
+            SLO_OSOB.next()
+         !}
+      ?};
+      SLO_OSOB.cntx_pop(); SLO_OSOB.ndx_drop()
+   ?};
+   SLO_OSOB.ndx_drop();
+
+   OS.cntx_pop(); SLU.cntx_pop(); SLO.cntx_pop(); SLO.ndx_drop()
+?};
+OSOBA.cntx_pop()
+
+
+\_osoba_pow1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Obsługuje retencję dla osób powiązanych z zapisami w SLO - wewnętrzna
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::        _b - Tabela pól typu SLO
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+_Fld:=_b;
+
+{? SLO.first()
+|| {! |?
+      _slo_old:=SLO.ref(); _old_kod:=SLO.KOD;
+      _ref:=exec('slo_ano','ro_zap',_arg,_RODO,'');
+      {? _ref<>null()
+      || _slo_new:=_ref;
+         _Tl:=SLO.testlink();
+         _loop:=_Tl.first();
+         {!
+         |? _loop
+         |! _ref_old:=_slo_old;
+            _ref_new:=_slo_new;
+            _skip:=0; _del:=0; _ff:="";
+            _Tab:=($_Tl.TABELA)();
+            _Tab.cntx_psh(); _Tab.use(_Tl.MASKA); _Tab.prefix();
+            {? _Tab.seek(_Tl.REF,)
+            || _crc:=_Tab.crc();
+               {? _Tl.TABELA='EDOKUM'
+               || _ff:="{? var_pres('UL',EDOKUM)>0 || EDOKUM.UL:='' ?};
+                        {? var_pres('MIASTO',EDOKUM)>0 || EDOKUM.MIASTO:='' ?};
+                        {? var_pres('POCZ',EDOKUM)>0 || EDOKUM.POCZ:='' ?};
+                        {? var_pres('KH_FULL',EDOKUM)>0 || EDOKUM.KH_FULL:='' ?};
+                        {? var_pres('DOM',EDOKUM)>0 || EDOKUM.DOM:=EDOKUM.LOKAL:=EDOKUM.KPOCZ:='' ?};
+                        exec('edz_del','ro_zap',EDOKUM.ref());
+                        exec('eda_del','ro_zap',EDOKUM.ref())
+                       ";
+                  _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='ZR_SLO'
+               || _skip:=_kh_fir; _del:=1
+               |? _Tl.TABELA='DOK'
+               || _ff:="DOK.E_DOC:=DOK.E_DOCP:=null; DOK.KH_KRAJ:=DOK.UL:=DOK.MIASTO:=DOK.POCZ:=DOK.KH_FULL:='';
+                        {? var_press('DOM',DOK)>0 || DOK.KPOCZ:=DOK.DOM:=DOK.LOKAL:='' ?};
+                        exec('dokumdel','ro_zap',DOK.ref())
+                       ";
+                  _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='AN_SLU'
+               || exec('del_jpk','ro_zap');
+                  _skip:=exec('fir_ansl','ro_ret',_Tl)
+               ?};
+               {? _skip=0
+               || {? _del
+                  ||
+::                   usunięcie rekordu
+                     {? _Tab.count()=0 || _Tab.del() ?}
+                  ||
+::                   podmiana wartości pól
+                     _Fld.prefix(_Tl.TABELA,);
+                     _loop:=_Fld.first();
+                     {!
+                     |? _loop
+                     |! _fld:=_Fld.TABELA+'.'+_Fld.POLE;
+                        {? ($_fld)()=_ref_old
+                        || ($(_fld+':=_a'))(_ref_new)
+                        ?};
+                        _loop:=_Fld.next()
+                     !};
+                     _ff();
+                     {? _crc<>_Tab.crc() & _Tab.put()
+                     || exec('_del_syslog','ro_zap',_Tab.name(),_Tab.ref())
+                     ?}
+                  ?}
+               ?}
+            ?};
+            _Tab.cntx_pop();
+            obj_del(_Tab);
+            _loop:=_Tl.del()
+         !};
+         obj_del(_Tl)
+      ?};
+      _ret.STATUS=0 & {? SLO.count()=0
+                      || exec('_del_syslog','ro_zap',SLO.name(),SLO.ref());
+                         _rek:=SLO.del();
+                         {? _slo_new
+                         || SLO.cntx_psh(); SLO.prefix();
+                            {? SLO.seek(_slo_new)
+                            || {? SLO.count()=0
+                               || exec('_del_syslog','ro_zap',SLO.name(),SLO.ref());
+                                  SLO.del()
+                               || SLO.KOD:=_old_kod; SLO.put()
+                               ?}
+                            ?};
+                            SLO.cntx_pop()
+                         ?};
+                         _rek
+                      || exec('_del_syslog','ro_zap',SLO.name(),SLO.ref());
+                         SLO.next()
+                      ?}
+   !}
+?}
+
+
+\rp7_os
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z realizacją postanowień umowy o pracę (RP7).
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=RP7_OS
+|| RP7_OS.cntx_psh();
+   RP7_OS.prefix();
+   {? RP7_OS.seek(_arg.SRC.REF)
+   || exec('_del','ro_zap',RP7_NB,,'OSOBA=:_a',RP7_OS.ref(),,,1);
+      exec('_del','ro_zap',RP7_KP,,'OSOBA=:_a',RP7_OS.ref(),"
+         exec('_del','ro_zap',RP7_KW,,'ZAPIS=:_a',RP7_KP.ref(),,,1)
+      ",,1);
+      _ref:=RP7_OS.ref();
+      {? ~(RP7_OS.count()=0 & RP7_OS.del(1,1)>0)
+      || undo();
+         _ret.STATUS:=1;
+         _ret.INFO:='Zapomnienie danych nie powiodło się.'
+      || exec('del_org_all','ro_map',_ref)
+      ?}
+   || _ret.STATUS:=-1;
+      _ret.INFO:='Odnalezienie odbiorcy zaświadczenia RP7 nie powiodło się.'
+   ?};
+   RP7_OS.cntx_pop()
+?};
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\rd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane członka rodziny związane z realizacją postanowień umowy o pracę.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=RD
+|| RD.cntx_psh();
+   RD.prefix();
+   {? RD.seek(_arg.SRC.REF)
+   || {? ~exec('_rd','ro_zap',RD.OSOBA,_RODO,_arg.PROB)
+      || undo()
+      ?}
+   || _ret.STATUS:=-1;
+      _ret.INFO:='Odnalezienie członka rodziny nie powiodło się.'
+   ?};
+   RD.cntx_pop()
+?};
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\_zc_ru
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.42]
+:: OPIS: Formuła dla bieżącego zleceniobiorcy (rekordu tabeli P) zwraca informację o typach umów cywilnoprawnych.
+::   WE:
+::   WY: Napis z informacją o występujących typach umów.
+::----------------------------------------------------------------------------------------------------------------------
+_ux:=0;
+_um:=0;
+
+RU.cntx_psh();
+RU.prefix();
+ZC.cntx_psh();
+ZC.index('ZLECPRAC');
+ZC.prefix(P.ref());
+{? ZC.first()
+|| {!
+   |? {? ZC.RU().K='m'
+      || _um+=1
+      || _ux+=1
+      ?};
+      ~(_um & _ux) & ZC.next()
+   !}
+?};
+ZC.cntx_pop();
+RU.cntx_pop();
+{? _um || 'M' || '' ?}+{? _ux || 'C' || '' ?}
+
+
+\_zc_separuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.42]
+:: OPIS: Formuła "separuje" umowy cywilnoprawne. Wywoływana jest przed anonimizacją danych osobowych "zleceniobiorcy".
+::       Zakłada się (sprawdź wcześniej), że zleceniobiorca ma umowy obu typów (Cywilnoprawne i prawa Majątkowe).
+::       Formuła tworzy nowego zleceniobiorcę (z minimalną ilością informacji o nim) i przepina na niego wszystkie
+::       umowy, które mają zostać zapomniane.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a [REFERENCE] - Wskazanie na pracownika.
+::       _b [STRING]    - Kod obsługiwanych umów:
+::                         C - umowy cywilnoprawne (bez 'm');
+::                         M - prawa majątkowe - spadek (tylko 'm').
+::   WY: Wynik operacji:
+::          '#-' - Brak pracownika (błędna wartość argumentu wywołania) lub nieoczekiwany błąd.
+::          'S-' - Separacja nie powiodła się.
+::          'S+' - Separacja powiodła się.
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_umz:=_b;
+
+_ret:='#-';
+
+P.cntx_psh();
+P.prefix();
+{? P.seek(_ref)
+|| _ret:='S-';
+:: Zapamietanie wybranych oryginalnych wartości.
+   _Porg:=obj_new('OSOBA','WYDZIAL','F_ZATR','ODDZIAL','DZA','ST','CP');
+   _Porg.OSOBA:=P.OSOBA;
+   _Porg.WYDZIAL:=P.WYDZIAL;
+   _Porg.F_ZATR:=P.F_ZATR;
+   _Porg.ODDZIAL:=P.ODDZIAL;
+   _Porg.DZA:=P.DZA;
+   _Porg.ST:=P.ST;
+   _Porg.CP:=P.CP;
+
+:: Kilka wartości słownikowych.
+   _dict:=obj_new('RU','H_ZM');
+   H.cntx_psh();
+   H.index('_HISTDAT');
+   H.prefix(P.ref());
+   {? H.last()
+   || _dict.RU:=H.RU;
+      _dict.H_ZM:=H.KZ
+   || _dict.RU:=null();
+      _dict.H_ZM:=null()
+   ?};
+   H.cntx_pop();
+
+   _ds:=do_state();
+   {? _ds<2
+   || {? _ds=0
+      || do()
+      ?};
+::    Tworzymy pracownika na potrzeby umów, które za chwilę będą zanonimizowane (czyli minimalny zestaw danych).
+      P.cntx_psh();
+      P.index('PRACOIP');
+      {? var_pres('FIRMA',P)=26
+      || P.prefix(REF.FIRMA,'Z',)
+      || P.prefix('Z',)
+      ?};
+      _ip:={? P.last() || P.IP ?}+1;
+      P.blank();
+      P.OSOBA:=_Porg.OSOBA;
+      P.WYDZIAL:=_Porg.WYDZIAL;
+      P.F_ZATR:=_Porg.F_ZATR;
+      P.ODDZIAL:=_Porg.ODDZIAL;
+      P.DZA:=_Porg.DZA;
+      P.ST:=_Porg.ST;
+      P.CP:=_Porg.CP;
+      P.IP:=_ip;
+      P.T:=$P.IP;
+      {? P.add()
+      || _pnew:=P.ref();
+         H_UM.cntx_psh();
+         H_UM.prefix();
+         H_UM.blank();
+         H_UM.P:=P.ref();
+         H_UM.OD:=_Porg.DZA;
+         H_UM.NUMER:='1';
+         H_UM.RU:=_dict.RU;
+         {? H_UM.add()
+         || H.cntx_psh();
+            H.prefix();
+            H.blank();
+            H.UMOWA:=H_UM.ref();
+            H.P:=P.ref();
+            H.RU:=H_UM.RU;
+            H.KZ:=_dict.H_ZM;
+            H.WYDZIAL:=P.WYDZIAL;
+            H.ST:=P.ST;
+            H.CP:=P.CP;
+            H.OD:=H_UM.OD;
+            H.PODPIS:=H_UM.OD;
+            H.WYL:=1;
+            H.WYM:=1;
+            H.WY:=H.WYL/H.WYM$3;
+            H.add();
+            H.cntx_pop()
+         ?};
+         H_UM.cntx_pop()
+      || _pnew:=null()
+      ?};
+::    W wersji z P_UPR należałoby w tym miejscu zadbać o uprawnienia, do dodanego przed chwilą rekordu tabeli P.
+::    Ponieważ jednak tworzony rekord jest troche bez znaczenia (za chwilę zostanie zanonimizowany) i dodatkowo formuła
+::    wykonywana jest w ZDO a nie w KALI-m, to trochę byłaby to sztuka dla sztuki.
+::    Chyba nic się nie stanie, jak rekord pojawi się użytkownikom po przelogowaniu.
+::    A dla niecierpliwych zostaje (w KALI-m) ręczne odbudowanie uprawnień: UD_KALI.UPR.obj(P).akt_usr(1)
+      P.cntx_pop();
+
+      {? _pnew
+::       Jeżeli udało się utworzyć nowego zleceniobiorcę, to przepinamy na niego wszystkie umowy odpowiedniego typu
+::       (w zależności od parametru wywołania).
+      || exec('_set_fval','ro_zap',ZC,
+            'join RU using("ZC".RU,RU.REFERENCE)',
+            'P=:_a and RU.K'+{? _umz='M' || '=' || '<>' ?}+'\'m\'',P.ref(),
+            "ZC.P:=_a",_pnew
+         )
+      ?};
+
+      {? (_ds=0 & end()) | do_state()=1
+::       Jeżeli to tutaj rozpoczęta została transakcja i pomyślnie zakończona lub
+::       rozpoczęta na zewnatrz i nadal nie zerwana, to separacja zakończyła się sukcesem.
+      || _ret:='S+'
+      ?}
+   ?}
+
+?};
+P.cntx_pop();
+
+_ret
+
+
+\spadkobierca
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.42]
+:: OPIS: Formuła zapominająca dane osobowe związane z realizacją praw majątkowych po zmarłym pracowniku.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+exec('umzlec','ro_zap',_a,'M')
+
+
+\umzlec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z realizacją postanowień umowy cywilnoprawnej.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::       [_b] [STRING] - Kod obsługiwanych umów:
+::                         C - umowy cywilnoprawne (bez 'm') [domyślnie];
+::                         M - prawa majątkowe - spadek (tylko 'm').
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_umz:={? var_pres('_b')=type_of('') & _b='M' || 'M' || 'C' ?};
+
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=OSOBA
+|| OSOBA.cntx_psh();
+   OSOBA.prefix();
+   {? OSOBA.seek(_arg.SRC.REF)
+::    Cały czas bieżącym rekorderm w tabeli OSOBA będzie źródłowy rekord anonimizowany.
+   || _new_ref:=exec('_add_osoba','ro_zap',_arg);
+      {? _new_ref=null()
+      || _ret.STATUS:=-2;
+         _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+      |? OSOBA.cntx_psh();
+         OSOBA.prefix();
+         {? OSOBA.seek(_new_ref)
+::          Zapamiętanie wybranych informacji o docelowym rekordzie.
+         || _osoba:=obj_new('RODO','SRC_REF','NEW_REF','NEW_REF_SQL','NAZWISKO','PIERWSZE','DRUGIE','PESEL','NIP',
+               'PASZPORT','DOWOD','UR_DATA'
+            );
+            _osoba.RODO:=_RODO;
+            _osoba.SRC_REF:=_arg.SRC.REF;
+            _osoba.NEW_REF:=OSOBA.ref();
+            _osoba.NEW_REF_SQL:=$_osoba.NEW_REF;
+            _osoba.NAZWISKO:=OSOBA.NAZWISKO;
+            _osoba.PIERWSZE:=OSOBA.PIERWSZE;
+            _osoba.DRUGIE:=OSOBA.DRUGIE;
+            _osoba.PESEL:=OSOBA.PESEL;
+            _osoba.NIP:=OSOBA.NIP;
+            _osoba.PASZPORT:=OSOBA.PASZPORT;
+            _osoba.DOWOD:=OSOBA.DOWOD;
+            _osoba.UR_DATA:=OSOBA.UR_DATA
+         ?};
+         OSOBA.cntx_pop();
+         var_pres('_osoba')<0
+      || _ret.STATUS:=-3;
+         _ret.INFO:='Odnalezienie zanonimizowanego wiersza nie powiodło się.'
+      || _tTABLE:=type_of(OSOBA);
+         {? var_pres('F_ZATR',P)=26
+::          Jeżeli w tabeli P jest już forma współpracy, to przestajemy sie przejmować tabelą PRZ.
+         || exec('_osoba_pow','ro_zap',_a,_osoba);
+            P.cntx_psh();
+            P.clear();
+            {? var_pres('FIRMA',P)=26
+            || P.f_set('FIRMA,OSOBA,F_ZATR(KOD)',,'"P".FIRMA=:_a and "P".OSOBA=:_b and "3F_ZATR".KOD=\'Z\'',
+                  REF.FIRMA,_osoba.SRC_REF)
+            || P.f_set('OSOBA,F_ZATR(KOD)',,'"P".OSOBA=:_a and "2F_ZATR".KOD=\'Z\'',_osoba.SRC_REF)
+            ?};
+::          Przejrzyjmy wszystkich zleceniobiorców. Jeżeli któryś z nich ma umowy obu typów, to rozdzielmy je (patrz
+::          opis \_zc_separuj).
+            _loop:=P.f_first();
+            {!
+            |? _loop
+            |! {? exec('_zc_ru','ro_zap')='MC'
+               || exec('_zc_separuj','ro_zap',P.ref(),_umz)
+               ?};
+               _loop:=P.f_next()
+            !};
+::          Ponieważ \_zc_separuj mogła dodać nowe rekordy w P - odświeżamy filtr.
+            P.f_rfresh();
+::          I już rzeczywista anonimizacja.
+            _loop:=P.f_first();
+            {!
+            |? _loop & _ret.STATUS=0
+            |! _ru:=exec('_zc_ru','ro_zap');
+               {? _ru=_umz | _ru=''
+::                Jeżeli zleceniobiorca ma tylko umowy interesującego nas typu lub nie ma żadnej umowy, to zapominamy.
+::                Jest ryzyko, że został wprowadzony przed chwilą, użytkownik nie zdążył wprowadzić umowy, a my
+::                zapominamy ...
+               || P.OSOBA:=_osoba.NEW_REF;
+::                Powyżej podmieniamy wskazanie na OSOBA, ale nie podczytujemy "nowego" rekordu - cały czas stoimy na
+::                źródłowym rekordzie anonimizowanym.
+                  {? P.put()
+                  || exec('_p','ro_zap',_osoba,'Z');
+                     exec('_set_fval','ro_zap',ZC,,'P=:_a',P.ref(),
+                        "  _par:=obj_new(3);
+                           _par[1]:=ZC.ref();
+                           _par[2]:=_a.SRC_REF;
+                           _par[3]:=_a.NEW_REF;
+                           exec('_set_fval','ro_zap',ZUS_RAP,,'ZC=:_a and OSOBA=:_b',_par,
+                              $('ZUS_RAP.OSOBA:=_a[3]'),
+                              _par,1
+                           );
+                           {? var_pres('ZC_INFO')=type_of(ZC)
+                           || exec('_set_fval','ro_zap',ZC_INFO,,'ZC=:_a and OSOBA=:_b',_par,
+                                 $('ZC_INFO.OSOBA:=_a[3]'),
+                                 _par,1
+                              )
+                           ?};
+                           ZC.OSOBA:=_a.NEW_REF;
+                           ZC.memo_set(,'TRESC');
+                           ZC.memo_put(,'TRESC')
+                        ",
+                        _osoba,1
+                     );
+                     exec('_del_syslog','ro_zap',P.name(),P.ref())
+                  || _ret.STATUS:=-2;
+                     _ret.INFO:='Zapis danych na dysk nie powiódł się.'
+                  ?}
+               ?};
+               _loop:=P.f_next()
+            !};
+            P.f_clear();
+            P.cntx_pop()
+
+::          W tabeli P nie ma jeszcze formy współpracy - trzeba analizować PRZ.
+         || exec('_osoba_pow','ro_zap',_a,_osoba);
+            PRZ.cntx_psh();
+            PRZ.prefix();
+            PRZ.f_set('OSOBA',,'OSOBA=:_a',_osoba.SRC_REF);
+            _loop:=PRZ.f_first();
+            {!
+            |? _loop & _ret.STATUS=0
+            |! PRZ.OSOBA:=_osoba.NEW_REF;
+::             Powyżej podmieniamy wskazanie na OSOBA, ale nie podczytujemy "nowego" rekordu - cały czas stoimy na
+::             źródłowym rekordzie anonimizowanym.
+               {? PRZ.put()
+               || exec('_set_fval','ro_zap',DEKL_POD,,'PRAC_ZL=:_a',PRZ.ref(),"DEKL_POD.OS_PODAT:=_a",_osoba.NEW_REF,1);
+                  {? var_pres('OS_VIEW')=_tTABLE & var_pres('OSOBA',OS_VIEW)=26
+                  || _fml:="
+                        OS_VIEW.OSOBA:=_a.NEW_REF;
+                        OS_VIEW.NAZWISKO:=_a.NAZWISKO;
+                        OS_VIEW.PIERWSZE:=_a.PIERWSZE;
+                        OS_VIEW.DRUGIE:=_a.DRUGIE;
+                        ~~
+                     ";
+                     exec('_set_fval','ro_zap',OS_VIEW,,'PRZ=:_a',PRZ.ref(),_fml,_osoba,1)
+                  ?};
+                  {? var_pres('OV_UPR')=_tTABLE
+                  || exec('_set_fval','ro_zap',OV_UPR,,'PRZ=:_a',PRZ.ref(),"OV_UPR.OSOBA:=_a",_osoba.NEW_REF,1)
+                  ?};
+                  exec('_set_fval','ro_zap',PROJREZE,,'PRZ=:_a',PRZ.ref(),"PROJREZE.OSOBA:=_a",_osoba.NEW_REF,1);
+                  exec('_set_fval','ro_zap',PROJREZZ,,'PRZ=:_a',PRZ.ref(),"PROJREZZ.OSOBA:=_a",_osoba.NEW_REF,1);
+                  P.cntx_psh();
+                  P.use('pracownz');
+                  P.prefix();
+                  exec('_set_fval','ro_zap',PRZ_P,,'PRZ=:_a',PRZ.ref(),
+                     "  PRZ_P.P();
+                        P.OSOBA:=_a;
+                        P.put()
+                     ",
+                     _osoba.NEW_REF,1
+                  );
+                  P.cntx_pop();
+                  {? var_pres('PRZ_UPR')=_tTABLE
+                  || exec('_set_fval','ro_zap',PRZ_UPR,,'PRZ=:_a',PRZ.ref(),"PRZ_UPR.OSOBA:=_a",_osoba.NEW_REF,1)
+                  ?};
+                  exec('_set_fval','ro_zap',VAT_DEK,,'PRZ=:_a',PRZ.ref(),
+                     "  {? VAT_DEK.OS_PODAT=_a.SRC_REF
+                        || VAT_DEK.OS_PODAT:=_a.NEW_REF
+                        ?};
+                        exec('_vat_dek_pit','ro_zap',_a)
+                     ",
+                     _osoba,1
+                  );
+                  exec('_del','ro_zap',ZALACZ,,'PRZ=:_a',PRZ.ref(),,,1);
+                  exec('_set_fval','ro_zap',ZC,,'PRZ=:_a',PRZ.ref(),
+                     "  _par:=obj_new(3);
+                        _par[1]:=ZC.ref();
+                        _par[2]:=_a.SRC_REF;
+                        _par[3]:=_a.NEW_REF;
+                        exec('_set_fval','ro_zap',ZUS_RAP,,'ZC=:_a and OSOBA=:_b',_par,
+                           $('ZUS_RAP.OSOBA:=_a[3]'),
+                           _par,1
+                        );
+                        {? var_pres('ZC_INFO')=type_of(ZC)
+                        || exec('_set_fval','ro_zap',ZC_INFO,,'ZC=:_a and OSOBA=:_b',_par,
+                              $('ZC_INFO.OSOBA:=_a[3]'),
+                              _par,1
+                           )
+                        ?};
+                        ZC.OSOBA:=_a.NEW_REF;
+                        ZC.memo_set(,'TRESC');
+                        ZC.memo_put(,'TRESC')
+                     ",
+                     _osoba,1
+                  );
+                  {? PRZ.ZZ_DOK<>null()
+                  || exec('_set_fval','ro_zap',SZK_TREN,'join ZZ_OSOBA','ZZ_OSOBA.ZZ_LINK=:_a',PRZ.ZZ_DOK,
+                        "exec('_zz_dok','ro_zap',SZK_TREN.ZZ_DOK)"
+                     );
+                     exec('_set_fval','ro_zap',ZZ_OSOBA,,'ZZ_LINK=:_a',PRZ.ZZ_DOK,
+                        "exec('_zz_osoba','ro_zap',_a)",_osoba,1
+                     )
+                  ?};
+                  exec('_del_syslog','ro_zap',PRZ.name(),PRZ.ref())
+
+               || _ret.STATUS:=-2;
+                  _ret.INFO:='Zapis danych na dysk nie powiódł się.'
+               ?};
+               _loop:=PRZ.f_next()
+            !};
+            PRZ.f_clear();
+            PRZ.cntx_pop()
+         ?};
+         {? _ret.STATUS=0
+         || _TL:=OSOBA.testlink();
+            {? type_of(_TL)<>type_of(~~)
+            || exec('_osoba','ro_zap',_arg,_osoba,_TL,'Z')
+            ?}
+         ?};
+         {? ~OSOBA.count()
+         || _ref:=OSOBA.ref();
+            {? ~exec('oso_slo','ro_ret')
+            || {? OSOBA.del(1,1)
+               || exec('del_org_all','ro_map',_ref);
+                  exec('_del_syslog','ro_zap',OSOBA.name(),_ref)
+               ?}
+            || {? exec('_put_osoba','ro_zap',_arg,OSOBA.IMEX)
+               || exec('_del_syslog','ro_zap',OSOBA.name(),_ref)
+               ?}
+            ?}
+         ?};
+         obj_del(_osoba)
+      ?}
+   || _ret.STATUS:=-1;
+      _ret.INFO:='Odnalezienie danych osobowych do zapomnienia nie powiodło się.'
+   ?};
+   OSOBA.cntx_pop()
+?};
+
+{? _ds=0
+|| end()
+?};
+~~
+
+
+\_put_osoba
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.42]
+:: OPIS: Formuła anonimizuje bieżący rekord w tabeli OSOBA.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::        _b - OSOBA.IMEX
+::   WY: Czy operacja się powiodła (1/0)
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_zwrot:=0;
+_lp:=0;
+_again:=1;
+{!
+|? _again
+|! OSOBA.blank();
+   OSOBA.NAZWISKO:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+   OSOBA.PIERWSZE:=^8258+_RODO.los_str(255,'ą');
+   OSOBA.PLEC:={? rand()<0.5 || 'K' || 'M' ?};
+   OSOBA.PESEL:='999'+_RODO.los_str(11-3,'0');
+   OSOBA.NIP:='999'+_RODO.los_str(10-3,'0');
+   OSOBA.PASZPORT:=^8258+_RODO.los_str(3,'A')+_RODO.los_str(20-4,'0');
+   OSOBA.DOWOD:=^8258+_RODO.los_str(3,'A')+_RODO.los_str(11-4,'0');
+   OSOBA.UR_DATA:=_RODO.los_dt();
+   OSOBA.REJ_DATA:=date(0,0,0);
+   OSOBA.REJ_INFO:='';
+   OSOBA.IMEX:=_b;
+   {? OSOBA.put(1)
+   || _zwrot:=1; _again:=0
+   || _lp+=1;
+      _again:=_lp<_arg.PROB
+   ?}
+!};
+_zwrot
+
+
+\szk_tren
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane trenera zewnętrznego.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=SZK_TREN
+|| SZK_TREN.cntx_psh();
+   SZK_TREN.prefix();
+   {? SZK_TREN.seek(_arg.SRC.REF)
+   || ZZ_OSOBA.cntx_psh();
+      ZZ_OSOBA.prefix();
+      SZK_TREN.ZZ_OSOBA();
+      _lp:=0;
+      _again:=1;
+      {!
+      |? _again
+      |! ZZ_OSOBA.NAZWISKO:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+         ZZ_OSOBA.RODOWE:='';
+         ZZ_OSOBA.PIERWSZE:=^8258+_RODO.los_str(255,'ą');
+         ZZ_OSOBA.DRUGIE:='';
+         ZZ_OSOBA.PESEL:='999'+_RODO.los_str(11-3,'0');
+         {? ZZ_OSOBA.put(1)
+         || exec('_zz_dok','ro_zap',SZK_TREN.ZZ_DOK);
+            exec('_zz_dok','ro_zap',ZZ_OSOBA.ZZ_DOK);
+            exec('_del_syslog','ro_zap',ZZ_OSOBA.name(),ZZ_OSOBA.ref());
+            exec('add','ro_map','U',SZK_TREN.ref(),SZK_TREN.ref(),REF.FIRMA);
+            _again:=0
+         || _lp+=1;
+            {? _arg.PROB<=_lp
+            || _again:=0;
+               undo()
+            ?}
+         ?}
+      !};
+      ZZ_OSOBA.cntx_pop()
+   || _ret.STATUS:=-1;
+      _ret.INFO:='Odnalezienie trenera nie powiodło się.'
+   ?};
+   SZK_TREN.cntx_pop()
+?};
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\wierzyciel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane członka rodziny związane z realizacją postanowień umowy o pracę.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=ADRES
+|| ADRES.cntx_psh();
+   ADRES.prefix();
+   {? ADRES.seek(_arg.SRC.REF)
+   || ADRES.cntx_psh();
+      _new_ref:=null();
+      _lp:=1;
+      _again:=1;
+      {!
+      |? _again
+      |! ADRES.SYMBOL:=_RODO.los_str(255,'A0','A');
+         ADRES.NAZWA:=_RODO.los_str(255,'ą','A');
+         ADRES.KOD_POCZ:=_RODO.los_str(2,'0')+'-'+_RODO.los_str(3,'0');
+         ADRES.POCZTA:=_RODO.los_str(255,'ą','A');
+         ADRES.MIASTO:=_RODO.los_str(255,'ą','A');
+         ADRES.ULICA:=_RODO.los_str(255,'ą','A');
+         ADRES.DOM:=$_RODO.los_int()+_RODO.los_str(1,'A');
+         ADRES.LOKAL:=$_RODO.los_int()+_RODO.los_str(1,'A');
+         ADRES.TEL:=_RODO.los_str(9,'0');
+         ADRES.FAX:=_RODO.los_str(9,'0');
+         ADRES.BANK:=null();
+         ADRES.KONTO:='';
+         ADRES.EMAIL:=_RODO.los_str(20,'a')+'@'+_RODO.los_str(20,'a')+'.pl';
+         {? ADRES.add(1)
+         || _again:=0;
+            _new_ref:=ADRES.ref();
+            exec('add','ro_map','U',_new_ref,_new_ref,'*')
+         || _lp+=1;
+            _again:=_lp<_arg.PROB
+         ?}
+      !};
+      {? _new_ref<>null()
+      || exec('_set_fval','ro_zap',KOM_OS,,'WIE=:_a',_arg.SRC.REF,"KOM_OS.WIE:=_a",_new_ref,1);
+         exec('add','ro_map','U',_arg.SRC.REF,_arg.SRC.REF,REF.FIRMA)
+      || undo()
+      ?};
+      ADRES.cntx_pop();
+      {? ADRES.count()=0 & ADRES.del(1,1)
+      || exec('_del_syslog','ro_zap',ADRES.name(),_arg.SRC.REF)
+      ?}
+   || _ret.STATUS:=-1;
+      _ret.INFO:='Odnalezienie wierzyciela nie powiodło się.'
+   ?};
+   ADRES.cntx_pop()
+?};
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\rp_osoba
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła zapominająca dane kandydata do pracy.
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=RP_OSOBA
+|| RP_OSOBA.cntx_psh();
+   RP_OSOBA.prefix();
+   {? RP_OSOBA.seek(_arg.SRC.REF)
+   || _czlista:=obj_new('EMAIL','TEL');
+::    Zapamiętanie wartości pozwalających na wyszukanie kandydata na czarnej liście.
+      _czlista.EMAIL:=~-RP_OSOBA.EMAIL;
+      _czlista.TEL:=RP_OSOBA.TEL;
+
+      _ok:=0;
+      _lp:=0;
+      _again:=1;
+      {!
+      |? _again
+      |! RP_OSOBA.STN:=null();
+         RP_OSOBA.NAZWISKO:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+         RP_OSOBA.RODOWE:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+         RP_OSOBA.PIERWSZE:=^8258+_RODO.los_str(255,'ą');
+         RP_OSOBA.DRUGIE:=^8258+_RODO.los_str(255,'ą');
+         RP_OSOBA.DATA_UR:=_RODO.los_dt();
+         RP_OSOBA.KOD:=_RODO.los_str(2,'0')+'-'+_RODO.los_str(3,'0');
+         RP_OSOBA.MIASTO:=_RODO.los_str(255,'ą','A');
+         RP_OSOBA.ULICA:=_RODO.los_str(255,'ą','A');
+         RP_OSOBA.DOM:=$_RODO.los_int()+_RODO.los_str(1,'A');
+         RP_OSOBA.LOKAL:=$_RODO.los_int()+_RODO.los_str(1,'A');
+         RP_OSOBA.TEL:='9'+_RODO.los_str(255,'0');
+         RP_OSOBA.EMAIL:=_RODO.los_str(20,'a')+'@'+_RODO.los_str(20,'a')+'.pl';
+         RP_OSOBA.WYK:=null();
+         RP_OSOBA.KAT_PJ:='';
+         RP_OSOBA.WIDOK:='N';
+         RP_OSOBA.ZGODA:='N';
+         RP_OSOBA.ZOSTAW:='N';
+         {? RP_OSOBA.put(1)
+         || _ok:=1;
+            _again:=0;
+            exec('add','ro_map','U',RP_OSOBA.ref(),RP_OSOBA.ref(),REF.FIRMA)
+         || _lp+=1;
+            _again:=_lp<_arg.PROB
+         ?}
+      !};
+      {? _ok
+      || _tTABLE:=type_of(RP_OSOBA);
+::       Tablica _osoba - do obsługi np. _zz_osoba - strukturę porównaj z \_ump.
+         _osoba:=obj_new('RODO','SRC_REF','NEW_REF','NEW_REF_SQL','NAZWISKO','PIERWSZE','DRUGIE','PESEL','NIP',
+            'PASZPORT','DOWOD','UR_DATA'
+         );
+         _osoba.RODO:=_RODO;
+         _osoba.SRC_REF:=_arg.SRC.REF;
+         _osoba.NEW_REF:=RP_OSOBA.ref();
+         _osoba.NEW_REF_SQL:=$_osoba.NEW_REF;
+         _osoba.NAZWISKO:=RP_OSOBA.NAZWISKO;
+         _osoba.PIERWSZE:=RP_OSOBA.PIERWSZE;
+         _osoba.DRUGIE:=RP_OSOBA.DRUGIE;
+         _osoba.PESEL:='';
+         _osoba.NIP:='';
+         _osoba.PASZPORT:='';
+         _osoba.DOWOD:='';
+         _osoba.UR_DATA:=RP_OSOBA.DATA_UR;
+
+         exec('_set_fval','ro_zap',ZZ_OSOBA,,'ZZ_LINK=:_a',RP_OSOBA.ZZ_DOK,"exec('_zz_osoba','ro_zap',_a)",_osoba,1);
+         exec('_zz_dok','ro_zap',RP_OSOBA.ZZ_DOK);
+         {? var_pres('RP_CECHA')=_tTABLE
+         || exec('_set_fval','ro_zap',RP_CECHA,,'RP_OSOBA=:_a',RP_OSOBA.ref(),
+               "RP_CECHA.TXT:=_a.RODO.los_str(255,'A','ą')",_osoba
+            )
+         ?};
+         {? var_pres('RP_OSET')=_tTABLE
+         || exec('_set_fval','ro_zap',RP_OSET,,'RP_OSOBA=:_a',RP_OSOBA.ref(),
+               "  exec('_set_fval','ro_zap',ZA_FORM,,'ZZ_LINK=:_a',RP_OSET.ZZ_DOK,
+                     ""exec('_zz_dok','ro_zap',ZA_FORM.ZZ_DOK)""
+                  );
+                  exec('_zz_dok','ro_zap',RP_OSET.ZZ_DOK)
+               "
+            )
+         ?};
+         {? var_pres('RP_LISTA')=_tTABLE
+         || exec('_del','ro_zap',RP_LISTA,,'upper(EMAIL)=\':_a\' and TEL=\':_b\'',_czlista,
+               "exec('_zz_dok','ro_zap',RP_LISTA.ZZ_DOK)"
+            )
+         ?};
+         exec('_del_syslog','ro_zap',RP_OSOBA.name(),RP_OSOBA.ref());
+         exec('add','ro_map','U',RP_OSOBA.ref(),RP_OSOBA.ref(),REF.FIRMA)
+
+      || _ret.STATUS:=-2;
+         _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+      ?}
+
+   || _ret.STATUS:=-1;
+      _ret.INFO:='Odnalezienie kandydata nie powiodło się.'
+   ?};
+   RP_OSOBA.cntx_pop()
+?};
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z kontrahentem
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+
+{? _arg.SRC.TABELA=KH
+|| KH.cntx_psh(); KH.prefix();
+   {? KH.seek(_arg.SRC.REF)
+   || _kh_old:=KH.ref(); _kodkh:=KH.KOD; _snip:=KH.SNIP; _nip:=KH.NIP;
+      _kh_new:=exec('kh_ano','ro_zap',_a);
+      {? _kh_new<>null
+      || _kodkh1:='';
+         KH.cntx_psh(); KH.prefix();
+         {? KH.seek(_kh_new) || _kodkh1:=KH.KOD ?};
+         KH.cntx_pop();
+::       anonimizacja odbiorców kontrahenta
+         exec('kh_odb','ro_zap',_arg,_kh_new);
+::       anonimizacja miejsc dostaw kontrahenta
+         exec('kh_msc','ro_zap',_arg,_kh_new);
+::       anonimizajca rachunków bankowych
+         exec('skid_rbk','ro_zap',_arg,_kh_old);
+         _Fld:=exec('fld','ro_zap','KH');
+::       _kh_fir=1 - dane są w innej firmie
+         _kh_fir:=exec('kh_fir','ro_ret');
+         _Tl:=KH.testlink();
+         _loop:=_Tl.first();
+         {! |?
+            _loop
+         |! _ref_old:=_kh_old;
+            _ref_new:=_kh_new;
+            _skip:=0; _del:=0; _ff:="";
+            _Tab:=($_Tl.TABELA)();
+            _Tab.cntx_psh(); _Tab.use(_Tl.MASKA); _Tab.prefix();
+            {? _Tab.seek(_Tl.REF,)
+            || _crc:=_Tab.crc();
+               {? _Tl.TABELA='EANN'
+               || _ff:="EANN.NKH:=''"
+               |? _Tl.TABELA='EDI_I'
+               || _del:=1
+               |? _Tl.TABELA='GIODO'
+               || _del:=1
+               |? _Tl.TABELA='FAKS'
+               || _ff:="FAKS.NAZ:=FAKS.MIASTO:=FAKS.UL:=FAKS.DOM:=FAKS.LOKAL:=FAKS.KPOCZ:=FAKS.POCZ:=FAKS.NIP_UE:=FAKS.KH_KRAJ:='';
+                        FAKS.SKID_RBK:=null(); FAKS.NB:=FAKS.RBK:='';
+                        exec('paragon','ro_zap');
+                        FAKS.NIP:='';
+                        FAKS.O_NAZ:=FAKS.O_MIASTO:=FAKS.O_KPOCZ:=FAKS.O_POCZ:=FAKS.O_UL:=FAKS.O_DOM:=FAKS.O_LOKAL:=FAKS.O_NIP:=FAKS.O_KRAJ:='';
+                        exec('dokumdel','ro_zap',FAKS.ref());
+                        exec('intra','ro_zap',FAKS.ref())
+                       "
+               |? _Tl.TABELA='EDOKUM'
+               || _ff:="{? var_pres('UL',EDOKUM)>0 || EDOKUM.UL:='' ?};
+                        {? var_pres('MIASTO',EDOKUM)>0 || EDOKUM.MIASTO:='' ?};
+                        {? var_pres('POCZ',EDOKUM)>0 || EDOKUM.POCZ:='' ?};
+                        {? var_pres('KH_FULL',EDOKUM)>0 || EDOKUM.KH_FULL:='' ?};
+                        {? var_pres('DOM',EDOKUM)>0 || EDOKUM.DOM:=EDOKUM.LOKAL:=EDOKUM.KPOCZ:='' ?};
+                        exec('edz_del','ro_zap',EDOKUM.ref());
+                        exec('eda_del','ro_zap',EDOKUM.ref())
+                       ";
+                  _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='KH_MSC'
+               || _del:=1
+               |? _Tl.TABELA='KH_DOD'
+               || _del:=_kh_fir=0 | KH_DOD.FIRMA=REF.FIRMA;
+                  _skip:=_del=0
+               |? _Tl.TABELA='MBWPL' | _Tl.TABELA='MBZAD'
+               || _del:=1
+               |? _Tl.TABELA='MDOST'
+               || _del:=1
+               |? _Tl.TABELA='MKODK'
+               || _del:=1
+               |? _Tl.TABELA='M_KH_SV'
+               || _del:=1
+               |? _Tl.TABELA='ND'
+               || _ff:="ND.NIP_UE:='';
+                        {? var_pres('POLA',ND)>0 || ND.POLA:=null() ?};
+                        {? var_pres('DOST_ODB',ND)>0 || ND.DOST_ODB:='' ?};
+                        exec('dokumdel','ro_zap',ND.ref())
+                       "
+               |? _Tl.TABELA='SER_NAG'
+               || _ff:="exec('dokumdel','ro_zap',SER_NAG.ref())";
+                  _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='DOKUM'
+               || _ff:="exec('dokumzdl','ro_zap');
+                        DOKUM.memo_set(,'OPIS');
+                        DOKUM.memo_put(,'OPIS');
+                        DOKUM.REFSQL:='';
+                        DOKUM.NAZWA:=DOKUM.LOK:=DOKUM.EM:=DOKUM.OSOBA:=DOKUM.KR_OP:='';
+                        DOKUM.DOKUM:=DOKUM.E_DOKUM:=null()
+                       ";
+                  _skip:=exec('fir_tab','ro_ret',_Tl,($_Tl.TABELA)());
+                  _del:=1
+               |? _Tl.TABELA='OFE'
+               || _ff:="exec('dokumdel','ro_zap',OFE.ref())"
+               |? _Tl.TABELA='DEZEZW' | _Tl.TABELA='KHBRANZE' | _Tl.TABELA='NIPY' | _Tl.TABELA='OS_ADRES' |
+                  _Tl.TABELA='KHCHKNIP'
+               || _skip:=_kh_fir; _del:=1
+               |? _Tl.TABELA='KH_OSOB'
+               || _ff:="exec('kh_osd','ro_zap')";
+                  _skip:=_kh_fir; _del:=1
+               |? _Tl.TABELA='PB'
+               || _ff:="PB.W:=PB.TYT:=PB.KP:=PB.M:=PB.UL:=PB.KHNIP:=''";
+                  _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='PW'
+               || _ff:="{? PW.PLIK
+                        || PWB.cntx_psh(); PWB.prefix(); PW.PLIK();
+                           PWB.PLIK:=null; PWB.put();
+                           PWB.cntx_pop()
+                        ?};
+                        PW.TYTOP:=PW.KONTR:=PW.SP_KHNIP:=''";
+                  _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='OP' | _Tl.TABELA='SER_NAGS' | _Tl.TABELA='UDT'
+               || _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='PAR_UM'
+               || _skip:=exec('fir_tab','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='WIND_KH' | _Tl.TABELA='WIND_OP'
+               || _skip:=exec('fir_wind','ro_ret',_Tl,($_Tl.TABELA)())
+               |? _Tl.TABELA='ZD_NAG'
+               || _ff:="ZD_NAG.NIP_UE:='';
+                        exec('dokumdel','ro_zap',ZD_NAG.ref())
+                       "
+               |? _Tl.TABELA='ZK_N'
+               || _ff:="ZK_N.NIP_UE:='';
+                        exec('dokumdel','ro_zap',ZK_N.ref())
+                       "
+               |? _Tl.TABELA='I_USERS'
+               || _lp:=0;
+                  _again:=1;
+                  {!
+                  |? _again
+                  |! I_USERS.LOGIN:=^8258+'anonim-'+_RODO.los_str(255,'ą');
+                     I_USERS.LAST_IP:='';
+                     I_USERS.EMAIL:=_RODO.los_str(20,'a')+'@'+_RODO.los_str(20,'a')+'.pl';
+                     I_USERS.AKT_PORT:='N';
+                     I_USERS.HASLOTMP:=I_USERS.HASLO:='';
+                     I_USERS.KH:=null();
+                     {? I_USERS.put(1)
+                     || exec('_del_syslog','ro_zap',_Tl.MASKA,_Tl.REF);
+                        _again:=0
+                     || _lp+=1;
+                        {? _arg.PROB<=_lp
+                        || _again:=0;
+                           undo()
+                        ?}
+                     ?}
+                  !};
+                  _skip:=1
+               ?};
+               {? _skip=0
+               || KH.cntx_psh();
+                  {? _del
+                  ||
+                     _ff();
+::                   usnięcie rekordu
+                     {? _Tab.count()=0 || _Tab.del() ?}
+                  ||
+::                   podmiana wartości pól
+                     _Fld.prefix(_Tl.TABELA,);
+                     _loop:=_Fld.first();
+                     {!
+                     |? _loop
+                     |! _fld:=_Fld.TABELA+'.'+_Fld.POLE;
+                        {? ($_fld)()=_ref_old
+                        || ($(_fld+':=_a'))(_ref_new)
+                        ?};
+                        _loop:=_Fld.next()
+                     !};
+                     _ff();
+                     {? _crc<>_Tab.crc() & _Tab.put()
+                     || exec('_del_syslog','ro_zap',_Tab.name(),_Tab.ref())
+                     ?}
+                  ?};
+                  KH.cntx_pop()
+               ?}
+            ?};
+            _Tab.cntx_pop();
+            obj_del(_Tab);
+            _loop:=_Tl.del()
+         !};
+         obj_del(_Tl);
+:: zapominanie dla powiązanych z kontrahentem zapisów w SLO
+         _ndx1:=SLO.ndx_tmp(,1,'SLU','WZ',0,'KOD',,0,'KOD',,0);
+         {? _ret.STATUS>=0
+         || obj_del(_Fld);
+            _Fld:=exec('fld','ro_zap','SLO');
+            SLO.cntx_psh(); SLO.index(_ndx1); SLO.prefix('Kontrahent',_kodkh,_kodkh);
+            {? SLO.first()
+            || {! |?
+:: zakładam nowego zanonimizowanego SLO dla każdego przebiegu (w tym samym słowniku)
+                  _slo_old:=SLO.ref();
+                  _ref:=exec('slo_ano','ro_zap',_arg,_RODO,_kodkh1);
+                  {? _ref<>null()
+                  || _slo_new:=_ref;
+                     _Tl:=SLO.testlink();
+                     _loop:=_Tl.first();
+                     {!
+                     |? _loop
+                     |! _ref_old:=_slo_old;
+                        _ref_new:=_slo_new;
+                        _skip:=0; _del:=0; _ff:="";
+                        _Tab:=($_Tl.TABELA)();
+                        _Tab.cntx_psh(); _Tab.use(_Tl.MASKA); _Tab.prefix();
+                        {? _Tab.seek(_Tl.REF,)
+                        || _crc:=_Tab.crc();
+                           {? _Tl.TABELA='EDOKUM'
+                           || _ff:="{? var_pres('UL',EDOKUM)>0 || EDOKUM.UL:='' ?};
+                                    {? var_pres('MIASTO',EDOKUM)>0 || EDOKUM.MIASTO:='' ?};
+                                    {? var_pres('POCZ',EDOKUM)>0 || EDOKUM.POCZ:='' ?};
+                                    {? var_pres('KH_FULL',EDOKUM)>0 || EDOKUM.KH_FULL:='' ?};
+                                    {? var_pres('DOM',EDOKUM)>0 || EDOKUM.DOM:=EDOKUM.LOKAL:=EDOKUM.KPOCZ:='' ?};
+                                    exec('edz_del','ro_zap',EDOKUM.ref());
+                                    exec('eda_del','ro_zap',EDOKUM.ref())
+                                   ";
+                              _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+                           |? _Tl.TABELA='ZR_SLO'
+                           || _skip:=_kh_fir; _del:=1
+                           |? _Tl.TABELA='DOK'
+                           || _ff:="{? DOK.NIP=KH.SNIP | DOK.NIP=KH.NIP
+                                    || DOK.NIP:=DOK.KH:=''
+                                    ?};
+                                    DOK.E_DOC:=DOK.E_DOCP:=null; DOK.KH_KRAJ:=DOK.UL:=DOK.MIASTO:=DOK.POCZ:=DOK.KH_FULL:='';
+                                    {? var_press('DOM',DOK)>0 || DOK.KPOCZ:=DOK.DOM:=DOM.LOKAL:='' ?};
+                                    exec('dokumdel','ro_zap',DOK.ref())
+                                   ";
+                              _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+                           |? _Tl.TABELA='DVAT'
+                           || _ff:="{? DVAT.NIP=KH.SNIP | DVAT.NIP=KH.NIP
+                                    || DVAT.NIP:=DVAT.KH:='';
+                                       {? var_pres('UL',DVAT)>0 || DVAT.UL:='' ?};
+                                       {? var_pres('MIASTO',DVAT)>0 || DVAT.MIASTO:='' ?};
+                                       {? var_pres('POCZ',DVAT)>0 || DVAT.POCZ:='' ?}
+                                    ?}
+                                   ";
+                              _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+                           |? _Tl.TABELA='AN_SLU'
+                           || exec('del_jpk','ro_zap');
+                              _skip:=exec('fir_ansl','ro_ret',_Tl)
+                           ?};
+                           {? _skip=0
+                           || KH.cntx_psh();
+                              {? _del
+                              ||
+::                   usnięcie rekordu
+                                 {? _Tab.count()=0 || _Tab.del() ?}
+                              ||
+::                   podmiana wartości pól
+                                 _Fld.prefix(_Tl.TABELA,);
+                                 _loop:=_Fld.first();
+                                 {!
+                                 |? _loop
+                                 |! _fld:=_Fld.TABELA+'.'+_Fld.POLE;
+                                    {? ($_fld)()=_ref_old
+                                    || ($(_fld+':=_a'))(_ref_new)
+                                    ?};
+                                    _loop:=_Fld.next()
+                                 !};
+                                 _ff();
+                                 {? _crc<>_Tab.crc() & _Tab.put()
+                                 || exec('_del_syslog','ro_zap',_Tab.name(),_Tab.ref())
+                                 ?}
+                              ?};
+                              KH.cntx_pop()
+                           ?}
+                        ?};
+                        _Tab.cntx_pop();
+                        obj_del(_Tab);
+                        _loop:=_Tl.del()
+                     !};
+                     obj_del(_Tl);
+::                   usunięcie nowego SLO jeśli nie wykorzystany
+                     SLO.cntx_psh();
+                     SLO.prefix();
+                     {? SLO.seek(_ref) & SLO.count()=0
+                     || SLO.del(1,1)
+                     ?};
+                     SLO.cntx_pop()
+                  ?};
+                  _ret.STATUS=0 & {? SLO.count()=0
+                                  || SLO.del()
+                                  || exec('_del_syslog','ro_zap',SLO.name(),SLO.ref());
+                                     SLO.next()
+                                  ?}
+               !}
+            ?};
+            SLO.cntx_pop()
+         ?};
+::       usuwanie danych niepowiązanych złączeniem do kh
+         exec('vat_ps','ro_zap',KH.NIP,KH.SNIP,KH.NAZ_P);
+         exec('dvat','ro_zap',KH.NIP,KH.SNIP,KH.NAZ_P);
+::       usuwanie kh
+         {? KH.count()=0 & ~_kh_fir
+         || _del:=0;
+            SLO.cntx_psh(); SLO.index(_ndx1); SLO.prefix('Kontrahent',KH.KOD,KH.KOD);
+            _del:=~SLO.first();
+            SLO.cntx_pop();
+            {? _del
+            || {? KH.del(1,1)
+               || exec('del_org_all','ro_map',_kh_old)
+               || exec('_del_syslog','ro_zap',KH.name(),KH.ref())
+               ?}
+            ?}
+         ?};
+::       usunięcie nowego KH jeśli nie wykorzystany
+         KH.cntx_psh(); KH.prefix();
+         {? KH.seek(_kh_new) & KH.count()=0
+         || _del:=0;
+            SLO.cntx_psh(); SLO.index(_ndx1); SLO.prefix('Kontrahent',KH.KOD,KH.KOD);
+            _del:=~SLO.first();
+            SLO.cntx_pop();
+            {? _del
+            || {? KH.del(1,1)
+               || exec('del_org_all','ro_map',_kh_new)
+               ?}
+            ?}
+         ?};
+         KH.cntx_pop();
+         SLO.ndx_drop()
+      ?}
+   ?};
+   KH.cntx_pop()
+?};
+{? _ds=0
+|| end()
+?};
+~~
+
+
+\kh_osd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Usuwa załączniki osoby kontaktowej kontrahenta
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('KH_OSKON')>0
+|| _ndx1:=KH_OSKON.ndx_tmp(,1,'KH_OSOB',,0); KH_OSKON.index(_ndx1); KH_OSKON.prefix(KH_OSOB.ref());
+   {? KH_OSKON.first()
+   || {! |? KH_OSKON.del() !}
+   ?};
+   KH_OSKON.ndx_drop()
+?};
+{? var_pres('KH_OSDOD')>0
+|| _ndx2:=KH_OSDOD.ndx_tmp(,1,'KH_OSDOD',,0); KH_OSDOD.index(_ndx2); KH_OSDOD.prefix(KH_OSOB.ref());
+   {? KH_OSDOD.first()
+   || {! |? KH_OSDOD.del() !}
+   ?};
+   KH_OSDOD.ndx_drop()
+?}
+
+
+\kh_odb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z odbiorcą
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::       _b - KH.ref()
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_kh_new:={? var_pres('_b')=type_of(null()) || _b || null() ?};
+
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+_kh:=null();
+_odb:=null();
+
+KH_ODB.cntx_psh();
+_loop:=0;
+{? _arg.SRC.TABELA=KH_ODB
+|| _odb:=_arg.SRC.REF;
+   _loop:=1
+|? _arg.SRC.TABELA=KH
+|| KH_ODB.index('KH_ODB');
+   KH_ODB.prefix(_arg.SRC.REF);
+   {? KH_ODB.first()
+   || _odb:=KH_ODB.ref();
+      _loop:=1
+   ?}
+?};
+{? _loop
+||
+:: anonimowy kh
+   _kh:=null();
+   {? _arg.SRC.TABELA=KH_ODB
+   || KH_ODB.cntx_psh();
+      KH_ODB.prefix();
+      {? KH_ODB.seek(_odb)
+      || _kh:=KH_ODB.KH
+      ?};
+      KH_ODB.cntx_pop()
+   |? _arg.SRC.TABELA=KH
+   || _kh:=_kh_new
+   ?};
+   {? _kh=null()
+   || _loop:=0;
+      _ret.STATUS:=-2;
+      _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+   || _Fld:=exec('fld','ro_zap','KH_ODB')
+   ?}
+?};
+{!
+|? _loop
+|!
+   KH_ODB.cntx_psh();
+   KH_ODB.prefix();
+   {? KH_ODB.seek(_odb)
+   ||
+      _odb_old:=KH_ODB.ref();
+      _odb:=null();
+::    anonimowy odbiorca
+      {? _kh
+      ||
+         _lp:=0;
+         _again:=1;
+         KH_ODB.cntx_psh();
+         {!
+         |? _again
+         |!
+            KH_ODB.blank(1);
+            KH_ODB.KH:=_kh;
+            KH_ODB.KOD:=^8258+_RODO.los_str(255,'ą');
+            KH_ODB.NAZ:=^8258+_RODO.los_str(255,'ą');
+            {? KH_ODB.add(1)
+            ||
+               _again:=0;
+               _odb:=KH_ODB.ref();
+               {? _arg.SRC.TABELA=KH_ODB
+               || exec('add','ro_map','U',KH_ODB.ref(),KH_ODB.ref(),'*');
+                  exec('add','ro_map','U',_odb_old,_odb_old,REF.FIRMA)
+               ?}
+            ||
+               _lp+=1;
+               {? _lp>=_arg.PROB
+               ||
+                  _again:=0;
+                  _ret.STATUS:=-2;
+                  _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+               ?}
+            ?}
+         !};
+         KH_ODB.cntx_pop()
+      ?};
+      {? _odb<>null()
+      ||
+         _odb_new:=_odb;
+         _Tl:=KH_ODB.testlink();
+::       _fir=1 - dane są w innej firmie
+         _fir:=_Tl.size()<KH_ODB.count();
+         _loop:=_Tl.first();
+         {!
+         |? _loop
+         |!
+            _ref_old:=_odb_old;
+            _ref_new:=_odb_new;
+            _skip:=0;
+            _del:=0;
+            _ff:="";
+            _Tab:=($_Tl.TABELA)();
+            _Tab.cntx_psh();
+            _Tab.use(_Tl.MASKA);
+            _Tab.cntx_psh();
+            _Tab.prefix();
+            {? _Tab.seek(_Tl.REF,)
+            ||
+               _crc:=_Tab.crc();
+               {? _Tl.TABELA='ND'
+               || _ff:="{? var_pres('POLA',ND)>0 || ND.POLA:=null() ?};
+                        {? var_pres('DOST_ODB',ND)>0 || ND.DOST_ODB:='' ?};
+                        exec('dokumdel','ro_zap',ND.ref())
+                       "
+               |? _Tl.TABELA='FAKS'
+               || _ff:="{? var_pres('O_NAZ',FAKS)>0
+                        || FAKS.O_NAZ:=FAKS.O_MIASTO:=FAKS.O_KPOCZ:=FAKS.O_POCZ:=FAKS.O_UL:=FAKS.O_DOM:=FAKS.O_LOKAL:=FAKS.O_NIP:=''
+                        ?};
+                        exec('dokumdel','ro_zap',FAKS.ref())
+                       "
+               |? _Tl.TABELA='OFE'
+               || _ff:="exec('dokumdel','ro_zap',OFE.ref())"
+               |? _Tl.TABELA='TARGP'
+               || _del:=1
+               |? _Tl.TABELA='ZK_N'
+               || _ff:="exec('dokumdel','ro_zap',ZK_N.ref())"
+               ?};
+               {? _skip=0
+               ||
+                  KH_ODB.cntx_psh();
+                  {? _del
+                  ||
+::                   usnięcie rekordu
+                     {? _Tab.count()=0 || _Tab.del() ?}
+                  ||
+::                   podmiana wartości pól
+                     _Fld.prefix(_Tl.TABELA,);
+                     _loop:=_Fld.first();
+                     {!
+                     |? _loop
+                     |!
+                        _fld:=_Fld.TABELA+'.'+_Fld.POLE;
+                        {? ($_fld)()=_ref_old
+                        ||
+                           ($(_fld+':=_a'))(_ref_new)
+                        ?};
+                        _loop:=_Fld.next()
+                     !};
+                     _ff();
+                     {? _crc<>_Tab.crc() & _Tab.put()
+                     || exec('_del_syslog','ro_zap',_Tab.name(),_Tab.ref())
+                     ?}
+                  ?};
+                  KH_ODB.cntx_pop()
+               ?}
+            ?};
+            _Tab.cntx_pop();
+            _Tab.cntx_pop();
+            obj_del(_Tab);
+            _loop:=_Tl.del()
+         !};
+         obj_del(_Tl);
+::       usuwanie danych niepowiązanych złączeniem do KH_ODB
+::       usuwanie KH_ODB
+         {? KH_ODB.count()=0
+         ||
+            {? KH_ODB.del(1,1)
+            || exec('del_org_all','ro_map',_odb_old)
+            || exec('_del_syslog','ro_zap',KH_ODB.name(),KH_ODB.ref())
+            ?}
+         ?};
+::       usunięcie nowego KH_ODB jeśli nie wykorzystany
+         KH_ODB.cntx_psh();
+         KH_ODB.prefix();
+         {? KH_ODB.seek(_odb) & KH_ODB.count()=0
+         ||
+            {? KH_ODB.del(1,1)
+            || exec('del_org_all','ro_map',_odb)
+            ?}
+         ?};
+         KH_ODB.cntx_pop()
+      ?}
+   ?};
+   KH_ODB.cntx_pop();
+   _loop:=0;
+   {? _arg.SRC.TABELA=KH
+   || {? KH_ODB.next()
+      || _odb:=KH_ODB.ref();
+         _loop:=1
+      ?}
+   ?}
+!};
+KH_ODB.cntx_pop();
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\kh_msc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z miejscem dostawy kontrahenta
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::       _b - KH.ref()
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_kh_new:={? var_pres('_b')=type_of(null()) || _b || null() ?};
+
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+_kh:=null();
+_msc:=null();
+
+KH_MSC.cntx_psh();
+_loop:=0;
+{? _arg.SRC.TABELA=KH_MSC
+|| _msc:=_arg.SRC.REF;
+   _loop:=1
+|? _arg.SRC.TABELA=KH
+|| KH_MSC.index('KH_NAZ');
+   KH_MSC.prefix(_arg.SRC.REF);
+   {? KH_MSC.first()
+   || _msc:=KH_MSC.ref();
+      _loop:=1
+   ?}
+?};
+{? _loop
+||
+:: anonimowy kh
+   _kh:=null();
+   {? _arg.SRC.TABELA=KH_MSC
+   || KH_MSC.cntx_psh();
+      KH_MSC.prefix();
+      {? KH_MSC.seek(_msc)
+      || _kh:=KH_MSC.KH
+      ?};
+      KH_MSC.cntx_pop()
+   |? _arg.SRC.TABELA=KH
+   || _kh:=_kh_new
+   ?};
+   {? _arg.SRC.TABELA=KH & _kh=null()
+   || _loop:=0;
+      _ret.STATUS:=-2;
+      _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+   || _Fld:=exec('fld','ro_zap','KH_MSC')
+   ?}
+?};
+{!
+|? _loop
+|!
+   KH_MSC.cntx_psh();
+   KH_MSC.prefix();
+   {? KH_MSC.seek(_msc)
+   ||
+      _msc_old:=KH_MSC.ref();
+      _msc:=null();
+::    anonimowe miejsce dostawy
+      _lp:=0;
+      _again:=1;
+      KH_MSC.cntx_psh();
+      {!
+      |? _again
+      |!
+         KH_MSC.blank(1);
+         KH_MSC.KH:=_kh;
+         KH_MSC.NAZ:=^8258+_RODO.los_str(255,'ą');
+         {? KH_MSC.add(1)
+         ||
+            _again:=0;
+            _msc:=KH_MSC.ref();
+            {? _arg.SRC.TABELA=KH_MSC
+            || exec('add','ro_map','U',KH_MSC.ref(),KH_MSC.ref(),'*');
+               exec('add','ro_map','U',_msc_old,_msc_old,REF.FIRMA)
+            ?}
+         ||
+            _lp+=1;
+            {? _lp>=_arg.PROB
+            ||
+               _again:=0;
+               _ret.STATUS:=-2;
+               _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+            ?}
+         ?}
+      !};
+      KH_MSC.cntx_pop();
+      {? _msc<>null()
+      ||
+         _msc_new:=_msc;
+         _Tl:=KH_MSC.testlink();
+::       _fir=1 - dane są w innej firmie
+         _fir:=_Tl.size()<KH_MSC.count();
+         _loop:=_Tl.first();
+         {!
+         |? _loop
+         |!
+            _ref_old:=_msc_old;
+            _ref_new:=_msc_new;
+            _skip:=0;
+            _del:=0;
+            _ff:="";
+            _Tab:=($_Tl.TABELA)();
+            _Tab.cntx_psh();
+            _Tab.use(_Tl.MASKA);
+            _Tab.cntx_psh();
+            _Tab.prefix();
+            {? _Tab.seek(_Tl.REF,)
+            ||
+               _crc:=_Tab.crc();
+               {? _Tl.TABELA='ND'
+               || _ff:="exec('dokumdel','ro_zap',ND.ref())"
+               |? _Tl.TABELA='ZD_NAG'
+               || _ff:="exec('dokumdel','ro_zap',ZD_NAG.ref())"
+               |? _Tl.TABELA='ZK_N'
+               || _ff:="exec('dokumdel','ro_zap',ZK_N.ref())"
+               ?};
+               {? _skip=0
+               ||
+                  KH_MSC.cntx_psh();
+                  {? _del
+                  ||
+::                   usnięcie rekordu
+                     {? _Tab.count()=0 || _Tab.del() ?}
+                  ||
+::                   podmiana wartości pól
+                     _Fld.prefix(_Tl.TABELA,);
+                     _loop:=_Fld.first();
+                     {!
+                     |? _loop
+                     |!
+                        _fld:=_Fld.TABELA+'.'+_Fld.POLE;
+                        {? ($_fld)()=_ref_old
+                        ||
+                           ($(_fld+':=_a'))(_ref_new)
+                        ?};
+                        _loop:=_Fld.next()
+                     !};
+                     _ff();
+                     {? _crc<>_Tab.crc() & _Tab.put()
+                     || exec('_del_syslog','ro_zap',_Tab.name(),_Tab.ref())
+                     ?}
+                  ?};
+                  KH_MSC.cntx_pop()
+               ?}
+            ?};
+            _Tab.cntx_pop();
+            _Tab.cntx_pop();
+            obj_del(_Tab);
+            _loop:=_Tl.del()
+         !};
+         obj_del(_Tl);
+::       usuwanie danych niepowiązanych złączeniem do KH_MSC
+::       usuwanie KH_MSC
+         {? KH_MSC.count()=0
+         ||
+            {? KH_MSC.del(1,1)
+            || exec('del_org_all','ro_map',_msc_old)
+            || exec('_del_syslog','ro_zap',KH_MSC.name(),KH_MSC.ref())
+            ?}
+         ?};
+::       usunięcie nowego KH_MSC jeśli nie wykorzystany
+         KH_MSC.cntx_psh();
+         KH_MSC.prefix();
+         {? KH_MSC.seek(_msc) & KH_MSC.count()=0
+         ||
+            {? KH_MSC.del(1,1)
+            || exec('del_org_all','ro_map',_msc)
+            ?}
+         ?};
+         KH_MSC.cntx_pop()
+      ?}
+   ?};
+   KH_MSC.cntx_pop();
+   _loop:=0;
+   {? _arg.SRC.TABELA=KH
+   || {? KH_MSC.next()
+      || _msc:=KH_MSC.ref();
+         _loop:=1
+      ?}
+   ?}
+!};
+KH_MSC.cntx_pop();
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\han
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z handlowcem
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE: _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+HAN.cntx_psh();
+HAN.prefix();
+{? HAN.seek(_arg.SRC.REF)
+||
+   _Fld:=exec('fld','ro_zap','HAN');
+   _han_old:=HAN.ref();
+   _han:=null();
+:: anonimowy handlowiec
+   _lp:=0;
+   _again:=1;
+   HAN.cntx_psh();
+   {!
+   |? _again
+   |!
+      HAN.blank(1);
+      HAN.KOD:=^8258+_RODO.los_str(255,'ą');
+      HAN.NAZ:=^8258+_RODO.los_str(255,'ą');
+      {? HAN.add(1)
+      ||
+         _again:=0;
+         _han:=HAN.ref();
+         exec('add','ro_map','U',HAN.ref(),HAN.ref(),'*');
+         exec('add','ro_map','U',_arg.SRC.REF,_arg.SRC.REF,REF.FIRMA)
+      ||
+         _lp+=1;
+         {? _lp>=_arg.PROB
+         ||
+            _again:=0;
+            _ret.STATUS:=-2;
+            _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+         ?}
+      ?}
+   !};
+   HAN.cntx_pop();
+   {? _han<>null()
+   ||
+      _han_new:=_han;
+      _Tl:=HAN.testlink();
+::    _fir=1 - dane są w innej firmie
+      _fir:=exec('han_fir','ro_ret');
+      _loop:=_Tl.first();
+      {!
+      |? _loop
+      |!
+         _ref_old:=_han_old;
+         _ref_new:=_han_new;
+         _skip:=0;
+         _del:=0;
+         _ff:="";
+         _Tab:=($_Tl.TABELA)();
+         _Tab.cntx_psh();
+         _Tab.use(_Tl.MASKA);
+         _Tab.cntx_psh();
+         _Tab.prefix();
+         {? _Tab.seek(_Tl.REF,)
+         ||
+            _crc:=_Tab.crc();
+            {? _Tl.TABELA='DOK'
+            || _skip:=exec('fir_odd','ro_ret',_Tl,($_Tl.TABELA)())
+            ?};
+            {? _skip=0
+            ||
+               HAN.cntx_psh();
+               {? _del
+               ||
+::                usnięcie rekordu
+                  {? _Tab.count()=0 || _Tab.del() ?}
+               ||
+::                   podmiana wartości pól
+                  _Fld.prefix(_Tl.TABELA,);
+                  _loop:=_Fld.first();
+                  {!
+                  |? _loop
+                  |!
+                     _fld:=_Fld.TABELA+'.'+_Fld.POLE;
+                     {? ($_fld)()=_ref_old
+                     ||
+                        ($(_fld+':=_a'))(_ref_new)
+                     ?};
+                     _loop:=_Fld.next()
+                  !};
+                  _ff();
+                  {? _crc<>_Tab.crc() & _Tab.put()
+                  || exec('_del_syslog','ro_zap',_Tab.name(),_Tab.ref())
+                  ?}
+               ?};
+               HAN.cntx_pop()
+            ?}
+         ?};
+         _Tab.cntx_pop();
+         _Tab.cntx_pop();
+         obj_del(_Tab);
+         _loop:=_Tl.del()
+      !};
+      obj_del(_Tl);
+::    usuwanie danych niepowiązanych złączeniem do HAN
+::    usuwanie HAN
+      {? HAN.count()=0
+      ||
+         {? HAN.del(1,1)
+         || exec('del_org_all','ro_map',_han_old)
+         || exec('_del_syslog','ro_zap',HAN.name(),HAN.ref())
+         ?}
+      ?};
+::    usunięcie nowego HAN jeśli nie wykorzystany
+      HAN.cntx_psh();
+      HAN.prefix();
+      {? HAN.seek(_han) & HAN.count()=0
+      ||
+         {? HAN.del(1,1)
+         || exec('del_org_all','ro_map',_han)
+         ?}
+      ?};
+      HAN.cntx_pop()
+   ?}
+?};
+HAN.cntx_pop();
+
+{? _ds=0
+|| end()
+?};
+
+~~
+
+
+\fld
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Zwraca tabelę pól typu _a. Analizuje wszystkie tabele systemu.
+::   WE: _a - akronim tabeli
+::   WY: uchwyt do tabeli
+::----------------------------------------------------------------------------------------------------------------------
+_acr:=_a;
+
+_Tab:=tab_tmp(
+   ,'TABELA','STRING[8]','Tabela'
+   ,'POLE','STRING[8]','Pole');
+
+_tab_num:=tab_num();
+{! _ii:=1.._tab_num
+|! {? tab_real(_ii)
+   || _tab_acr:=tab_acr(_ii);
+      _Tab_ii:=($_tab_acr)();
+      _fld_num:=_Tab_ii.fld_num();
+      {! _jj:=1.._fld_num
+      |! {? _Tab_ii.fld_join(_jj)=_acr
+         || _Tab.TABELA:=_tab_acr;
+            _Tab.POLE:=_Tab_ii.fld_acr(_jj);
+            _Tab.add()
+         ?}
+      !};
+      obj_del(_Tab_ii)
+   ?}
+!};
+
+::_Tab.win_sel(_Tab.mk_sel(,,1));
+::_Tab.select();
+
+_Tab
+
+
+\dokumdel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Usuwa załączniki dokumentu _a
+::   WE: _a - ref dokumentu
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_Names:=DOKUM.names();
+DOKUM.cntx_psh();
+_loop:=_Names.first();
+{!
+|? _loop
+|!
+   DOKUM.use(_Names.NAME);
+   DOKUM.cntx_psh();
+   DOKUM.index('DOKUM');
+   DOKUM.prefix(REF.FIRMA,$_a);
+   {? DOKUM.first()
+   ||
+      {!
+      |?
+:: obecnie nie są zwalniane numery w numeracji SYS tabeli DOKUM
+         _del:=exec('del','dokum',,1,DOKUM.ref());
+:: usunięto ostatni rekord w dziedzinie
+         {? _del=1 || 0
+:: usunięto rekord a bieżącym stał się następny
+         |? _del=2 || 1
+:: nie powiodło się usunięcie
+         || DOKUM.next()
+         ?}
+      !}
+   ?};
+   DOKUM.cntx_pop();
+   _loop:=_Names.next()
+!};
+DOKUM.cntx_pop()
+
+
+\dokumzdl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Usuwa rekordy w DOKUMZ
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('DOKUMZ')=type_of(DOKUM)
+|| exec('_del','ro_zap',DOKUMZ,,'DOK=:_a',DOKUM.ref())
+?}
+
+
+\edz_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Usuwa załączniki dokumentu w obiegu _a
+::   WE: _a - ref dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('EDOKUMZ')>0
+|| EDOKUMZ.cntx_psh(); EDOKUMZ.use('skid_n'+(EDOKUM.name()+2));
+   EDOKUMZ.index('DISP'); EDOKUMZ.prefix(_a);
+   {? EDOKUMZ.first
+   || {! |? EDOKUMZ.del !}
+   ?};
+   EDOKUMZ.cntx_pop()
+?}
+
+
+\eda_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Usuwa atrybuty dokumentu w obiegu _a
+::   WE: _a - ref dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('EDOK_ATR')>0
+|| EDOK_ATR.cntx_psh(); EDOK_ATR.use('edokat'+(EDOKUM.name()+2));
+   _ndx:=EDOK_ATR.ndx_tmp(,1,'EDOKUM',,0);
+   EDOK_ATR.index(_ndx); EDOK_ATR.prefix(_a);
+   {? EDOK_ATR.first
+   || {! |? EDOK_ATR.del !}
+   ?};
+   EDOK_ATR.cntx_pop(); EDOK_ATR.ndx_drop()
+?}
+
+
+\kh_ano
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Tworzy anonimowego kontrahenta
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::        _b - obiekt RODO
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_is_arg:=
+   {? var_pres('_a')>0
+   || _arg:=_a;
+      _RODO:=_arg.RODO;
+      _ret:=_arg.RET;
+      1
+   || _RODO:=_b;
+      0
+   ?};
+_result:=null();
+_lp:=0; _again:=1;
+KH.cntx_psh(); KH.prefix();
+{!
+|? _again
+|! KH.blank(1);
+   KH.P:=2;
+   KH.FIZYCZNY:=1;
+   _nr:='';
+   {? PAR_SKID.get(10)='T'
+   || KH.cntx_psh(); KH.index('KOD'); KH.prefix(2);
+      {? KH.last() & (#KH.KOD)<>0
+      || _dl:=+KH.KOD; _nr:=form(((#KH.KOD)+1),-_dl,0,'9.')
+      ?};
+      KH.cntx_pop()
+   ?};
+   {? _nr='' || _nr:=^8258+_RODO.los_str(255,'ą') ?};
+   KH.KOD:=_nr;
+   KH.SKR:=^8258+_RODO.los_str(255,'ą');
+   KH.NAZ:=^8258+_RODO.los_str(255,'ą');
+   KH.NAZ_P:=^8258+_RODO.los_str(255,'ą');
+   KH.MIASTO:=^8258+_RODO.los_str(255,'ą');
+   KH.UL:=^8258+_RODO.los_str(255,'ą');
+   {? KH.add(1)
+   || _again:=0;
+      _result:=KH.ref();
+      {? _is_arg
+      || exec('add','ro_map','U',KH.ref(),KH.ref(),'*');
+         exec('add','ro_map','U',_arg.SRC.REF,_arg.SRC.REF,REF.FIRMA)
+      ?}
+   || _lp+=1;
+      {? _lp>=_arg.PROB
+      || _again:=0;
+         {? _is_arg
+         || _ret.STATUS:=-2;
+            _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+         ?}
+      ?}
+   ?}
+!};
+KH.cntx_pop();
+_result
+
+
+\slo_ano
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Tworzy anonimowy zapis w tabeli SLO (w tym samym słowniku jak zapis bazowy)
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::        _b - obiekt RODO
+::        _c - SLO.KOD
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_is_arg:=
+   {? var_pres('_a')>0
+   || _arg:=_a;
+      _ret:=_arg.RET;
+      _RODO:=_arg.RODO;
+      1
+   || _RODO:=_b; 0
+   ?};
+
+_result:=null();
+
+_lp:=0; _again:=1; _slu:=SLO.SLU; _dl:=+SLO.KOD;
+SLO.cntx_psh(); SLO.prefix();
+{! |?
+   _again
+|! SLO.blank(1);
+   SLO.SLU:=_slu;
+   {? _c=''
+   || _los:=_RODO.los_str(255,'ą');
+      SLO.KOD:=_dl+_los
+   || SLO.KOD:=_c
+   ?};
+   _los:=_RODO.los_str(255,'ą');
+   SLO.TR:=_los;
+   {? SLO.add(1)
+   || _again:=0;
+      _result:=SLO.ref()
+   || _lp+=1;
+      {? _lp>=_arg.PROB
+      || _again:=0;
+         {? _is_arg
+         || _ret.STATUS:=-2;
+            _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+         ?}
+      ?}
+   ?}
+!};
+SLO.cntx_pop();
+_result
+
+
+\vat_ps
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [19.02]
+:: OPIS: Usuwanie informacji w VAT_PS dotyczących kontrahenta
+::   WE: _a - nip
+::       _b - snip
+::       _c - pełna nazwa kontrahenta
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('VAT_PS')>0 & (_a<>'' | _b<>'') & _c<>''
+|| VAT_PS.cntx_psh(); ROK_F.cntx_psh(); ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+   _ndx:=VAT_PS.ndx_tmp(,1,'KH',,0,'NIP',,0);
+   {? _a<>'' || exec('vat_ps1','ro_zap',_c,_a,_ndx) ?};
+   {? _b<>'' & _b<>_a || exec('vat_ps1','ro_zap',_c,_b,_ndx) ?};
+   VAT_PS.ndx_drop();
+   ROK_F.cntx_pop(); VAT_PS.cntx_pop()
+?}
+
+
+\vat_ps1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [19.02]
+:: OPIS: Usuwanie informacji w VAT_PS dotyczących kontrahenta - wewnętrzna
+::   WE: _a - pełna nazwa kontrahenta
+::       _a - nip
+::       _c - akronim indeksu tymczasowego VAT_PS
+::----------------------------------------------------------------------------------------------------------------------
+{? ROK_F.first()
+|| {! |?
+      VAT_PS.use('vat_ps'+ROK_F.KOD); VAT_PS.index(_c); VAT_PS.prefix(_a,_b,);
+      {? VAT_PS.first()
+      || {! |?
+            VAT_PS.NIP:='';
+            VAT_PS.KH:='';
+            VAT_PS.ADRES:='';
+            VAT_PS.cntx_psh(); VAT_PS.prefix();
+            {? VAT_PS.put()
+            || exec('_del_syslog','ro_zap',VAT_PS.name(),VAT_PS.ref());
+               {? VAT_PS.VAT_DEK
+               || VAT_DEK.cntx_psh(); VAT_DEK.use(ref_name(VAT_PS.VAT_DEK)); VAT_PS.VAT_DEK();
+                  VAT_DEK.PLIK:=null;
+                  {? VAT_DEK.put()
+                  || exec('_del_syslog','ro_zap',VAT_DEK.name(),VAT_DEK.ref());
+                     JPK.cntx_psh(); JPK.index('DODAT'); JPK.prefix('VAT',$VAT_DEK.ref());
+                     {? JPK.first()
+                     || {! |?
+                           JPK.PLIK:=null;
+                           {? JPK.put()
+                           || exec('_del_syslog','ro_zap',JPK.name(),JPK.ref())
+                           ?};
+                           JPK.next()
+                         !}
+                     ?};
+                     JPK.cntx_pop()
+                  ?};
+                  VAT_DEK.cntx_pop()
+               ?}
+            ?};
+            VAT_PS.cntx_pop();
+            VAT_PS.first()
+         !}
+      ?};
+      ROK_F.next()
+  !}
+?}
+
+
+\dvat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [19.02]
+:: OPIS: Usuwanie informacji w DVAT dotyczących kontrahenta
+::   WE: _a - nip
+::       _b - snip
+::       _c - pełna nazwa kontrahenta
+::----------------------------------------------------------------------------------------------------------------------
+{? (_a<>'' | _b<>'') & _c<>''
+|| DVAT.cntx_psh();
+   ROK_F.cntx_psh(); ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+   _ndx:=DVAT.ndx_tmp(,1,'KH',,0,'NIP',,0);
+   {? _a<>'' || exec('dvat1','ro_zap',_c,_a,_ndx) ?};
+   {? _b<>'' & _b<>_a || exec('dvat1','ro_zap',_c,_b,_ndx) ?};
+   DVAT.ndx_drop();
+   DVAT.cntx_pop(); ROK_F.cntx_pop()
+?}
+
+
+\dvat1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [19.02]
+:: OPIS: Usuwanie informacji w DVAT dotyczących kontrahenta - wewnętrzna
+::   WE: _a - pełna nazwa kontrahenta
+::       _a - nip
+::       _c - akronim indeksu tymczasowego DVAT
+::----------------------------------------------------------------------------------------------------------------------
+{? ROK_F.first()
+|| {! |?
+      DVAT.use('dvat__'+ROK_F.KOD); DVAT.index(_c); DVAT.prefix(_a,_b,);
+      {? DVAT.first()
+      || {! |?
+            DVAT.NIP:=DVAT.KH:='';
+            DVAT.UL:='';
+            DVAT.MIASTO:='';
+            DVAT.POCZ:='';
+            DVAT.DOM:='';
+            DVAT.LOKAL:='';
+            DVAT.KPOCZ:='';
+            DVAT.cntx_psh(); DVAT.prefix();
+            {? DVAT.put() || exec('_del_syslog','ro_zap',DVAT.name(),DVAT.ref()) ?};
+            DVAT.cntx_pop();
+            DVAT.first()
+         !}
+      ?};
+      ROK_F.next()
+   !}
+?}
+
+
+\vat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z dokumentem VAT
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=DOK
+|| DOK.cntx_psh(); DOK.use(_arg.SRC.MASKA); DOK.prefix();
+   {? DOK.seek(_arg.SRC.REF)
+   || DOK.cntx_psh();
+      _nip:=DOK.NIP; _kh:=DOK.KH_FULL;
+      {? _nip<>''
+      || ROK_F.cntx_psh(); ROK_F.index('KOD'); ROK_F.prefix(REF.FIRMA);
+         OKRO_F.cntx_psh(); OKRO_F.index('ROK');
+         {? ROK_F.first()
+         || _ndx:=DOK.ndx_tmp(,1,'NIP',,0);
+            {! |?
+               OKRO_F.prefix(ROK_F.ref());
+               {? OKRO_F.first()
+               || {! |?
+                     DOK.use('doku'+ROK_F.KOD+form(OKRO_F.NR,-2)); DOK.index(_ndx); DOK.prefix(_nip,);
+                     {? DOK.first()
+                     || {! |?
+                           DOK.cntx_psh(); DOK.prefix();
+                           DOK.NIP:=DOK.KH:='';
+                           DOK.E_DOC:=DOK.E_DOCP:=null; DOK.KH_KRAJ:=DOK.UL:=DOK.MIASTO:=DOK.POCZ:=DOK.KH_FULL:='';
+                           DOK.KPOCZ:=DOK.DOM:=DOM.LOKAL:='';
+                           {? DOK.put()
+                           || exec('_del_syslog','ro_zap',DOK.name(),DOK.ref());
+                              exec('dokumdel','ro_zap',DOK.ref())
+                           ?};
+                           DOK.cntx_pop();
+                           DOK.first()
+                        !}
+                     ?};
+                     OKRO_F.next()
+                  !}
+               ?};
+               ROK_F.next()
+            !};
+            DOK.ndx_drop()
+         ?};
+         ROK_F.cntx_pop(); OKRO_F.cntx_pop();
+         exec('vat_ps','ro_zap',_nip,_nip,_kh);
+         exec('dvat','ro_zap',_nip,_nip,_kh)
+      ?};
+      DOK.cntx_pop();
+      exec('add','ro_map','U',DOK.ref(),DOK.ref(),REF.FIRMA);
+      DOK.ndx_drop()
+   || _ret.STATUS:=-1;
+      _ret.INFO:='Nie znaleziono dokumentu.'
+   ?};
+   DOK.cntx_pop()
+?};
+{? _ds=0
+|| end()
+?};
+~~
+
+
+\intra
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Usuwa NIP z pozycji deklaracji intrastat dla dokumentu _a
+::   WE: _a - FAKS.ref()
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_faks:=FAKS.ref();
+
+{? FAKS.IST_TYP<>'W' | var_pres('IDKH',ISTT)<0 || return() ?};
+
+_Tab:=sql($"
+   select
+      ISTTS.ISTT REF
+   from
+      @ISTTS
+   where
+      ISTTS.DOK=:_a"
+   ,_faks);
+
+IST.cntx_psh();
+ISTT.cntx_psh();
+_loop:=_Tab.first();
+{!
+|? _loop
+|!
+   ISTT.use(8+_Tab.REF);
+   ISTT.cntx_psh();
+   ISTT.prefix();
+   {? ISTT.seek(BB.sqlint(_Tab.REF),) & ISTT.IDKH<>''
+   ||
+      ISTT.IDKH:='';
+      {? ISTT.put() & ISTT.IST
+      ||
+         IST.use(ref_name(ISTT.IST));
+         IST.cntx_psh();
+         {? ISTT.IST().Z
+         ||
+            IST.Z:=null();
+            IST.put()
+         ?};
+         IST.cntx_pop()
+      ?}
+   ?};
+   ISTT.cntx_pop();
+   _loop:=_Tab.next()
+!};
+ISTT.cntx_pop();
+IST.cntx_pop()
+
+
+\del_jpk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Formuła usuwająca JPK dla roku z AN_SLU
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('JPK')>0
+|| AN_SLU.cntx_psh(); AN_SLU.prefix();
+   AN.cntx_psh(); AN.use('koan__'+(AN_SLU.name()+2)); AN.prefix();
+   KH.cntx_psh(); KS.prefix();
+   ROK_F.cntx_psh(); ROK_F.prefix();
+   ODD.cntx_psh(); ODD.prefix();
+   {? AN_SLU.AN().KS().ROK().FIRMA=REF.FIRMA
+   || _ndx1:=ROK_F.ndx_tmp(,1,'KOD',,0);
+      ROK_F.cntx_psh(); ROK_F.index(_ndx1); ROK_F.prefix(AN_SLU.name()+2);
+      OKRO_F.cntx_psh(); OKRO_F.index('ROK'); OKRO_F.prefix(ROK_F.ref());
+      {? OKRO_F.first()
+      || JPK.cntx_psh();
+         _ndx2:=JPK.ndx_tmp(,1,'FIRMA',,0,'OKRO_F',,0); JPK.index(_ndx2);
+         {! |?
+            JPK.prefix(REF.FIRMA,OKRO_F.ref());
+            {? JPK.first()
+            || {! |?
+                  JPK.PLIK:=null;
+                  {? JPK.put()
+                  || exec('_del_syslog','ro_zap',JPK.name(),JPK.ref())
+                  ?};
+                  JPK.next()
+               !}
+            ?};
+            OKRO_F.next()
+         !};
+         JPK.cntx_pop(); JPK.ndx_drop()
+      ?};
+      OKRO_F.cntx_pop(); ROK_F.cntx_pop(); ROK_F.ndx_drop()
+   ?};
+   ODD.cntx_pop(); KH.cntx_pop(); ROK_F.cntx_pop(); AN.cntx_pop();
+   AN_SLU.cntx_pop()
+?};
+~~
+
+
+\kh_osob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Formuła zapominająca dane osobowe związane z osobą kontaktowa kontrahenta
+::       UWAGA: Poprawność argumentu wywołania NIE jest weryfikowana.
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_ret:=_arg.RET;
+
+_ds:=do_state();
+{? _ds=2
+|| return()
+|? _ds=0
+|| do()
+?};
+
+{? _arg.SRC.TABELA=KH_OSOB
+|| KH_OSOB.cntx_psh(); KH_OSOB.prefix();
+   {? KH_OSOB.seek(_arg.SRC.REF) & KH_OSOB.KH
+   || DOKUM.cntx_psh();
+      _ref_old:=KH_OSOB.ref();
+      _ref:=exec('khos_ano','ro_zap',_arg);
+      {? _ref<>null()
+      ||
+         _Fld:=exec('fld','ro_zap','KH_OSOB');
+         _Tl:=KH_OSOB.testlink();
+::       _fir=1 - dane są w innej firmie
+         _fir:=exec('kh_osob_fir','ro_ret');
+         _loop:=_Tl.first();
+         {!
+         |? _loop
+         |!
+            _ref_old:=_ref_old;
+            _ref_new:=_ref;
+            _skip:=0; _del:=0; _ff:="";
+            _Tab:=($_Tl.TABELA)();
+            _Tab.cntx_psh(); _Tab.use(_Tl.MASKA); _Tab.prefix();
+            {? _Tab.seek(_Tl.REF,)
+            || _crc:=_Tab.crc();
+               {? _skip=0
+               || KH_OSOB.cntx_psh();
+                  {? _del
+                  ||
+                     _ff();
+::                   usnięcie rekordu
+                     {? _Tab.count()=0 || _Tab.del() ?}
+                  ||
+::                   podmiana wartości pól
+                     _Fld.prefix(_Tl.TABELA,);
+                     _loop:=_Fld.first();
+                     {!
+                     |? _loop
+                     |! _fld:=_Fld.TABELA+'.'+_Fld.POLE;
+                        {? ($_fld)()=_ref_old
+                        || ($(_fld+':=_a'))(_ref_new)
+                        ?};
+                        _loop:=_Fld.next()
+                     !};
+                     _ff();
+                     {? _crc<>_Tab.crc() & _Tab.put()
+                     || exec('_del_syslog','ro_zap',_Tab.name(),_Tab.ref())
+                     ?}
+                  ?};
+                  KH_OSOB.cntx_pop()
+               ?}
+            ?};
+            _Tab.cntx_pop();
+            obj_del(_Tab);
+            _loop:=_Tl.del()
+         !};
+         obj_del(_Tl);
+::       usuwanie KH_OSOB
+         {? KH_OSOB.count()=0 & ~_fir
+         ||
+            {? KH_OSOB.del(1,1)
+            || exec('del_org_all','ro_map',_ref_old)
+            || exec('_del_syslog','ro_zap',KH_OSOB.name(),KH_OSOB.ref())
+            ?}
+         ?};
+::       usunięcie nowego KH_OSOB jeśli nie wykorzystany
+         KH_OSOB.cntx_psh(); KH_OSOB.prefix();
+         {? KH_OSOB.seek(_ref) & KH_OSOB.count()=0
+         ||
+            {? KH_OSOB.del(1,1)
+            || exec('del_org_all','ro_map',_ref)
+            ?}
+         ?};
+         KH_OSOB.cntx_pop();
+
+         _ndx1:=DOKUM.ndx_tmp(,1,'FIRMA',,0,'KH',,0,'OSOBA',,0);
+         _ndx2:=DOKUM.ndx_tmp(,1,'KH',,0,'OSOBA',,0);
+         _Names:=DOKUM.names();
+         _loop:=_Names.first();
+         {!
+         |? _loop
+         |!
+            DOKUM.use(_Names.NAME);
+            DOKUM.cntx_psh();
+            DOKUM.index(_ndx1); DOKUM.prefix(REF.FIRMA,KH_OSOB.KH,KH_OSOB.NAZWISKO+' '+KH_OSOB.IMIE);
+            {? DOKUM.first()
+            || {! |?
+                  DOKUM.cntx_psh(); DOKUM.prefix();
+                  DOKUM.OSOBA:='';
+                  {? DOKUM.put()
+                  || exec('_del_syslog','ro_zap',DOKUM.name(),DOKUM.ref())
+                  ?};
+                  DOKUM.cntx_pop();
+                  DOKUM.first()
+               !}
+            ?};
+            DOKUM.index(_ndx2); DOKUM.prefix(KH_OSOB.KH,KH_OSOB.NAZWISKO+' '+KH_OSOB.IMIE);
+            {? ~DOKUM.first()
+            || {? KH_OSOB.count()=0
+               || _ref_khs:=KH_OSOB.ref();
+                  {? KH_OSOB.del(1,1)
+                  || exec('del_org_all','ro_map',_ref_khs)
+                  || exec('_del_syslog','ro_zap',KH_OSOB.name(),KH_OSOB.ref())
+                  ?}
+               |? var_pres('KH_OSKON')>0 | var_pres('KH_OSDOD')>0
+               || _count:=KH_OSOB.count();
+                  {? var_pres('KH_OSKON')>0
+                  || _ndx3:=KH_OSKON.ndx_tmp(,1,'KH_OSOB',,0); KH_OSKON.index(_ndx3); KH_OSKON.prefix(KH_OSOB.ref());
+                     _count-=KH_OSKON.size()
+                  ?};
+                  {? var_pres('KH_OSDOD')>0
+                  || _ndx4:=KH_OSDOD.ndx_tmp(,1,'KH_OSDOD',,0); KH_OSDOD.index(_ndx4); KH_OSDOD.prefix(KH_OSOB.ref());
+                     _count-=KH_OSDOD.size()
+                  ?};
+                  {? _count=0
+                  || {? var_pres('KH_OSKON')>0
+                     || KH_OSKON.index(_ndx3); KH_OSKON.prefix(KH_OSOB.ref());
+                        {? KH_OSKON.first()
+                        || {! |? KH_OSKON.del() !}
+                        ?}
+                     ?};
+                     {? var_pres('KH_OSDOD')>0
+                     || KH_OSDOD.index(_ndx4); KH_OSDOD.prefix(KH_OSOB.ref());
+                        {? KH_OSDOD.first()
+                        || {! |? KH_OSDOD.del() !}
+                        ?}
+                     ?};
+                     {? KH_OSOB.count()=0
+                     || _ref_khs:=KH_OSOB.ref();
+                        {? KH_OSOB.del(1,1)
+                        || exec('del_org_all','ro_map',_ref_khs)
+                        || exec('_del_syslog','ro_zap',KH_OSOB.name(),KH_OSOB.ref())
+                        ?}
+                     ?}
+                  ?}
+               ?}
+            || exec('_del_syslog','ro_zap',DOKUM.name(),DOKUM.ref())
+            ?};
+            DOKUM.cntx_pop();
+            _loop:=_Names.next()
+         !};
+         DOKUM.ndx_drop()
+      ?};
+      DOKUM.cntx_pop()
+   ?};
+   KH_OSOB.cntx_pop()
+?};
+
+{? _ds=0
+|| end()
+?};
+~~
+
+
+\khos_ano
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.22]
+:: OPIS: Tworzy anonimowy zapis w tabeli KH_OSOB
+::   WE:  _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_RODO:=_arg.RODO;
+_result:=null;
+_lp:=0; _again:=1;
+KH_OSOB.cntx_psh(); KH_OSOB.prefix(); _kh:=KH_OSOB.KH;
+{! |?
+   _again
+|! KH_OSOB.blank(1);
+   KH_OSOB.IMIE:=^8258+_RODO.los_str(255,'ą');
+   KH_OSOB.NAZWISKO:=^8258+_RODO.los_str(255,'ą');
+   KH_OSOB.TEL:=^8258+_RODO.los_str(255,'ą');
+   KH_OSOB.GSM:=^8258+_RODO.los_str(255,'ą');
+   KH_OSOB.FAKS:=^8258+_RODO.los_str(255,'ą');
+   KH_OSOB.EMAIL:=^8258+_RODO.los_str(255,'ą');
+   KH_OSOB.D:='N';
+   {? KH_OSOB.add(1)
+   || _again:=0;
+      _result:=KH_OSOB.ref();
+      exec('add','ro_map','U',_result,_result,'*');
+      exec('add','ro_map','U',_arg.SRC.REF,_arg.SRC.REF,REF.FIRMA)
+   || _lp+=1;
+      {? _lp>=_arg.PROB
+      || _again:=0;
+         _ret.STATUS:=-2;
+         _ret.INFO:='Utworzenie zanonimizowanego wiersza nie powiodło się.'
+      ?}
+   ?}
+!};
+KH_OSOB.cntx_pop();
+_result
+
+
+\paragon
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Zeruje NIP na paragonie jeśli jest zgodny z _b
+::   WE: _a - $FAKS.ref()
+::       _b - NIP
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+TYPYSP.cntx_psh();
+{? FAKS.SYMF<>'' & FAKS.NIP<>'' & FAKS.T().PAR='N'
+||
+   _fak2par:=$FAKS.ref();
+   _nip:=FAKS.NIP;
+   _Tab:=FAKS.names();
+   _loop:=_Tab.first();
+   FAKS.cntx_psh();
+   {!
+   |? _loop
+   |!
+      FAKS.use(_Tab.NAME);
+      FAKS.cntx_psh();
+      FAKS.index('FAK_SYMF');
+      FAKS.prefix('S',_fak2par,);
+      _loop:=FAKS.first();
+      {!
+      |? _loop
+      |!
+         {? FAKS.T().PAR='T' & FAKS.NIP=_nip | FAKS.NIP_UE=_nip
+         ||
+            FAKS.NIP_UE:=FAKS.NIP:='';
+            FAKS.put()
+         ?};
+         _loop:=FAKS.next()
+      !};
+      FAKS.cntx_pop();
+      _loop:=_Tab.next()
+   !};
+   FAKS.cntx_pop()
+?};
+TYPYSP.cntx_pop()
+
+
+\skid_rbk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.22]
+:: OPIS: Anonimizuje rachunki bankowe
+::   WE: _a  [ARRAY]  - Tablica elementów nazwanych określająca parametry działania (patrz metryka pliku).
+::       _b - KH.ref()
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=_a;
+_kh_old:=#_b;
+_RODO:=_arg.RODO;
+SKID_RBK.cntx_psh();
+SKID_RBK.index('TAB');
+SKID_RBK.prefix(null(),'KH','KH',_kh_old);
+_loop:=SKID_RBK.first();
+{!
+|? _loop
+|!
+   SKID_RBK.cntx_psh();
+   SKID_RBK.prefix();
+   SKID_RBK.TAB:='HK';
+   SKID_RBK.N:=^8258+_RODO.los_str(255,'ą');
+   SKID_RBK.put();
+   SKID_RBK.cntx_pop();
+   _loop:=SKID_RBK.first()
+!};
+FIRMA.cntx_psh();
+SKID_RBK.prefix(null(),REF.FIRMA().SYMBOL+'KH2',REF.FIRMA().SYMBOL+'KH2',_kh_old);
+_loop:=SKID_RBK.first();
+{!
+|? _loop
+|!
+   SKID_RBK.cntx_psh();
+   SKID_RBK.prefix();
+   SKID_RBK.SKID_RBK:=0;
+   SKID_RBK.TAB:=REF.FIRMA().SYMBOL+'HK2';
+   SKID_RBK.N:=^8258+_RODO.los_str(255,'ą');
+   SKID_RBK.put();
+   SKID_RBK.cntx_pop();
+   _loop:=SKID_RBK.first()
+!};
+FIRMA.cntx_pop();
+SKID_RBK.cntx_pop()
+
+:Sign Version 2.0 jowisz:1045 2023/11/22 09:01:06 542aefbdfac4d17db27f94fba044a44eaa490edb5ca5eb91ea42d2b08557a606ae0414fc36d9d314aa0ca6621dc1fdbc5b9e84c839b92608f1b01f2cf4763df2240444c43e3677d32e8df4a937308bef187652c75f12a4599ef83437b7649ee4b570ee3234aafb59fbcf11001be9bbe4a2bf4a1fefc45c4ea3053eb366728699

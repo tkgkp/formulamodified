@@ -1,0 +1,1158 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: plan_dostaw_prod.fml
+:: Utworzony: 10.03.2023
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Planowanie zapotrzebowania materiałowego na potrzeby produkcji
+::======================================================================================================================
+
+
+\pdprod__script
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - przykładowy skrypt
+::   WE: [_a] - PD_N.ref() - plan dostaw
+::       [_b] - ODDZ.KOD - oddział
+::       [_c] - del
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_pd_n:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+_oddz:={? var_pres('_b')=type_of('') || _b || ST.ODDZ ?};
+_del:={? var_pres('_c')=type_of(0) || _c || 0 ?};
+_continue:=1;
+_sep:='^';
+::
+:: obiekt
+::
+_pdprod:=exec('pdprod','plan_dostaw_prod',_pd_n,_oddz);
+::
+:: debug
+::
+::_pdprod.DEBUG+='stany_create|';
+::_pdprod.DEBUG+='plan|';
+::_pdprod.DEBUG+='plan_cancel|';
+::_pdprod.DEBUG+='plan_verify|';
+::
+:: usuwanie planu
+::
+{? _del || {? _pd_n || return(_pdprod.pd_del()) || FUN.info('Należy podać plan dostaw.'); return(0) ?} ?};
+::
+:: tworzenie planu dostaw
+::
+{? _pd_n=null() || _continue:=_pdprod.pd_create('Plan strategiczny','Plan strategiczny') ?};
+::
+:: tworzenie pozycji planu wg PX_MAT
+::
+{? _continue>0
+||
+   _sur:=spli_str(
+      'BLASZKI^OPAK_01^POK-BI^PRZYL_01^RAM-1BI^RAMKA_MET^SRUBY_ROZP^TASMA_MD^WKRET_CN_01^WKRET_MON_01'
+::      'TASMA_MD'
+      ,_sep
+   );
+   _PD_P_MAT:=exec('pdprod_plan_mat_tab','plan_dostaw_prod');
+   {! _ii:=1 .. obj_len(_sur)
+   |!
+      _PD_P_MAT.blank();
+      _PD_P_MAT.M:=$exec('FindInSet','#table','M','MATKTM',_sur[_ii],,,1,,null()); _PD_P_MAT.add()
+   !};
+   _continue:=_pdprod.poz_create(_PD_P_MAT)
+?};
+::
+:: planowanie
+::
+{? _continue>0
+||
+   _sur2plan:=spli_str(
+      '1^TASMA_MD^180'
+      ,_sep
+   );
+   _MAT2PLAN:=exec('mat2plan','plan_dostaw_prod');
+:: planowanie pierwszej operacji
+   {! _ii:=1 // 3 .. obj_len(_sur2plan)
+   |!
+      _MAT2PLAN.blank();
+      _MAT2PLAN.ID:=_sur2plan[_ii];
+      _MAT2PLAN.M:=$exec('FindInSet','#table','M','MATKTM',_sur2plan[_ii+1],,,1,,null());
+      _MAT2PLAN.IL:=#_sur2plan[_ii+2];
+      _MAT2PLAN.D:=date(0,0,0);
+      _MAT2PLAN.T:=time(0,0,0);
+      _MAT2PLAN.add();
+      _plan:=_pdprod.plan(_MAT2PLAN);
+:: status
+      FUN.info('Data: %1\nStatus: %2'[$_plan.DATA,_pdprod.plan_status(_plan.STATUS)]);
+      obj_del(_plan)
+   !};
+:: anulowanie drugiej operacji
+   _pdprod.plan_cancel('2')
+?};
+::
+:: veryfikacja planu
+::
+{? _continue>0
+||
+   FUN.info('Teraz należy zmienić dane w planie dostaw.\n\nCoś zamówić lub rozchodować aby było co weryfikować.');
+   _verify:=_pdprod.plan_verify();
+   FUN.info('Status weryfikacji: %1'[$_verify.STATUS]);
+   {? _verify.STATUS=1
+   ||
+:: utrwalenie planu strategicznego
+      ~~
+
+   |? _verify.STATUS=2
+   ||
+:: warunkowe utrwalenie planu strategicznego
+:: lista ponownie planowanych surowców - surowce dla których planowano dostawy mają status=4
+      exec('mat2plan_select','plan_dostaw_prod',_verify.MAT2PLAN)
+   ||
+:: lista ponownie planowanych surowców - surowce z którymi jest problem mają status=0
+      exec('mat2plan_select','plan_dostaw_prod',_verify.MAT2PLAN)
+   ?};
+:: anulowanie pierwszej operacji
+   _pdprod.plan_cancel('1')
+?}
+
+
+\pdprod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - obiekt
+::   WE: [_a] - PD_N.ref() - plan dostaw
+::       [_b] - ODDZ.KOD - oddział
+::   WY: tablica o podanych elementach
+::----------------------------------------------------------------------------------------------------------------------
+_pd_n:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+_oddz:={? var_pres('_b')=type_of('') || _b || ST.ODDZ ?};
+
+{? _pd_n & exec('FindAndGet','#table',PD_N,_pd_n,,"PLANPROD")<>'T'
+||
+   FUN.info('Podany plan dostaw nie dotyczy planu produkcji.\nZostanie utworzony nowy.'@);
+   _pd_n:=null()
+?};
+
+::UWAGA: _fld, i _mth to formułki pomocnicze, żeby wygodniej tworzyć tablice i komentować poszczególne jej elementy
+:: powiedzmy, że to bedzie pole
+_fld:="31+form(_a)";
+:: powiedzmy, że to bedzie metoda
+_mth:="31+form(_a)";
+
+_env:=obj_new(
+:: pola
+    _fld('DEBUG',             'debug')
+   ,_fld('PD_N',              'Plan dostaw')
+   ,_fld('ODDZ',              'Oddział')
+   ,_fld('STANY',             'Stany')
+   ,_fld('PLAN_MAT',          'Zaplanowane materiały')
+   ,_fld('P_DOST',            'T/N* Uwzględniać potencjalne dostawy')
+:: metody public
+   ,_mth('pd_create',         'Tworzy plan dostaw')
+   ,_mth('pd_del',            'Usuwa plan dostaw')
+   ,_mth('poz_create',        'Tworzy pozycje planu')
+   ,_mth('plan',              'Planuje zapotrzebowanie')
+   ,_mth('plan_cancel',       'Anuluje zapotrzebowanie')
+   ,_mth('plan_verify',       'Weryfikuje plan przez porównie migawek')
+   ,_mth('plan_status',       'Weryfikuje plan przez porównie migawek')
+   ,_mth('stany_select',      'Wyświetla tabelę stanów')
+:: metody private
+   ,_mth('dost_create',       'Tworzy listę dostawców')
+   ,_mth('stany_create',      'Tworzy tabelę stanów')
+);
+:: pola
+_env.DEBUG:='|';
+_env.PD_N:=_pd_n;
+_env.ODDZ:=_oddz;
+_env.STANY:=exec('pdprod_stany_tab','plan_dostaw_prod');
+_env.PLAN_MAT:=exec('pdprod_plan_mat_tab','plan_dostaw_prod');
+_env.P_DOST:='N';
+:: metody public
+_env.pd_create:="params_set('pdprod',.); exec('pdprod_pd_create','plan_dostaw_prod',_a,_b)";
+_env.pd_del:="params_set('pdprod',.); exec('pdprod_pd_del','plan_dostaw_prod')";
+_env.poz_create:="params_set('pdprod',.); exec('pdprod_poz_create','plan_dostaw_prod',_a)";
+_env.plan:="params_set('pdprod',.); exec('pdprod_plan','plan_dostaw_prod',_a)";
+_env.plan_cancel:="params_set('pdprod',.); exec('pdprod_plan_cancel','plan_dostaw_prod',_a)";
+_env.plan_verify:="params_set('pdprod',.); exec('pdprod_plan_verify','plan_dostaw_prod')";
+_env.plan_status:="exec('plan_status','plan_dostaw_prod',_a)";
+_env.stany_select:="params_set('pdprod',.); exec('pdprod_stany_select','plan_dostaw_prod',_a)";
+:: metody private
+_env.dost_create:="params_set('pdprod',.); exec('pdprod_dost_create','plan_dostaw_prod')";
+_env.stany_create:="params_set('pdprod',.); exec('pdprod_stany_create','plan_dostaw_prod',_a)";
+:: tablica o podanych elementach
+_env
+
+
+\pdprod_stany_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - tabela stanów
+::   WE:
+::   WY: alias do utworzonej tabeli tymczasowej
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('TAB','NDX_TMS','NDX_SD','NDX_STAN','NDX_PLAN_MAT','WER');
+_result.TAB:=_TAB:=tab_tmp(5
+   ,'M','STRING[16]','Materiał'
+   ,'D','DATE','Data'
+   ,'T','TIME','Czas'
+   ,'TMS','STRING[15]','Znacznik czasowy'
+   ,'A','STRING[1]','Aktywny'
+   ,'SD','REAL','Stan dostępny'
+   ,'STAN','REAL','Stan'
+   ,'D_MG','REAL','Dostawy magazynowe narastająco'
+   ,'D_ZAM','REAL','Dostawy zamówione narastająco'
+   ,'D_DOZAM','REAL','Dostawy do zamówienia narastająco'
+   ,'ROZ','REAL','Rozchody narastająco'
+   ,'STATUS','INTEGER','0/1/2/4/'
+   ,'PLAN_MAT','STRING[16]','Planowana pozycja'
+   ,'IL','REAL','Ilość'
+);
+_result.NDX_TMS:=_TAB.index('?');
+_result.NDX_SD:=_TAB.ndx_tmp(,,'A',,,'M',,,'SD',,,'D',,,'T',,,'STAN',,1);
+_result.NDX_STAN:=_TAB.ndx_tmp(,,'A',,,'M',,,'D',,,'T',,,'STAN',,1);
+_result.NDX_PLAN_MAT:=_TAB.ndx_tmp(,,'PLAN_MAT',,);
+_result.WER:=_wer:=_TAB.mk_sel('',,,'#pdprod_stny');
+_TAB.win_fld(_wer,,'M',,,16,,,'$M.ref()');
+_TAB.win_fld(_wer,,'D',,,10,,,'Data');
+_TAB.win_fld(_wer,,'T',,,8,,,'Czas');
+_TAB.win_fld(_wer,,'TMS',,,15,,,'tm_stamp');
+_TAB.win_fld(_wer,,'A',,,3,,,'Akt');
+_TAB.win_fld(_wer,,'SD',,,10,2,,'SD');
+_TAB.win_fld(_wer,,'STAN',,,10,2,,'STAN');
+_TAB.win_fld(_wer,,'D_MG',,,10,2,,'D_MG');
+_TAB.win_fld(_wer,,'D_ZAM',,,10,2,,'D_ZAM');
+_TAB.win_fld(_wer,,'D_DOZAM',,,10,2,,'D_DOZAM');
+_TAB.win_fld(_wer,,'ROZ',,,10,2,,'ROZ');
+_TAB.win_fld(_wer,,'STATUS',,,10,2,,'STATUS');
+_TAB.win_fld(_wer,,'PLAN_MAT',,,16,,,'PLAN_MAT');
+_TAB.win_fld(_wer,,'IL',,,10,2,,'IL');
+_TAB.win_sel(_wer);
+
+_result
+
+
+\pdprod_plan_mat_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - tabela zaplanowanych materiałów
+::   WE:
+::   WY: alias do utworzonej tabeli tymczasowej
+::----------------------------------------------------------------------------------------------------------------------
+tab_tmp(2
+   ,'ID','STRING[16]','Id'
+   ,'M','STRING[16]','Materiał'
+   ,'IL','REAL','Ilość'
+   ,'D','DATE','Data'
+   ,'T','TIME','Czas'
+)
+
+
+\mat2plan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - tabela planowanych materiałów
+::   WE: _a - 0/1 - tab_tmp
+::   WY: alias do utworzonej tabeli tymczasowej
+::----------------------------------------------------------------------------------------------------------------------
+($(
+{? var_pres('_a')=type_of(0) & _a || "tab_tmp" || "tab_tmp_out_tr" ?}
++
+"
+   (3
+      ,'TMS','STRING[15]','Znacznik czasowy'
+      ,'ID','STRING[40]','Id'
+      ,'M','STRING[16]','Materiał'
+      ,'IL','REAL','Ilość'
+      ,'D','DATE','Data'
+      ,'T','TIME','Czas'
+      ,'PLAN_D','DATE','Data'
+      ,'PLAN_T','TIME','Czas'
+      ,'STATUS','INTEGER','-1/0/1/2/4/'
+   )
+"))()
+
+
+\pdprod_pd_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - dodanie planu dostaw
+::   WE: _a - zestaw formuł
+::       _b - zestaw magazynów
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_pdprod:=params_get().pdprod;
+_z_ff:={? var_pres('_a')=type_of('') || _a || '' ?};
+_z_mg:={? var_pres('_b')=type_of('') || _b || '' ?};
+
+_z_ff:=exec('FindInSet','#table','PD_D_ZN','NAZ',_z_ff,,,1,,null());
+_z_mg:=exec('FindInSet','#table','PD_MG_ZN','UNIK',_z_mg,,,1,,null());
+
+{? _z_ff=null() || FUN.info('Wymagane podanie zestawu formuł.'@); return(0) ?};
+
+exec('init','lzk');
+
+POM.TAB:='PD_N';
+POM.TYPDOK:='PDN';
+
+do();
+PD_N.blank();
+PD_N.ODDZ:=_pdprod.ODDZ;
+PD_N.R:=PD_N.DU~1;
+PD_N.M:=PD_N.DU~2;
+PD_N.PD_D_ZN:=_z_ff;
+PD_N.PD_MG_ZN:=_z_mg;
+PD_N.PLANPROD:='T';
+{? PD_N.add()
+||
+   exec('wol_nr','numery','PD_N');
+   exec('pd_n_upd','plan_dostaw');
+   _pdprod.PD_N:=PD_N.ref()
+?};
+end()
+
+
+\pdprod_pd_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - usunięcie planu dostaw
+::   WE:
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_pdprod:=params_get().pdprod;
+exec('FindAndGet','#table',PD_N,_pdprod.PD_N,,"
+   exec('pd_usun','plan_dostaw',1)
+",1)
+
+
+\pdprod_poz_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - dodanie pozycji
+::   WE: _a - tabela z materiałami exec('pdprod_plan_mat_tab','plan_dostaw_prod')
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_pdprod:=params_get().pdprod;
+_list:=_a;
+
+PD_N.cntx_psh();
+PD_N.prefix();
+{? PD_N.seek(_pdprod.PD_N)
+||
+:: usunięcie pozycji
+   PD_P.cntx_psh();
+   PD_P.index('POZ');
+   PD_P.prefix(PD_N.ref());
+   _loop:=PD_P.first();
+   {!
+   |? _loop
+   |!
+      _loop:=exec('pd_p_del','plan_dostaw',0)<>1
+   !};
+   PD_P.cntx_pop();
+:: dodanie pozycji
+   _loop:=_list.first();
+   {!
+   |? _loop
+   |!
+      exec('FindAndGet','#table',M,_list.M,,"
+         _dost:=exec('dost','ceny_mat',M.ref(),date(0,0,0),INFO.NAROD,0).KH;
+         exec('pd_p_add','plan_dostaw',PD_N.ref(),M.MGR,M.MGRP,M.MGAT,M.MODM,M.ref(),M.J,_dost)
+      ");
+      _loop:=_list.next()
+   !};
+:: analiza
+   _params:=exec('pda_a','plan_dostaw');
+   PD_P.index('POZ');
+   PD_P.prefix(PD_N.ref());
+   _loop:=PD_P.first();
+   {!
+   |? _loop
+   |!
+      {? PD_P.STAT<>'Z'
+      ||
+         {? exec('pd_p_lock','plan_dostaw',0)
+         ||
+            PD_P.REFRESH:='T';
+            {? PD_P.put()
+            ||
+               exec('pd_pow_del','plan_dostaw',PD_P.PD_N,PD_P.ref(),'','',~~);
+               _params.PAR:='';
+               _params.M:=PD_P.M;
+               _params.TM_STAMP:=PD_P.tm_stamp();
+               _params.DK:=PD_P.PD_N().DK;
+               _params.TK:=PD_N.TK;
+               _params.DISP:=0;
+               _params.PD_P:=PD_P.ref();
+               _params.PD_P_ODS:=1;
+               _params.VER_TYP:=exec('pda_ver_typ_ps_buf','plan_dostaw');
+               _params.VER_DATA:=PD_N.DU;
+               exec('pda','plan_dostaw',_params);
+               exec('pd_p_unlock','plan_dostaw')
+            ?}
+         ?}
+      ?};
+      _loop:=PD_P.next()
+   !};
+:: dodanie dostawców
+   _pdprod.dost_create();
+:: przygotowanie tabeli stnów
+   _pdprod.stany_create(exec('pda_ver_typ_ps_buf','plan_dostaw'))
+?};
+PD_N.cntx_pop()
+
+
+\pdprod_plan_verify
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - weryfikacja planu
+::   WE:
+::   WY: 0/1/2 - stan niedostępny/stan dostępny/stan dostępny w innym terminie
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_pdprod:=params_get().pdprod;
+
+_result:=obj_new('STATUS','MAT2PLAN');
+_result.STATUS:=1;
+_result.MAT2PLAN:=~~;
+
+_continue:=1;
+
+PD_TV.cntx_psh();
+PD_N.cntx_psh();
+PD_N.prefix();
+{? PD_N.seek(_pdprod.PD_N)
+||
+   PD_TV.prefix();
+   PD_TV.index('PDNTNR');
+   PD_TV.prefix(PD_N.ref(),exec('pda_ver_typ_ps_buf','plan_dostaw'),);
+   {? PD_TV.first()
+   ||
+:: wersja bufor staje się nieaktywna
+      PD_TV.AKTYWNA:='N'; PD_TV.put()
+   ||
+:: brak wersji bufor więc nie ma co weryfikować
+      _continue:=0
+   ?};
+   {? _continue>0
+   ||
+:: usunięcie wersji weryfikacja bufora
+      PD_TV.prefix();
+      PD_TV.index('PDNTNR');
+      PD_TV.prefix(PD_N.ref(),exec('pda_ver_typ_ps_buf_verify','plan_dostaw'),);
+      {? PD_TV.first() || exec('pda_ver_del','plan_dostaw',PD_TV.ref()) ?};
+:: analiza
+      _data:=date();
+      _params:=exec('pda_a','plan_dostaw');
+      PD_P.index('POZ');
+      PD_P.prefix(PD_N.ref());
+      _loop:=PD_P.first();
+      {!
+      |? _loop
+      |!
+         {? PD_P.REFRESH='T' & PD_P.STAT<>'Z'
+         ||
+            {? exec('pd_p_lock','plan_dostaw',0)
+            ||
+               PD_P.REFRESH:='T';
+               {? PD_P.put()
+               ||
+                  exec('pd_pow_del','plan_dostaw',PD_P.PD_N,PD_P.ref(),'','',~~);
+                  _params.PAR:='';
+                  _params.M:=PD_P.M;
+                  _params.TM_STAMP:=PD_P.tm_stamp();
+                  _params.DK:=PD_P.PD_N().DK;
+                  _params.TK:=PD_N.TK;
+                  _params.DISP:=0;
+                  _params.PD_P:=PD_P.ref();
+                  _params.PD_P_ODS:=1;
+                  _params.VER_TYP:=exec('pda_ver_typ_ps_buf_verify','plan_dostaw');
+                  _params.VER_DATA:=_data;
+                  exec('pda','plan_dostaw',_params);
+                  exec('pd_p_unlock','plan_dostaw')
+               ?}
+            ?}
+         ?};
+         _loop:=PD_P.next()
+      !}
+   ?};
+   PD_TV.prefix();
+   PD_TV.index('PDNTNR');
+:: przygotowanie tabeli stnów - zwraca materiały do ponownego planowania
+   _result.MAT2PLAN:=_MAT2PLAN:=_pdprod.stany_create(exec('pda_ver_typ_ps_buf_verify','plan_dostaw'));
+:: planowanie
+   _plan:=_pdprod.plan(_MAT2PLAN);
+   {? _MAT2PLAN.first() & _plan.STATUS<=0
+   ||
+      _result.STATUS:=0
+   ||
+      _loop:=_MAT2PLAN.first();
+      {!
+      |? _loop
+      |!
+         {? _MAT2PLAN.D<>_MAT2PLAN.PLAN_D | _MAT2PLAN.T<>_MAT2PLAN.PLAN_T || _result.STATUS:=2 ?};
+         _loop:=_result.STATUS<>2 & _MAT2PLAN.next()
+      !}
+   ?};
+:: wersja bufor staje się aktywna
+   _pd_tv:=null();
+   PD_TV.prefix(PD_N.ref(),exec('pda_ver_typ_ps_buf','plan_dostaw'),);
+   {? PD_TV.first() || _pd_tv:=PD_TV.ref(); PD_TV.AKTYWNA:='T'; PD_TV.put() ?};
+:: przepisanie bufora weryfikacji do bufora
+   PD_TV.prefix(PD_N.ref(),exec('pda_ver_typ_ps_buf_verify','plan_dostaw'),);
+   {? PD_TV.first()
+   ||
+      _pd_p:=null();
+      PD_T2.cntx_psh();
+      PD_T2.index('D');
+      PD_T2.prefix(PD_TV.ref());
+      _loop:=PD_T2.first();
+      {!
+      |? _loop
+      |!
+         {? _pd_p<>PD_T2.PD_P
+         ||
+            _pd_p:=PD_T2.PD_P;
+            exec('pda_ver_del_data','plan_dostaw',_pd_tv,_pd_p)
+         ?};
+         PD_T2.cntx_psh();
+         PD_T2.prefix();
+         PD_T2.PD_TV:=_pd_tv;
+         PD_T2.put();
+         PD_T2.cntx_pop();
+         _loop:=PD_T2.first()
+      !};
+      PD_T2.cntx_pop()
+   ?};
+:: usunięcie bufora weryfikacji
+   PD_TV.prefix(PD_N.ref(),exec('pda_ver_typ_ps_buf_verify','plan_dostaw'),);
+   {? PD_TV.first() || exec('pda_ver_del','plan_dostaw',PD_TV.ref()) ?}
+?};
+PD_N.cntx_pop();
+PD_TV.cntx_pop();
+
+_pdprod.stany_select('plan_verify');
+
+_result
+
+
+\plan_status
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - opis statusu
+::   WE: _a - status
+::   WY: opis statusu
+::----------------------------------------------------------------------------------------------------------------------
+{? _a=-1 || 'Nie był planowany'
+|? _a=0 || 'Stan niedostępny'
+|? _a=1 || 'Materiały na stanie'
+|? _a=2 || 'Materiały mają zaplanowane dostawy'
+|? _a=4 || 'Materiały dostępne po zamówieniu'
+|| 'Nieokreślony'
+?}
+
+
+\stan_status
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - status stanu magazynowego
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_pdprod:=params_get().pdprod;
+
+_STANY:=_pdprod.STANY.TAB;
+
+{? -_STANY.ROZ+_STANY.D_MG>=0 || 1
+|? -_STANY.ROZ+_STANY.D_MG+_STANY.D_ZAM>=0 || 2
+|? -_STANY.ROZ+_STANY.D_MG+_STANY.D_ZAM+_STANY.D_DOZAM || 4
+|| 0
+?}
+
+
+\stan_aktywny
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - ustawia znacznik aktywności stanu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_pdprod:=params_get().pdprod;
+
+_STANY:=_pdprod.STANY.TAB;
+_stany_ndx_tms:=_pdprod.STANY.NDX_TMS;
+
+_STANY.cntx_psh();
+_STANY.index(_stany_ndx_tms);
+_STANY.prefix(_STANY.M,_STANY.D,_STANY.T);
+_akt:='T';
+_loop:=_STANY.last(); {! |? _loop |! _STANY.A:=_akt; _akt:='N'; _loop:=_STANY.put() & _STANY.prev() !};
+_STANY.cntx_pop()
+
+
+\pdprod_stany_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - utworzenie tabeli stanów
+::   WE: _a - typ analizy planu dostaw
+::   WY: exec('mat2plan','plan_dostaw_prod')
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_typ:=_a;
+
+_return:=_MAT2PLAN:=exec('mat2plan','plan_dostaw_prod');
+
+_pdprod:=params_get().pdprod;
+_pd_n:=_pdprod.PD_N;
+_STANY:=_pdprod.STANY.TAB;
+_stany_ndx_tms:=_pdprod.STANY.NDX_TMS;
+_PLAN_MAT:=_pdprod.PLAN_MAT;
+_tms:=tm_stamp();
+_tms_date:=exec('str2date','#convert',10+tm_form(_tms));
+::_tms_time:=exec('str2time','#convert',tm_form(_tms)+8);
+_tms_time:=time(0,0,0);
+
+_STANY.cntx_psh();
+_STANY.index(_stany_ndx_tms);
+PD_TV.cntx_psh();
+PD_TV.index('PDNTNR');
+PD_TV.prefix(_pd_n,_typ,);
+{? PD_TV.first()
+||
+   _pd_p:=null();
+   PD_T2.cntx_psh();
+   PD_T2.index('D');
+   PD_T2.prefix(PD_TV.ref(),_pd_n);
+   _loop:=PD_T2.first();
+   {!
+   |? _loop
+   |!
+      {? _pd_p<>PD_T2.PD_P
+      ||
+:: usunięcie stanów przy ponownym przeliczeniu np. weryfikacji
+         _STANY.cntx_psh();
+         _STANY.prefix($PD_T2.M,);
+         {? _STANY.first()
+         || {!
+            |?
+               {? _PLAN_MAT.seek(_STANY.PLAN_MAT)
+               ||
+                  _MAT2PLAN.blank();
+                  _MAT2PLAN.TMS:=_STANY.TMS;
+                  _MAT2PLAN.ID:=_PLAN_MAT.ID;
+                  _MAT2PLAN.M:=_PLAN_MAT.M;
+                  _MAT2PLAN.IL:=_PLAN_MAT.IL;
+                  _MAT2PLAN.D:=_STANY.D;
+                  _MAT2PLAN.T:=_STANY.T;
+                  _MAT2PLAN.add()
+               ?};
+               _STANY.del()
+            !}
+         ?};
+         _STANY.cntx_pop();
+         _pd_p:=PD_T2.PD_P;
+         _roz:=_d_zam:=_d_mg:=0
+      ?};
+      _put:=1;
+      _date:=PD_T2.D;
+      _time:=PD_T2.T;
+      {? _date<_tms_date | _date=_tms_date & _time<_tms_time
+      ||
+         _date:=_tms_date;
+         _time:=_tms_time
+      ?};
+      {? ~_STANY.find_key($PD_T2.M,_date,_time)
+      ||
+         _put:=0;
+         _STANY.blank();
+         _STANY.M:=$PD_T2.M;
+         _STANY.D:=_date;
+         _STANY.T:=_time;
+         _STANY.TMS:=_tms;
+         _STANY.A:='T';
+         _STANY.ROZ:=_roz;
+         _STANY.D_ZAM:=_d_zam;
+         _STANY.D_MG:=_d_mg
+      ?};
+      {? PD_T2.PRZY_ROZ='R'
+      ||
+         _roz+=PD_T2.ILR;
+         _STANY.ROZ+=PD_T2.ILR
+
+      |? ref_tab(PD_T2.REF)=ZD_POZ
+            |
+         ref_tab(PD_T2.REF)=PD_K & exec('FindAndGet','#table',PD_K,PD_T2.REF,,"PD_K.TYPYZAM().R='D'",0)
+      ||
+         _d_zam+=PD_T2.ILP;
+         _STANY.D_ZAM+=PD_T2.ILP
+      ||
+         _d_mg+=PD_T2.ILP;
+         _STANY.D_MG+=PD_T2.ILP
+      ?};
+      {? _put || _STANY.put() || _STANY.add() ?};
+      _loop:=PD_T2.next()
+   !};
+   PD_T2.cntx_pop()
+?};
+PD_TV.cntx_pop();
+_mat:='';
+_loop:=_STANY.last();
+{!
+|? _loop
+|!
+   _stan:=_STANY.D_MG+_STANY.D_ZAM+_STANY.D_DOZAM-_STANY.ROZ;
+   {? _mat<>_STANY.M
+   ||
+      _sd:=_stan;
+      _mat:=_STANY.M
+   ?};
+   {? _stan<_sd || _sd:={? _stan<=0 || 0 || _stan ?} ?};
+   _STANY.STAN:=_stan;
+   _STANY.SD:=_sd;
+   _STANY.STATUS:=exec('stan_status','plan_dostaw_prod',_STANY);
+   _loop:=_STANY.put() & _STANY.prev()
+!};
+_STANY.cntx_pop();
+
+_pdprod.stany_select('stany_create');
+
+_return
+
+
+\pdprod_plan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - planowanie listy materiałów
+::   WE: _a - lista materiałów do zaplanowania: exec('mat2plan','plan_dostaw_prod')
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_pdprod:=params_get().pdprod;
+_MAT2PLAN:=_a;
+
+_STANY:=_pdprod.STANY.TAB;
+_stany_ndx_tms:=_pdprod.STANY.NDX_TMS;
+_stany_ndx_sd:=_pdprod.STANY.NDX_SD;
+_PLAN_MAT:=_pdprod.PLAN_MAT;
+_tms:=tm_stamp();
+_continue:=1;
+
+_result:=obj_new('STATUS','DATA');
+_result.DATA:=date(0,0,0);
+_result.STATUS:=0;
+
+_loop:=_MAT2PLAN.first();
+{!
+|? _loop
+|!
+   _MAT2PLAN.STATUS:=-1;
+   _loop:=_MAT2PLAN.put() & _MAT2PLAN.next()
+!};
+
+do();
+_loop:=_MAT2PLAN.first();
+{!
+|? _loop
+|!
+   _id:=_MAT2PLAN.ID;
+   _il:=_MAT2PLAN.IL;
+:: dodanie materiału z listy do planowania do listy zaplanowanych materiałów
+   _PLAN_MAT.blank();
+   _PLAN_MAT.ID:=_id;
+   _PLAN_MAT.M:=_MAT2PLAN.M;
+   _PLAN_MAT.IL:=_il;
+   _PLAN_MAT.D:=_MAT2PLAN.D;
+   _PLAN_MAT.T:=_MAT2PLAN.T;
+   {? _PLAN_MAT.add()
+   ||
+:: szukamy stanu
+      _STANY.index(_stany_ndx_sd);
+      _STANY.prefix('T',_PLAN_MAT.M,);
+      {? ~_STANY.find_ge(_il)
+      ||
+:: brak stanu, wymagane planowanie dostawy
+         exec('stan_dost','plan_dostaw_prod',_PLAN_MAT.M,_il)
+      ?};
+      {? ~_STANY.find_ge(_il)
+      ||
+:: brak stanu
+         _continue:=0;
+         undo();
+:: aktualizacja statusu
+         _MAT2PLAN.STATUS:=0;
+         _MAT2PLAN.put();
+:: wynik
+         _result.STATUS:=0
+      ||
+:: jest wystarczający stan
+         {? _PLAN_MAT.D<> date(0,0,0) & (_STANY.D<_PLAN_MAT.D | _STANY.D=_PLAN_MAT.D & _STANY.T<_PLAN_MAT.T)
+         ||
+:: jeśli stan jest wcześniejszy niż wymagana data i czas to tworzymy zapis dla wymaganej daty i czasu
+            _STANY.D:=_PLAN_MAT.D;
+            _STANY.T:=_PLAN_MAT.T
+         ?};
+         _STANY.TMS:={? _MAT2PLAN.TMS='' || _tms || _MAT2PLAN.TMS ?};
+         _STANY.ROZ+=_il;
+         _STANY.STAN+=-_il;
+         _STANY.SD+=-_il;
+         _STANY.IL:=-_il;
+         _STANY.STATUS:=exec('stan_status','plan_dostaw_prod');
+         _STANY.PLAN_MAT:=$_PLAN_MAT.ref();
+         {? _STANY.add()
+         ||
+:: wynik
+            {? _result.STATUS<_STANY.STATUS || _result.STATUS:=_STANY.STATUS ?};
+            {? _result.DATA<_STANY.D || _result.DATA:=_STANY.D ?};
+:: zaplanowany materiał
+            _stany:=_STANY.ref();
+:: aktywacja stanu
+            params_exec('stan_aktywny','plan_dostaw_prod',_STANY);
+:: aktualizacja listy materiałów do zaplanowania
+            _MAT2PLAN.PLAN_D:=_STANY.D;
+            _MAT2PLAN.PLAN_T:=_STANY.T;
+            _MAT2PLAN.STATUS:=_STANY.STATUS;
+            _MAT2PLAN.put();
+:: aktualizacja rozchodu, stanu, stanu dostępnego dla stanów następujących
+            _STANY.cntx_psh();
+            _STANY.index(_stany_ndx_tms);
+            _loop:=_STANY.next();
+            {!
+            |? _loop
+            |!
+               _STANY.ROZ+=_il;
+               _STANY.STAN+=-_il;
+               _STANY.SD+=-_il;
+               _STANY.STATUS:=exec('stan_status','plan_dostaw_prod');
+               _loop:=_STANY.put() & _STANY.next()
+            !};
+            _STANY.cntx_pop();
+:: aktualizacja stanu, stanu dostępnego dla stanów poprzedzających
+            _STANY.cntx_psh();
+            _STANY.index(_stany_ndx_tms);
+            _loop:=_STANY.prev();
+            {!
+            |? _loop
+            |!
+               _STANY.STAN+=-_il;
+               _STANY.SD+=-_il;
+               {? _STANY.SD<0 || _STANY.SD:=0 ?};
+               _STANY.STATUS:=exec('stan_status','plan_dostaw_prod');
+               _loop:=_STANY.put() & _STANY.prev()
+            !};
+            _STANY.cntx_pop()
+         ?}
+      ?}
+   ?};
+   _loop:=_continue>0 & _MAT2PLAN.next()
+!};
+end();
+
+_pdprod.stany_select('plan');
+
+_result
+
+
+\pdprod_plan_cancel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - anulowanie zaplanowanych materiałów
+::   WE: _a - identyfikator zaplanowanych materiałow
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_pdprod:=params_get().pdprod;
+_id:=_a;
+
+_STANY:=_pdprod.STANY.TAB;
+_stany_ndx_tms:=_pdprod.STANY.NDX_TMS;
+_stany_ndx_plan_mat:=_pdprod.STANY.NDX_PLAN_MAT;
+_PLAN_MAT:=_pdprod.PLAN_MAT;
+_tms:=tm_stamp();
+_continue:=1;
+
+_STANY.cntx_psh();
+_PLAN_MAT.cntx_psh();
+_PLAN_MAT.prefix(_id,);
+_loop:=_PLAN_MAT.first();
+{!
+|? _loop
+|!
+   _STANY.index(_stany_ndx_plan_mat);
+   _STANY.prefix($_PLAN_MAT.ref());
+   {? _STANY.first()
+   ||
+      _stany:=_STANY.ref();
+      _il:=-_STANY.IL;
+:: aktualizacja rozchodu, stanu, stanu dostępnego dla stanów następujących
+      _STANY.cntx_psh();
+      _STANY.index(_stany_ndx_tms);
+      _loop:=_STANY.next();
+      {!
+      |? _loop
+      |!
+         _STANY.ROZ+=-_il;
+         _STANY.STAN+=_il;
+         _STANY.SD+=_il;
+         _STANY.STATUS:=exec('stan_status','plan_dostaw_prod');
+         _loop:=_STANY.put() & _STANY.next()
+      !};
+      _STANY.cntx_pop();
+:: aktualizacja stanu, stanu dostępnego dla stanów poprzedzających
+      _sd:=_STANY.SD+_il;
+      _STANY.cntx_psh();
+      _STANY.index(_stany_ndx_tms);
+      _loop:=_STANY.prev();
+      {!
+      |? _loop
+      |!
+         _STANY.STAN+=_il;
+         _stan:=_STANY.STAN;
+         {? _stan<_sd || _sd:={? _stan<=0 || 0 || _stan ?} ?};
+         _STANY.SD:=_sd;
+         _STANY.STATUS:=exec('stan_status','plan_dostaw_prod');
+         _loop:=_STANY.put() & _STANY.prev()
+      !};
+      _STANY.cntx_pop();
+:: usunięcie stanu
+      _STANY.cntx_psh();
+      _STANY.index(_stany_ndx_tms);
+      _STANY.prefix(_STANY.M,_STANY.D,_STANY.T);
+      {? _STANY.seek(_stany)
+      ||
+         _STANY.del();
+:: aktywacja stanu
+         {? _STANY.first() || params_exec('stan_aktywny','plan_dostaw_prod',_STANY) ?}
+      ?};
+      _STANY.cntx_pop()
+   ?};
+   _loop:=_PLAN_MAT.del()
+!};
+_PLAN_MAT.cntx_pop();
+_STANY.cntx_pop();
+
+_pdprod.stany_select('plan_cancel')
+
+
+\pdprod_stany_select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - wyświetla tabelę stanów
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_pdprod:=params_get().pdprod;
+_title:=_a;
+
+{? do_state()=0 & _title<>'' & _pdprod.DEBUG*_title
+||
+   _STANY:=_pdprod.STANY.TAB;
+   _STANY.prefix();
+   _STANY.win_sel(_pdprod.STANY.WER);
+   _STANY.hdr_sel('');
+   _STANY.hdr_sel(_title);
+   _STANY.select()
+?}
+
+
+\mat2plan_select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Wyświetla materiały do zaplanowania
+::   WE: _a - tabela z materiałami do zaplanowania
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_MAT2PLAN:=_a;
+_TAB:=exec('mat2plan','plan_dostaw_prod',1);
+_loop:=_MAT2PLAN.first();
+{!
+|? _loop
+|!
+   _TAB.TMS:=_MAT2PLAN.TMS;
+   _TAB.ID:=_MAT2PLAN.ID;
+   _TAB.M:=_MAT2PLAN.M;
+   _TAB.IL:=_MAT2PLAN.IL;
+   _TAB.D:=_MAT2PLAN.D;
+   _TAB.T:=_MAT2PLAN.T;
+   _TAB.PLAN_D:=_MAT2PLAN.PLAN_D;
+   _TAB.PLAN_T:=_MAT2PLAN.PLAN_T;
+   _TAB.STATUS:=_MAT2PLAN.STATUS;
+   _loop:=_TAB.add() & _MAT2PLAN.next()
+!};
+_wer:=_TAB.mk_sel('',,,'#mat2plan');
+_TAB.win_fld(_wer,,'TMS',,,15,,,'Znacznik czasowy');
+_TAB.win_fld(_wer,,'ID',,,16,,,'Id');
+_TAB.win_fld(_wer,,'M',,,16,,,'$M.ref()');
+_TAB.win_fld(_wer,,'IL',,,10,ST.DOKL,,'Ilość');
+_TAB.win_fld(_wer,,'D',,,10,,,'Data');
+_TAB.win_fld(_wer,,'T',,,8,,,'Czas');
+_TAB.win_fld(_wer,,'PLAN_D',,,10,,,'Plan data');
+_TAB.win_fld(_wer,,'PLAN_T',,,8,,,'Plan czas');
+_TAB.win_fld(_wer,,'STATUS',,,3,,,'Status');
+_TAB.win_sel(_wer);
+_TAB.select()
+
+
+\pdprod_dost_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - wypełnienie tabeli dostawców
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_pdprod:=params_get().pdprod;
+_pd_n:=_pdprod.PD_N;
+
+MDOST.cntx_psh();
+MDOSTPOW.cntx_psh();
+PD_MDOST.cntx_psh();
+PD_MDOST.index('MIL');
+PD_MDOST.prefix(_pd_n);
+{? PD_MDOST.first() || {! |? PD_MDOST.del() !} ?};
+PD_P.cntx_psh();
+PD_P.index('POZ');
+PD_P.prefix(_pd_n);
+_loop:=PD_P.first();
+{!
+|? _loop
+|!
+   MDOST.index('M');
+   MDOST.prefix('D',PD_P.M);
+   _loop:=MDOST.first();
+   {!
+   |? _loop
+   |!
+      PD_MDOST.blank();
+      PD_MDOST.PD_N:=_pd_n;
+      PD_MDOST.M:=PD_P.M;
+      PD_MDOST.KH:=MDOST.KH;
+      PD_MDOST.C1:=MDOST.C1;
+      PD_MDOST.C2:=MDOST.C2;
+      PD_MDOST.C3:=MDOST.C3;
+      PD_MDOST.C4:=MDOST.C4;
+      PD_MDOST.D:=MDOST.D;
+      PD_MDOST.ILDNI:=MDOST.ILDNI;
+      PD_MDOST.EWZ:=MDOST.EWZ;
+      PD_MDOST.WAL:=MDOST.WAL;
+      PD_MDOST.IL:=0;
+      MDOSTPOW.index('MDOST');
+      MDOSTPOW.prefix(MDOST.ref());
+      _loop:=MDOSTPOW.first();
+      {? ~_loop || PD_MDOST.add() ?};
+      {!
+      |? _loop
+      |!
+         PD_MDOST.IL:=MDOSTPOW.IL;
+         _loop:=PD_MDOST.add() & MDOSTPOW.next()
+      !};
+      _loop:=MDOST.next()
+   !};
+   _loop:=PD_P.next()
+!};
+PD_P.cntx_pop();
+PD_MDOST.cntx_pop();
+MDOSTPOW.cntx_pop();
+MDOST.cntx_pop()
+
+
+\stan_dost
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Planowanie - uzupełnienie stanu tylko jeśli są dostawcy
+::   WE: _a - zamawiany materiał
+::       _b - zamawiana ilość
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_pdprod:=params_get().pdprod;
+_mat:=_a;
+_il:=_b;
+_pd_n:=_pdprod.PD_N;
+_STANY:=_pdprod.STANY.TAB;
+_ndx_tms:=_pdprod.STANY.NDX_TMS;
+_tms:=tm_stamp();
+_continue:=0;
+
+_STANY.cntx_psh();
+_STANY.index(_ndx_tms);
+PD_MDOST.cntx_psh();
+PD_MDOST.index('MIL');
+PD_MDOST.prefix(_pd_n,exec('FindAndGet','#table',M,_mat,,,null()));
+{? PD_MDOST.find_ge(_il) | PD_MDOST.first()
+||
+   _continue:=1;
+   _ildni:=PD_MDOST.ILDNI;
+   {? PD_MDOST.EWZ>_il || _il:=PD_MDOST.EWZ
+   |? PD_MDOST.IL>_il || _il:=PD_MDOST.IL
+   ?}
+?};
+{? _continue>0
+||
+   _date:=date()+_ildni;
+   _time:=time(0,0,0);
+   _put:=1;
+
+   _STANY.prefix(_mat,_date,_time);
+   {? _STANY.last()
+   ||
+      _STANY.A:='N';
+      _STANY.put()
+   ||
+      _put:=0;
+      _STANY.blank();
+      _STANY.M:=_mat;
+      _STANY.D:=_date;
+      _STANY.T:=_time;
+      _roz:=0;
+      _d_zam:=0;
+      _d_dozam:=0;
+      _d_mg:=0;
+      _stan:=0;
+      _sd:=0;
+      _STANY.cntx_psh();
+      _STANY.prefix(_mat);
+      {? _STANY.find_le(_date,_time)
+      ||
+         _roz:=_STANY.ROZ;
+         _d_zam:=_STANY.D_ZAM;
+         _d_dozam:=_STANY.D_DOZAM;
+         _d_mg:=_STANY.D_MG;
+         _stan:=_STANY.STAN;
+         _sd:=_STANY.SD
+      ?};
+      _STANY.cntx_pop();
+      _STANY.ROZ:=_roz;
+      _STANY.D_ZAM:=_d_zam;
+      _STANY.D_DOZAM:=_d_dozam;
+      _STANY.D_MG:=_d_mg;
+      _STANY.STAN:=_stan;
+      _STANY.SD:=_sd
+   ?};
+   _STANY.TMS:=_tms;
+   _STANY.A:='T';
+   _STANY.IL:=_il;
+   _STANY.D_DOZAM+=_STANY.IL;
+   {? _put || _STANY.put() || _STANY.add() ?};
+   _stany:=_STANY.ref();
+   _STANY.prefix(_mat);
+   _mat:='';
+   _loop:=_STANY.last();
+   {!
+   |? _loop
+   |!
+      {? _STANY.ref()=_stany || _il:=0 ?};
+      _STANY.D_DOZAM+=_il;
+      _stan:=_STANY.D_MG+_STANY.D_ZAM+_STANY.D_DOZAM-_STANY.ROZ;
+      {? _mat<>_STANY.M
+      ||
+         _sd:=_stan;
+         _mat:=_STANY.M
+      ?};
+      {? _stan<_sd || _sd:={? _stan<=0 || 0 || _stan ?} ?};
+      _STANY.STAN:=_stan;
+      _STANY.SD:=_sd;
+      _STANY.STATUS:=exec('stan_status','plan_dostaw_prod',_STANY);
+      _loop:=_STANY.put() & _STANY.prev()
+   !}
+?};
+_STANY.cntx_pop();
+PD_MDOST.cntx_pop()
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:35 05c65a2ed1b49c3e5fdf0fd9b437f8cb59393a1e0584acb876808fe77981305d482937373a74cb0f5192c9068ad31b1b2c7640c281e3c914c9615a98ae9aae6f6abe0a49635349b22cf53f6b5b2ea1fa87a7bb4fcdc02a13d2e81b94dedeecf2826869d4c63821c678349cf12453ce243a263edd6cfa62c11c85f161e3656772

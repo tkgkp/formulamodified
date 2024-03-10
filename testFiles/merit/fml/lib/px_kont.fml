@@ -1,0 +1,3818 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku:  px_kont.fml [12.10]
+:: Utworzony: 2011-07-20
+:: Autor: WH
+::======================================================================================================================
+:: Zawartosc: Obsluga zasobow (kontenerow) w planie strategicznym (wielowymiarowym planie pojemnosciowym)
+::======================================================================================================================
+
+
+\select_kont
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Wyswietla okno wertowania kontenerow
+::----------------------------------------------------------------------------------------------------------------------
+
+::czyszcze zmienna potrzebna do prefiksowania formul planu
+PX_VAR.RULE_TYP:='';
+
+::w tym kontekscie zawsze mozna redagowac
+PX_VAR.EDIT:=1;
+
+PX_KONT.cntx_psh();
+
+::sprawdzam czy jest zalozona glowna wersja planu, jesli nie to ja zakladam
+exec('mainversion_chk','px_ver');
+_mainversion:=exec('get_mainversion','px_ver');
+
+::tworze tabele tymczasowa KONT_TREE ktora zawiera drzewo elementow ktore moga byc kontenerami
+exec('create_kon_tree','px_param');
+
+::tworze okienko grupowe
+_grp:=PX_KONT.grp_make('Zasoby planistyczne'@,"grp_disp(KONT_TREE,WERK_TREE)",,0,0);
+PX_KONT.grp_sel(_grp,,'WER',,"PX_VAR.SEL_KONT:=PX_KONT.ref();grp_disp(KONT_TREE,WERK_TREE)",0,0,,,,,,'maximized');
+PX_KONT.grp_splt(_grp,,'vertical','zasoby');
+PX_KONT.grp_sel(_grp,KONT_TREE,WERK_TREE,,,0,0,,,,,,'maximized_with_title');
+
+::ustawiam kontekst dla tabeli PX_KONT
+PX_KONT.win_sel(_grp);
+PX_KONT.win_edit('RED');
+PX_KONT.clear();
+PX_KONT.index('SYM');
+::pokazuje tylko kontenery rzeczywiste
+PX_KONT.prefix(_mainversion);
+
+::support drag and drop
+exec('pxkont_dnd','px_kont');
+
+PX_VAR.VIE_VER:=exec('get_mainversion','px_ver');
+exec('__KAL','object');
+PX_KONT.select();
+PX_VAR.VIE_VER:=null();
+
+VAR_DEL.delete('KONT_TREE');
+VAR_DEL.delete('WERK_TREE');
+::czyszcze zmienna potrzebna do prefiksowania formul planu
+PX_VAR.RULE_TYP:='';
+PX_KONT.cntx_pop();
+~~
+
+
+\pxkont_dnd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Definiuje mechanizm d'n'd dla tabeli PX_KONT
+::----------------------------------------------------------------------------------------------------------------------
+PX_KONT.dnd_sel('WER',,
+               'records.#kont_tree',
+               "
+                  _tab:=dnd_info(\'dropped_records\');
+                  {? type_of(_tab) = type_of(~~) || return(0) ?};
+
+                     exec('pxkont_dnd_drop','px_kont',_tab)
+               "
+               );
+~~
+
+
+\pxkont_dnd_drop
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Obsluga upuszczenia rekordow z tabeli tymczasowej KONT_TREE
+::   WE: _a - tabela z rekordami ktore popuszczam - wynik formuly dnd_info('dropped_records')
+::----------------------------------------------------------------------------------------------------------------------
+_dropped:=_a;
+
+::czyszcze zmienna PX_VAR
+PX_VAR.blank();
+::wyswietlam grupowe okno edycyjne
+PX_VAR.win_edit('KONT_PAR');
+
+:: deklaracje obiektow dla komunikatow
+exec('JCQ_decl','#message');
+{? var_pres('KOMM')<100 || KOMM:=obj_new(@.CLASS.JCQ) ?};
+KOMM.init(200,,'Dodawanie zasobów planu strategicznego','',,,0);
+
+{? PX_VAR.edit("exec('px_kont_arec','px_kont',PX_VAR)")
+||
+:: pytanie o zakres generowania pojemnikow
+   PX_VER.cntx_psh();
+   PX_VER.clear();
+   {? PX_VER.seek(exec('get_mainversion','px_ver'))
+   || exec('def_zakres_smpl','px_param')
+   ?};
+   PX_VER.cntx_pop();
+   {? _dropped.first()
+   || {!
+      |? {? KONT_TREE.seek(_dropped.REF,)
+         ||
+            KONT_TREE.cntx_psh();
+            KONT_TREE.prefix(KONT_TREE.ref());
+            {? KONT_TREE.first()
+            ||
+::             galaz
+               {!
+               |? _next:=0;
+                  _ref_nxt:=null();
+                  KONT_TREE.cntx_psh();
+                  {? KONT_TREE.next()
+                  || _ref_nxt:=KONT_TREE.ref()
+                  ?};
+                  KONT_TREE.cntx_pop();
+
+                  _can_continue:=exec('pxkont_add_dnd','px_kont');
+                  {? _can_continue>0
+                  ||
+::                   generowanie pojemnikow
+                     exec('px_cup_gen','px_param',1);
+                     _can_continue:=KONT_TREE.del(,1)
+                  ?};
+
+                  {? _ref_nxt<>null()
+                  || _next:=KONT_TREE.seek(_ref_nxt)
+                  ?};
+                  _next>0 & _can_continue>0
+               !};
+               KONT_TREE.cntx_pop();
+               KONT_TREE.del()
+            ||
+::             lisc
+               KONT_TREE.cntx_pop();
+::             funkcja dodajaca rekord
+               _ok:=exec('pxkont_add_dnd','px_kont');
+               {? _ok
+               ||
+::                generowanie pojemnikow
+                  exec('px_cup_gen','px_param',1);
+                  _del:=KONT_TREE.del(,1)
+               ?}
+            ?}
+         ?};
+         _dropped.next()
+      !};
+::    czyszcze puste galezie drzewa
+      exec('kont_tree_clean','px_kont')
+   ?}
+?};
+::po dodaniu rekordu odswiezam widok tabeli z mozliwymi zasobami do importu
+win_disp();
+
+::sprzatam po generowaniu pojemnikow
+exec('gen_cleanup','px_param');
+~~
+
+
+\kont_tree_clean
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Usuwa z tabeli KONT_TREE wszystkie puste galezie
+::       Kontekst pracy - istniejaca tabela KONT_TREE
+::----------------------------------------------------------------------------------------------------------------------
+
+_ndx1:=KONT_TREE.ndx_tmp(,,'BRANCH',,);
+_ndx2:=KONT_TREE.ndx_tmp(,,'PARENT',,);
+KONT_TREE.index(_ndx1);
+KONT_TREE.prefix('T');
+{? KONT_TREE.first()
+|| {!
+   |? _clean:=0;
+      KONT_TREE.cntx_psh();
+      KONT_TREE.index(_ndx2);
+      KONT_TREE.prefix(KONT_TREE.ref());
+      {? KONT_TREE.first()=0
+      || _clean:=1
+      ?};
+      KONT_TREE.cntx_pop();
+      _continue:={? _clean>0
+                 || KONT_TREE.del(,1)
+                 || KONT_TREE.next()
+                 ?};
+      _continue>0
+   !}
+?};
+KONT_TREE.ndx_drop(_ndx1);
+KONT_TREE.ndx_drop(_ndx2);
+~~
+
+
+\pxkont_add_dnd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Uruchamia funkcje \pxkont_add, pracuje w kontekscie rekordu KONT_TREE
+::   WY: 0 / 1 - sukces czy porazka
+::----------------------------------------------------------------------------------------------------------------------
+_mainver:=exec('get_mainversion','px_ver');
+::sprawdzam czy juz taki istnieje, jesli tak, to nie dodaje
+PX_KONT.cntx_psh();
+PX_KONT.index('SYM');
+PX_KONT.prefix(_mainver,KONT_TREE.SYMBOL,);
+{? PX_KONT.first()
+|| PX_KONT.cntx_pop();
+   KOMM.add('Zasób o symbolu: %1 istnieje już na liście zasobów.'@[KONT_TREE.SYMBOL],2);
+   return(0)
+?};
+PX_KONT.cntx_pop();
+::znajdowanie kalendarza
+_kal:=null();
+{? KONT_TREE.KAL_REF<>''
+|| KAL_NAZW.cntx_psh();
+   KAL_NAZW.clear();
+   {? KAL_NAZW.seek(KONT_TREE.KAL_REF)
+   || _kal:=KAL_NAZW.ref()
+   ?};
+   KAL_NAZW.cntx_pop()
+?};
+_plres:=null();
+PL_RES.cntx_psh();
+PL_RES.clear();
+{? PL_RES.seek(KONT_TREE.PL_RES)
+|| _plres:=PL_RES.ref()
+?};
+PL_RES.cntx_pop();
+
+::dodawanie kontenera
+_ok:=exec('pxkont_add','px_kont',_mainver,
+                                 _plres,
+                                 KONT_TREE.SYMBOL,
+                                 KONT_TREE.NAZWA,
+                                 _kal,
+                                 'R',
+                                 1,
+                                 KONT_TREE.TYP,
+                                 KONT_TREE.REF,
+                                 KONT_TREE.WYD);
+
+{? _ok=0
+|| FUN.emsg('Dodawanie zasobu do planowania się nie powiodło.'@)
+?};
+_ok
+
+
+\pxkont_add_act
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Akcja dolacz w tabeli PX_KONT okna: WER
+::----------------------------------------------------------------------------------------------------------------------
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+PX_KONT.blank();
+_edit:=exec('win_edit','px_kont');
+PX_KONT.win_edit(_edit);
+exec('opernast_init','px_init');
+{? PX_KONT.edit("exec('px_kont_arec','px_kont',PX_KONT)")
+|| _mainver:=exec('get_mainversion','px_ver');
+
+:: przeniesienie wartosci z bufora tabeli do zmiennej - funkcja exec('pxkont_add','px_kont') korzysta z pol w zmiennej
+   exec('px_kont2px_var','px_param');
+
+:: dodawanie kontenera
+   _ok:=exec('pxkont_add','px_kont',_mainver,
+                                    null(),
+                                    PX_KONT.SYMBOL,
+                                    PX_KONT.NAZWA,
+                                    null(),
+                                    'R',
+                                    1,
+                                    ,
+                                    ,
+                                    ,
+                                    PX_KONT.PARALLEL);
+   {? _ok
+   ||
+::    generowanie pojemnikow
+      exec('px_cup_gen','px_param',0)
+   ?}
+?};
+PX_KONT.cntx_pop();
+~~
+
+
+\pxkont_add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Dodaje do tabeli PX_KONT rekord, jesli nie podany jest ref do PL_RES, to zakladam tez PL_RESa
+::   WE: _a: PX_KONT.PX_VER - PX_VER.ref()
+::       _b: PX.KONT.PL_RES - PL_RES.ref()
+::       _c: PX_KONT.SYMBOL - STRING[60]
+::       _d: PX_KONT.NAZWA - STRING[80]
+::       _e: PX_KONT.KAL - KAL_NAZW.ref()
+::       [_f] PX_KONT.KIND - STRING[1]
+::       [_g] 1 / [0] - inicjowac czy nie rekord na podstawie zmiennej PX_VAR (uzywane podczas grupowego dodawania)
+::       [_h]: PL_RES.TYP - STRING[1]
+::       [_i]: PL_RES.REF - STRING[16]
+::       [_j]: PL_RES.WYD - STRING[10]
+::       [_k]: PL_RES.PARALLEL - STRING[1]
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+
+:: sprawdzanie argumentow
+_ver:=null();
+_sym:='';
+_naz:='';
+_kal_nazw:=null();
+
+
+_kind:='';
+_view_add:=0;
+
+_plres:=null();
+
+_can_continue:=1;
+
+{? _=0
+|| return(0)
+?};
+_ver:=_a;
+_plres:=_b;
+_sym:=_c;
+_naz:=_d;
+_kal_nazw:=_e;
+
+_kind:='';
+{? var_pres('_f')=type_of('')
+|| _kind:=_f
+?};
+
+_var_init:=1;
+{? var_pres('_g')=type_of(0)
+|| _var_init:=_g
+?};
+_typ:='';
+{? var_pres('_h')=type_of('')
+|| _typ:=_h
+?};
+_ref:='';
+{? var_pres('_i')=type_of('')
+|| _ref:=_i
+?};
+_wyd_sym:='';
+{? var_pres('_j')=type_of('')
+|| _wyd_sym:=_j
+?};
+_parallel:='0';
+{? var_pres('_k')=type_of('')
+|| _parallel:=_k
+?};
+
+::dodawanie plresa jesli potrzebny
+{? _plres=null() & _typ<>'' & _ref<>''
+||
+::sprawdzam czy przypadkiem nie ma takiego plresa juz
+   _add:=1;
+   PL_RES.cntx_psh();
+   PL_RES.index('REF');
+   PL_RES.prefix(_ref,_ref);
+   {? PL_RES.first()
+   || _add:=0;
+      _parallel:=PL_RES.PARALLEL
+   ?};
+   PL_RES.cntx_pop();
+
+   {? _add
+   || _ok:=exec('plres_add','po_plan', _typ,
+                                       _ref,
+                                       _sym,
+                                       _naz,
+                                       _kal_nazw,
+                                       _wyd_sym,
+                                       _parallel);
+::    jesli sie udalo dodac to dodany plres staje sie biezacym
+      {? _ok
+      || _plres:=PL_RES.ref()
+      ?}
+   ?}
+?};
+
+:: Przed dodaniem kontenera sprawdzam czy przypadkiem w tej wersji nie ma już takiego kontenera ale nieaktywnego
+PX_VER.cntx_psh();
+PX_VER.clear();
+{? PX_VER.seek(_ver)
+||
+   PX_KONT.cntx_psh();
+   PX_KONT.index('SYM');
+   PX_KONT.prefix(_ver,_sym,);
+   {? PX_KONT.first()
+   || _can_continue:=0;
+      _msg:='Dodawanie kontenera zakończone niepowodzeniem.\n\n'@;
+      {? PX_KONT.A='T'
+      || _msg+='W wersji planu: %1 istnieje już \'aktywny\' kontener o symbolu: %2'@[PX_VER.SYMBOL,_sym]
+      || _msg+='W wersji planu: %1 istnieje \'nieaktywny\' kontener o symbolu: %2'@[PX_VER.SYMBOL,_sym]
+      ?};
+      FUN.emsg(_msg)
+   ?};
+   PX_KONT.cntx_pop()
+|| _can_continue:=0;
+   FUN.emsg('Dodawanie kontenera zakończone niepowodzeniem. \nNie znaleziono wersji docelowej.'@)
+?};
+PX_VER.cntx_pop();
+
+{? _can_continue>0
+||
+:: DODAWANIE REKORDU
+   PX_KONT.blank();
+   PX_KONT.PX_VER:=_ver;
+   PX_KONT.PL_RES:=_plres;
+   PX_KONT.SYMBOL:=_sym;
+   PX_KONT.NAZWA:=_naz;
+   PX_KONT.KAL:=_kal_nazw;
+   {? _kind<>''
+   || PX_KONT.KIND:=_kind
+   ?};
+   PX_KONT.PARALLEL:=_parallel;
+   _result:=PX_KONT.add();
+
+:: przeniesienie wartosci pol ze zmiennej do tabeli
+   {? _var_init>0
+   || exec('px_var2px_kont','px_param')
+   ?}
+?};
+_result
+
+
+\pxkont_del
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER/PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Usuwa z tabeli PX_KONT rekord usuwajac najpierw wszystkie pojemniki (jesli mozna)
+::       Uwaga! Rozpoczyna i konczy transakcje
+::   WE: [_a] - PX_KONT.ref() - zasob do usuniecia
+::       [_b] - 0 / 1 - akcja grupowa (domyslnie okreslane na podstawie ilosci zaznaczonych rekordow)
+::   WY: 0 / 1 - sukces przy porazka
+::----------------------------------------------------------------------------------------------------------------------
+_kont:=PX_KONT.ref();
+{? _>0
+|| _kont:=_a
+?};
+_group:=0;
+{? PX_KONT.sel_size()>0
+|| _group:=1
+?};
+{? _>1
+|| _group:=_b
+?};
+
+_result:=0;
+_ok:=0;
+
+_choice:=1;
+
+:: zapytanie czy na pewno
+{? _group=0
+|| _choice:=FUN.ask('Czy usunąć zasób: %1?'@[PX_KONT.SYMBOL])
+?};
+
+{? _choice=1
+|| {? PX_KONT.seek(_kont)
+   || {? _group=0
+      || KOMM.init(200,,'Usuwanie zasobów planu'@,'')
+      ?};
+
+::    Sprawdzam powiazania miedzy zasobami
+      _no_dpnd:=exec('chk_depend','px_kont',PX_KONT.ref());
+
+      {? _no_dpnd
+      ||
+::       Sprawdzam powiazania z wszystkimi tabelami
+         _connections:=exec('testlink_all','px_kont',PX_KONT.ref());
+
+::       jesli jest powiazanie tylko z jedna tabela i jest to PX_CUP to moge spokojnie usunac caly kontener
+::       jesli jest wiecej powiazan to nie usuwam kontenera tylko go dezaktywuje
+         _can_del:=1;
+         {? _connections.size()=0
+         || _can_del:=1
+         |? _connections.size()=1
+         || _connections.first();
+            {? _connections.TABELA='PX_CUP'
+            || _can_del:=1
+            || _can_del:=0
+            ?}
+         |? _connections.size()>1
+         || {? _connections.first()
+            || {!
+               |? {? _connections.TABELA<>'PX_CUP' & _connections.TABELA<>'PX_CAL'
+                  || _can_del:=0
+                  ?};
+                  _connections.next()
+               !}
+            ?}
+         ?};
+         {? _can_del>0
+         ||
+::          jesli moge usunac to usuwam
+            exec('delete_manual','px_kont')
+         ||
+::          jesli nie moge usunac to dezaktywuje
+            _msg:='Zasób jest powiązany, zamiast usunięcia zostanie podjęta próba jego dezaktywacji.'@;
+            KOMM.sect_beg(_msg,'xwin16.png:4','128:80:50');
+            exec('deactivate','px_kont',PX_KONT.ref(),1);
+            KOMM.sect_end()
+         ?}
+      ?};
+
+::    jesli akcja nie byla grupowa to pokazuje okno z komunikatami
+      {? _group=0
+      || win_disp();
+         KOMM.select(,,,,,0)
+      ?}
+   ?}
+?};
+_result
+
+
+\delete_manual
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Podprocedura usuwajaca kontener. Wywywolywana podczas recznego usuwania kontenera przez uzytkownika z
+::       formulki exec('pxkont_del','px_kont')
+::       Kontekst pracy:
+::                         - PX_KONT.ref()
+::                         - zainicjowany obiekt KOMM
+::                         - istniejaca tabela KONT_TREE
+::   WY: 0 - zguba
+::       1 - zwyciestwo
+::----------------------------------------------------------------------------------------------------------------------
+
+_result:=0;
+
+_uid_mine:=PX_KONT.UID;
+_kind:='???';
+{? PX_KONT.KIND='R'
+|| _kind:='rzeczywisty'
+?};
+{? PX_KONT.KIND='W'
+|| _kind:='widokowy'
+?};
+{? PX_KONT.KIND='T'
+|| _kind:='technologiczny'
+?};
+_msg_main:='Usuwanie zasobu: '+PX_KONT.SYMBOL+' - typ zasobu: '+_kind;
+_lp_msg1:=KOMM.sect_beg(_msg_main,,1);
+
+:: Najpierw usuwam pojemniki nalezace do kontenera
+_ok:=1;
+PX_CUP.cntx_psh();
+PX_CUP.index('TM_START');
+PX_CUP.prefix(PX_KONT.ref());
+{? PX_CUP.first()
+||
+:: TRANSAKCJA START!!!
+   do();
+   _msg_cup:='Usuwanie pojemników';
+   _lp_msg2:=KOMM.sect_beg(_msg_cup,,1);
+   {!
+   |? _ok:=exec('cup_del','px_gen',PX_CUP.ref(),1);
+      PX_CUP.first() & _ok>0
+   !};
+   KOMM.sect_end();
+   {? _ok>0
+   ||
+::    Jesli wszystko sie powiodlo to usuwam sekcje z komunikatami
+      KOMM.del(_lp_msg2)
+   ||
+::    TRANSAKCJA UNDO!!!
+      undo()
+   ?};
+
+:: TRANSAKCJA END!!!
+   end()
+?};
+PX_CUP.cntx_pop();
+
+:: przywracam do drzewa elementow ktore moga byc kontenerami usuwany kontener
+{? _ok>0
+||
+   {? var_pres('KONT_TREE')>0
+   || {? PX_KONT.PL_RES<>null()
+      || KONT_TREE.cntx_psh();
+         _ndx:=KONT_TREE.ndx_tmp(,,'TYP',,,'BRANCH',,);
+         _ndx2:=KONT_TREE.ndx_tmp(,,'TYP',,,'SYMBOL',,,'NAZWA',,);
+         KONT_TREE.index(_ndx);
+::       szukam galezi, jesli nie znajde to zakladam
+         _typ:=PX_KONT.PL_RES().TYP;
+         KONT_TREE.prefix(_typ,'T');
+         {? KONT_TREE.first()=0
+         || exec('tree_add_branch','px_param',_typ)
+         ?};
+::       sprawdzam czy w drzewie zrodlowym jest juz taki element
+         _add_tree:=1;
+         KONT_TREE.cntx_psh();
+         KONT_TREE.index(_ndx2);
+         KONT_TREE.prefix(_typ,PX_KONT.SYMBOL,PX_KONT.NAZWA);
+         {? KONT_TREE.first()
+         || _add_tree:=0
+         ?};
+         KONT_TREE.cntx_pop();
+::       jesli w drzewie zrodlowym nie ma elementu o takim symbolu to go dodaje
+         {? _add_tree=1
+         || _kal:=exec('get_kal_nazwa','po_plan',$PX_KONT.KAL,_typ);
+            exec('tree_add','px_param',   PX_KONT.PL_RES().TYP,
+                                          PX_KONT.PL_RES().REF,
+                                          KONT_TREE.ref(),
+                                          PX_KONT.SYMBOL,
+                                          PX_KONT.NAZWA,
+                                          _kal[1],
+                                          $PX_KONT.KAL,
+                                          PX_KONT.PL_RES().WYD,
+                                          $PX_KONT.PL_RES)
+         ?};
+         KONT_TREE.ndx_drop(_ndx);
+         KONT_TREE.ndx_drop(_ndx2);
+         KONT_TREE.cntx_pop()
+      ?}
+   ?}
+?};
+
+:: Usuwanie kontenera
+{? _ok>0
+||
+:: TRANSAKCJA START!!!
+   do();
+   _result:=PX_KONT.del(,1);
+   {? _result=0
+   ||
+::    TRANSAKCJA UNDO!!!
+      undo()
+   ?};
+:: TRANSAKCJA END!!!
+   end()
+?};
+
+:: koncze glowna sekcje
+KOMM.sect_end();
+
+{? _result>0
+||
+:: Jesli sie udalo to usuwam sekcje z komunikatami
+   KOMM.del(_lp_msg1)
+?};
+
+_result
+
+
+\deactivate
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Dezaktywuje zasob (kontener)
+::   WE: _a - PX_KONT.ref()
+::       [_b] - 0 / 1 - akcja grupowa (domyslnie okreslane na podstawie ilosci zaznaczonych rekordow)
+::   WY: 0 - zguba
+::       1 - zwyciestwo
+::----------------------------------------------------------------------------------------------------------------------
+_pxkont:=_a;
+_result:=0;
+
+_group:=0;
+{? PX_KONT.sel_size()>0
+|| _group:=1
+?};
+{? _>1
+|| _group:=_b
+?};
+
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_pxkont)
+||
+   {? _group=0
+   || KOMM.init(200,,'Dezaktywacja zasobów planu','')
+   ?};
+:: zapytanie czy na pewno
+   _choice:=1;
+   {? _group=0
+   || {? PX_KONT.A='N'
+      || FUN.info('Zasób nieaktywny.'@);
+         _choice:=0
+      |? exec('chk_depend','px_kont',PX_KONT.ref())
+      ||
+         {? exec('chk_koop','px_kont',PX_KONT.ref())
+         || _choice:=FUN.ask('Czy dezaktywować zasób: %1?'@[PX_KONT.SYMBOL])
+         || _choice:=FUN.ask('Zasób powiązany z operacjami, czy dezaktywować zasób: %1?'@[PX_KONT.SYMBOL])
+         ?}
+      || _choice:=0
+      ?}
+   || {? PX_KONT.A='N'
+      || KOMM.add('Zasób: %1 nieaktywny.'@[PX_KONT.SYMBOL]);
+         _choice:=0
+      |? ~exec('chk_depend','px_kont',PX_KONT.ref())
+      || _choice:=0
+      || {? ~exec('chk_koop','px_kont',PX_KONT.ref())
+         || KOMM.add('Zasób: %1 powiązany z operacjami, dezaktywacja niemożliwa.'@[PX_KONT.SYMBOL],'xwin16.png:2','128:0:0');
+            _choice:=0
+         ?}
+      ?}
+   ?};
+
+   {? _choice=1
+   ||
+      _uid_mine:=PX_KONT.UID;
+
+      _msg_main:='Dezaktywowanie zasobu: %1'@[PX_KONT.SYMBOL];
+      KOMM.sect_beg(_msg_main,,1);
+      _lp_main:=KOMM.find_msg(_msg_main);
+
+      _ok:=1;
+
+::    Jesli sie udalo usuniecie pojemnikow to zmieniam status na nieaktywny
+      {? _ok>0
+      || PX_KONT.A:='N';
+         _result:=PX_KONT.put()
+      ?};
+
+::    Koncze glowna sekcje
+      KOMM.sect_end();
+
+::    Aktualizuje komunikat
+      {? _result>0
+      || KOMM.update(_lp_main,_msg_main+' - OK','xwin16.png:38','0:128:0')
+      || KOMM.update(_lp_main,_msg_main+' - PROBLEM','xwin16.png:2','128:0:0')
+      ?}
+   ?};
+:: jesli akcja nie byla grupowa to pokazuje okno z komunikatami
+   {? _group=0 & _result<=0
+   || KOMM.select(,,,,,0)
+   ?}
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\activate
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Aktywuje zasob (kontener)
+::   WE: _a - PX_KONT.ref()
+::       [_b] - 0 / 1 - akcja grupowa (domyslnie okreslane na podstawie ilosci zaznaczonych rekordow)
+::   WY: 0 - zguba
+::       1 - zwyciestwo
+::----------------------------------------------------------------------------------------------------------------------
+_pxkont:=_a;
+_result:=0;
+
+_group:=0;
+{? PX_KONT.sel_size()>0
+|| _group:=1
+?};
+{? _>1
+|| _group:=_b
+?};
+
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_pxkont)
+||
+:: zapytanie czy na pewno
+   _choice:=1;
+   {? _group=0
+   || {? PX_KONT.A='T'
+      || FUN.info('Zasób aktywny.'@);
+         _choice:=0
+      ||
+         _choice:=FUN.ask('Czy aktywować zasób: %1?'@[PX_KONT.SYMBOL])
+      ?}
+   ?};
+
+   {? _choice=1
+   ||
+      {? _group=0
+      || KOMM.init(200,,'Aktywacja zasobów planu'@,'');
+::         exec('def_zakres_smpl','px_param',,,1)
+         ~~
+      ?};
+      _uid_mine:=PX_KONT.UID;
+
+      _msg_main:='Aktywowanie zasobu: %1'@[PX_KONT.SYMBOL];
+      KOMM.sect_beg(_msg_main,,1);
+      _lp_main:=KOMM.find_msg(_msg_main);
+
+      PX_KONT.A:='T';
+      _result:=PX_KONT.put();
+
+::    Koncze glowna sekcje
+      KOMM.sect_end();
+
+::    Aktualizuje komunikat
+      {? _result>0
+      || KOMM.update(_lp_main,_msg_main+' - OK','xwin16.png:38','0:128:0')
+      || KOMM.update(_lp_main,_msg_main+' - PROBLEM','xwin16.png:2','128:0:0')
+      ?};
+
+::    Generuje pojemniki
+::      {? _result>0 & PX_KONT.KIND='R'
+::      || exec('px_cup_gen','px_param',1)
+::      ?};
+
+::    jesli akcja nie byla grupowa to pokazuje okno z komunikatami
+      {? _group=0 & _result<=0
+      || KOMM.select(,,,,,0)
+      ?}
+   ?}
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\delete_cups
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.02]
+:: OPIS: Usuwa pojemniki dla podanego zasobu planistycznego
+::   WE: [_a] - PX_KONT.ref - ref zasobu lub bieżący rekord
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PX_KONT.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PX_KONT.cntx_psh();
+{? _ref<>null()
+|| PX_KONT.prefix();
+   {? PX_KONT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _what:=exec('PX_KONT','#to_string');
+   _group:=0;
+   {? PX_KONT.sel_size()>0
+   || _group:=1
+   ?};
+   {? _group=0
+   || KOMM.init(200,,'Usuwanie pojemników'@,'');
+      _can_continue:=FUN.ask('Czy usunąć pojemniki zasobu: %1'@[_what])
+   ?};
+
+   {? _can_continue>0
+   ||
+      PX_CUP.cntx_psh();
+      PX_CUP.index('TM_START');
+      PX_CUP.prefix(PX_KONT.ref());
+      {? PX_CUP.first()
+      ||
+::       TRANSAKCJA START!!!
+         _mydo:=do_state()=0;
+         {? _mydo || do() ?};
+
+         _msg_cup:='Usuwanie pojemników zasobu: %1'@[_what];
+         KOMM.sect_beg(_msg_cup,,1);
+         _lp_cup:=KOMM.find_msg(_msg_cup);
+         {!
+         |? _ok:=exec('cup_del','px_gen',PX_CUP.ref(),1);
+            PX_CUP.first() & _ok>0
+         !};
+         KOMM.sect_end();
+::       zmieniam komunikat o usuwaniu pojemnikow w KOMM w zaleznosci od tego czy udalo sie usunac wszystkie pojemniki
+         {? _ok>0
+         || KOMM.update(_lp_cup,_msg_cup+' - OK','xwin16.png:38','0:128:0',1)
+         ||
+::          TRANSAKCJA UNDO!!!
+            undo();
+            KOMM.update(_lp_cup,_msg_cup+' - PROBLEM','xwin16.png:2','128:0:0',1)
+         ?};
+::       TRANSAKCJA END!!!
+         {? _mydo || end() ?}
+      || KOMM.add('Nie znaleziono pojemników do usunięcia dla zasobu: %1'@[_what],2,,1)
+      ?};
+      PX_CUP.cntx_pop()
+   ?};
+   {? _group=0
+   || KOMM.select()
+   ?}
+?};
+PX_KONT.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\delete_cups_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.02]
+:: OPIS: Akcja grupa przed Usuń pojemniki
+::   WY: 0/1
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0;
+{? FUN.ask('Zaznaczono: %1 zasobów. Czy usunąć im pojemniki?'@[$PX_KONT.sel_size()])
+|| _ok:=1;
+:: deklaracje obiektow dla komunikatow
+   exec('JCQ_decl','#message');
+   {? var_pres('KOMM')<100 || KOMM:=obj_new(@.CLASS.JCQ) ?};
+   KOMM.init(200,,'Usuwanie pojemników zasobów'@,'')
+?};
+_ok
+
+
+\delete_cups_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.02]
+:: OPIS: Akcja grupa po Usuń pojemniki
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+KOMM.select(,,,,,0);
+~~
+
+
+\activate_gr1
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Akcja grupa przed aktywacja
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0;
+{? FUN.ask('Zaznaczono: %1 zasobów. Czy aktywować je wszystkie?'@[$PX_KONT.sel_size()])
+|| _ok:=1;
+::   exec('px_def_zakres','px_param');
+:: deklaracje obiektow dla komunikatow
+   exec('JCQ_decl','#message');
+   {? var_pres('KOMM')<100 || KOMM:=obj_new(@.CLASS.JCQ) ?};
+   KOMM.init(200,,'Aktywacja zasobów planu'@,'')
+?};
+_ok
+
+
+\activate_gr2
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Akcja grupa po aktywacja
+::----------------------------------------------------------------------------------------------------------------------
+KOMM.select(,,,,,0);
+~~
+
+
+\deactivate_gr1
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Akcja grupa przed dezaktywacja
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0;
+{? FUN.ask('Zaznaczono: %1 zasobów. Czy dezaktywować je wszystkie?'@[$PX_KONT.sel_size()])
+|| _ok:=1;
+:: deklaracje obiektow dla komunikatow
+   exec('JCQ_decl','#message');
+   {? var_pres('KOMM')<100 || KOMM:=obj_new(@.CLASS.JCQ) ?};
+   KOMM.init(200,,'Dezaktywacja zasobów planu'@,'')
+?};
+_ok
+
+
+\deactivate_gr2
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Akcja grupa po dezaktywacja
+::----------------------------------------------------------------------------------------------------------------------
+KOMM.select(,,,,,0);
+~~
+
+
+\testlink_all
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Sprawdza powiazania PX_KONTa
+::   WE: _a - PX_KONT.ref()
+::   WY: DICT - tabelka tymczasowa z nazwami tabel powiazanych z kontenerem
+::----------------------------------------------------------------------------------------------------------------------
+_pxkont:=_a;
+_result:=tab_tmp(1,'TABELA','STRING[20]','Tabela');
+
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_pxkont)
+|| _link:=PX_KONT.testlink(,PX_KONT.count);
+   {? _link.first()
+   || {!
+      |? _result.prefix(_link.TABELA);
+         {? _result.first()=0
+         || _result.TABELA:=_link.TABELA;
+            _result.add()
+         ?};
+         _link.next()
+      !}
+   ?}
+?};
+PX_KONT.cntx_pop();
+_result.clear();
+_result
+
+
+\testlink
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Sprawdza czy dany PX_KONT jest powiazany z dana tabela
+::   WE: _a - PX_KONT.ref()
+::       _b - STRING - akronim tabeli
+::       [_c] - DICT -  tabelka tymczasowa z nazwami tabel powiazanych z kontenerem,
+::                      jesli nie podano to robi testlinka. MUSI MIEC POLE TABELA
+::   WY: 0 - brak powiazan
+::       1 - sa powiazania
+::----------------------------------------------------------------------------------------------------------------------
+_pxkont:=_a;
+_table_acr:=_b;
+_result:=0;
+
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_pxkont)
+||
+   {? _>2
+   || _link_tab:=_c
+   || _link_tab:=PX_KONT.testlink(2,PX_KONT.count())
+   ?};
+   _ndx:=_link_tab.ndx_tmp(,,'TABELA',,);
+   _link_tab.index(_ndx);
+   _link_tab.prefix(_table_acr);
+   {? _link_tab.first()
+   || _result:=1
+   ?}
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\pxkont_del_gr1
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Akcja grupa przed usun tabela PX_KONT okienko WER
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0;
+{? FUN.ask('Zaznaczono: %1 zasobów. Czy usunąć je wszystkie?'@[$PX_KONT.sel_size()])
+|| _ok:=1;
+   KOMM.init(200,,'Usuwanie zasobów planu'@,'')
+?};
+_ok
+
+
+\pxkont_del_gr2
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Akcja grupa po usun tabela PX_KONT okienko WER
+::----------------------------------------------------------------------------------------------------------------------
+KOMM.select(,,,,,0);
+~~
+
+
+\px_il_wym_ae
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Po redakcji pola tabeli PX_KONT.IL_WYM, zmiennej PX_VAR.IL_WYM
+::----------------------------------------------------------------------------------------------------------------------
+_il_wym:=exec('il_wym','px_param');
+{? fld()<1 | fld()>_il_wym
+|| FUN.emsg('Ilość wymiarów musi się zawierać w przedziale <1 .. %1>.'@[$_il_wym]);
+   0
+||
+   win_disp()
+?}
+
+
+\px_kont_jm_bd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Przed wyswietleniem PX_KONT.JM?
+::----------------------------------------------------------------------------------------------------------------------
+_dim:=#(cur_afld()+1);
+_result:='';
+{? PX_KONT.IL_WYM<_dim
+|| _result:=exec('color_noavail','px_param');
+   PX_KONT.efld_opt('DISP','label_color='+((_result*',')-_result),,'JM'+$_dim,'KOD');
+   PX_POZ.efld_opt('RED','label_color='+((_result*',')-_result),PX_KONT,'JM'+$_dim,'KOD');
+   PX_CUP.efld_opt('RED','label_color='+((_result*',')-_result),PX_KONT,'JM'+$_dim,'KOD')
+||
+   PX_KONT.efld_opt('DISP','label_color=',,'JM'+$_dim,'KOD');
+   PX_POZ.efld_opt('RED','label_color=',PX_KONT,'JM'+$_dim,'KOD');
+   PX_CUP.efld_opt('RED','label_color=',PX_KONT,'JM'+$_dim,'KOD')
+?};
+_result
+
+
+\px_kont_jm_be
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Przed edycja PX_KONT.JM?
+::----------------------------------------------------------------------------------------------------------------------
+_dim:=#(cur_afld()+1);
+_result:=1;
+{? PX_KONT.IL_WYM<_dim
+|| _result:=0
+?};
+:: dla 1. wymiaru w polu CAP_INF dodatkowe sprawdzenie powiazan zasobu z TOPER, ZGP
+{? cur_afld()='JM1' & _result>0 & menu_txt()='Popraw'
+|| _result:=exec('chk_koop','px_kont',PX_KONT.ref())
+?};
+_result
+
+
+\px_kont_kal_bd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Przed wyswietl pola PX_KONT.KAL
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+PX_KONT.KAL().CZESC<>'T'
+
+
+\px_kont_arec
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Rekord po - tabela PX_KONT okienka: WER, lub formula walidujaca w oknie KONT_PAR zmiennej PX_VAR
+::   WE: [_a] - Akronim tabeli lub zmiennej (domyslnie PX_KONT)
+::       [_b] - INTEGER - [0] - walidacja po dolacz
+::                         1  - walidacja po popraw
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('__table');
+__table:=PX_KONT;
+{? var_pres('_a')>100
+|| obj_del(__table);
+   __table:=_a
+?};
+_mode:=0;
+{? var_pres('_b')=type_of(0)
+|| _mode:=_b
+?};
+
+{? __table=PX_KONT
+||
+   {? __table.SYMBOL=''
+   || FUN.emsg('Symbol zasobu nie może być pusty.'@);
+      return('SYMBOL')
+   ?};
+   {? __table.NAZWA=''
+   || FUN.emsg('Nazwa zasobu nie może być pusta.'@);
+      return('NAZWA')
+   ?};
+   {? __table.MAX_CDUR=''
+   || FUN.emsg('Maksymalna długość pojemników musi być określona.'@);
+      return('MAX_CDUR')
+   ||
+::    Sprawdzam czy mozna zmienic maksymalny poziom czasu trwania
+      {? _mode=1
+      || {? exec('chk_kont_maxdur','px_kont',__table.ref(),__table.MAX_CDUR,0)=0
+         || FUN.emsg('Istnieją pojemniki dłuższe niż wybrana \'Maksymalna długość pojemników\'.'@);
+            return('MAX_CDUR')
+         ?}
+      ?}
+   ?}
+?};
+
+{? __table.CUPEQ=null()
+|| FUN.emsg('Formuła na pojemnik nie może być pusta.'@);
+   return('CUPEQ')
+?};
+{? __table.IL_WYM<=0
+|| FUN.emsg('Ilość wymiarów musi być większa od zera.'@);
+   return('IL_WYM')
+?};
+{? __table.OFFSET~1>23
+|| FUN.emsg('Godzina rozpoczęcia pojemników nie może być większa niż %1.'@['23']);
+   return('OFFSET')
+?};
+{? exec('is_oper_nast_time','px_param')
+||
+   _jm1:=exec('get','#params',500380);
+   _jm2:=exec('get','#params',500381);
+
+   _jm_array:=obj_new(2);
+   {? _jm1<>''
+   || _jm_array[1]:=_jm1
+   || _jm_array[1]:=''
+   ?};
+   {? _jm2<>''
+   || _jm_array[2]:=_jm2
+   || _jm_array[2]:=''
+   ?};
+   _result:=exec('chk_dimension_kont','px_kont',_jm_array,0,,0,__table);
+   {? _result=0
+   || _msg:='Włączono następstwo operacji metodą proporcji czasowej (parametr %1).\n'
+            'Zasób w planie musi mieć przynajmniej jeden wymiar skończony w jednostce \'%2\' lub \'%3\''@
+            ['500370',_jm1,_jm2];
+      FUN.emsg(_msg);
+      return('CAP_INF1')
+   ?}
+?};
+
+:: kontrola aby chociaz jeden z wymiarow byl skonczony, jesli kontener ma wiecej niz jeden wymiar
+{? __table.IL_WYM>1
+|| _finite:=0;
+   {! _dim:=1..__table.IL_WYM
+   |? _finite=0
+   |! {? ($('__table.CAP_INF'+$_dim))()=0
+      || _finite:=1
+      ?}
+   !};
+   {? _finite=0
+   || FUN.emsg('Przynajmniej jeden z wymiarów musi być \'skończony\'.'@);
+      return('CAP_INF2')
+   ?}
+?};
+
+{! _dim:=1..__table.IL_WYM
+|!
+   {? __table.PARALLEL<>'1'
+   ||
+      {? ($('__table.CAP_INF'+$_dim))()=0 & ($('__table.MINEQ'+$_dim))()=null()
+      || FUN.emsg('Formuła na pojemność minimalną (wymiar %1) nie może być pusta.'@[$_dim]);
+         return('MINEQ'+$_dim)
+      ?};
+      {? ($('__table.CAP_INF'+$_dim))()=0 & ($('__table.MAXEQ'+$_dim))()=null()
+      || FUN.emsg('Formuła na pojemność maksymalną (wymiar %1) nie może być pusta.'@[$_dim]);
+         return('MAXEQ'+$_dim)
+      ?}
+   ?};
+   {? ($('__table.JM'+$_dim))()=null()
+   || FUN.emsg('Jednostka miary (wymiar %1) nie może być pusta.'@[$_dim]);
+      return('JM'+$_dim)
+   ?};
+
+   {? ($('__table.PREC'+$_dim))()<0
+   || FUN.emsg('Dokładność (wymiar %1) nie może być mniejsza od zera.'@[$_dim]);
+      return('PREC'+$_dim)
+   ?}
+!};
+
+_wymiary:=tab_tmp(1,
+:: 'POLE','TYP','Nazwa w oknie',
+   'JM','STRING[20]','Nazwa pola 1');
+
+{! _dim:=1..__table.IL_WYM
+|! {? ($('__table.JM'+$_dim))()<>null()
+   || _jm:=($('__table.JM'+$_dim+'().KOD'))();
+      {? _jm<>''
+      || _wymiary.prefix(_jm);
+         {? _wymiary.first()=0
+         || _wymiary.blank();
+            _wymiary.JM:=_jm;
+            _wymiary.add()
+         ||
+::          Znalazłem powtórzoną jednostkę miary
+            FUN.emsg('Jednostka miary (wymiar %1) nie może występować wielokrotnie.'@[$_dim]);
+            return('JM'+$_dim)
+         ?}
+      ?}
+   ?}
+!};
+
+VAR_DEL.delete('__table');
+''
+
+
+\cap_init_all
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Inicjuje pojemnosci wszystkich kontenerow rzeczywistych (i rekurencyjnie widokowych)
+::       Akcja wywolywana przez Alert oraz z menu WWPP
+::   WE: [_a] - czy dialog (1), domyslnie brak dialogu (0)
+::   WY: 1 - ok, 0 - wystąpiły błędy i aktualizacja została przerwana
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(0) || _dialog:=_a || _dialog:=0 ?};
+
+_result:=1;
+_can_continue:=0;
+
+{? ~_dialog | FUN.ask('Czy aktualizować pojemności wszystkich zasobów?'@)
+||
+   KOMM.init(,,'Aktualizacja pojemości zasobów'@);
+
+   exec('declare','kalendarz');
+   {? var_pres('KAL')<0 || KAL:=obj_new(@.CLASS.KALEND) ?};
+
+   _px_ver:=exec('get_mainversion','px_ver');
+
+   PX_KONT.index('ACT');
+   PX_KONT.prefix('T',_px_ver);
+   {? PX_KONT.first()
+   || {!
+      |? _can_continue:=exec('cap_init_act','px_kont',0);
+         {? _can_continue=0 || _result:=0 ?};
+         PX_KONT.next() & _can_continue>0
+      !}
+   ?};
+
+   {? _dialog || KOMM.select() ?}
+?};
+_result
+
+
+\cap_init_act
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Akcja 'Inicjuj pojemnosci' w tabeli PX_KONT, okienka: WER;
+::       formula exec('cap_init_all','px_kont')
+::   WE: [_a] - czy dialog (domyslnie 1), brak dialogu (0)
+::   WY: 1 - ok, 0 - wystąpiły błędy i aktualizacja została przerwana
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(0) || _dialog:=_a || _dialog:=1 ?};
+
+_group:=0;
+{? PX_KONT.sel_size()>0
+|| _group:=1
+?};
+
+_result:=1;
+_can_continue:=0;
+
+_choice:=1;
+:: zapytanie czy na pewno
+{? _group=0 & _dialog=1
+|| _choice:=FUN.ask('Czy inicjować pojemność zasobu: %1?'@[PX_KONT.SYMBOL])
+?};
+{? _choice=1
+|| PX_CUP.cntx_psh();
+   PX_CUP.index('TM_START');
+   PX_CUP.prefix(PX_KONT.ref());
+:: inicjuje wszystkie kafelki kontenera
+   {? PX_CUP.first()
+   || _start:=PX_KONT.PX_VER().TM_START;
+      _end:=PX_KONT.PX_VER().TM_END;
+      _can_continue:=exec('capacity_init','px_gen',PX_KONT.ref(),_start,_end);
+      {? _can_continue=0 || _result:=0 ?}
+   ?};
+   PX_CUP.cntx_pop() & _can_continue>0
+?};
+_result
+
+
+\cap_init_gr1
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Grupa przed 'Inicjuj pojemnosci' w tabeli PX_KONT, okienka: WER
+::----------------------------------------------------------------------------------------------------------------------
+FUN.ask('Zaznaczono: %1 zasobów. Czy inicjować im pojemności?'@[$PX_KONT.sel_size()])
+
+
+\cap_init_gr2
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Grupa po 'Inicjuj pojemnosci' w tabeli PX_KONT, okienka: WER
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\px_kont_cup_be
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Przed redagowaniem PX_KONT.CUPEQ
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('px_rules_prfx','px_param',exec('px_rule_cup','px_param'));
+1
+
+
+\px_kont_in_be
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Przed redagowaniem PX_KONT.CUP_IN
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('px_rules_prfx','px_param',exec('px_rule_in','px_param'));
+1
+
+
+\px_kont_out_be
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Przed redagowaniem PX_KONT.CUP_OUT
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('px_rules_prfx','px_param',exec('px_rule_out','px_param'));
+1
+
+
+\get_px_kont
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.10]
+:: OPIS: Zwraca PX_KONT.ref() dla podanych parametrow (zasob aktywny)
+::       Wywolania: exec('import_toper','px_oper'), exec('import_zgp','px_oper')
+::   WE: _a - Typ zasobu - B (brygada), L (linia), P (pracownik), G (grupa stanowisk), S (stanowisko), W (wydzial),
+::                         K (kontrahent - rozwojowo)
+::       _b - ref zrodla z ktorego powstal zasob (UD_SKL.ref(), TWRKPLC.ref() itp)
+::       _c - Rodzaj kontenera T,[R],V
+::   WY: PX_KONT.ref()
+::UWAGA: Brak kontroli parametrow.... jak cos nie tak, to bedzie BUM!
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new('ResKind','ResRef','KonKind');
+_args.ResKind:=_a;
+_args.ResRef:=_b;
+_args.KonKind:=_c;
+
+_loc:=obj_new('PL_RES','Version');
+_loc.PL_RES:={? _args.ResKind<>'' || exec('get_plres','po_plan',_args.ResKind,_args.ResRef)
+                                  || null()
+             ?};
+_loc.Version:={? _args.KonKind='T' || null()
+                                   || exec('get_mainversion','px_ver')
+              ?};
+_result:=null();
+{? _loc.PL_RES<>null()
+|| PX_KONT.cntx_psh();
+   PX_KONT.index('PL_RES');
+   PX_KONT.prefix(_loc.Version,_loc.PL_RES,_args.KonKind);
+   {? PX_KONT.first() & PX_KONT.A='T'
+   || _result:=PX_KONT.ref()
+   ?};
+   PX_KONT.cntx_pop()
+|? _args.ResKind=''
+|| FUN.emsg('Nie określono typu zasobu dla operacji.'@)
+?};
+_result
+
+
+\get_px_kont4ver
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.10]
+:: OPIS: Zwraca PX_KONT.ref() dla podanych parametrow
+::   WE: _a - wersja
+::       _b - SYMBOL
+::   WY: PX_KONT.ref() lub null()
+::UWAGA: Brak kontroli parametrow
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new('Version','Symbol','Kind');
+_args.Version:=_a;
+_args.Symbol:=_b;
+
+_result:=null();
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+PX_KONT.index('ACT');
+PX_KONT.prefix('T',_args.Version, _args.Symbol,);
+{? PX_KONT.first()
+|| _result:=PX_KONT.ref()
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\sel_px_kont
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.10]
+:: OPIS: Wyswietla PX_KONT dla podanych parametrow i umozliwia wybor
+::   WE: _a - wersja
+::       _b - rodzaj
+::   WY: wybrany PX_KONT.ref()
+::UWAGA: Parametry bez [] sa wymagane, formula moze nie sprawdzac czy zostaly podane i moze wystapic blad.
+::----------------------------------------------------------------------------------------------------------------------
+_ver:=_a;
+_kind:=_b;
+_ref:=null();
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+PX_KONT.index('ACT');
+PX_KONT.prefix('T',_ver);
+PX_KONT.win_sel('SEL');
+{? PX_KONT.select()
+|| _ref:=PX_KONT.ref()
+?};
+PX_KONT.cntx_pop();
+_ref
+
+
+\leg_kont_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Legenda w oknie PX_KONT.WER
+::----------------------------------------------------------------------------------------------------------------------
+exec('legenda','color','#PX_KONT#01');
+~~
+
+
+\leg_kont_plan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Legenda w oknie PX_KONT.PX_WER, PX_KONT.PX_WERT
+::----------------------------------------------------------------------------------------------------------------------
+exec('legenda','color','#PX_KONT#02','#PX_KONT#03','PX_KONT#01#','@PX_CUP#01');
+~~
+
+
+\px_kont_fld_bd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: TS [12.10]
+:: OPIS: Przed wyswietleniem PX_KONT.** (MAXEQ*, MINEQ*, PREC*, CUP_INF*)
+::----------------------------------------------------------------------------------------------------------------------
+_fld:=cur_afld();
+_dim:=#(_fld+1);
+_result:='';
+{? PX_KONT.IL_WYM<_dim
+|| {? 7+_fld='CAP_INF' | (4-_fld-1)='OVW'
+   || _result:=0
+   || _result:=exec('color_noavail','px_param')
+   ?};
+   PX_KONT.efld_opt('RED','label_color='+((_result*',')-_result),,_fld);
+   {? (4+_fld)='CAPF' & (4-_fld-1)<>'OVW'
+   || PX_KONT.efld_opt(cur_win(1,1),'editable=grayed',,_fld)
+   ?};
+   ~~
+||
+   _infinity:=exec('infinity_array','px_kont');
+   {? (5+_fld='MAXEQ' | 5+_fld='MINEQ') & _infinity[_dim]>0
+   || _result:=exec('color_noavail','px_param')
+   ?};
+::   {? 4+_fld='CAPF'
+::   || _result:=exec('color_noavail','px_param')
+::   ?};
+   PX_KONT.efld_opt('RED','label_color=',,_fld);
+   {? (4+_fld)='CAPF' & (4-_fld-1)<>'OVW'
+   || PX_KONT.efld_opt(cur_win(1,1),'editable=1',,_fld)
+   ?};
+   ~~
+?};
+{? _fld='PARALLEL' & cur_win(1,1)<>'WER'
+|| {? exec('is_oper_nast_time','px_param')
+   || PX_KONT.efld_opt(cur_win(1,1),'editable=1',,'PARALLEL')
+   || PX_KONT.efld_opt(cur_win(1,1),'editable=grayed',,'PARALLEL')
+   ?}
+?};
+_result
+
+
+\px_kont_fld_be
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: TS [12.10]
+:: OPIS: Przed redakcja PX_KONT.** (MAXEQ*, MINEQ*, PREC*, CUP_INF*)
+::----------------------------------------------------------------------------------------------------------------------
+_fld:=cur_afld();
+_dim:=#(_fld+1);
+_result:=1;
+{? PX_KONT.IL_WYM<_dim
+|| _result:=0
+?};
+
+:: dla 1. wymiaru w polu CAP_INF dodatkowe sprawdzenie powiazan zasobu z TOPER, ZGP
+{? _fld='CAP_INF1' & _result>0 & menu_txt()='Popraw'
+|| _result:=exec('chk_koop','px_kont',PX_KONT.ref())
+||
+   _infinity:=exec('infinity_array','px_kont');
+   {? (5+_fld='MAXEQ' | 5+_fld='MINEQ') & _result>0
+   || {? _infinity[_dim]>0
+      || _result:=0
+      || exec('px_rules_prfx','px_param',exec('px_rule_cap','px_param'))
+      ?}
+   ?}
+?};
+_result
+
+
+\px_kont_fld_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Po redakcji PX_KONT.** (CUP_INF*)
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_fld:=cur_afld();
+
+_result:=1;
+
+{? _fld='OFFSET'
+|| {? PX_KONT.OFFSET~1>23
+   || FUN.emsg('Godzina rozpoczęcia pojemników nie może być większa niż 23.'@);
+      _result:=0
+   ?}
+|? (7+_fld='CAPFMAX' | 7+_fld='CAPFMIN' | 7+_fld='CAPFUSE')
+|| _result:=exec('valid_formula','#field')
+?};
+win_disp();
+_result
+
+
+\clone_a
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Tablica parametrow dla clone
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new('SOURCE',
+               'PX_VER',
+               'TM_START',
+               'TM_END',
+               'MODE',
+               'STARTMOD',
+               'ACCEPTIN'
+               );
+_args.SOURCE:=null();
+_args.PX_VER:=null();
+_args.TM_START:=0;
+_args.TM_END:=0;
+
+:: 0 - nie klonuje zadnych pozycji planu, ale klonuje zajete pojemnosci pojemnika
+:: 1 - klonuje tylko zablokowane pozycje planu, pojemnosci pojemnikow ustawia na nowo
+:: 2 - klonuje wszystkie pozycje planu i pojemnosci pojemnikow
+_args.MODE:=0;
+
+:: 'NASTEPNY POJEMNIK' - pierwszym pojemnikiem w sklonowanych kontenerach jest nastepny pojemnik po TM_START
+:: 'AKTUALNY POJEMNIK' - pierwszym pojemnikiem w sklonowanych kontenerach jest pojemnik trwajacy w TM_START
+_args.STARTMOD:=exec('start_nextcup','px_param');
+:: czy klonowanie jest wynikiem akceptacji - ma wplyw na klonowanie kontenerow
+_args.ACCEPTIN:='N';
+_args
+
+
+\clone
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Klonuje kontener
+::   WE: _a - _args  - argumenty funkcji wynik dzialania exec('clone_a','px_kont')
+::   WY: 0 / 1 - sukces czy porazka
+::----------------------------------------------------------------------------------------------------------------------
+_args:={? _=1 || _a || exec('clone_a','px_kont') ?};
+_result:=0;
+
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+PX_CUP.cntx_psh();
+PX_CUP.index('TM_START');
+
+:: inicjalizacja komunikatow, jesli nie zainicjowane
+{? var_pres('pxkomm')<=0
+|| exec('pxkomm_init','px_logix')
+?};
+_can_continue:=0;
+{? PX_KONT.seek(_args.SOURCE)
+||
+   _msg:='Duplikowanie zasobu: %1 %2'@[PX_KONT.SYMBOL,PX_KONT.NAZWA];
+   pxkomm.sect_beg(_msg);
+   PX_KONT.cntx_psh();
+:: jesli jest juz taki kontener w bazie to go nie dodaje
+   PX_KONT.index('SYM');
+   PX_KONT.prefix(_args.PX_VER,PX_KONT.SYMBOL,);
+   {? PX_KONT.first()
+   || _can_continue:=1;
+      _msg:='Znaleziono zasób docelowy — czyszczenie pojemników...'@;
+      pxkomm.sect_beg(_msg);
+::    jesli byl w juz w bazie to w podanym zakresie usuwam mu pojemniki - i tak je sklonuje zaraz
+      PX_CUP.cntx_psh();
+      PX_CUP.index('TM_START');
+      PX_CUP.prefix(PX_KONT.ref());
+      {? PX_CUP.find_le(_args.TM_START)
+      || {!
+         |?
+::          oznaczam pojemniki do usuniecia, zeby sie nie rypac z usuwaniem z biezacej dziedziny
+            _delete_cup:=0;
+            {? (exec('cup_time_side','px_plan',_args.TM_START)=1 | exec('cup_time_side','px_plan',_args.TM_START)=2)
+               &
+               (exec('cup_time_side','px_plan',_args.TM_END)=3 | _args.TM_END=0)
+            || _delete_cup:=1
+            ?};
+
+            {? _delete_cup>0
+            ||
+               PX_CUP.STATUS:=exec('status_todelete','px_cup');
+               _can_continue:=PX_CUP.put()
+            ?};
+            PX_CUP.next() & _can_continue>0
+         !}
+      ?};
+
+::    usuwam pojemniki oznaczone do usuniecia
+      {? _can_continue>0
+      ||
+         PX_CUP.index('STATUS');
+         PX_CUP.prefix(PX_KONT.ref(),exec('status_todelete','px_cup'));
+         {? PX_CUP.first()
+         || {!
+            |? exec('delete','px_cup',PX_CUP.ref());
+               PX_CUP.first()
+            !}
+         ?}
+      ?};
+      PX_CUP.cntx_pop();
+      pxkomm.sect_end()
+   ||
+      _msg:='Zakładanie zasobu docelowego.'@;
+      pxkomm.sect_beg(_msg,,1);
+      PX_KONT.clear();
+::    NIE MA W BAZIE TAKIEGO WIEC ZAKLADAM
+
+      _s_ver:=PX_KONT.PX_VER;
+      PX_KONT.PX_VER:=_args.PX_VER;
+      PX_KONT.UID_SRC:=PX_KONT.UID;
+      PX_KONT.UID:=exec('uid','#blank');
+
+::    Odnalezienie zasobow podrzednych - pobranie listy symboli
+      _symlist:=tab_tmp(,'SYMBOL','STRING[60]','Symbol');
+      PX_KONT.cntx_psh();
+      PX_KONT.index('ACTT');
+      PX_KONT.prefix('T',_s_ver,#_args.SOURCE);
+      {? PX_KONT.first()
+      || {!
+         |? _symlist.SYMBOL:=PX_KONT.SYMBOL;
+            _symlist.add();
+            PX_KONT.next()
+         !}
+      ?};
+      PX_KONT.cntx_pop();
+
+::    Do testow - selekcja listy symboli zasobow podrzednych
+::      {? _symlist.first()
+::      || exec('select','libfml',_symlist)
+::      ?};
+
+::    Odnalezienie zasobu nadrzednego - pobranie symbolu ze zrodlowej wersji
+      PX_KONT.cntx_psh();
+      PX_KONT.clear();
+      {? PX_KONT.seek(PX_KONT.TREE,)
+      || _symtree:=PX_KONT.SYMBOL
+      || _symtree:=''
+      ?};
+      PX_KONT.cntx_pop();
+::    Odnalezienie zasobu nadrzednego - powiazanie wg symbolu w wersji docelowej
+      PX_KONT.cntx_psh();
+      PX_KONT.index('ACT');
+      PX_KONT.prefix('T',PX_KONT.PX_VER,_symtree,);
+      {? PX_KONT.first()
+      || _reftree:=#PX_KONT.ref()
+      || _reftree:=0
+      ?};
+      PX_KONT.cntx_pop();
+      PX_KONT.TREE:=_reftree;
+
+      _can_continue:=PX_KONT.add();
+      {? _can_continue=0
+      || _msg:='Nie udało się dodanie zasobu: %1 %2'@[PX_KONT.SYMBOL,PX_KONT.NAZWA];
+         pxkomm.error(_msg)
+      ||
+::       Odnalezienie zasobow podrzednych - powiazanie wg symbolu w wersji docelowej
+         _ref:=PX_KONT.ref();
+         PX_KONT.cntx_psh();
+         PX_KONT.index('ACT');
+         {? _symlist.first()
+         || {!
+            |?
+               PX_KONT.prefix('T',PX_KONT.PX_VER,_symlist.SYMBOL,);
+               {? PX_KONT.first()
+               || PX_KONT.TREE:=#_ref;
+                  PX_KONT.put()
+               ?};
+               _symlist.next()
+            !}
+         ?};
+         PX_KONT.cntx_pop()
+      ?};
+      pxkomm.sect_end()
+   ?};
+
+   _cloned:=null();
+   {? _can_continue>0
+   || _cloned:=PX_KONT.ref()
+   ?};
+
+   PX_KONT.cntx_pop();
+
+   {? _can_continue>0
+   ||
+      _msg:='Duplikowanie pojemników do zasobu: %1 %2'@[PX_KONT.SYMBOL,PX_KONT.NAZWA];
+      pxkomm.sect_beg(_msg,,1);
+::    Klonowanie pojemnikow
+      _argscup:=exec('clone_a','px_cup');
+      _argscup.PX_KONT:=_cloned;
+      _argscup.PX_VER:=_args.PX_VER;
+      _argscup.MODE:=_args.MODE;
+      PX_CUP.prefix(_args.SOURCE);
+      {? PX_CUP.find_le(_args.TM_START)
+      ||
+         {!
+         |? _clone_cup:=0;
+
+            _side_start:=exec('cup_time_side','px_plan',_args.TM_START);
+            _side_end:=exec('cup_time_side','px_plan',_args.TM_END);
+            {? (_side_start=1 | _side_start=2)
+               &
+               (_side_end=3 | _args.TM_END=0)
+            || _clone_cup:=1
+            ?};
+
+            {? _clone_cup>0
+            || _argscup.SOURCE:=PX_CUP.ref();
+               _can_continue:=exec('clone','px_cup',_argscup)
+            ?};
+
+::          jesli przetwarzany pojemnik ma poczatek pozniejszy niz ustawiona granicato przerywam petle
+            _break:=0;
+            {? _args.TM_END>0 & PX_CUP.TM_START>_args.TM_END
+            || _break:=1
+            ?};
+            PX_CUP.next() & _can_continue>0 & _break=0
+         !}
+      ?};
+::    Jesli nie udalo sie sklonowac zadnego pojemnika to zwracam komunikat i przerywam planowanie
+      PX_CUP.prefix(_cloned);
+      {? PX_CUP.first()=0
+      || _can_continue:=0;
+         PX_VER.cntx_psh();
+         PX_KONT.cntx_psh();
+
+         {? PX_KONT.seek(_cloned)
+         ||
+            _msg:='Przerwano planowanie. Nie powiodło się duplikowanie zasobów.\n'
+                  'Zasób docelowy nie posiada żadnych pojemników od początku tworzonej wersji.\n'
+                  'Zasób: %1 wersja: %2'@[PX_KONT.SYMBOL,PX_KONT.PX_VER().SYMBOL]+'\n';
+            _msg+='Start wersji: %1'@[{? _args.TM_START>0 || (19+tm_form(_args.TM_START))|| '???' ?}]+'\n';
+            _msg+='Koniec wersji: %1'@[{? _args.TM_END>0 || (19+tm_form(_args.TM_END))|| '???' ?}]+'\n';
+            _msg+='Możliwe przyczyny:'@+'\n';
+            _msg+='● '+'Zasób: %1 nie posiada pojemników w podanym okresie (należy je wygenerować lub dezaktywować zasób)'@[PX_KONT.SYMBOL]+'\n';
+            _msg+='● '+'Kolejka zawiera elementy ze zbyt bliskim terminem realizacji'@;
+            FUN.emsg(_msg);
+            pxkomm.error(_msg)
+         ?};
+         PX_VER.cntx_pop();
+         PX_KONT.cntx_pop()
+      ?};
+      pxkomm.sect_end()
+   ?};
+   pxkomm.sect_end()
+|| _msg:='Nie znaleziono zasobu do duplikowania: %1'@[$_args.SOURCE];
+   pxkomm.error(_msg)
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+
+PX_KONT.cntx_pop();
+PX_CUP.cntx_pop();
+_result
+
+
+\lock
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Blokada kontenera ( PX_KONT.r_lock(1,1,1) )
+::   WE: [_a] - #PX_KONT.ref(), a jak brak parametru, to ustawiony rekord w tabali PX_KONT
+::       [_b] - czy nie wyswietlac dialogow (domyslnie 0 - wyswietlac)
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+{? _=0
+|| _px:=#PX_KONT.ref()
+|| {? type_of(_a)<>type_of(0) || _px:=#PX_KONT.ref() || _px:=_a ?}
+?};
+
+{? _>1
+|| _no_display:=_b
+|| _no_display:=0
+?};
+
+_ok:=0;
+BLK.index('AMR');
+BLK.prefix('PX_KONT',PX_KONT.name(),_px);
+{? ~BLK.first()
+|| BLK.ACR:='PX_KONT';
+   BLK.MSK:=PX_KONT.name();
+   BLK.REF:=_px;
+   BLK.SES_ID:=PX_KONT.ses_id();
+   _ok:=BLK.add()
+|| _ok:=1
+?};
+{? _ok
+|| {? BLK.r_lock(1,1,1)
+   || BLK.SES_ID:=PX_KONT.ses_id();
+      _ok:=BLK.put()
+   ||
+      {? ~_no_display
+      || FUN.emsg('Zasób planistyczny jest redagowany przez użytkownika \'%1\' na terminalu \'%2\'.\n\n'
+                  'Zasób dostępny w trybie podglądu.'@[BLK.ses_info(BLK.SES_ID,'log_name'),KAL_UD.ses_info(BLK.SES_ID,'log_tty')])
+      ?};
+      _ok:=0
+   ?}
+?};
+_ok
+
+
+\unlock
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Usuniecie blokady kontenera ( PX_KONT.r_unlock() )
+::   WE: _a - #PX_KONT.ref(), a jak brak parametru, to ustawiony rekord w tabali PX_KONT
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? _=0 || _a:=#PX_KONT.ref() ?};
+BLK.index('AMR');
+BLK.prefix('PX_KONT',PX_KONT.name(),_a);
+{? BLK.first()
+|| {? PX_KONT.ses_id()=BLK.SES_ID
+   || BLK.r_unlock();
+      BLK.del()
+   ?}
+?};
+~~
+
+
+\kont_find_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Zwraca pusta tabele tymczasowa wykorzystywana w formulach \kont_find_*
+::       Do wykorzystania w formulach \select*/px_plan
+::   WY: Tablica tymczasowa z #PX_KONT.ref()
+::----------------------------------------------------------------------------------------------------------------------
+tab_tmp(1,'REF','INTEGER','#PX_KONT.ref()')
+
+
+\kont_find_all
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Szuka wszystkich aktywnych i uzywanych kontenerow w biezacej wersji
+::       Jezeli PX_VAR.PX_SET<>null() to ograniczenie do kontenerow wybranego zestawu
+::       Do wykorzystania w formule \select/px_plan
+::   WY: Tablica tymczasowa z #PX_KONT.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_px_kont:=exec('kont_find_tab','px_kont');
+PX_KONT.cntx_psh();
+{? PX_VAR.PX_SET=null()
+|| PX_KONT.index('ACT');
+   PX_KONT.prefix('T',PX_VAR.VIE_VER)
+|| PX_KONT.index('ACTS');
+   PX_KONT.prefix('T',PX_VAR.VIE_VER,PX_VAR.PX_SET)
+?};
+{? PX_KONT.first()
+|| {!
+   |?
+      _px_kont.REF:=#PX_KONT.ref();
+      PX_POZ.index('PX_KONT');
+      PX_POZ.prefix(PX_KONT.ref());
+      {? PX_POZ.first() || _px_kont.add() ?};
+      PX_KONT.next()
+   !}
+?};
+PX_KONT.cntx_pop();
+_px_kont
+
+
+\tree_view_res
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Dla zakladki 'Zasoby' buduje drzewo dla przekazanego kontenera w ujeciu:
+::       - Obiekty ktore sa zaplanowane na kontenerze
+::          - Grupy w ktorych wystepuje obiekt
+::             - Etapy ktore wchodza w sklad grupy
+::   WE: _a - PX_KONT.ref
+::   WY: tabela tymczasowa
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=tab_tmp(3,
+   'TYP'       ,'STRING[1]'   ,'Typ: O - obiekt, S - etap',
+   'UID_PAR'   ,'STRING[15]'  ,'Unikalne id elementu nadrzednego',
+   'SYMBOL'    ,'STRING[60]'  ,'Symbol',
+   'UID'       ,'STRING[15]'  ,'Unikalne id elementu',
+   'NAZWA'     ,'STRING[60]'  ,'Nazwa',
+   'REF_STG'   ,'INTEGER'     ,'#PX_STAGE.ref()',
+   'REF_GRP'   ,'INTEGER'     ,'#PX_STAGE.ref()',
+   'REF_OBJ'   ,'INTEGER'     ,'#PX_KONT.ref()'
+);
+_ndx1:=_px_obj.ndx_tmp('',1,  'TYP',,,
+                              'REF_OBJ',,,
+                              'REF_GRP',,,
+                              'REF_STG',,);
+
+_px_kont:=_a;
+
+PX_GRP.cntx_psh();
+PX_CONN.cntx_psh();
+PX_CONN.index('PX_GRP');
+PX_STAGE.cntx_psh();
+PX_OBJ.cntx_psh();
+PX_POZ.cntx_psh();
+PX_POZ.index('PX_OBJ3');
+PX_OBJ.index('SYMBOL');
+
+PX_GRP.index('VISIBLE');
+
+_px_ver:=exec('FindAndGet','#table',PX_KONT,_px_kont,,"PX_VER",null());
+
+PX_GRP.prefix(_px_ver,'T');
+{? PX_GRP.first()
+|| {!
+   |?
+      {? PX_GRP.STATWYK2<>'T'
+      || PX_CONN.prefix(PX_GRP.ref());
+         {? PX_CONN.first()
+         || {!
+            |? {? PX_CONN.PX_OBJ<>null() & PX_CONN.PX_OBJ().A='T'
+               || PX_POZ.prefix(PX_OBJ.ref(),_px_kont);
+                  {? PX_POZ.first()
+                  || {!
+                     |?
+                        exec('px_poz2view','px_kont',_px_obj,_ndx1);
+                        PX_POZ.next()
+                     !}
+                  ?}
+               ?};
+               PX_CONN.next()
+            !}
+         ?}
+      ?};
+      PX_GRP.next()
+   !}
+?};
+
+:: Specjalna obsługa dla remontów w planie
+
+REM_ZGL.cntx_psh();
+REM_ZGL.index('PLAN_PX');
+_status:=exec('status_verified','remonty_zgloszenia');
+REM_ZGL.prefix('T',_status);
+{? REM_ZGL.first()
+|| {!
+   |?
+      _rem_obj:=exec('get_rem_object','px_obj',REM_ZGL.ref());
+      {? _rem_obj<>null()
+      || PX_POZ.prefix(_rem_obj,_px_kont);
+         {? PX_POZ.first()
+         || {!
+            |?
+               exec('px_poz2view','px_kont',_px_obj,_ndx1);
+               PX_POZ.next()
+            !}
+         ?}
+      ?};
+      REM_ZGL.next()
+   !}
+?};
+
+_status:=exec('status_completed','remonty_zgloszenia');
+REM_ZGL.prefix('T',_status);
+{? REM_ZGL.first()
+|| {!
+   |?
+      _rem_obj:=exec('get_rem_object','px_obj',REM_ZGL.ref());
+      {? _rem_obj<>null()
+      || PX_POZ.prefix(_rem_obj,_px_kont);
+         {? PX_POZ.first()
+         || {!
+            |?
+               exec('px_poz2view','px_kont',_px_obj,_ndx1);
+               PX_POZ.next()
+            !}
+         ?}
+      ?};
+      REM_ZGL.next()
+   !}
+?};
+
+REM_ZGL.cntx_pop();
+
+PX_POZ.cntx_pop();
+PX_OBJ.cntx_pop();
+PX_STAGE.cntx_pop();
+PX_GRP.cntx_pop();
+PX_CONN.cntx_pop();
+
+_px_obj.clear();
+_px_obj.ndx_drop(_ndx1);
+_px_obj
+
+
+\px_poz2view
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Zasila tabelkę widoku pozycji planu
+::   WE: _a - tab_tmp - tabela którą zasilić
+::       _b - STRING - indeks tabeli _a
+::   WY: 0/1
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+_ndx1:=_b;
+
+_can_continue:=1;
+
+PX_GRP.cntx_psh();
+{? PX_POZ.PX_GRP().STATWYK2='T' | PX_GRP.VISIBLE<>'T' | PX_POZ.SRC_OPER='T'
+|| _can_continue:=0
+?};
+PX_GRP.cntx_pop();
+
+{? _can_continue>0
+||
+   _px_obj.blank();
+   _stage:=PX_POZ.PX_STAGE;
+   _px_grp:=PX_POZ.PX_GRP;
+   _obj:=PX_POZ.PX_OBJ;
+
+   _uid_obj:='';
+   _uid_grp:='';
+
+   _px_obj.index(_ndx1);
+   _px_obj.prefix('O',#PX_POZ.PX_OBJ);
+   {? _px_obj.first()
+   || _uid_obj:=_px_obj.UID
+   ||
+::    Pierwszy poziom drzewa - obiekt
+      _px_obj.TYP:='O';
+      _px_obj.UID_PAR:='';
+      _px_obj.SYMBOL:=PX_POZ.PX_OBJ().SYMBOL;
+      _px_obj.UID:=exec('uid','#blank');
+      _px_obj.NAZWA:=PX_OBJ.NAZWA;
+      _px_obj.REF_STG:=0;
+      _px_obj.REF_OBJ:=#PX_POZ.PX_OBJ;
+      _px_obj.add();
+      _uid_obj:=_px_obj.UID;
+      ~~
+   ?};
+
+   {? _px_grp<>null()
+   ||
+::    Pozycja planu posiada obiekt grupujacy
+      _px_obj.cntx_psh();
+      _px_obj.index(_ndx1);
+      _px_obj.prefix('G',#_obj,#_px_grp);
+      {? _px_obj.first()
+      || _uid_grp:=_px_obj.UID
+      ||
+::       Drugi poziom drzewa - grupa
+         _px_obj.TYP:='G';
+         _px_obj.UID_PAR:=_uid_obj;
+         _px_obj.SYMBOL:=PX_POZ.PX_GRP().SYMBOL;
+         _px_obj.UID:=exec('uid','#blank');
+         _px_obj.NAZWA:=PX_GRP.NAZWA;
+         _px_obj.REF_GRP:=#_px_grp;
+         _px_obj.REF_OBJ:=#_obj;
+         _px_obj.add();
+         _uid_grp:=_px_obj.UID
+      ?};
+      _px_obj.cntx_pop();
+      ~~
+   ||
+::    Pozycja planu nie posiada obiektu grupujacego
+      _px_obj.cntx_psh();
+      _px_obj.index(_ndx1);
+      _px_obj.prefix('G',#_obj,0);
+      {? _px_obj.first()
+      || _uid_grp:=_px_obj.UID
+      ||
+::       Drugi poziom drzewa - grupa
+         _px_obj.TYP:='G';
+         _px_obj.UID_PAR:=_uid_obj;
+         _px_obj.SYMBOL:='Brak obiektu grupującego'@;
+         _px_obj.UID:=exec('uid','#blank');
+         _px_obj.NAZWA:='Brak obiektu grupującego'@;
+         _px_obj.REF_GRP:=0;
+         _px_obj.REF_OBJ:=#_obj;
+         _px_obj.add();
+         _uid_grp:=_px_obj.UID
+      ?};
+      _px_obj.cntx_pop();
+      ~~
+   ?};
+
+   {? _stage<>null()
+   ||
+::    Pozycja planu posiada etap
+      _px_obj.cntx_psh();
+      _px_obj.index(_ndx1);
+      _px_obj.prefix('S',#_obj,#_px_grp,#_stage);
+      {? _px_obj.size()=0
+      ||
+::       Trzeci poziom drzewa - etap
+         _px_obj.TYP:='S';
+         _px_obj.UID_PAR:=_uid_grp;
+         _px_obj.SYMBOL:=form(PX_POZ.PX_STAGE().NR,-2)+' '+PX_STAGE.NAZWA;
+         _px_obj.UID:=exec('uid','#blank');
+         _px_obj.NAZWA:=PX_STAGE.NAZWA;
+         _px_obj.REF_STG:=#_stage;
+         _px_obj.REF_OBJ:=#_obj;
+         _px_obj.REF_GRP:=#_px_grp;
+         _px_obj.add()
+      ?};
+      _px_obj.cntx_pop();
+      ~~
+   ||
+::    Pozycja planu nie posiada etapu (np zaplanowana na podstawie Planu operacyjnego)
+
+::    Sprawdzam czy jest 'pusty etap', jesli nie ma to go zakladam
+      _px_obj.cntx_psh();
+      _px_obj.prefix('S',#_obj,#_px_grp,0);
+      {? _px_obj.size()=0
+      ||
+::       Trzeci poziom drzewa - etap
+         _px_obj.TYP:='S';
+         _px_obj.UID_PAR:=_uid_grp;
+         _px_obj.SYMBOL:='00 '+'Brak etapu planistycznego'@;
+         _px_obj.UID:=exec('uid','#blank');
+         _px_obj.NAZWA:='Nieokreślony (pusty etap planistyczny)'@;
+         _px_obj.REF_STG:=0;
+         _px_obj.REF_OBJ:=#_obj;
+         _px_obj.REF_GRP:=#_px_grp;
+         _px_obj.add()
+      ?};
+      _px_obj.cntx_pop();
+      ~~
+   ?}
+?};
+~~
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Usuwa dany kontener
+::   WE: _a - PX_KONT.ref() - rekord do usuniecia
+::   WY: 0 - porazka
+::      >0 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_px_kont:=_a;
+
+PX_KONT.cntx_psh();
+PX_CUP.cntx_psh();
+PX_KONT.clear();
+_can_continue:=1;
+
+:: inicjalizacja komunikatow, jesli nie zainicjowane
+{? var_pres('pxkomm')<=0
+|| exec('pxkomm_init','px_logix')
+?};
+
+{? PX_KONT.seek(_px_kont)
+||
+   _msg:='Usuwanie zasobu: '+PX_KONT.SYMBOL+' '+PX_KONT.NAZWA;
+   pxkomm.sect_beg(_msg);
+:: 1. Usuwam kaskadowo wszystkie pojemniki nalezace do kontenera->pozycje planu nalezace do pojemnikow
+   PX_CUP.index('START');
+   PX_CUP.prefix(PX_KONT.ref());
+   {? PX_CUP.first()
+   || {!
+      |? _can_continue:=exec('delete','px_cup',PX_CUP.ref());
+         PX_CUP.first() & _can_continue>0
+      !}
+   ?};
+
+:: 2. Usuwam kalendarze
+   {? _can_continue>0
+   || _can_continue:=exec('delete4kont','px_cal',_px_kont)
+   ?};
+
+:: 3. Usuwam kontener
+   {? _can_continue>0
+   ||
+::    Usuwam powiazania kontenerow podrzednych
+      _parent:=#PX_KONT.ref();
+      PX_KONT.cntx_psh();
+      PX_KONT.index('UID');
+      {? PX_KONT.first()
+      || {!
+         |?
+            {? PX_KONT.TREE=_parent || PX_KONT.TREE:=0; PX_KONT.put() ?};
+            PX_KONT.next()
+         !}
+      ?};
+      PX_KONT.cntx_pop();
+      _result:=PX_KONT.del(,1);
+      {? _result=0
+      || _msg:='Nie udało się usunięcie zasobu: '+PX_KONT.SYMBOL;
+         pxkomm.error(_msg)
+      ?}
+   ?};
+   pxkomm.sect_end()
+|| _msg:='Nie znaleziono zasobu: '+$_px_kont;
+   pxkomm.error(_msg)
+?};
+
+PX_CUP.cntx_pop();
+PX_KONT.cntx_pop();
+_result
+
+
+\grp_mode_seq
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Zwraca wartosc dla pola dla PX_KONT.GRP_MODE - przetwarzanie sekwencyjne
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+'S'
+
+
+\grp_mode_row
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Zwraca wartosc dla pola dla PX_KONT.GRP_MODE - przetwarzanie rownolegle
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+'R'
+
+
+\kont_real_pres
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Sprawdza, czy dostepny jest co najmniej jeden kontener rzeczywisty w ogladanej wersji planu
+::----------------------------------------------------------------------------------------------------------------------
+PX_KONT.cntx_psh();
+PX_KONT.index('ACT');
+PX_KONT.prefix('T',PX_VAR.VIE_VER);
+_res:=PX_KONT.first();
+PX_KONT.cntx_pop();
+_res
+
+
+\plres2pxkonts
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Aktualizuje PX_KONTy na podstawie PL_RES
+::   WE: _a - PL_RES.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_plres:=_a;
+
+PL_RES.cntx_psh();
+PL_RES.clear();
+PX_KONT.cntx_psh();
+PX_KONT.index('PL_RES');
+PX_VER.cntx_psh();
+
+{? PL_RES.seek(_plres)
+||
+:: 1. Aktualizuje dla wersji glownej
+   PX_VER.clear();
+   {? PX_VER.seek(exec('get_mainversion','px_ver'))
+   || PX_KONT.prefix(PX_VER.ref(),_plres);
+      {? PX_KONT.first()
+      || {!
+         |? exec('plres2kont','px_kont');
+            PX_KONT.next()
+         !}
+      ?}
+   ?};
+
+:: 2. Aktualizuje we wszystkich wersjach przeliczonych, przeliczanych i do przeliczenia
+::    ale jeszcze nie zatwierdzonych - jesli tego nie zrobie
+::    to przy zatwierdzeniu wersji przeliczonej w planie glownym kontenery moga sie zduplikowac (jesli np byl poprawiany
+::    symbol plresa)
+
+:: 2.1 Wersje przeliczone
+   PX_VER.index('STATUS');
+   PX_VER.prefix(0,exec('status_ready','px_ver'));
+   {? PX_VER.first()
+   || {!
+      |? PX_KONT.prefix(PX_VER.ref(),_plres);
+         {? PX_KONT.first()
+         || {!
+            |? exec('plres2kont','px_kont');
+               PX_KONT.next()
+            !}
+         ?};
+         PX_VER.next()
+      !}
+   ?};
+
+:: 2.2 Wersje przeliczane
+   PX_VER.index('STATUS');
+   PX_VER.prefix(0,exec('status_pending','px_ver'));
+   {? PX_VER.first()
+   || {!
+      |? PX_KONT.prefix(PX_VER.ref(),_plres);
+         {? PX_KONT.first()
+         || {!
+            |? exec('plres2kont','px_kont');
+               PX_KONT.next()
+            !}
+         ?};
+         PX_VER.next()
+      !}
+   ?};
+
+:: 2.3 Wersje do przeliczenia
+   PX_VER.index('STATUS');
+   PX_VER.prefix(0,exec('status_todo','px_ver'));
+   {? PX_VER.first()
+   || {!
+      |? PX_KONT.prefix(PX_VER.ref(),_plres);
+         {? PX_KONT.first()
+         || {!
+            |? exec('plres2kont','px_kont');
+               PX_KONT.next()
+            !}
+         ?};
+         PX_VER.next()
+      !}
+   ?}
+?};
+
+PX_VER.cntx_pop();
+PX_KONT.cntx_pop();
+PL_RES.cntx_pop();
+~~
+
+
+\plres2kont
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Uaktualnia PX_KONT na podstawie PL_RES
+::       KONTEKST PRACY - rekord PL_RES i PX_KONT
+::   WY: 0 - zwyciestwo
+::       1 - zguba
+::----------------------------------------------------------------------------------------------------------------------
+:: Sprawdzenie, czy nowy symbol nie jest juz uzyty
+_res_ref:=PL_RES.ref();
+PX_KONT.cntx_psh();
+PX_KONT.index('SYM');
+PX_KONT.prefix(PX_KONT.PX_VER,PL_RES.SYM,);
+{? PX_KONT.first() & PX_KONT.PL_RES<>_res_ref
+|| _ok:=0;
+   {? do_state()<>0
+   || undo('Symbol zasobu \''+PL_RES.SYM+'\' został już użyty w planie strategicznym.')
+   ?}
+|| _ok:=1
+?};
+PX_KONT.cntx_pop();
+
+_result:=0;
+{? _ok
+||
+   PX_KONT.SYMBOL:=PL_RES.SYM;
+   PX_KONT.NAZWA:=PL_RES.NAZ;
+   PX_KONT.KAL:=PL_RES.KAL_NAZW;
+   _result:=PX_KONT.put()
+?};
+_result
+
+
+\popraw
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Akcja 'Popraw' w tabeli PX_KONT, okna wertowania: WER
+::----------------------------------------------------------------------------------------------------------------------
+:: Sprawdzenie, czy zasob jest przypisany jako domyslny kooperacyjny (500360)
+::{? PX_KONT.SYMBOL=exec('get','#params',500360,2,null())
+::|| FUN.info('Zasób "'+PX_KONT.SYMBOL+'" jest wykorzystany jako domyślny zasób kooperacyjny.');
+::   return()
+::?};
+exec('opernast_init','px_init');
+
+{? ~exec('chk_koop','px_kont',PX_KONT.ref())
+|| {? ~FUN.ask('Zasób powiązany z operacjami, czy zmodyfikować zasób: %1?'@[PX_KONT.SYMBOL])
+   || return()
+   ?}
+?};
+_can_continue:=1;
+
+_edit:=exec('win_edit','px_kont');
+PX_KONT.win_edit(_edit);
+
+_il_wym:=PX_KONT.IL_WYM;
+_cup_eq:=PX_KONT.CUPEQ;
+_px_set:=PX_KONT.PX_SET;
+_max_cdur:=PX_KONT.MAX_CDUR;
+{? PX_KONT.edit("exec('px_kont_arec','px_kont',,1)")>0
+|| {? PX_KONT.put()
+   ||
+::    Jezeli zmienia sie PX_SET, to aktualizacja PX_POZ oraz ustalenie zestawow startowych dla PX_OBJ
+      {? _px_set<>PX_KONT.PX_SET
+      || exec('update_px_kont','px_poz',PX_KONT.ref());
+
+::       wypelnianie zestawow planistycznych na etapach do ktorych nalezy poprawiany zasob
+         PX_OPER.cntx_psh();
+         PX_OPER.index('PX_KONT');
+         PX_OPER.prefix(PX_KONT.ref());
+         {? PX_OPER.first()
+         || KOMM.init(250,,'Wypełnianie zestawów planistycznych dla etapów przepisu.'@);
+            {!
+            |? exec('px_set_fill','px_stage',PX_OPER.PX_STAGE,1,,0);
+               PX_OPER.next()
+            !};
+            KOMM.select()
+         ?};
+         PX_OPER.cntx_pop();
+
+::       Odtwarzanie kolejek w zestawach
+         exec('refresh_all','px_grps');
+
+::       Ponowne ustalenie zestawow startowych
+         exec('px_obj_set','px_obj',_px_set);
+
+         VAR_DEL.delete('set_bef');
+         ~~
+      ?};
+      {? _max_cdur<>PX_KONT.MAX_CDUR
+      || _new_cdur:=PX_KONT.MAX_CDUR;
+::       Jesli zmnienila sie optymalna dlugosc pojemnikow to nanosze ja rowniez na kontenery
+::       ktore powstaly poprzez kopiowanie z biezacego. Naniesie to zmiany w innych wersjach
+::       i bedzie mozna podgladac plan w innych wersjach z poprawnie naniesionym polem MAX_CDUR
+         PX_KONT.cntx_psh();
+         PX_KONT.index('UID_SRC');
+         PX_KONT.prefix(PX_KONT.UID);
+         {? PX_KONT.first()
+         || {!
+            |? PX_KONT.MAX_CDUR:=_new_cdur;
+               _can_continue:=PX_KONT.put();
+               PX_KONT.next() & _can_continue>0
+            !}
+         ?};
+         PX_KONT.cntx_pop()
+      ?};
+
+::    Jesli liczba wymiarow przed edycja i po edycji rozna, to wyswietlam info
+      {? _il_wym<>PX_KONT.IL_WYM
+      || _msg:='Po zmianie ilości wymiarów na zasobie, należy wykonać następujące czynności:\n'
+               '1. Inicjacja pojemności na zasobie.\n'
+               '2. Poprawienie przepisów planistycznych używających poprawionego zasobu.\n'
+               '3. Przeliczenie i ponowna akceptacja planu.\n\n'
+               'Uwaga - przeszły plan nie uwzględnia zmiany wymiarów.\n'@;
+         FUN.info(_msg)
+      ?};
+::    Jesli formula na pojemniki przed edycja i po edycji rozna, to wyswietlam ostrzezenie
+      {? _cup_eq<>PX_KONT.CUPEQ
+      ||
+::       Sprawdzam czy kontener mial juz wygenerowane pojemniki
+         PX_CUP.cntx_psh();
+         PX_CUP.index('TM_START');
+         PX_CUP.prefix(PX_KONT.ref());
+         {? PX_CUP.first()
+         || _msg:='Uwaga! Zmieniono \'Formułę na pojemnik\' na zasobie, który posiada już pojemniki.\n\n'
+                  'Po zmianie \'Formuły na pojemnik\' istniejące pojemniki nie zostaną zmodyfikowane\n'
+                  'ani usunięte. Dopiero podczas dogenerowania nowych pojemników zmiana \'Formuły na pojemnik\' zostanie uwzględniona.\n'
+                  'Uwaga! Ponowne wygenerowanie pojemników w okresie, w którym już są pojemniki może\n'
+                  'doprowadzić do utworzenia nieprawidłowej struktury planu.'@;
+            FUN.emsg(_msg)
+         ?};
+         PX_CUP.cntx_pop()
+      ?};
+
+::    Przepisuje do zmiennej wlasciwosci kontenera ktory poprawilem
+      exec('px_kont2px_var','px_param');
+      _uid:=PX_KONT.UID;
+      _symbol:=PX_KONT.SYMBOL;
+      _nazwa:=PX_KONT.NAZWA;
+      PX_KONT.cntx_psh();
+      PX_KONT.clear();
+      {? PX_KONT.seek(PX_KONT.TREE,)
+      || _symtree:=PX_KONT.SYMBOL
+      || _symtree:=''
+      ?};
+      PX_KONT.cntx_pop();
+      ~~
+   ?}
+?};
+~~
+
+
+\px_kont_nakl_bl
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.30]
+:: OPIS: Blank pola tabeli PX_KONT.NAKL_PRC
+::----------------------------------------------------------------------------------------------------------------------
+100
+
+
+\px_kont_nakl_bd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.30]
+:: OPIS: Przed wyswietl pola tabeli PX_KONT.NAKL_PRC
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\px_kont_nakl_be
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.30]
+:: OPIS: Przed redakcja pola tabeli PX_KONT.NAKL_PRC
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+1
+
+
+\px_kont_nakl_ae
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.30]
+:: OPIS: Po redakcji pola tabeli PX_KONT.NAKL_PRC
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+{? PX_KONT.NAKL_PRC>100 | PX_KONT.NAKL_PRC<0
+|| _result:=0;
+   FUN.emsg('Niedozwolona wartość.\nPoprawna wartość musi się zawierać w przedziale 0..100.'@)
+?};
+_result
+
+
+\px_kont_display
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MENU KONTEKSTOWE
+::  UTW: TS [12.10]
+:: OPIS: Wyswietla dane zasobu
+::----------------------------------------------------------------------------------------------------------------------
+PX_KONT.cntx_psh();
+{? PX_VAR.SEL_KONT<>null()
+|| PX_VAR.SEL_KONT()
+?};
+_edit:=exec('win_edit','px_kont');
+PX_KONT.win_edit(_edit);
+PX_KONT.display();
+PX_KONT.cntx_pop();
+~~
+
+
+\dimensions_chk
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Sprawdza zgodnosc 'wymiarowa' pomiedzy dwoma kontenerami
+::   WE: _a - PX_KONT.ref() - kontener 1
+::       _b - PX_KONT.ref() - kontener 2
+::   WY: -1 - kontenery maja rozna ilosc wymiarow
+::       -2 - kontenery maja rozne jednostki miary w wymiarach
+::        0 - wystapil blad, nie znaleziono podanych kontenerow albo cos rownie nieprzyjemnego
+::        1 - kontenery sa zgodne pod wzgledem ilosci i jednostki miary w wymiarach
+::----------------------------------------------------------------------------------------------------------------------
+_kont1:=_a;
+_kont2:=_b;
+_result:=0;
+
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_kont1)
+|| _il_wym1:=PX_KONT.IL_WYM;
+   _dims1:=obj_new(_il_wym1);
+   {! _it:=1.._il_wym1
+   |! _dims1[_it]:=($('PX_KONT.JM'+$_it))()
+   !};
+
+   {? PX_KONT.seek(_kont2)
+   || _result:=1;
+
+      _il_wym2:=PX_KONT.IL_WYM;
+      _dims2:=obj_new(_il_wym2);
+
+      {! _it:=1.._il_wym2
+      |! _dims2[_it]:=($('PX_KONT.JM'+$_it))()
+      !};
+
+      {? _il_wym1=_il_wym2
+      || _can_continue:=1;
+         {! _it:=1.._il_wym1
+         |? _can_continue>0
+         |!
+            {? _dims1[_it]<>_dims2[_it]
+            || _result:=-2;
+               _can_continue:=0
+            ?}
+         !}
+      || _result:=-1
+      ?}
+   ?}
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\get_start
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca punkt czasowy od ktorego zaczynaja sie pojemniki w danym kontenerze
+::   WE: _a - PX_KONT.ref()
+::   WY: REAL - tm_stamp poczatku pierwszego pojemnika
+::----------------------------------------------------------------------------------------------------------------------
+_kont:=_a;
+_result:=0;
+
+PX_KONT.cntx_psh();
+PX_CUP.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_kont)
+|| PX_CUP.index('TM_START');
+   PX_CUP.prefix(PX_KONT.ref());
+   {? PX_CUP.first()
+   || _result:=PX_CUP.TM_START
+   ?}
+?};
+PX_CUP.cntx_pop();
+PX_KONT.cntx_pop();
+_result
+
+
+\get_end
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca punkt czasowy w ktorym koncza sie pojemniki w danym kontenerze
+::   WE: _a - PX_KONT.ref()
+::   WY: REAL - tm_stamp konca ostatniego pojemnika
+::----------------------------------------------------------------------------------------------------------------------
+_kont:=_a;
+_result:=0;
+
+PX_KONT.cntx_psh();
+PX_CUP.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_kont)
+|| PX_CUP.index('TM_END');
+   PX_CUP.prefix(PX_KONT.ref());
+   {? PX_CUP.last()
+   || _result:=PX_CUP.TM_END
+   ?}
+?};
+PX_CUP.cntx_pop();
+PX_KONT.cntx_pop();
+_result
+
+
+\round_time
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zaokragla punkt czasowy do czasu pojemnika rzeczywistego ktory przecina ten punkt
+::   WE: _a - PX_KONT.ref();
+::       _b - REAL - tm_stamp() - moment czasu ktory zaokraglam
+::       _c - STRING - 'START':      - zaokraglenie do poczatku pojemnika
+::                     'START_NEXT': - zaokraglenie do poczatku nastepnego pojemnika
+::                     'END'  :      - zaokraglenie do konca pojemnika
+::   WY: REAL - tm_stamp() - zaokraglony moment czasu
+::----------------------------------------------------------------------------------------------------------------------
+_kont:=_a;
+_time:=_b;
+_mode:=_c;
+
+_result:=_time;
+
+PX_KONT.cntx_psh();
+PX_CUP.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_kont)
+|| {? exec('cup_closest','px_plan',_kont,_time,1)>0
+   || {? _mode='START'
+      || _result:=PX_CUP.TM_START
+      |? _mode='START_NEXT'
+      || {? PX_CUP.next()
+         || _result:=PX_CUP.TM_START
+         ?}
+      |? _mode='END'
+      || _result:=PX_CUP.TM_END
+      ?}
+   ?}
+?};
+PX_CUP.cntx_pop();
+PX_KONT.cntx_pop();
+_result
+
+
+\precision_array
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca tablice zawierajaca wartosci precyzji na podanym kontenerze
+::   WE: _a - PX_KONT.ref()
+::   WY: obj_new(x) - precyzja w kolejnych wymiarach
+::----------------------------------------------------------------------------------------------------------------------
+_px_kont:=_a;
+_result:=obj_new(1);
+_result[1]:=0;
+
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_px_kont)
+|| _il_wym:=PX_KONT.IL_WYM;
+   obj_del(_result);
+   _result:=obj_new(_il_wym);
+   {! _it:=1.._il_wym
+   |! _result[_it]:=($('PX_KONT.PREC'+$_it))()
+   !}
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\kooperacyjny
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Sprawdza, czy zasob moze byc przypisany jako kooperacyjny
+::       1. wymiar musi byc nieskonczony, jednostka miary [h]
+::   WE: _a - PX_KONT.ref()
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_a)
+|| {? VAR.GRP_MOD<>'T'
+   || _koop_jm:=exec('get','#params',500382);
+      {? PX_KONT.CAP_INF1=1 & PX_KONT.JM1().KOD=_koop_jm
+      || _res:=1
+      || _msg:='Niepoprawne przypisanie zasobu %1.\n'
+               'Zasób kooperacyjny musi mieć następujące cechy pierwszego wymiaru:\n\n'
+               '• wymiar nieskończony\n'
+               '• jednostka miary: [%2]'@[PX_KONT.SYMBOL,_koop_jm];
+         {? VAR.GRUPA='T'
+         || KOMM.add(_msg)
+         || FUN.emsg(_msg)
+         ?};
+         _res:=0
+      ?}
+   ?}
+?};
+PX_KONT.cntx_pop();
+_res
+
+
+\coef_dg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Wyznacza przelicznik dni na godziny do planowania kooperacji
+::       Jezeli nie podano zasobu (null), to zwraca przelicznik systemowy (formula 500361)
+::   WE: _a - PX_KONT.ref()
+::       _b - tm_stamp() poczatku badanego przedzialu
+::       _c - tm_stamp() konca badanego przedzialu
+::----------------------------------------------------------------------------------------------------------------------
+{? _a=null() | _b<=0 | _c<=0
+||
+   _res:=exec('get','#params',500361,1,null())
+||
+   _res:=0;
+   _sum_tm:=0;
+   _il_cups:=0;
+   PX_CUP.index('TM_START');
+   PX_CUP.prefix(_a);
+   {? PX_CUP.find_ge(_b)
+   || {!
+      |?
+         _il_cups+=1;
+         _sum_tm+=PX_CUP.TM_END-PX_CUP.TM_START;
+         PX_CUP.next() & PX_CUP.TM_START<=_c
+      !}
+   ?};
+   {? _il_cups>0
+   || _res:=_sum_tm/_il_cups/exec('minute','#tm_stamp')/60
+   ?}
+?};
+_res
+
+
+\chk_depend
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Sprawdzenie powiazan zasobu z innymi zasobami oraz wystapienia w parametrze 500360
+::       W przypadku powiazan dodaje tez wpisy do KOMM-a
+::   WE: _a - PX_KONT.ref() - nie jest sprawdzana obecnosc i typ parametru wejsciowego
+::   WY: 1 - ok, brak powiazan, 0 - zle, sa powiazania
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=1;
+_pxkont:=_a;
+
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_pxkont)
+||
+   _symbol:=PX_KONT.SYMBOL;
+:: - czy wystepuje jako parametr 500360
+   {? _symbol=exec('get','#params',500360,2,null())
+   || _ok:=0;
+      KOMM.add('Zasób: %1 jest wykorzystany jako domyślny zasób kooperacyjny.'@[_symbol],'xwin16.png:2','128:0:0')
+   ?};
+:: - czy jest zasobem podrzednym
+   {? PX_KONT.TREE<>0
+   || _ok:=0;
+      PX_KONT.clear();
+      {? PX_KONT.seek(PX_KONT.TREE,)
+      || KOMM.add('Zasób: %1 jest powiązany jako zasób podrzędny zasobu: %2.'@[_symbol,PX_KONT.SYMBOL],'xwin16.png:2','128:0:0')
+      || KOMM.add('Zasób: %1 jest powiązany jako zasób podrzędny.'@[_symbol],'xwin16.png:2','128:0:0')
+      ?}
+   ?};
+:: - czy jest zasobem nadrzednym
+   PX_KONT.index('ACTT');
+   PX_KONT.prefix('T',PX_KONT.PX_VER,#_pxkont);
+   {? PX_KONT.first()
+   || _ok:=0;
+      KOMM.add('Zasób: %1 jest powiązany jako zasób nadrzędny zasobu: %2.'@[_symbol,PX_KONT.SYMBOL],'xwin16.png:2','128:0:0')
+   ?}
+||
+   _ok:=0
+?};
+PX_KONT.cntx_pop();
+_ok
+
+
+\zwrozw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Zwija/rozwija galezie widoku zasobow
+::----------------------------------------------------------------------------------------------------------------------
+exec('zwrw_all','#tree',PX_KONT,'TREE','PX_WERT')
+
+
+\chk_koop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Sprawdza, czy zasob ma powiazania z operacjami kart technologicznych, technologiami zlecen, przewodnikami
+::   WE: _a - PX_KONT.ref() - nie jest sprawdzana obecnosc i typ parametru wejsciowego
+::   WY: 1 - ok, brak powiazan, 0 - zle, sa powiazania
+::----------------------------------------------------------------------------------------------------------------------
+_pxkont:=_a;
+
+_link:=exec('testlink_all','px_kont',_pxkont);
+_tlink:=exec('testlink','px_kont',_pxkont,'TOPER',_link);
+_plink:=exec('testlink','px_kont',_pxkont,'ZGP',_link);
+
+~(_tlink | _plink)
+
+
+\chk_maxdur
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy wszystkie kontenery aktywne w danej wersji maja wypelnione pole PX_KONT.MAX_CDUR
+::   WE: _a - PX_VER.ref
+::   WY: 0 - sa takie kontenety ktore nie maja ustalonej wartosci pola MAX_CDUR
+::       1 - wszystkie kontenery maja jakas wartosc pola MAX_CDUR
+::----------------------------------------------------------------------------------------------------------------------
+_px_ver:=_a;
+
+_result:=1;
+_can_continue:=1;
+
+PX_KONT.cntx_psh();
+PX_KONT.index('ACT');
+PX_KONT.prefix('T',_px_ver);
+{? PX_KONT.first()
+|| {!
+   |? {? PX_KONT.MAX_CDUR=''
+      || _result:=0;
+         _can_continue:=0
+      ?};
+      PX_KONT.next() & _can_continue>0
+   !}
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\chk_kont_maxdur
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy wszystkie pojemniki w kontenerze maja czas trwania krotszy niz maksimum
+::       okreslone w kontenerze
+::   WE: _a - PX_KONT.ref
+::       [_b] - STRING - poziom wg ktorego kontrolowac dlugosc pojemnikow, jesli nie podany
+::                       to brany z pola PX_KONT.MAX_CDUR
+::       [_c] - INTEGER - poziom raportowania - 0 - brak jakichkolwiek komunikatow
+::                                              1 - inicjowany i wyswietlany KOMM
+::   WY: 0 - sa pojemniki ktore sa niezgodne pod wzgledem dlugosci trwania z maksimum kontenera
+::       1 - wszystkie pojemniki poprawnie przeszly kontrole
+::----------------------------------------------------------------------------------------------------------------------
+_px_kont:=_a;
+
+_level:='';
+_lev_kont:=1;
+{? var_pres('_b')=type_of('')
+|| _level:=_b;
+   _lev_kont:=0
+?};
+
+_komm:=0;
+{? var_pres('_c')=type_of(0)
+|| _komm:=_c
+?};
+
+_result:=1;
+_can_continue:=1;
+
+{? _komm>0
+||
+:: deklaracje obiektow dla komunikatow
+   exec('JCQ_decl','#message');
+   {? var_pres('KOMM')<100 || KOMM:=obj_new(@.CLASS.JCQ) ?};
+   KOMM.init(250,,'Kontrola czasu trwania pojemników'@,'',,,0)
+?};
+
+PX_CUP.cntx_psh();
+PX_CUP.index('TM_START');
+PX_KONT.cntx_psh();
+PX_KONT.clear();
+{? PX_KONT.seek(_px_kont)
+||
+   {? _lev_kont>0
+   ||
+::    Jesli w parametrze wejsciowym max poziom nie zostal podany, to go biore z kontenera
+      _level:=PX_KONT.MAX_CDUR
+   ?};
+
+   {? _level<>''
+   ||
+      PX_CUP.prefix(PX_KONT.ref());
+      _month:=exec('month','#tm_stamp');
+      _week:=exec('week','#tm_stamp');
+      _day:=exec('day','#tm_stamp');
+
+      {? PX_CUP.first()
+      || {!
+         |?
+            _cup_duration:=PX_CUP.TM_END-PX_CUP.TM_START;
+
+            {? _level='M'
+            || {? _cup_duration>_month
+               || _result:=0;
+                  {? _komm>0
+                  || _msg:='Pojemnik: %1 przekracza maksymalny czas trwania określony na kontenerze: miesiąc'@[PX_CUP.SYMBOL];
+                     KOMM.add(_msg,2)
+                  || _can_continue:=0
+                  ?}
+               ?}
+            |? _level='T'
+            || {? _cup_duration>_week
+               || _result:=0;
+                  {? _komm>0
+                  || _msg:='Pojemnik: %1 przekracza maksymalny czas trwania określony na kontenerze: tydzień'@[PX_CUP.SYMBOL];
+                     KOMM.add(_msg,2)
+                  || _can_continue:=0
+                  ?}
+               ?}
+            |? _level='D'
+            || {? _cup_duration>_day
+               || _result:=0;
+                  {? _komm>0
+                  || _msg:='Pojemnik: %1 przekracza maksymalny czas trwania określony na kontenerze - miesiąc'@[PX_CUP.SYMBOL];
+                     KOMM.add(_msg,2)
+                  || _can_continue:=0
+                  ?}
+               ?}
+            ?};
+            PX_CUP.next() & _can_continue>0
+         !}
+      ?}
+   ?}
+?};
+PX_KONT.cntx_pop();
+PX_CUP.cntx_pop();
+_result
+
+
+\mask_current
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Zwraca niearchiwalna maske dla tabeli PX_KONT
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+PX_KONT.name()
+
+
+\chk_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.41]
+:: OPIS: Sprawdza czy wszystkie kontenery aktywne w danej wersji maja wypelnione pole PX_KONT.PX_SET
+::       Sprawdzenie dokonywane jest tylko wtedy, gdy jest przynajmniej jeden PX_SET w systemie
+::   WE: _a - PX_VER.ref()
+::   WY: 0 - sa takie kontenery ktore nie maja ustalonej wartosci pola PX_SET
+::       1 - wszystkie kontenery maja jakas wartosc pola PX_SET
+::----------------------------------------------------------------------------------------------------------------------
+_px_ver:=_a;
+
+_result:=1;
+_can_continue:=1;
+
+PX_SET.cntx_psh();
+PX_SET.prefix();
+{? PX_SET.size()>0
+|| PX_KONT.cntx_psh();
+   PX_KONT.index('ACT');
+   PX_KONT.prefix('T',_px_ver);
+   {? PX_KONT.first()
+   || {!
+      |? {? PX_KONT.PX_SET=null()
+         || _result:=0;
+            _can_continue:=0
+         ?};
+         PX_KONT.next() & _can_continue>0
+      !}
+   ?};
+   PX_KONT.cntx_pop()
+?};
+PX_SET.cntx_pop();
+_result
+
+
+\chk_set1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Sprawdza czy wszystkie kontenery aktywne w danej wersji maja puste pole PX_KONT.PX_SET
+::   WE: _a - PX_VER.ref()
+::   WY: 0 - sa takie kontenery ktore maja ustalona wartosci pola PX_SET
+::       1 - wszystkie kontenery maja pusta wartosc pola PX_SET
+::----------------------------------------------------------------------------------------------------------------------
+_px_ver:=_a;
+
+_result:=1;
+_can_continue:=1;
+
+PX_KONT.cntx_psh();
+PX_KONT.index('ACT');
+PX_KONT.prefix('T',_px_ver);
+{? PX_KONT.first()
+|| {!
+   |? {? PX_KONT.PX_SET<>null()
+      || _result:=0;
+         _can_continue:=0
+      ?};
+      PX_KONT.next() & _can_continue>0
+   !}
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\chk_dimension
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.42]
+:: OPIS: Sprawdza czy wszystkie kontenery aktywne w danej wersji maja wymiar w podanej jednostce miary
+::   WE:  _a  - tablica STRING - jednostki miary które sprawdzać
+::       [_b] - INTEGER - 0/1 -  0 - wymiary mają być skończony
+::                               1 - nieskończony
+::                              -1 - nie sprawdzać tego
+::       [_c] - PX_VER.ref() - wersja planu, jeśli nie podana to wersja główna
+::       [_d] - INTEGER - 0/1 - czy tworzyć i wyświetlać KOMMa
+::   WY: 0 - sa takie kontenery ktore nie mają podanego wymiaru
+::       1 - wszystkie kontenery maja podany wymiar
+::----------------------------------------------------------------------------------------------------------------------
+_jm_array:=_a;
+_inf:=-1;
+{? var_pres('_b')=type_of(0)
+|| _inf:=_b
+?};
+_px_ver:=exec('get_mainversion','px_ver');
+{? var_pres('_c')=type_of(PX_VER.ref())
+|| _px_ver:=_c
+?};
+_komm_init:=1;
+{? var_pres('_d')=type_of(0)
+|| _komm_init:=_d
+?};
+
+_result:=1;
+_can_continue:=1;
+
+JM.cntx_psh();
+PX_KONT.cntx_psh();
+PX_KONT.index('ACT');
+PX_KONT.prefix('T',_px_ver);
+
+{? _komm_init>0
+|| KOMM.init(250,,'Kontrola jednostek miary w zasobach planu strategicznego'@)
+?};
+
+_size_jm:=obj_len(_jm_array);
+
+
+{? PX_KONT.first() & _size_jm>0
+|| {!
+   |?
+      {? exec('chk_dimension_kont','px_kont',_jm_array,_inf,,2)=0
+      || _result:=0
+      ?};
+      PX_KONT.next()
+   !}
+?};
+{? _komm_init>0
+|| KOMM.select()
+?};
+PX_KONT.cntx_pop();
+JM.cntx_pop();
+_result
+
+
+\chk_dimension_kont
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.42]
+:: OPIS: Sprawdza czy podany kontener ma przynajmniej jeden wymiar w podanej liście jednostek miary
+::   WE:  _a  - tablica STRING - jednostki miary które sprawdzić
+::       [_b] - INTEGER - 0/1 -  0 - wymiary mają być skończony
+::                               1 - nieskończony
+::                              -1 - nie sprawdzać tego
+::       [_c] - PX_KONT.ref lub bieżący rekord
+::       [_d] - INTEGER - sposób komunikowania: 0 - brak, [1] ekran, 2 - KOMM
+::       [_e] - TABLE - tabela którą sprawdzać (domyślnie PX_KONT)
+::   WY: 0 - kontener nie ma żadnego z podanych jednostek miary w swoich wymiarach
+::       1 - ma przynajmniej jedną jednostkę miary
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_jm_array:=_a;
+_inf:=-1;
+{? var_pres('_b')=type_of(0)
+|| _inf:=_b
+?};
+
+_ref:=null();
+{? var_pres('_c')=type_of(PX_KONT.ref())
+|| _ref:=_c
+?};
+_dialog:=1;
+{? var_pres('_d')=type_of(0)
+|| _dialog:=_d
+?};
+_tab:=~~;
+{? var_pres('_e')>0
+|| _tab:=_e
+|| _tab:=PX_KONT
+?};
+
+_size_jm:=obj_len(_jm_array);
+
+_result:=1;
+_can_continue:=1;
+_obj_ntab:=obj_ntab(_tab);
+
+{? ~_obj_ntab
+|| _tab.cntx_psh();
+   {? _ref<>null()
+   || _tab.prefix();
+      {? _tab.seek(_ref)
+      || _can_continue:=1
+      || _can_continue:=0
+      ?}
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? _tab=PX_KONT | _obj_ntab
+   || _symbol:=_tab.SYMBOL
+   || _symbol:=KONT_TREE.SYMBOL
+   ?};
+:: - czy wystepuje jako parametr 500360
+   {? _symbol=exec('get','#params',500360,2,null())
+   ||
+::    Zasób kooperacyjny olewam, on może mieć dowolne wymiary
+      _can_continue:=0;
+      _result:=1
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _jm_symbols:='';
+   _can_continue:=1;
+   _kont_ok:=0;
+
+   {! _it_jm:=1.._size_jm
+   |! _jm:=_jm_array[_it_jm];
+      {? _jm<>''
+      ||
+         {? _jm_symbols<>''
+         || _jm_symbols+=', '+_jm
+         || _jm_symbols+=_jm
+         ?};
+         {! _it:=1.._tab.IL_WYM
+         |? _can_continue>0
+         |! _rule:="exec('FindAndGet','#table',JM,_a.JM"+$_it+",,\"KOD\",'')";
+            _jm_wym:=($_rule)(_tab);
+            {? _jm_wym=_jm
+            ||
+               {? _inf>-1
+               ||
+::                Jednostka znaleziona, teraz sprawdzam czy zgadza się jej skończoność
+                  _rule2:='_tab:=_a;_tab.CAP_INF'+$_it;
+                  _inf_wym:=($_rule2)(_tab);
+                  {? _inf_wym=_inf
+                  || _kont_ok:=1;
+                     _can_continue:=0
+                  ?}
+               ||
+::                Nieskończoność nieważna
+                  _kont_ok:=1;
+                  _can_continue:=0
+               ?}
+            ?}
+         !}
+      ?}
+   !};
+
+   {? _kont_ok=0
+   || _result:=0;
+      _inf_txt:='wymiaru'@;
+      {? _inf=0
+      || _inf_txt:='wymiaru skończonego'@
+      || _inf_txt:='wymiaru nieskończonego'@
+      ?};
+
+      {? _tab=PX_KONT
+      || _msg:='Zasób %1 nie posiada żadnego %2 w jednej z jednostek miary: %3.'@[_tab.SYMBOL,_inf_txt,_jm_symbols]
+      || _msg:='Zasób nie posiada żadnego %1 w jednej z jednostek miary: %2.'@[_inf_txt,_jm_symbols]
+      ?};
+      {? _dialog=1
+      || FUN.emsg(_msg)
+      |? _dialog=2
+      || KOMM.add(_msg,2)
+      ?}
+   ?}
+?};
+
+{? ~_obj_ntab
+|| _tab.cntx_pop()
+?};
+_result
+
+
+\px_kont_set_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Przed wyswietleniem pola PX_KONT.PX_SET
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+{? ~exec('is_one_version','px_param')
+|| _result:=exec('color_noavail','px_param');
+   PX_KONT.efld_opt('DISP','label_color='+((_result*',')-_result),,'PX_SET','SYMBOL');
+   PX_KONT.efld_opt('RED','label_color='+((_result*',')-_result),,'PX_SET','SYMBOL')
+|| PX_KONT.efld_opt('DISP','label_color=',,'PX_SET','SYMBOL');
+   PX_KONT.efld_opt('RED','label_color=',,'PX_SET','SYMBOL')
+?};
+_result
+
+
+\px_kont_set_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Przed redakcja pola PX_KONT.PX_SET
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('set_bef');
+_result:=0;
+{? exec('is_one_version','px_param')
+|| _result:=1;
+   set_bef:=PX_KONT.PX_SET
+?};
+_result
+
+
+\px_kont_set_ae
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.41]
+:: OPIS: Po redakcji pola PX_KONT.PX_SET
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+{? exec('is_one_version','px_param') & set_bef<>PX_KONT.PX_SET
+||
+   _msg:='Zmiana zestawu planistycznego spowoduje odtworzenie kolejek przypisanych do zestawów.\n'
+         'Konsekwencją tego jest utrata wszystkich potwierdzeń w kolejkach.\n'
+         'Zostaną odtworzone zestawy startowe dla wszyskich obiektów planistycznych.\n'
+         'Czy na pewno kontynuować?\n'@;
+   _result:=FUN.ask(_msg)
+?};
+_result
+
+
+\szukaj_before
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Akcja przed szukaj w oknach wertowania PX_KONT
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+PX_KONT.win_patt('SZUK');
+~~
+
+
+\szukaj_after
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Akcja po szukaj w oknach wertowania PX_KONT
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\rebuild_cups
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.42]
+:: OPIS: Dla wszystkich zasobów podanej wersji usuwa pojemniki i tworzy je na nowo, inicjuje im pojemności
+::       i jeśli potrzeba odtwarza kalendarze
+::   WE: [_a] - wersja planu
+::       [_b] - REAL - od kiedy inicjować na nowo pojemniki
+::       [_c] - INTEGER - 0/1 czy pokazywać progresss
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_px_ver:=exec('get_mainversion','px_ver');
+{? var_pres('_a')=type_of(PX_VER.ref())
+|| _px_ver:=_a
+?};
+_tm_stamp:=SYSLOG.tm_stamp();
+{? var_pres('_b')=type_of(0)
+|| _tm_stamp:=_b
+?};
+_progress:=1;
+{? var_pres('_c')=type_of(0)
+|| _progress:=_c
+?};
+
+exec('opernast_init','px_init');
+
+_result:=0;
+_can_continue:=1;
+
+PX_KONT.cntx_psh();
+PX_CUP.cntx_psh();
+PX_CUP.index('TM_START');
+PX_KONT.index('ACT');
+PX_KONT.prefix('T',_px_ver);
+
+_days_max:=exec('get','#params',500350,1);
+_startd:=exec('tm_stamp2date','#tm_stamp',_tm_stamp);
+_endd:=exec('FindAndGet','#table',PX_VER,_px_ver,,"ENDD().DATA",_startd+_days_max);
+{? (_startd+_days_max)>_endd
+|| _endd:=_startd+_days_max
+?};
+_progress:=1;
+
+_prg_step:=1;
+KOMM.init(250,,'Odtwarzanie pojemników'@);
+do();
+
+{? PX_KONT.first()
+||
+   _lp:=1;
+   {? _progress>0
+   || _msg:='Odtwarzanie pojemników...'@;
+      FUN.prg_start(PX_KONT.size()/_prg_step,_msg,,,1)
+   ?};
+   {!
+   |?
+
+      {? _progress>0
+      || {? _lp%*_prg_step=0
+         || FUN.prg_next(,'Odtwarzanie pojemników dla zasobu: %1'@[PX_KONT.SYMBOL])
+         ?}
+      ?};
+
+      {? _tm_stamp>0
+      || _has_cups:=exec('cup_closest','px_plan',PX_KONT.ref(),_tm_stamp,1);
+         {? _has_cups=0
+         || PX_CUP.prefix(PX_KONT.ref());
+            _has_cups:=PX_CUP.first()
+         ?}
+      || PX_CUP.prefix(PX_KONT.ref());
+         _has_cups:=PX_CUP.first()
+      ?};
+
+      {? _has_cups>0
+      ||
+::       Faza pierwsza - usuwam pojemniki
+         {!
+         |? _next:=0;
+            _ref_nxt:=null();
+            PX_CUP.cntx_psh();
+            {? PX_CUP.next()
+            || _ref_nxt:=PX_CUP.ref()
+            ?};
+            PX_CUP.cntx_pop();
+
+            _can_continue:=exec('delete','px_cup',PX_CUP.ref());
+
+            {? _ref_nxt<>null()
+            || _next:=PX_CUP.seek(_ref_nxt)
+            ?};
+            _next>0 & _can_continue>0
+         !};
+         {? _can_continue>0
+         ||
+::          Usunąłem pojemniki więc dogenerowuję nowe, inicjuję im pojemności
+            _can_continue:=exec('cup_generator','px_gen',PX_KONT.ref(),_startd,_endd)
+
+         ?}
+      ?};
+      _lp+=1;
+      PX_KONT.next() & _can_continue>0
+   !};
+   {? _progress>0
+   || FUN.prg_stop()
+   ?}
+?};
+PX_CUP.cntx_pop();
+PX_KONT.cntx_pop();
+
+{? _can_continue<=0
+|| undo()
+?};
+end();
+KOMM.select();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\is_koop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.42]
+:: OPIS: Sprawdza czy zasób jest zasobem kooperacyjnym
+::   WE: [_a] - PX_KONT.ref - ref zasobu lub bieżący rekord
+::   WY: 0 - zasób nie jest zasobem kooperacyjnym
+::       1 - zasób jest zasobem kooperacyjnym
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PX_KONT.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PX_KONT.cntx_psh();
+{? _ref<>null()
+|| PX_KONT.prefix();
+   {? PX_KONT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _symbol:=PX_KONT.SYMBOL;
+   {? _symbol=exec('get','#params',500360,2,null())
+   || _result:=1
+   ?}
+?};
+PX_KONT.cntx_pop();
+_result
+
+
+\win_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Okienko edycyjne PX_KONT
+::   WY: STRING - akronim okna
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_edit:=PX_KONT.mk_edit('Właściwości zasobu'@,0,'#px_kont_edt',,,'html_maximized');
+PX_KONT.win_etab(_edit,'Dane podstawowe'@);
+PX_KONT.win_ewin(_edit,,'RED');
+PX_KONT.win_etab(_edit,'Dane dodatkowe'@);
+PX_KONT.win_ewin(_edit,,'CAPF');
+exec('ok_esc','#window',PX_KONT,_edit);
+_edit
+
+
+\infinity_array
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [22.26]
+:: OPIS: Zwraca tablicę informującą które  wymiary zasobu są nieskończone
+::   WE: [_a] - PX_KONT.ref - zasób w planie strategicznym lub bieżący rekord
+::   WY: obj_new()
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PX_KONT.ref())
+|| _ref:=_a
+?};
+
+_can_continue:=1;
+
+
+_result:=~~;
+PX_KONT.cntx_psh();
+{? _ref<>null()
+|| PX_KONT.prefix();
+   {? PX_KONT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| _il_wym:=PX_KONT.IL_WYM;
+   _result:=obj_new(_il_wym);
+   {! _it:=1.._il_wym
+   |! _result[_it]:=0;
+
+      _jm:=($('PX_KONT.JM'+$_it+'().KOD'))();
+      {? PX_VAR.NAST_ALG=2 & PX_KONT.PARALLEL='1' & (_jm=PX_VAR.P500380 | _jm=PX_VAR.P500381)
+      ||
+::       Jeżeli następstwo czasowe i planowanie równoległe włączone to wszystkie wymiary
+::       czasowe są nieskończone
+         _result[_it]:=1
+      || _result[_it]:=($('PX_KONT.CAP_INF'+$_it))()
+      ?}
+   !}
+?};
+PX_KONT.cntx_pop();
+{? type_of(_result)=0
+|| _il_wym:=exec('il_wym','px_param');
+   _result:=obj_new(_il_wym);
+   {! _it:=1.._il_wym
+   |! _result[_it]:=0
+   !}
+?};
+_result
+
+
+\compare
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [23.25]
+:: OPIS: Porównuje pojemności na zasobach dwóch wersji
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+{? PX_VAR.VIE_VER=exec('get_mainversion','px_ver')
+|| FUN.emsg('Funkcjonalność porównywania jest dostępna tylko dla wersji planu inna niż główna.'@);
+   return()
+?};
+
+PX_KONT.cntx_psh();
+PX_KONT.prefix();
+_context:=PxSelect.Context;
+PxSelect.Context:=_context+'|COMPARE';
+
+_ref:=PX_KONT.ref();
+
+_tree_kont:=0;
+:: Zakładam filtr
+{? PX_VAR.PX_SET<>null()
+|| PX_KONT.f_set('SYMBOL,PX_VER',,'PX_KONT.A=\'T\' and PX_KONT.PX_SET=:_a and (PX_KONT.PX_VER=:_b or PX_KONT.PX_VER=:_c)',PX_VAR.PX_SET,PX_VAR.VIE_VER,exec('get_mainversion','px_ver'))
+|| PX_KONT.f_set('SYMBOL,PX_VER',,'PX_KONT.A=\'T\' and (PX_KONT.PX_VER=:_a or PX_KONT.PX_VER=:_b)',PX_VAR.VIE_VER,exec('get_mainversion','px_ver'))
+?};
+
+_que_tab:=0;
+
+_h_podz:={? _que_tab || 14 || 14 ?};
+_h_nav:={? _que_tab || 35 || 10 ?};
+
+_before:="
+   _one_ver:=exec('is_one_version','px_param');
+   _chk_role:=exec('chk_role','#b__box',OPERATOR.USER,'TPP_PPS_DPLA');
+   _elements:=exec('elements_table_navi','px_plan',_one_ver);
+   _simulation:={? exec('mainversion_vie','px_ver') || 0 || 1 ?};
+
+   _whatif:=0;
+   {? exec('is_whatif','px_ver',PX_VAR.VIE_VER)>0
+   || _whatif:=1;
+      _simulation:=0
+   ?};
+   {? _one_ver>0
+   ||
+      {? _simulation>0
+      ||
+::       Jesli wyswietlana wersja nie jest wersja glowna (np przeliczona symulacja),
+::       albo użytkownik nie ma roli
+::       to znikam caly panel dot. przeliczania w panelu nawigacji
+         exec('set_visible_grp','#desktop','','nawigacja','przelicz_one_ver',0,_elements)
+      ?};
+::    w zależności od tego czy użytkownik nie ma roli - wyłączam przyciski do przeliczania, akceptacji
+      {? _chk_role=0 | _simulation>0
+      || exec('set_visible_grp','#desktop','','nawigacja','4m7hj5gf3h00459d84nlcj9in707',0,_elements)
+      || exec('set_visible_grp','#desktop','','nawigacja','4m7hj5gf3h00459d84nlcj9in707',1,_elements)
+      ?};
+      {? _chk_role=0 | _simulation>0 | _whatif>0
+      || exec('set_visible_grp','#desktop','','nawigacja','btn_whatif@przelicz_one_ver',0,_elements)
+      || exec('set_visible_grp','#desktop','','nawigacja','btn_whatif@przelicz_one_ver',1,_elements)
+      ?};
+      exec('load','#desktop','nawigacja','px_navi_cmp.dsk',,,,,_elements)
+   ?};
+   exec('px_navi_opt','px_task',_one_ver);
+
+:: Ustawiam widok w combobox
+   _view:=PX_VAR.PX_VIEW;
+   {? _view<>null()
+   ||
+      _view_sym:=exec('FindAndGet','#table',PX_VIEW,_view,,\"SYMBOL\",'');
+      {? _view_sym<>''
+      || exec('set_value','#desktop','','nawigacja',PxSelect.ID_VIEW,_view_sym)
+      ?}
+   || exec('set_enabled','#desktop','','nawigacja',PxSelect.ID_VIEW,0)
+   ?};
+
+:: Ustawiam zestaw w combobox
+   {? _one_ver
+   || {? PX_VAR.PX_SET<>null()
+      || exec('set_value','#desktop','','nawigacja',PxSelect.ID_SET,PX_VAR.PX_SET().SYMBOL)
+      || exec('set_value','#desktop','','nawigacja',PxSelect.ID_SET,'-- brak --')
+      ?}
+   ?};
+
+::   exec('debug_string','desktop','','nawigacja',PX_VAR.VIE_VER().SYMBOL);
+   ~~
+";
+_grp:=PX_KONT.grp_make('Porównanie zasobów'@,_before,'#pxkontcmp',1,1,,,,'jterm');
+
+_before:="
+   PX_VAR.IL_KOL:=exec('il_kol','px_plan');
+   {? _a>0
+   || exec('navi_enable','px_plan',1)
+   ?}
+";
+
+PX_KONT.grp_sel(_grp,,{? _tree_kont || 'PX_WERT' || 'PX_WER' ?},'Pojemności'@,"exec('after_rfr_poj','px_plan')",,,,_before,,,,'maximized');
+_il_kol:=exec('il_kol','px_plan');
+{! _it:=1.._il_kol
+|! _fi:=$("{? PX_VAR.WAR"+$_it+"='' || '' || exec('ico_fill','px_cup',"+$_it+",PxSelect.PX_WK.WYMIAR,0,1)?}");
+   PX_KONT.win_fml({? _tree_kont || 'PX_WERT' || 'PX_WER' ?},PX_VAR,'WAR'+$_it,,'ICON_BEFORE',_fi)
+!};
+
+:: Panel nawigacyjny =--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--
+PX_KONT.grp_splt(_grp,,'horizontal','nawigacja',_h_nav);
+PxSelect.PX_NAVI:=exec('create','#desktop',PX_KONT,'nawigacja',_grp,2);
+
+:: Komponent sterujacy wymiarami planu - definicje ==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--
+_far:="
+   PX_KONT.cntx_psh();
+   PX_VAR.SEL_KONT();
+   {? PxSelect.PX_WYM.LP<>0
+   ||
+      PX_VAR.JM:=($('PX_KONT.JM'+$PxSelect.PX_WYM.LP))();
+      PxSelect.PX_WK.prefix($PX_KONT.ref());
+      {? PxSelect.PX_WK.first()
+      || PxSelect.PX_WK.WYMIAR:=PxSelect.PX_WYM.LP;
+         PxSelect.PX_WK.put()
+      ?};
+::    Uwaga: ze wzgledu na narzuty w przetwarzaniu - odswiezanie zakladki pojemnosci mozna wylaczyc, ale ryzykowne
+      grp_disp(PX_KONT,{? exec('tree_kont','px_param') || 'PX_WERT' || 'PX_WER' ?},0,1);
+::    Uwaga: ze wzgledu na powolnie dzialanie - odswiezanie lepiej wylaczyc dla zakladki obiektow ew. kontenerow
+:      grp_disp(PxSelect.Tab_OBJ.TAB,PxSelect.Tab_OBJ.WER,0,1);
+:      grp_disp(PxSelect.Tab_KONT.TAB,PxSelect.Tab_KONT.WER,0,1);
+
+::    Podczytuje widok
+      PX_VAR.PX_VIEW();
+      _offset:=exec('time','#tm_stamp',PX_VIEW.OFFSET);
+      _infinity:=exec('infinity_array','px_kont');
+      _cap_inf:=_infinity[PxSelect.PX_WK.WYMIAR];
+      _prec:=($('PX_KONT.PREC'+$PxSelect.PX_WK.WYMIAR))();
+      _il_kol:=exec('il_kol','px_plan');
+::    Dla kafelkow na dole musze obliczyc dostepne/zajete pojemnosci
+      {! _it:=1.._il_kol
+      |! exec('caps_var','px_plan',_it,PX_KONT.ref(),_offset,_prec,_cap_inf)
+      !};
+      exec('kafelki_reload','px_plan');
+      ~~
+   ?};
+   PX_KONT.cntx_pop();
+   ~~
+";
+:: Komponent sterujacy wymiarami planu ==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--
+{? ~_que_tab
+|| PX_KONT.grp_splt(_grp,,'horizontal','kafelek0',_h_podz);
+   PX_KONT.grp_sel(_grp,PxSelect.PX_WYM,PxSelect.wx_WYM,,_far,,,,,,,,'maximized_with_title')
+?};
+
+:: Widok szczegolow dla kolumn zestawienia - "kafelki" -==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--==--
+{? ~_que_tab
+|| {! _it:=1.._il_kol
+   |! _before:=$('exec(\'kafelek_bf\',\'px_plan\','+$_it+')');
+      PX_KONT.grp_splt(_grp,'kafelek'+$(_it-1),'vertical','kafelek'+$_it);
+      PX_KONT.grp_sel(_grp,PX_POZ,'KAFELEK'+$_it,,,,,,_before,,,,'maximized_with_title');
+      _fi:=$('exec(\'kafelek_ico_fil\',\'px_plan\','+$_it+')');
+      PX_POZ.win_fml('KAFELEK'+$_it,PX_VAR,'ICON',,'ICON_BEFORE',_fi)
+   !}
+?};
+
+PX_KONT.win_sel(_grp);
+
+PX_KONT.actions({? _tree_kont || 'PX_WERT' || 'PX_WER' ?},'R',);
+
+{? _ref<>null() & PX_KONT.f_active()
+|| PX_KONT.f_seek(_ref)
+?};
+
+PX_KONT.select(,1,10);
+PX_KONT.f_clear();
+PX_KONT.cntx_pop();
+PxSelect.Context:=_context;
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:39 c80dc09cef77e50a14f6145bf8585d0a3dee1de4354ebefe67170a892fab950f834368a42b02d35575ab276e350c1892b0f1f10a251afa5cd8539fca52417b3191cfc0666b68411aca2a836fb9f607cd5f22a07fb83b2a20210d96e0eb439e6e7b53b518c733f470c5eaae81ed4adf5962a1c39e5cf5ba51b17b4e4852be651d

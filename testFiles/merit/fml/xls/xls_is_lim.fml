@@ -1,0 +1,198 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: xls_is_lim.fml
+:: Utworzony: 23.08.2018
+:: Autor: jaws
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi eksportu/importu kwot ograniczeń
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Inicjalizuje mechanizm importu/eksportu.
+::   WE: _a [OBJECT] - środowisko mechanizmu
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_def:=_a;
+
+_def.ID:='IS_LIM';
+_def.FUNPAR:='ZWS_PAR_PSWI';
+_def.DOMAIN:=exec('name','#b_domain','PPL');
+_def.FILE:=exec('def_per_dict_xlsx','xls__init');
+_def.SHEET:='Kwoty ograniczeń=1,1';
+_def.NAME:='Kwoty ograniczeń'@;
+_def.DESC:='Kwoty ograniczeń';
+
+: źródło danych
+_def.TABLE:="IS_LIM";
+
+: prolog
+_def.BEFORE:="
+   IS_LIM.cntx_psh();
+   IS_LIM.f_clear();
+   IS_LIM.index('OD');
+   IS_LIM.prefix();
+   ~~
+";
+
+: epilog
+_def.AFTER:="
+   IS_LIM.cntx_pop();
+   ~~
+";
+
+: definicja kolumn
+_def.FIELDS:="
+   _env:=_a;
+   _env.define('OD',    MS.name(IS_LIM,'OD'),    1,,MS.comment(IS_LIM,'OD'));
+   _env.define('DO',    MS.name(IS_LIM,'DO'),    1,,MS.comment(IS_LIM,'DO'));
+   _env.define('MIES',  MS.name(IS_LIM,'MIES'),  1,,MS.comment(IS_LIM,'MIES'));
+   _env.define('RODZAJ',MS.name(IS_LIM,'RODZAJ'),1,,MS.comment(IS_LIM,'RODZAJ'));
+   _env.define('KW',    'Kwota limitu',          1,,MS.comment(IS_LIM,'KW'),,2);
+   _env.define('UWAGI', MS.name(IS_LIM,'UWAGI'), 1,,MS.comment(IS_LIM,'UWAGI'));
+   ~~
+";
+
+: zawartość wiersza
+_def.EXPORT:="
+   _env:=_a;
+   _buf:=_b;
+   _buf.OD.VALUE:=IS_LIM.OD;
+   _buf.DO.VALUE:=IS_LIM.DO;
+   _buf.MIES.VALUE:=IS_LIM.MIES;
+   _buf.RODZAJ.VALUE:=IS_LIM.RODZAJ;
+   _buf.KW.VALUE:=IS_LIM.KW;
+   _buf.UWAGI.VALUE:=IS_LIM.UWAGI;
+   1
+";
+
+: weryfikacja i zapis wiersza odczytanego z pliku wymiany
+_def.VALIDATE:="exec('validate','xls_is_lim',_a,_b,_c)";
+_def.IMPORT:="exec('import','xls_is_lim',_a,_b,_c)";
+~~
+
+
+\validate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Weryfikuje poprawność wiersza odczytanego z pliku wymiany.
+::   WE: _a [OBJECT] - tablica nazwana z wartościami pól wiersza pliku wymiany
+::       _b [INTEGER] - tryb pracy: 0 - zachowaj istniejące, 1 - nadpisywać istniejące
+::       _c [OBJECT] - obiekt z resultem, patrz exec('args_valid','#excel_imex')
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+: mapa argumentów
+_buf:=_a;
+_mod:=_b;
+_val:=_c;
+
+: wychwyć błędy krytyczne
+_fld:=
+   {? _buf.OD=date(0,0,0) || 'OD'
+   |? _buf.DO=date(0,0,0) || 'DO'
+   |? _buf.MIES=''        || 'MIES'
+   |? _buf.RODZAJ=''      || 'RODZAJ'
+   || ''
+   ?};
+{? _fld<>''
+:  katastrofa
+|| _val.msg_empty(_fld);
+   _val.RESULT:=0;
+   return()
+?};
+
+: błędne wartości
+{? ('TN'*_buf.MIES)=0
+|| _val.msg_inset('MIES','T','N');
+   _val.RESULT:=0;
+   return()
+
+|? ('PU'*_buf.RODZAJ)=0
+|| _val.msg_inset('RODZAJ','P','U');
+   _val.RESULT:=0;
+   return()
+
+|? _buf.DO<_buf.OD
+|| _val.MSG:='Data "%1" nie może być wcześniejsza od daty "%2".'@
+      [MS.name(IS_LIM,'DO'),MS.name(IS_LIM,'OD')];
+   _val.RESULT:=0;
+   return()
+
+|? _buf.KW<0
+|| _val.msg_range('KW',0);
+   _val.RESULT:=0;
+   return()
+?};
+
+: ostrzeżenia
+_max:=MS.fld_len(IS_LIM,'UWAGI');
+{? +_buf.UWAGI>_max
+|| _val.msg_length('UWAGI',_max);
+   _buf.UWAGI:=_max+_buf.UWAGI
+?};
+
+_ref:=null;
+{? IS_LIM.find_tab(,
+      'OD',,'=',_buf.OD,
+      'DO',,'=',_buf.DO,
+      'MIES',,'=',_buf.MIES,
+      'RODZAJ',,'=',_buf.RODZAJ
+   )
+|| _ref:=IS_LIM.ref();
+   _val.ACTION:='put'
+|| _val.ACTION:='add'
+?};
+
+: dodatkowy test "nakładania się" limitów
+_RS:=sql(
+   'select IS_DEF.OPIS '
+   'from   IS_OGR join IS_LIM join IS_DEF '
+   'where  IS_OGR.IS_LIM<>:_a and '
+   '       IS_OGR.IS_DEF in ( '
+   '          select IS_OGR.IS_DEF '
+   '          from   IS_OGR join IS_LIM '
+   '          where  IS_LIM=:_a '
+   '       ) and '
+   '       IS_LIM.OD<=to_date(:_c) and '
+   '       to_date(:_b)<=IS_LIM.DO and '
+   '       IS_LIM.RODZAJ=\':_d\'',
+   _ref,_buf.OD,_buf.DO,_buf.RODZAJ
+);
+
+{? type_of('_RS')=type_of(SYSLOG) & _RS.first()
+|| _val.MSG:='Wykryto konflikt z już istniejącymi zapisami.'@;
+   _val.RESULT:=0;
+   return()
+?};
+
+: optymalizacja importu i standaryzacja kodu
+_val.OBJ:=exec('write_obj','xls__util',_ref,
+   "'%1 - %2 (%3)'[$_a.OD,$_a.DO,_a.RODZAJ]"
+);
+~~
+
+
+\import
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Tworzy lub modyfikuje wiersze na podstawie wartości odczytanych z pliku wymiany.
+::   WE: _a [OBJECT] - tablica nazwana z wartościami pól wiersza pliku wymiany
+::       _b [INTEGER] - tryb pracy: 0 - zachowaj istniejące, 1 - nadpisywać istniejące
+::       _c [OBJECT] - rezultat walidacji i importu, patrz exec('args_valid','#excel_imex')
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+exec('write','xls__util',_a,_b,_c,IS_LIM,"
+   _a.OD:=_b.OD;
+   _a.DO:=_b.DO;
+   _a.MIES:=_b.MIES;
+   _a.RODZAJ:=_b.RODZAJ;
+   _a.KW:=_b.KW;
+   _a.UWAGI:=_b.UWAGI;
+   ~~
+");
+~~
+
+:Sign Version 2.0 jowisz:1028 2019/06/07 16:01:48 5c3a682bce6ed13833516d7b36bf924ee177f22fd19a7ff20fb59a6e02bba5976a56ba744f1f9c2796a913edc34a4974b4a6e1e6d0979c73f40177bdc1eb309cab76185e95205d03b7c60e458a1ce98cf5c6944d38430f36cd61f46f4099f7c2597dd3996156d9e97108ab3f536120977ffb558c343d9af97448f6e6ae43f2f0

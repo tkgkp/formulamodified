@@ -1,0 +1,966 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2226_pzd01.fml
+:: Utworzony: 06.04.2023
+:: Autor: IS
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 21.37 na 22.26
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Główna formuła aktualizacji 22.26_PZD01
+::----------------------------------------------------------------------------------------------------------------------
+:: Informacja o dacie i czasie aktualizacji
+__UPG.id_ver(date(2023,4,28),time(0,0,0));
+:: Zadania wykonywane raz dla całego systemu
+__UPG.add_task('upgrade_act',,,'ZPR',,,,,'T');
+__UPG.add_task('rubryki_placowe',,,'PPL',,,,,'T');
+__UPG.add_task('funpar',,,'ZWS',,,,,'T');
+__UPG.add_task('f_zatra_add',,'N','ZWS',,,,1,'T');
+__UPG.add_task('slowniki_kadrowe',,,'ZWS',,,,,'T');
+__UPG.add_task('color',,,'ZWS',,,,,'T');
+__UPG.add_task('kart_def',,,'ZWS',,,,,'T');
+__UPG.add_task('rep_tran',,,'PKD',,,,,'T');
+__UPG.add_task('add_rub_attr',,,'PPL',,,,,'T');
+:: Zadania automatyczne, wykonywane dla każdej firmy
+__UPG.add_task('role',,'N','ZWS',,,,1,'T');
+__UPG.add_task('rodzaje',,'N','ZWS',,,,1,'T');
+__UPG.add_task('slowniki',,'N','ZWS',,,,1,'T');
+__UPG.add_task('pola',,'N','PRC',,,,1,'T');
+__UPG.add_task('oswiadczenia',,'N','ZWS',,,,1,'T');
+__UPG.add_task('skladnik_typ',,'N','ZWS',,,,1,'T');
+:: Zadania manualne
+__UPG.add_task('rozszerzony_filtr','N',,'ZWS',,,,1,'T');
+__UPG.add_task('procesy_pzd01','N','N','PKD',,,,1,'T');
+__UPG.add_task('szablony','N',,'ZWS',,,,1,'T');
+~~
+
+
+\upgrade_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [22.26]
+:: OPIS: Aktualizacja typów danych oraz czynności dla wskazanych obszarów
+::   WE: [_a] - dziedziny
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+:: Poniżej wpisać domeny, których dotyczą nowe lub aktualizowane czynności (ciekawe, czy uda się alfabetycznie ...)
+::_dom:=spli_str('LMG.LSP.LZK.LUM.LOD.PKD.POR.PPK.PKW.PPL.TPP.TTE.TRE.WYP.ZWS.FST.FKS.KON.OBE.OBG.PBA.BIQ','.');
+_dom_str:={? var_pres('_a')=type_of('')
+          || _a
+          || 'PKD.ZWS'
+          ?};
+_dom:=spli_str(_dom_str,'.');
+_len:=obj_len(_dom);
+
+{? _len & _dom[1]<>''
+|| FUN.prg_start(_len+2,'Aktualizacja czynności.',,,1);
+
+:: Uzupełnienie domen (zawsze)
+   FUN.prg_next();
+   exec('add_domain','#b_action');
+   __UPG.msg('Zaktualizowano dziedziny.');
+
+:: Uzupełnienie typów (zawsze)
+   FUN.prg_next();
+   exec('fill_tab','#b_type',0);
+   __UPG.msg('Zaktualizowano typy danych.');
+
+   {! _i.._len
+   |! FUN.prg_next();
+      _domain:=exec('FindInSet','#table','B_DOMAIN','SYMBOL',_dom[_i]);
+      {? _domain<>null()
+      || exec('import_needed_dom','#b_design',_domain,0);
+         __UPG.msg('Zaktualizowano czynności dziedziny: %1.'[_dom[_i]])
+      ?}
+   !};
+   FUN.prg_stop()
+?};
+obj_del(_dom);
+_res
+
+
+\upgrade_act_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [22.26]
+:: OPIS: Aktualizacja typy danych oraz czynności dla wskazanych obszarów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja typów danych oraz czynności dla modelera'
+
+
+\funpar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [20.14]
+:: OPIS: Aktualizacja obszaru Ustawienia i parametryzacja.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+{? exec('aktualizuj','funpar',1)
+|| _usun:=obj_new(4);
+   _usun[1]:='ZWS_PAR_PPZT';
+   _usun[2]:='ZWS_PAR_PPZR';
+   _usun[3]:='ZWS_PAR_PPZS';
+   _usun[4]:='ZWS_PAR_PPNW';
+   FP_DEF.cntx_psh();
+   FP_DEF.index('ID');
+   _del:=1;
+   {! _licz:=1..obj_len(_usun) |!
+      FP_DEF.prefix('T',_usun[_licz],);
+      _del*={? FP_DEF.first() || FP_DEF.del(,1) || 1 ?}
+   !};
+   FP_DEF.cntx_pop();
+   {? _del>0
+   || __UPG.msg('Zaktualizowano zawartość obszaru: Ustawienia i parametryzacja.')
+   || __UPG.msg('Usunięcie czynności parametryzacyjnych nie powiodło się.');
+      _ret:=-1
+   ?}
+|| __UPG.msg('Nie zaktualizowano zawartości obszaru: Ustawienia i parametryzacja.');
+   _ret:=-1
+?};
+_ret
+
+
+\funpar_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.14]
+:: OPIS: Aktualizacja obszaru Ustawienia i parametryzacja - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ustawień i parametryzacji'
+
+
+\role
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [22.26]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami personelowymi.
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('roleActions','upgrade',
+      'Administrator',
+      'ZWS_PAR_PPSS,ZWS_PAR_PKTL,ZWS_PAR_PKTU,ZWS_PAR_PPZO,ZWS_PAR_PPSR,ZWS_PAR_PKTR,ZWS_PAR_PKJM,ZWS_PAR_PPTA'
+   ) &
+   exec('roleActions','upgrade',
+      'Dyrektor HR,'
+      'Przeglądający Kadry',
+      'PKD_EZK_OPPO,PKD_EZK_OPAD,PKD_EZK_OPZD,PKD_EZK_OPKT,PKD_GRP_BTGB,PKD_GRP_BTWY'
+   ) &
+   exec('roleActions','upgrade',
+      'Specjallista ds. zleceniobiorców',
+      'PKD_EZK_ORKT,PKD_GRP_BTGB,PKD_GRP_BTWY'
+   ) &
+   exec('roleActions','upgrade',
+      'Specjalista ds. kadr',
+      'PKD_EZK_ORPO,PKD_EZK_ORAD,PKD_EZK_ORZD,PKD_EZK_ORKT,PKD_GRP_BTGB,PKD_GRP_BTWY,PKD_EZK_AKOT,PPL_PLL_RPSF'
+   ) &
+   exec('roleActions','upgrade',
+      'Specjalista ds. planowania czasu pracy,'
+      'Specjalista ds. rozliczania czasu pracy,'
+      'Specjalista ds. płac',
+      'PKD_EZK_ORZD'
+   ) &
+   exec('roleActions','upgrade',
+      'Przeglądający Kadry',
+      'PPL_PLL_PPSF'
+   ) &
+   exec('roleActions','upgrade',
+      'Przeglądający Płace',
+      'PKD_EZK_OPZD'
+   )
+|| 1
+|| -1
+?}
+
+
+\role_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [22.26]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami personelowymi
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ról/uprawnień związana z czynnościami personelowymi.'
+
+
+\f_zatra_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Nadanie czynnościom uprawnień do form współpracy.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Lista czynności, dla których przypisane zostaną formy współpracy. Założenia:
+:: 1. Czynności są oddzielone przecinkami.
+:: 2. W ramach czynności przekazywana jest również informacja o kodach form współpracy (oddzielonych znakiem dwukropka).
+::    Zakładamy, że duże litery dotyczą form docelowych.
+_lista:=spli_str(
+   'PKD_GRP_BTWY:P:Z:K:R:T,'
+   'PKD_GRP_BTGB:P:Z:K:R:T,'
+   'PKD_EZK_OPKT:P:Z:K:R:T,'
+   'PKD_EZK_ORKT:P:Z:K:R:T,'
+   'PKD_EZK_OPZD:P,'
+   'PKD_EZK_ORZD:P,'
+   'PKD_EZK_OPAD:P,'
+   'PKD_EZK_ORAD:P,'
+   'PKD_EZK_OPPO:P,'
+   'PKD_EZK_ORPO:P',
+   ','
+);
+
+_ret:=1;
+B_ACTION.cntx_psh();
+B_ACTION.f_clear();
+B_ACTION.index('UNIK');
+B_ACTION.prefix();
+_lenl:=obj_len(_lista);
+{! _lp:=1 .. _lenl
+|! _acz:=spli_str(_lista[_lp],':');
+   _uid:=_acz[1];
+   {? B_ACTION.find_key(_uid,)
+   || _lena:=obj_len(_acz);
+      {! _lf:=2 .. _lena
+      |! _fz:=_acz[_lf];
+         __UPG.msg('Forma współpracy: %1 | Czynność: %2 - %3' [_fz,_uid,B_ACTION.NAME]);
+         _add:=exec('f_zatra_add','f_zatr',{? -_fz=_fz || 'N' || 'T' ?},_fz,_uid);
+         {? _add=''
+         || __UPG.msg(' - uprawnienia nadane')
+         || __UPG.msg(_add);
+            _ret:=-1
+         ?}
+      !}
+   || __UPG.msg('"%1" - nieprawidłowy kod czynności.' [_uid]);
+      _ret:=-1
+   ?};
+   obj_del(_acz)
+!};
+B_ACTION.cntx_pop();
+_ret
+
+
+\f_zatra_add_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Nadanie czynnościom uprawnień do form współpracy - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Nadanie czynnościom uprawnień do form współpracy'
+
+
+\rodzaje
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Przepisanie rodzajów pracy poza siedzibą firmy do nowego słownika.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+SLO_KOD.cntx_psh();
+SLO_KOD.index('KOD');
+SLO_KOD.prefix(exec('slo_typ','ext_slo','PPSFT'));
+:: Sprawdzenie czy nie występują w słowniku wpisy o kodach obecnie zarezerwowanych (ZDALN_ST i ZDALN_OK):
+{? SLO_KOD.find_key('ZDALN_ST') | SLO_KOD.find_key('ZDALN_OK')
+|| _znaki:=spli_str(',#,!,@,$,-,+,?',',');
+   _znakiLen:=obj_len(_znaki);
+   _znakNr:=0;
+:: Szukam na jaki znak mogę zamienić _:
+   {! _ii:=1.._znakiLen
+   |? SLO_KOD.find_key('ZDALN%1ST'[_znaki[_ii]]) | SLO_KOD.find_key('ZDALN%1OK'[_znaki[_ii]])
+   |! _znakNr:=_znaki[_ii]
+   !};
+   {? _znakNr=_znakiLen
+   || _ret:=-1
+   ?};
+   {? _ret=1
+   || _kody:=spli_str('ZDALN_ST,ZDALN_OK',',');
+      {! _ii:=1..obj_len(_kody)
+      |! _stary:=SLO_KOD.KOD;
+         SLO_KOD.KOD:=gsub(_stary,'_',_znaki[_znakNr+1]);
+         {? SLO_KOD.put()
+         || __UPG.msg('Zmieniono zapis w słowniku o kodzie %1 na %2.'[_stary,SLO_KOD.KOD])
+         || _ret:=-1
+         ?}
+      !};
+      obj_del(_kody)
+   ?};
+   obj_del(_znaki);
+   {? _ret=-1
+   || __UPG.msg('Nie udało się zmodyfikować istniejących zapisów w słowniku o kodach ZDALN_OK oraz ZDALN_ST.')
+   ?}
+?};
+{? _ret=1 & SLO_KOD.first()
+|| _firma:=exec('firma','ustawienia');
+   PPSFR.cntx_psh();
+   PPSFR.index('KOD');
+   PPSFR.prefix(_firma);
+   PPSFR.trig_off('*','*');
+   {!
+   |? {? ~PPSFR.find_key(SLO_KOD.KOD)
+      || PPSFR.blank();
+         PPSFR.FIRMA:=_firma;
+         PPSFR.KOD:=SLO_KOD.KOD;
+         PPSFR.NAZWA:=SLO_KOD.NAZWA;
+         PPSFR.SYSTEM:=SLO_KOD.SYSTEM;
+         {? ~PPSFR.add()
+         || _ret:=-1
+         ?}
+      ?};
+
+      SLO_KOD.next()
+   !};
+
+   {? _ret=1
+   || __UPG.msg('Dodanie zapisów rodzajów pracy poza siedzibą zakończone powodzeniem.');
+      SLO_KOD.prefix();
+
+      PPSFL.cntx_psh();
+      PPSFL.prefix();
+      PPSFL.trig_off('*','*');
+      _fSet:=PPSFL.f_set(,,'PPSFL.FIRMA=:_a and PPSFL.SLO_KOD is not null',_firma);
+      {? _fSet & PPSFL.f_first()
+      || {!
+         |? {? PPSFR.find_key(PPSFL.SLO_KOD().KOD)
+            || PPSFL.PPSFR:=PPSFR.ref();
+               PPSFL.SLO_KOD:=null();
+               {? ~PPSFL.put()
+               || _ret:=-1
+               ?}
+            || _ret:=-1
+            ?};
+
+            PPSFL.f_next()
+         !}
+      ?};
+      {? _fSet
+      || PPSFL.f_clear()
+      || _ret:=-1
+      ?};
+      PPSFL.trig_on('*','*');
+      PPSFL.cntx_pop();
+
+      PPSFT.cntx_psh();
+      PPSFT.prefix();
+      PPSFT.trig_off('*','*');
+      _fSet:=PPSFT.f_set(,,'PPSFT.FIRMA=:_a and PPSFT.SLO_KOD is not null',_firma);
+      {? _fSet & PPSFT.f_first()
+      || {!
+         |? {? PPSFR.find_key(PPSFT.SLO_KOD().KOD)
+            || PPSFT.PPSFR:=PPSFR.ref();
+               PPSFT.SLO_KOD:=null();
+               {? ~PPSFT.put()
+               || _ret:=-1
+               ?}
+            || _ret:=-1
+            ?};
+
+            PPSFT.f_next()
+         !}
+      ?};
+      {? _fSet
+      || PPSFT.f_clear()
+      || _ret:=-1
+      ?};
+      PPSFT.trig_on('*','*');
+      PPSFT.cntx_pop()
+   ?};
+   {? _ret=1
+   || __UPG.msg('Przełączenie wskazań na rodzaje pracy poza siedzibą zakończone powodzeniem.')
+   || __UPG.msg('Dodanie zapisów rodzajów pracy poza siedzibą zakończone niepowodzeniem.')
+   ?};
+   PPSFR.trig_on('*','*');
+   PPSFR.cntx_pop()
+|| __UPG.msg('Brak zapisów rodzajów pracy poza siedzibą.')
+?};
+SLO_KOD.cntx_pop();
+_ret
+
+
+\rodzaje_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Przepisanie rodzajów pracy poza siedzibą firmy do nowego słownika - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Przepisanie rodzajów pracy poza siedzibą firmy do nowego słownika'
+
+
+\rubryki_placowe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Dodanie rubryk i atrybutów płacowych.
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_txt:='';
+exec('__RUB','object');
+__RUB.fill();
+
+:: Aktualizacja i dodanie nowych składników płacowych. ----------------------------------------------------------------
+:: 7135 L.g. poza siedzibą
+:: 7138 L.g. praca zdalna
+:: 7233 Lg.prac.zd. bież.mc
+:: 7234 Lg.prac.zd. pop.mc
+:: 7235 Dni prac.zd. bież.mc
+:: 7236 Dni prac.zd. pop.mc
+:: 7224 Praca zd. ryczałt
+:: 7225 Praca zd. ekwiwal.
+{? +exec('import','rubryki','g',
+      '7135,7138,7224,7225,7233,7234,7235,7236',
+      1,0)
+|| _txt:='Dodanie nowych rubryk zakończyło się niepowodzeniem';
+   _result:=-1
+|| _txt:='Dodanie nowych rubryk zakończone powodzeniem'
+?};
+__UPG.msg(_txt);
+{? _result=-1 || return(_result) ?};
+
+:: Aktualizacja atrybutów rubryk. -------------------------------------------------------------------------------------
+
+:: Dodanie atrybutów dla pracy zadalnej
+exec('atrplaimex_decl','rubatr');
+_atr:=obj_new(@.CLASS.AtrPlaImEx);
+_atr.add_attr('g','103,816',1);
+
+:: Dodatki razem z kodem większym niż 740:
+exec('add_use','rubatr',332,7224,7225);
+:: Usunięcie istniejących danych na liście płac:
+exec('add_use','rubatr',101111,7224,7225,7135,7138,7233,7234,7235,7236);
+
+:: Przypisanie dodanych rubryk do nowych typów pracy poza siedzibą:
+   PPSFT.trig_off('*','*');
+   PPSFT.cntx_psh();
+   PPSFT.index('NAZWA');
+   PPSFT.prefix(exec('firma','ustawienia'));
+   R.cntx_psh();
+   R.index('RUBKOD');
+   R.prefix();
+   {? PPSFT.find_key('Praca zdalna okazjonalna',) & PPSFT.SYSTEM='T' & PPSFT.R=null() & R.find_key(7135)
+   || PPSFT.R:=R.ref();
+      PPSFT.put()
+   ?};
+   {? PPSFT.find_key('Praca zdalna stała',) & PPSFT.SYSTEM='T' & PPSFT.R=null() & R.find_key(7138)
+   || PPSFT.R:=R.ref();
+      PPSFT.put()
+   ?};
+   R.cntx_pop();
+   PPSFT.cntx_pop();
+   PPSFT.trig_on('*','*');
+
+__UPG.msg('Zakończono aktualizację atrybutów składników płacowych.');
+
+_result
+
+
+\rubryki_placowe_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Dodanie rubryk i atrybutów płacowych - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie rubryk i atrybutów płacowych związanych z pracą zdalną.'
+
+
+\slowniki_kadrowe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Dodanie słowników i pozycji do kontroli trzeźwości
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+_res:=exec('kontrola_trzezwosci','dane_startowe');
+{? _res=1
+|| __UPG.msg('Dodano możliwość wyboru stanu trzeźwości i rodzaju badania trzeźwości.')
+|| __UPG.msg('Nie dodano wszystkich stanów trzeźwości i rodzajów badań trzeźwości.')
+?};
+_res
+
+
+\slowniki_kadrowe_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Dodanie słowników i pozycji do kontroli trzeźwości
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie możliwość wyboru stanu trzeźwości i rodzaju badania trzeźwości.'
+
+
+\slowniki
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Zasilenie słowników w dane startowe.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+{? ~exec('ppsf','dane_startowe')
+|| _ret:=-1;
+   __UPG.msg('Operacja zasilenia słowników zakończona niepowodzeniem.')
+|| __UPG.msg('Operacja zasilenia słowników zakończona powodzeniem.')
+?};
+
+_ret
+
+
+\slowniki_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Zasilenie słowników w dane startowe - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Zasilenie słowników pracy poza siedzibą firmy w dane startowe'
+
+
+\color
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [21.37]
+:: OPIS: Aktualizacja schematów kolorów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+exec('Color','#object');
+exec('Legend','#object');
+exec('odtw_kolor_iko','color',2);
+__UPG.msg('Zostały zaaktualizowane schematy kolorów i ikon dla akcji Legenda.');
+_res
+
+
+\color_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [21.37]
+:: OPIS: Aktualizacja schematów kolorów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja schematu kolorów.'
+
+
+\oswiadczenia
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie wartości w nowych strukturach oświadczeń na podstawie istniejących zapisów.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_firma:=exec('firma','ustawienia');
+:: Przepisanie oświadczeń z pola MEMO w typach PPSFT do nagłówka oświadczeń PPSF_NO
+PPSF_NO.cntx_psh();
+PPSF_NO.index('KOD');
+PPSF_NO.prefix();
+PPSF_PO.cntx_psh();
+PPSF_PO.index('UNIQUE');
+PPSF_PO.prefix();
+PPSFN.cntx_psh();
+PPSFN.index('TYPPRAC');
+PPSFT.cntx_psh();
+PPSFT.index('NAZWA');
+PPSFT.prefix(_firma);
+{? PPSFT.first()
+|| {!
+   |? _oswTre:=PPSFT.memo_txt(,1,'OSW_TRE');
+      {? +form(_oswTre)
+      || {? ~PPSF_NO.find_tab(,'TR1',,'=',_oswTre)
+         || _nowyKod:=~-(form(16+PPSFT.OPIS));
+            {! |? PPSF_NO.find_key(_firma,_nowyKod)
+            |! _nowyKod:='%1%2'[_nowyKod,form(rand,,4)+4]
+            !};
+            PPSF_NO.blank();
+            PPSF_NO.FIRMA:=_firma;
+            PPSF_NO.KOD:=_nowyKod;
+            PPSF_NO.OPIS:=100+PPSFT.OPIS;
+            PPSF_NO.SYSTEM:=PPSFT.SYSTEM;
+            PPSF_NO.W1:=PPSFT.OSW_WYM;
+            PPSF_NO.TR1:=_oswTre;
+            {? ~PPSF_NO.add()
+            || _ret:=-1
+            ?}
+         ?};
+::       Dodanie oświadczeń dla pracowników mających wcześniej nagłówki pracy poza siedzibą tego typu:
+         {? _ret=1
+         || PPSFN.prefix(PPSFT.ref());
+            {? PPSFN.first()
+            || {!
+               |? {? ~PPSF_PO.find_key(PPSF_NO.ref(),PPSFN.P)
+                  || PPSF_PO.blank();
+                     PPSF_PO.PPSF_NO:=PPSF_NO.ref();
+                     PPSF_PO.P:=PPSFN.P;
+                     PPSF_PO.AKCEPT:=PPSF_PO.O1:=PPSFN.OSW_AKC;
+                     PPSF_PO.OD:=PPSFN.OD;
+                     {? ~PPSF_PO.add()
+                     || _ret:=-1
+                     ?}
+::                Znalazłem już takie oświadczenie pracownika (dodane w obrocie wcześniej - to nowe struktury)
+                  || {? PPSF_PO.OD>PPSFN.OD
+::                   Aktualizuję datę od oświadczenia jeśli trzeba:
+                     || PPSF_PO.OD:=PPSFN.OD;
+                        {? ~PPSF_PO.put()
+                        || _ret:=-1
+                        ?}
+                     ?}
+                  ?};
+
+                  PPSFN.next()
+               !}
+            ?}
+         ?}
+      ?};
+
+      PPSFT.next()
+   !}
+?};
+PPSFT.cntx_pop();
+PPSFN.cntx_pop();
+PPSF_PO.cntx_pop();
+PPSF_NO.cntx_pop();
+
+{? _ret<>1
+|| __UPG.msg('Nie powiodła się operacja uzupełnienia wartości w nowych strukturach oświadczeń.')
+|| __UPG.msg('Operacja uzupełnienia wartości w nowych strukturach oświadczeń zakończona powodzeniem.')
+?};
+
+_ret
+
+
+\oswiadczenia_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie wartości w nowych strukturach oświadczeń na podstawie istniejących zapisów - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie wartości w nowych strukturach oświadczeń na podstawie istniejących zapisów'
+
+
+\pola
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie wartości w nowych polach związanych z pracą poza siedzibą firmy.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_firma:=exec('firma','ustawienia');
+
+PPSFP.trig_off('*','*');
+PPSFP.cntx_psh();
+PPSFP.index('PRMO');
+PPSFP.prefix(_firma);
+PPSFN.cntx_psh();
+{? PPSFP.first()
+|| {!
+   |? {? ~PPSFP.OSOBA
+      || PPSFP.OSOBA:=PPSFP.PPSFN().OSOBA;
+         {? ~PPSFP.put()
+         || _ret:=-1
+         ?}
+      ?};
+
+      PPSFP.next()
+   !}
+?};
+PPSFN.cntx_pop();
+PPSFP.cntx_pop();
+PPSFP.trig_on('*','*');
+
+PPSFT.trig_off('*','*');
+PPSFT.cntx_psh();
+PPSFT.index('NAZWA');
+PPSFT.prefix(_firma);
+{? PPSFT.first()
+|| {!
+   |? _put:=0;
+      {? ~(',T,N,'*',%1,'[PPSFT.SKL_RCP])
+      || PPSFT.SKL_RCP:='N';
+         _put:=1
+      ?};
+      {? ~(',T,N,'*',%1,'[PPSFT.OSW_WZA])
+      || PPSFT.OSW_WZA:='N';
+         _put:=1
+      ?};
+
+      {? _put & ~PPSFT.put()
+      || _ret:=-1
+      ?};
+
+      PPSFT.next()
+   !}
+?};
+PPSFT.cntx_pop();
+PPSFT.trig_on('*','*');
+
+{? _ret<>1
+|| __UPG.msg('Nie powiodła się operacja uzupełnienia nowych pól.')
+|| __UPG.msg('Operacja uzupełnienia nowych pól zakończona powodzeniem.')
+?};
+
+_ret
+
+
+\pola_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie wartości w nowych polach związanych z pracą poza siedzibą firmy - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie wartości w nowych polach związanych z pracą poza siedzibą firmy'
+
+
+\kart_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Redefinicja KART_DEF'a.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+
+Cntx.psh(KART_DEF);
+Cntx.clr(KART_DEF);
+KART_DEF.index('SYMBOL');
+{? KART_DEF.find_key('WYR_KAR',)
+|| KART_DEF.WER:='KART';
+   KART_DEF.DO:='Ważne do';
+   {? KART_DEF.put(1)
+   || __UPG.msg('Zmieniono definicję kartoteki Wyróżnień i kar.')
+   || __UPG.msg('Nie powiodła się zmiana definicji kartoteki Wyróżnień i kar.');
+      _ret:=-1
+   ?}
+|| __UPG.msg('Nie powiodła się zmiana definicji kartoteki Wyróżnień i kar.');
+   _ret:=-1
+?};
+Cntx.pop(KART_DEF);
+_ret
+
+
+\kart_def_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Redefinicja KART_DEF'a - Opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Redefinicja kartoteki Wyróżnień i kar.'
+
+
+\rep_tran
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Kompilacja wydruków.
+::----------------------------------------------------------------------------------------------------------------------
+{? rep_tran('pkd*')<>0
+|| __UPG.msg('Zaktualizowano wydruki dziedziny PKD.');
+   1
+|| __UPG.msg('Aktualizacja wydruków dziedziny PKD nie powiodła się.');
+   -1
+?}
+
+
+\rep_tran_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Kompilacja wydruków dziedziny PPL - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Kompilacja wydruków dziedziny PKD.'
+
+
+\skladnik_typ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie składnikiem 7135 istniejących typów pracy poza siedzibą firmy.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+
+PPSFT.trig_off('*','*');
+PPSFT.cntx_psh();
+PPSFT.index('NAZWA');
+PPSFT.prefix(exec('firma','ustawienia'));
+{? PPSFT.first()
+|| _rRef:=null();
+   R.cntx_psh();
+   R.index('RUBKOD');
+   R.prefix(7135);
+   {? R.first()
+   || _rRef:=R.ref()
+   || _ret:=-1
+   ?};
+   R.cntx_pop();
+   {? _ret=1
+   || {!
+      |? {? PPSFT.R=null() & ',W,G,'*',%1,'[PPSFT.GEN_G]
+         || PPSFT.R:=_rRef;
+            {? ~PPSFT.put()
+            || _ret:=-1
+            ?}
+         ?};
+
+         PPSFT.next()
+      !}
+   ?}
+?};
+PPSFT.cntx_pop();
+PPSFT.trig_on('*','*');
+
+{? _ret<>1
+|| __UPG.msg('Nie powiodła się operacja uzupełnienia typów pracy poza siedzibą firmy składnikiem 7135.')
+|| __UPG.msg('Operacja uzupełnienia typów pracy poza siedzibą firmy składnikiem 7135 zakończona powodzeniem.')
+?};
+
+_ret
+
+
+\skladnik_typ_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie składnikiem 7135 istniejących typów pracy poza siedzibą firmy - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie składnikiem 7135 istniejących typów pracy poza siedzibą firmy'
+
+
+\rozszerzony_filtr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Uzupełnienie definicji rozszerzonych filtrów.
+::----------------------------------------------------------------------------------------------------------------------
+exec('import_init','#excel_imex',spli_str('ZWS_PAR_XFL',','));
+__UPG.msg('Uruchomiono formułę uzupełniającą definicje rozszerzonych filtrów.');
+1
+
+
+\rozszerzony_filtr_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Uzupełnienie definicji rozszerzonych filtrów - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie definicji rozszerzonych filtrów'
+
+
+\procesy_pzd01
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Import procesu PER_KOT_AUTO
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+exec('procesy','upgrade','22.26','PER_KOT_AUTO','PER_KOT_AUTO')
+
+
+\procesy_pzd01_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Import procesu PER_KOT_AUTO - opis
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+'Pozwala zaimportować nowy proces dziedziny PKD:\n'
+' ● PER_KOT_AUTO - Cykliczne usuwanie wyn. kontroli trzeźwości\n'
+
+
+\szablony
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Import zestawów danych i definicji szablonów.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('import_init','#excel_imex',spli_str('ZWS_PAR_ASDZ,ZWS_PAR_ASDD',','));
+_result:=0;
+{? FUN.ask('Czy oznaczyć zadanie: \'%1\' jako wykonane?'@['szablony'])
+|| __UPG.msg('Zaktualizowano zestawy danych i definicje szablonów.');
+   _result:=1
+|| _result:=-1
+?};
+_result
+
+
+\szablony_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Import zestawów danych i definicji szablonów - opis.
+::   WE:
+::   WY: opis zadania potransferowego
+::----------------------------------------------------------------------------------------------------------------------
+'Import zestawów danych i definicji szablonów.'
+
+
+\add_rub_attr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [22.26]
+:: OPIS: ER/WRT/XP/23.25/2308/0033:
+::       (ER/WRT/XP/12.51/2306/0010) Ryczałt praca zdalna - potr. komornicze nie powinno się liczyć z tej kwoty.
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_txt:='';
+exec('__RUB','object');
+__RUB.fill();
+
+:: Dodatki razem z kodem większym niż 740:
+exec('add_use','rubatr',2113,7224,7225);
+
+__UPG.msg('Zakończono aktualizację atrybutu 2113 składników płacowych.');
+
+_result
+
+
+\add_rub_attr_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [22.26]
+:: OPIS: ER/WRT/XP/23.25/2308/0033:
+::       (ER/WRT/XP/12.51/2306/0010) Ryczałt praca zdalna - potr. komornicze nie powinno się liczyć z tej kwoty - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'ER/WRT/XP/23.25/2308/0033: '
+'(ER/WRT/XP/12.51/2306/0010) Ryczałt praca zdalna - potr. komornicze nie powinno się liczyć z tej kwoty.'
+
+:Sign Version 2.0 jowisz:1045 2023/08/18 07:49:24 a026441da35ef2235d1186b260e10f40433782f417c7f645d9b420f651bc90b65e1c062a73f122d9707721cb6aaa7df663c014c228277faef9b32cc485ac92b80f30da5aee07b9a2d6bdf018b14e1cad3d93404cf06223519f1a2822e8a58fef7655c8a078261a00b47519dd44a39af3e92862a7f20c8ee09bc0bb49cb598c37

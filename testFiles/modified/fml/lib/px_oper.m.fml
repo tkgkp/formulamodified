@@ -1,0 +1,1093 @@
+﻿:!UTF-8
+::(c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku: px_oper.fml [12.10]
+:: Utworzony: 2011/07/12
+:: Autor: jerry
+::======================================================================================================================
+:: Zawartosc:    Obsluga operacji dla planow strategicznych (WielowymiarowychPlanowPojemnosciowych - WWPP)
+::======================================================================================================================
+
+
+\PX_OPER_aE
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.10]
+:: OPIS: Po redakcji pol w PX_OPER
+::----------------------------------------------------------------------------------------------------------------------
+_fld:=cur_afld();
+{? 3+_fld='CAP'
+|| _fld:=3-_fld;
+   _fldn:=_fld+1;
+   _nfld:=#_fldn;
+   {? _nfld<=PX_OPER.PX_KONT().IL_WYM
+   || _fld:=_fld-1;
+      {? 1+_fld='_'
+:: Wartosci
+      || _fld:=1-_fld;
+         {? ($('form(PX_OPER.CAPF'+_fld+_fldn+')'))()=''
+         || {? fld()<0
+            || FUN.emsg('Wartość nie może być ujemna.'@); 0
+            || 1
+            ?}
+         || 0
+         ?}
+      |? 1+_fld='F'
+:: Formuly
+      || _fld:=1-_fld;
+         {? var_pres('tpar')>100
+         || {? fld()<>''
+            || {? tpar.chk(fld())
+               ||
+:: NUCO - obsługa zmiennych wdrożeniowych - przeliczenie ilości wg ukrętów
+                  q_px.ILOSC:=PX_OPER.PX_STAGE().TKTL().XJM;
+                  ($('PX_OPER.CAP_'+_fld+_fldn+':=_a'))(tpar.calc(fld()));
+                  q_px.zeruj();
+                  1
+               ?}
+            || 1
+            ?}
+         || FUN.wdrerror('Nie powołano obiektu "tpar". Wykorzystanie formuł nie jest możliwe.'); 0
+         ?}
+      ?}
+   ?}
+?}
+
+
+\import_toper
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WW [12.46]
+:: OPIS: Import PX_OPER z TOPER zlecenia
+::   WE: _args - wynik formuly exec('import_toper_a','px_oper')
+::       _nast - wynik formuly exec('pxnasttab','px_nast')
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_args:={? _>0 || _a || exec('import_toper_a','px_oper') ?};
+_nast:={? _>1 || _b || exec('pxnasttab','px_nast') ?};
+{? type_of(_args.PxTex)<100
+|| FUN.wdrerror('Błędny typ argumentu .PxTex w import_toper/px_oper');
+   return(0)
+?};
+{? type_of(_args.Komm)<100
+|| _args.Komm:=obj_new(@.CLASS.JCQ);
+   _args.Komm.init();
+   ~~
+?};
+
+_result:=0;
+_can_continue:=0;
+
+_loc:=obj_new('PX_KONT');
+_loc.PX_KONT:=null();
+
+{? _args.TKTLorg=null()
+|| _args.TKTLorg:=_args.TKTLsrc
+?};
+
+_processed:=exec('toper_processed','px_oper');
+
+Cntx.psh(PX_OPER, TKTL, TOPER, TMAT, PX_KONT, PX_STAGE, PX_MAT);
+Cntx.clr(PX_OPER, TKTL, TOPER, TMAT, PX_KONT, PX_STAGE, PX_MAT);
+
+NASTOPER.cntx_psh();
+NASTOPER.index('OPNAST');
+:: UWAGA! NA RAZIE NIE SA UWZGLEDNIANE TPZ
+
+:: NUCO - jeśli to wywołanie pierwsze nie rekurencyjne to ustawiam zmienną sterującą
+::        planowanie na wydział na q_px_wyd:=1
+{? _args.RECUR=0
+|| q_px_wyd:=1
+?};
+
+:: Sprawdzenie, czy sa polfabrykaty nie pobierane z magazynu
+_polfabr:=0;
+{? _args.Complex='T' | _args.Complex='P'
+||
+   TMAT.index('ANL');
+   TMAT.prefix('T',_args.TKTLsrc);
+:: NUCO - zmiana znacznika TMAT.DFLT_KTL na tak dla każdego półproduktu dla którego jest karta technologiczna
+::        nie jest to karta zlecenia i nie ma innej karty i półprodukt jest surowcem nielimitowanym
+::        999007 - parametr czy stosować przepis złożony dla surowców/półproduktów nielimitowanych
+   _czy_zlozony:=exec('get_w','#params',999007,type_of(''))='T';
+   {? TMAT.first()
+   || {!
+      |?
+         {? TMAT.KTL=null() & TMAT.LIMIT='N'
+         || _qtktl:=exec('get_zktl4TMAT','qtpp',TMAT.ref());
+            {? _qtktl<>null() & _qtktl<>_args.TKTLsrc
+            || {? _czy_zlozony
+               || TMAT.DFLT_KTL:='T'
+               || TMAT.DFLT_KTL:='N'
+               ?};
+               TMAT.put()
+            |? _qtktl=_args.TKTLsrc
+            || TMAT.DFLT_KTL:='N';
+               TMAT.put()
+            ?}
+         ?};
+         TMAT.next()
+      !}
+   ?};
+:: Koniec zmiany
+   {? TMAT.first()
+   || {!
+      |?
+         {? (TMAT.KTL<>null() | TMAT.DFLT_KTL='T') & TMAT.MAG<>'T'
+         || _polfabr:=1
+         ?};
+         TMAT.next() & _polfabr=0
+      !}
+   ?}
+?};
+
+_opg:=exec('get','#params',500367);
+{? _polfabr
+|| {? (_opg<>'N')
+      & ((_args.Complex='T') | (_opg='T'))
+   || _polfabr:=1
+   || _polfabr:=0
+   ?};
+   _nast.polfabr:=_polfabr
+?};
+_rec_args:=exec('import_toper_a','px_oper');
+
+exec('array_copy','libfml',_args,_rec_args,2);
+
+_args_stg:=exec('stage_create_a','px_oper');
+:: jezeli karta z surowcami do karty i polfabrykaty, to tutaj rekurencja
+{? _polfabr
+::   & exec('FindAndGet','#table',TKTL,_args.TKTLsrc,,"TYP().SUR",'O')='K'
+||
+:: Sprawdzane surowce bez przypisanej operacji
+   TMAT.index('ANNL');
+   TMAT.prefix('T',_args.TKTLsrc,null());
+   {? TMAT.first()
+   || {!
+      |?
+         {? ((TMAT.KTL<>null()) | (TMAT.DFLT_KTL='T')) & TMAT.MAG<>'T'
+         || _rec_args.TKTLsrc:=exec('get_zktl4TMAT','px_oper',TMAT.ref());
+            _rec_args.TKTLorg:=_args.TKTLsrc;
+            _rec_args.NRNOP:=0;
+            _rec_args.IS_POLF:=1;
+            _rec_args.Lp:=_args.Lp;
+            _rec_args.LAST_STG:=_args.LAST_STG;
+            _rec_args.LAST_NR:=_args.LAST_NR;
+            _rec_args.nToper:=_args.nToper;
+            _rec_args.Complex:='T';
+            _rec_args.Qcoef:=TMAT.WARB/exec('FindAndGet','#table',TKTL,_rec_args.TKTLsrc,,"XJM",1)*_args.Qcoef;
+            _rec_args.STAGE_1:=1;
+            _rec_args.RECUR:=1;
+:: NUCO - kontrola planowania na wydział - rekurencja
+            _tmp_wyd:=q_px_wyd;
+            q_px_wyd:=1;
+            exec('import_toper','px_oper',_rec_args,_nast);
+:: NUCO - kontrola planowania na wydział - rekurencja
+            q_px_wyd:=_tmp_wyd;
+            _args.Lp:=_rec_args.Lp;
+            _args.LAST_STG:=_rec_args.LAST_STG;
+            _args.LAST_NR:=_rec_args.LAST_NR;
+            _args.nToper:=_rec_args.nToper;
+            _args_stg.HAS_POLF:=1;
+            ~~
+         ?};
+         TMAT.next()
+      !}
+   ?}
+?};
+
+:: Szukam pierwszego TOPERA od ktorego zaczne analize
+_first:=exec('toper_first','px_oper',_args.TKTLsrc,_processed);
+
+{? _args.nToper=null()
+|| _args.nToper:=TOPER.ref()
+?};
+
+{? _first>0
+||
+   _args_stg.TKTLdest:=_args.TKTLdest;
+   _args_stg.PX_TEXd:=_args.PX_TEXd;
+   _args_stg.Lp:=_args.Lp;
+   _args_stg.Qcoef:=_args.Qcoef;
+   _args_stg.Complex:=_args.Complex;
+   _args_stg.STAGE_1:=_args.STAGE_1;
+   _args_stg.LAST_STG:=_args.LAST_STG;
+   _args_stg.LAST_NR:=_args.LAST_NR;
+   _args_stg.nToper:=_args.nToper;
+   _args_stg.TKTLorg:=_args.TKTLorg;
+   _args_stg.Polfabr:=_polfabr;
+   _args_stg.RECUR:=_args.RECUR;
+   _args_stg.IS_POLF:=_args.IS_POLF;
+   _args_stg.SIMULATE:=_args.SIMULATE;
+   _args_stg.SIM_FML:=_args.SIM_FML;
+
+   _stages_first:=exec('opers_starting_ending','tech_oper',_args.TKTLsrc);
+   _can_create:=1;
+   {? _stages_first.size()>1
+   ||
+::    Jeżeli technologia zaczyna się od dwóch operacji równoległych, to trzeba najpierw te operacje
+::    przerobić na etapy, żeby drugi etap równoległy nie wylądował na końcu
+
+      _can_create:=0;
+      TOPER.cntx_psh();
+      TOPER.prefix();
+      {? _stages_first.first()
+      || {!
+         |?
+            {? TOPER.seek(_stages_first.REF)
+            ||
+               _loc.PX_KONT:=null();
+               _args_stg.LAST_STG:=_args.LAST_STG;
+               _args_stg.LAST_NR:=_args.LAST_NR;
+               _args_stg.STAGE_1:=_args.STAGE_1;
+               _args_stg.nToper:=_args.nToper;
+               _args_stg.CAN_REC:=0;
+::             Z aktualnego TOPERa robie PX_STAGE
+               _can_continue:=exec('toper2stage','px_oper',_args_stg,_processed,_nast);
+
+               _args.Lp:=_args_stg.Lp;
+
+               _args.STAGE_1:=0
+            ?};
+            _stages_first.next()
+         !}
+      ?};
+      TOPER.cntx_pop()
+   ?};
+
+   {!
+   |?
+      _loc.PX_KONT:=null();
+      _args_stg.CAN_REC:=1;
+      _args_stg.CAN_CREATE:=_can_create;
+      _args_stg.LAST_STG:=_args.LAST_STG;
+      _args_stg.LAST_NR:=_args.LAST_NR;
+      _args_stg.STAGE_1:=_args.STAGE_1;
+      _args_stg.nToper:=_args.nToper;
+::    Z aktualnego TOPERa robie PX_STAGE
+      _can_continue:=exec('toper2stage','px_oper',_args_stg,_processed,_nast);
+
+      _args.Lp:=_args_stg.Lp;
+
+      _args.STAGE_1:=0;
+
+::    Jesli sa jeszcze jakies bez poprzednikow to sie na nich ustawiam przerabiam od poczatku
+      _first:=exec('toper_first','px_oper',_args.TKTLsrc,_processed);
+      _first>0 & _can_continue>0
+   !};
+
+   _args.LAST_STG:=_args_stg.LAST_STG;
+   _args.LAST_NR:=_args_stg.LAST_NR;
+   _args.nToper:=_args_stg.nToper;
+:: Po zaimportowaniu na PX_TEX aktualizuje mu XJM ze zrodlowego TKTL
+   {? _can_continue>0 & _args.PX_TEXd<>null()
+   || _xjm:=exec('FindAndGet','#table',TKTL,_args.TKTLsrc,,"XJM",1);
+      _can_continue:=exec('xjm_set','px_tex',_args.PX_TEXd,_xjm)
+   ?}
+?};
+Cntx.pop(PX_OPER, TKTL, TOPER, TMAT, PX_KONT, PX_STAGE, PX_MAT);
+NASTOPER.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\toper2stage
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Tworzy PX_STAGE'e na podstawie calej sciezki od aktualnego topera poprzez wszystkie jego nastepniki
+::       az do momentu w ktorym nastepniki sie koncza
+::   WE: _args - obj_new - obiekt z parametrami - wynik formuly exec('stage_create_a','px_oper')
+::       _b - tab_tmp - tabela z juz przetworzonymi TOPERami, wynik dzialania exec('toper_processed','px_oper')
+::       _c - obj_new - obiekt do obsługi następników - wynik formuły exec('pxnasttab','px_nast')
+::   WY: 0 - nie udalo sie dodac PX_STAGE lub PX_OPER
+::       1 - dodano poprawnie PX_STAGE i PX_OPER
+::       2 - dodano poprawnie PX_STAGE i PX_OPER ale z wykrzykniczkiem informujacym o niepoprawnych powiazaniach
+::----------------------------------------------------------------------------------------------------------------------
+_args:=~~;
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('stage_create_a','px_oper')
+?};
+_processed:=_b;
+
+_nast:={? _>2 || _c || exec('pxnasttab','px_nast') ?};
+_result:=0;
+_can_continue:=1;
+
+TOPER.cntx_psh();
+_processed.cntx_psh();
+TMAT.cntx_psh();
+
+_rec_args:=exec('stage_create_a','px_oper');
+exec('array_copy','libfml',_args,_rec_args,1);
+
+:: Zapamietuje nr i ref etapu na ktory wrocic po wykonaniu siebie
+_ret_nr:=_args.LAST_NR;
+_ret_ref:=_args.LAST_STG;
+_ntoper:=_nast.ntoper;
+
+{? _args.Polfabr>0 & _args.CAN_CREATE>0
+||
+   TMAT.index('ANNL');
+   TMAT.prefix('T',TOPER.NRK,TOPER.ref());
+   _args_pol:=exec('import_toper_a','px_oper');
+
+   {? TMAT.first()
+   || {!
+      |?
+         {? ((TMAT.KTL<>null()) | (TMAT.DFLT_KTL='T')) & TMAT.MAG<>'T'
+         || _args_pol.TKTLsrc:=exec('get_zktl4TMAT','px_oper',TMAT.ref());
+            _args_pol.TKTLorg:=_args.TKTLdest;
+            _args_pol.TKTLdest:=_args.TKTLdest;
+            _args_pol.PX_TEXd:=_args.PX_TEXd;
+            _args_pol.NRNOP:=0;
+            _args_pol.RECUR:=1;
+            _args_pol.IS_POLF:=1;
+            _args_pol.Lp:=_args.Lp;
+            _args_pol.LAST_STG:=_args.LAST_STG;
+            _args_pol.LAST_NR:=_args.LAST_NR;
+            _args_pol.nToper:=_args.nToper;
+            _args_pol.Complex:='T';
+            _args_pol.SIMULATE:=_args.SIMULATE;
+            _args_pol.SIM_FML:=_args.SIM_FML;
+            _args_pol.Qcoef:=TMAT.WARB/exec('FindAndGet','#table' ,TKTL
+                                                                  ,_args_pol.TKTLsrc
+                                                                  ,
+                                                                  ,"XJM",1)*_args.Qcoef;
+            _args_pol.STAGE_1:=1;
+:: NUCO - dodanie obsługi rekurencji dla planowania wydziałowego
+            _tmp_wyd:=q_px_wyd;
+            q_px_wyd:=1;
+            exec('import_toper','px_oper',_args_pol,_nast);
+:: NUCO - dodanie obsługi rekurencji dla planowania wydziałowego
+            q_px_wyd:=_tmp_wyd;
+            _args.Lp:=_args_pol.Lp;
+            _args.LAST_STG:=_args_pol.LAST_STG;
+            _args.LAST_NR:=_args_pol.LAST_NR;
+            _args.nToper:=_args_pol.nToper;
+            _args.HAS_POLF:=1;
+            ~~
+         ?};
+         TMAT.next()
+      !}
+   ?}
+?};
+
+{? _args.CAN_CREATE>0
+||
+:: Uruchamiam tworzenie PX_STAGE na podstawie aktualnego TOPERA
+   _result:=exec('stage_create','px_oper',_args,_processed,_nast)
+|| _result:=1
+?};
+{? _args.CAN_REC>0 & _result>0
+||
+   _rec_args.nToper:=#TOPER.ref;
+:: Dla kazdego z nastepnikow uruchamiam rekurencyjnie
+   NASTOPER.cntx_psh();
+   NASTOPER.index('OPNAST');
+   NASTOPER.prefix('T',TOPER.ref());
+   {? NASTOPER.first()
+   ||
+      _rec_args.Lp:=_args.Lp;
+      _rec_args.STAGE_1:=0;
+      _rec_args.RECUR:=1;
+
+      _rec_args.CAN_REC:=0;
+      _rec_args.CAN_CREATE:=1;
+::    W pierwszej pętli tworzę operacje dla wszystkich następników
+      {!
+      |?
+         _rec_args.LAST_STG:=_args.LAST_STG;
+         _rec_args.LAST_NR:=_args.LAST_NR;
+         _rec_args.nToper:=_args.nToper;
+
+         NASTOPER.NRNAST();
+::       Stoje na nastepniku, tworze z niego PX_STAGE
+
+::       Sprawdzam czy nastepnik byl juz przetwarzany na PX_STAGE
+         _processed.prefix($TOPER.ref());
+         {? _processed.first()=0
+         ||
+            PX_STAGE.cntx_psh();
+::          !!! REKURENCJA !!!
+            _can_continue:=exec('toper2stage','px_oper',_rec_args,_processed,_nast);
+            _args.Lp:=_rec_args.Lp;
+            PX_STAGE.cntx_pop()
+         ?};
+         NASTOPER.next() & _can_continue>0
+      !};
+
+      _rec_args.CAN_REC:=1;
+      _rec_args.CAN_CREATE:=0;
+::    W drugiej pętli dla każdego następnika uruchamiam rekurencyjnie
+      {? NASTOPER.first()
+      || {!
+         |?
+            _rec_args.LAST_STG:=_args.LAST_STG;
+            _rec_args.LAST_NR:=_args.LAST_NR;
+            _rec_args.nToper:=_args.nToper;
+
+            NASTOPER.NRNAST();
+
+::          !!! REKURENCJA !!!
+            PX_STAGE.cntx_psh();
+            _can_continue:=exec('toper2stage','px_oper',_rec_args,_processed,_nast);
+            _args.Lp:=_rec_args.Lp;
+            PX_STAGE.cntx_pop();
+
+            NASTOPER.next() & _can_continue>0
+         !}
+      ?};
+
+      _args.LAST_STG:=_rec_args.LAST_STG;
+      _args.LAST_NR:=_rec_args.LAST_NR;
+      _args.nToper:=_rec_args.nToper
+   || _args.nToper:=null
+   ?};
+   NASTOPER.cntx_pop();
+   ~~
+?};
+
+TMAT.cntx_pop();
+_processed.cntx_pop();
+TOPER.cntx_pop();
+_result
+
+
+\stage_create
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Tworzy PX_STAGE'a na podstawie aktualnego TOPERa
+::       Kontekst pracy - rekord TOPER
+::   WE: _a - _args - obj_new - obiekt z parametrami - wynik formuly exec('stage_create_a','px_oper')
+::       _b - tab_tmp - tabela z juz przetworzonymi TOPERami, wynik dzialania exec('toper_processed','px_oper')
+::       _c - obj_new - obiekt do obsługi następników - wynik formuły exec('pxnasttab','px_nast')
+::   WY: 0 - nie udalo sie dodac PX_STAGE lub PX_OPER
+::       1 - dodano poprawnie PX_STAGE i PX_OPER
+::       2 - dodano poprawnie PX_STAGE i PX_OPER ale z wykrzykniczkiem informujacym o niepoprawnych powiazaniach
+::           2 wystepuje tylko jesli TOPER mial wiecej niz 1 poprzednika
+::       3 - dodano poprawnie PX_STAGE i PX_OPER ale z wykrzykniczkiem informujacym o niepoprawnych powiazaniach
+::           3 wystepuje tylko jesli TOPER mial wiecej niz 1 nastepnika
+::----------------------------------------------------------------------------------------------------------------------
+_args:=~~;
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('stage_create_a','px_oper')
+?};
+_processed:=_b;
+
+_nast:=_c;
+_result:=0;
+
+:: NUCO - dodanie obsługi zmiennych wdrożeniowych w przypadku pracy z poziomu serwisu (nie jest czytany qdef.fml)
+{? var_press('q_px')<0 ||  exec('q_init','qtpp') ?};
+:: sterowanie planowaniem na wydział
+_wydzial:=0;
+:: NUCO - koniec zmiany
+
+TKTL.cntx_psh();
+TPKTL.cntx_psh();
+_processed.cntx_psh();
+_processed.clear();
+
+PX_STAGE.clear();
+PX_STAGE.blank(1);
+PX_STAGE.TKTL:={? _args.TKTLdest<>null() || _args.TKTLdest || null() ?};
+PX_STAGE.PX_TEX:={? _args.PX_TEXd<>null() || _args.PX_TEXd || null() ?};
+PX_STAGE.NR:=(_args.Lp+=1);
+_nazwa:={? TOPER.WEW='T' || TOPER.OPER().NA
+                         || TOPER.TTOUT().NA
+        ?};
+{? PX_STAGE.TKTL<>null()
+|| _nrk:='['+TOPER.NRK().NRK+' ('+TOPER.NRK().WER+')] - '
+|| _nrk:=''
+?};
+PX_STAGE.NAZWA:=_nrk+_nazwa;
+PX_STAGE.ALIGNMEN:='';
+PX_STAGE.NKO:=TOPER.NKO;
+PX_STAGE.TTM:=TOPER.TTM;
+PX_STAGE.TPZ:=exec('get_tpz','tech_oper');
+PX_STAGE.TOPER:=TOPER.ref();
+PX_STAGE.RTOPER:=$TOPER.ref();
+
+_added:=0;
+{? _args.SIMULATE>0
+|| _added:=_args.SIM_FML('PX_STAGE',_args)
+|| _added:=PX_STAGE.add()
+?};
+
+{? _added>0
+||
+   TKTL.cntx_psh();
+   _nast.add(PX_STAGE.ref,TOPER.ref,TOPER.NRK,null());
+   TKTL.cntx_pop();
+:: stemplujemy TOPERA utworzonym PX_STAGE
+   {? _args.SIMULATE=0 & _args.PX_TEXd=null() & TOPER.NRK=_args.TKTLorg
+   || exec('tie_toper2stage','px_tex',TOPER.ref(),PX_STAGE.ref())
+   ?};
+
+:: operacja wewnetrzna - gniazdo albo stanowisko, kooperacja - kontener specjalny
+   _px_kont:={? TOPER.WEW='T'
+             || {? TOPER.GRPOJ='G'
+                || _PX_KONT:=exec('get_px_kont','px_kont','G',TOPER.GRUPA,'R');
+                   {? _PX_KONT<>null()
+                   || _PX_KONT
+                   || exec('get_px_kont','px_kont','S',TOPER.TWRKPLG().ELEMENT,'R')
+                   ?}
+                || _PX_KONT:=exec('get_px_kont','px_kont','S',TOPER.PLACE,'R');
+                   {? _PX_KONT<>null()
+                   || _PX_KONT
+                   || TWRKZPO.index('ELEMENTG');
+                      TWRKZPO.prefix(TOPER.PLACE);
+                      {? TWRKZPO.first()
+                      || exec('get_px_kont','px_kont','G',TWRKZPO.GRUPA,'R')
+                      || null()
+                      ?}
+                   ?}
+                ?}
+             |? TOPER.WEW='N'
+             || {? TOPER.PX_KONT<>null()
+                || TOPER.PX_KONT
+                || _PX_KONT:=exec('get','#params',500360);
+                   {? _PX_KONT<>''
+                   || exec('get_px_kont4ver','px_kont',exec('get_mainversion','px_ver'),_PX_KONT)
+                   || null()
+                   ?}
+                ?}
+             || null()
+             ?};
+:: NUCO - jeśli operacja jest operacją wewnętrzną, nie odnaleziono zasobu
+   {? TOPER.WEW='T' & _px_kont=null()
+   || _kod_wyd:={? TOPER.GRPOJ='G'
+                || TOPER.GRUPA().WYD().KOD
+                || TOPER.PLACE().WYD().KOD
+                ?};
+      _px_kont:=exec('get_px_kont4ver','px_kont',exec('get_mainversion','px_ver'),_kod_wyd);
+      _wydzial:=1
+   ?};
+
+   PX_OPER.blank();
+   PX_OPER.PX_STAGE:=PX_STAGE.ref();
+   PX_OPER.PX_KONT:=_px_kont;
+   PX_OPER.COMMENT:=_nazwa;
+
+   {! _it:=1.. PX_OPER.PX_KONT().IL_WYM
+   |!
+      _prec:=($('PX_OPER.PX_KONT().PREC'+$_it+''))();
+
+      {? TOPER.WEW='N'
+      ||
+::       w wymiar z jednostka miary z parametru 500382 - czas na kooperacje
+         _coef_dg:=exec('coef_dg','px_kont',TOPER.PX_KONT,0,0);
+         {? ($('PX_OPER.PX_KONT().JM'+$_it+'().KOD'))()=exec('get','#params',500382)
+         || ($('PX_OPER.CAP_USE'+$_it+':=(TOPER.DAYS_K*_a)'))(_coef_dg);
+            ($('PX_OPER.CAP_MAX'+$_it+':=_a'))(_coef_dg)
+         ?};
+::       Dla kooperacji zuzycia stale niezalezne od XJM
+         PX_OPER.CONST:='T'
+
+      |? TOPER.WEW='T'
+      ||
+::       w wymiar z jednostka miary z parametru 500380 - wrzucamy czas operacji
+         {? TOPER.NTIME>0 & ($('PX_OPER.PX_KONT().JM'+$_it+'().KOD'))()=exec('get','#params',500380)
+         || ($('PX_OPER.CAP_USE'+$_it+':=(TOPER.NTIME*{? TOPER.FIX_NORM=\'T\' || 1 || _a ?})$_b'))(_args.Qcoef,_prec)
+         ?};
+
+::       w wymiar z jednostka miary z parametru 500381 - wrzucamy czas maszynowy
+         {? TOPER.MTIME>0 & ($('PX_OPER.PX_KONT().JM'+$_it+'().KOD'))()=exec('get','#params',500381)
+         || ($('PX_OPER.CAP_USE'+$_it+':=(TOPER.MTIME*{? TOPER.FIX_NORM=\'T\' || 1 || _a ?})$_b'))(_args.Qcoef,_prec)
+         ?};
+
+::       stały czas operacji
+:: NUCO - uwzględnienie parametru stałego zużycia na podstawie zasobu planu strategicznego
+::         PX_OPER.CONST:=TOPER.FIX_NORM
+         PX_OPER.CONST:=PX_OPER.PX_KONT().QCONST
+      ?};
+
+::    w wymiar zgodny z jednostka miary produktu - wrzucamy XJM
+      {? ($('PX_OPER.PX_KONT().JM'+$_it+'().KOD'))()=TOPER.NRK().JM().KOD
+      ||
+:: NUCO - jeśli planowanie na wydział to ilość w jednostce miary produktu tylko dla operacji raportującej produkcje
+         {? ~_wydzial
+         || ($('PX_OPER.CAP_USE'+$_it+':=(TOPER.NRK().XJM*_a)$_b'))(_args.Qcoef,_prec)
+         || {? TOPER.WEW='T' & _px_kont<>null() & q_px_wyd
+            || ($('PX_OPER.CAP_USE'+$_it+':=(TOPER.NRK().XJM*_a)$_b'))(_args.Qcoef,_prec);
+               q_px_wyd:=0
+            || ($('PX_OPER.CAP_USE'+$_it+'0'))()
+            ?}
+         ?}
+      ?};
+
+
+
+::    w pozostale wymiary wrzucamy XJM przeliczone wg MJM produktu
+      MJM.index('JP');
+      MJM.prefix(TOPER.NRK().KTM,TOPER.NRK().JM,($('PX_OPER.PX_KONT().JM'+$_it))());
+      {? MJM.first()
+      || ($('PX_OPER.CAP_USE'+$_it+':=TOPER.NRK().XJM/MJM.PRZ'))()
+      ?}
+   !};
+
+:: Generowanie PX_MAT - import surowcow
+   _argsmat:=exec('import_tmat_a','px_mat');
+   _argsmat.TKTL:=TOPER.NRK;
+   _argsmat.TOPER:=TOPER.ref();
+::   _argsmat.SurKO:=TOPER.NRK().TYP().SUR;
+   _argsmat.PX_STAGE:=PX_STAGE.ref();
+   _argsmat.Polfabr:=~_args.Polfabr;
+   _argsmat.Qcoef:=_args.Qcoef;
+:: Przejście po surowcach bez przypisanej operacji (dla pierwszego etapu w procesie)
+   {? _args.STAGE_1
+   || _argsmat.SurKO:='K';
+      exec('import_tmat','px_mat',_argsmat)
+   ?};
+:: Przejście po surowcach przypisanych do operacji
+   {? 1
+::      _argsmat.SurKO='O' | (_argsmat.SurKO='K' & _args.STAGE_1)
+   || _argsmat.SurKO:='O';
+      exec('import_tmat','px_mat',_argsmat)
+   ?};
+
+   {? PX_OPER.PX_KONT<>null()
+    & ( PX_KONT.name()=ref_name(PX_OPER.PX_KONT)
+      | PX_KONT.use(ref_name(PX_OPER.PX_KONT))
+      )
+::             & PX_OPER.PX_KONT().A='T'
+   || {? _args.SIMULATE=0
+      || _can_continue:=PX_OPER.add()
+      || _can_continue:=_args.SIM_FML('PX_OPER',_args)
+      ?}
+   || _can_continue:=1
+   ?};
+
+:: Przepisanie domyślnych formuł z zasobu na operację
+   {? _can_continue>0
+   || _can_continue:=exec('default_kont_formulas','px_oper')
+   ?};
+
+:: Wypelnianie zestawow planistycznych
+   {? _can_continue>0 & exec('is_px_set','px_param')>0
+   ||
+      _can_continue:=exec('px_set_fill','px_stage',PX_STAGE.ref(),1,0)
+   ?};
+
+   {? _can_continue>0
+   ||
+      _result:=1;
+
+      _args.LAST_STG:=PX_STAGE.ref();
+      _args.LAST_NR:=PX_STAGE.NR;
+
+      _processed.blank();
+      _processed.REF:=$TOPER.ref();
+      {? _result=2 | _result=3
+      || _processed.CONNS_OK:='N'
+      || _processed.CONNS_OK:='T'
+      ?};
+      _processed.add();
+      ~~
+   ?}
+?};
+TKTL.cntx_pop();
+TPKTL.cntx_pop();
+_processed.cntx_pop();
+_result
+
+
+\import_zgp
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Import PX_OPER z ZGP
+::   WE: _args - wynik formuly exec('import_zgp_a','px_oper')
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_args:={? _=1 || _a || exec('import_zgp_a','px_oper') ?};
+{? type_of(_args.PxTex)<100
+|| FUN.wdrerror('Błędny typ argumentu .PxTex w import_zgp/px_oper');
+   return(0)
+?};
+{? _args.PX_TEXd=null()
+|| FUN.wdrerror('Błędny typ argumentu .PX_TEXd w import_zgp/px_oper. Argument nie może być null');
+   return(0)
+?};
+{? type_of(_args.Komm)<100
+|| _args.Komm:=obj_new(@.CLASS.JCQ);
+   _args.Komm.init();
+   ~~
+?};
+
+_result:=0;
+_can_continue:=0;
+
+_loc:=obj_new('PX_KONT');
+
+_loc.PX_KONT:=null();
+
+Cntx.psh(PX_OPER,ZL,M,JM,ZGH,ZGP,PX_KONT,PX_STAGE,PX_MAT);
+Cntx.clr(PX_OPER,ZL,M,JM,ZGH,ZGP,PX_KONT,PX_STAGE,PX_MAT);
+
+PX_OPER.index('UNIQALL');
+:: UWAGA! NA RAZIE NIE SA UWZGLEDNIANE TPZ
+
+{? ZL.seek(_args.ZLsrc)
+||
+:: jesli zlecenie zlozone i przewodniki do podzlecen to robie rekurencje
+   {? ZL.RODZAJ='Z'
+   ||
+      ZL.cntx_psh();
+      ZL.index('NRNZL');
+      ZL.prefix(ZL.UNRZL);
+      {? _args.KIND='P'
+      ||
+::       generacja wielu prostych przepisow
+         _rec_args:=exec('import_zgp_a','px_oper');
+         exec('array_copy','libfml',_args,_rec_args,2);
+         {? ZL.first()
+         || _ok:=1;
+            {!
+            |? _rec_args.ZLsrc:=ZL.ref();
+::             !!! REKURENCJA !!!
+               _ok:=_ok & exec('import_zgp','px_oper',_rec_args);
+               ZL.next()
+            !};
+            _can_continue:=_ok
+         ?}
+      |? _args.KIND='Z'
+      ||
+::       generacja przepisu zintegrowanego do naglowka zlecenia zlozonego
+         {? ZL.first()
+         || _main_src:=_args.ZLsrc; _ok:=1;
+            {!
+            |?
+::             !!! REKURENCJA !!!
+               _args.ZLsrc:=ZL.ref();
+               _ok:=_ok & exec('import_zgp','px_oper',_args);
+               ZL.next()
+            !};
+            _can_continue:=_ok;
+            _args.ZLsrc:=_main_src
+         ?}
+      ?};
+      ZL.cntx_pop()
+   ||
+      ZGH.index('ZLNR');
+      ZGH.prefix(ZL.ref());
+
+      {? _args.MODE=2
+      ||
+         ZGP.index('ZLEC');
+         ZGP.prefix(ZL.ref());
+::       Jeśli dogenerowuje tylko brakujące ZGPy to muszę najpierw wszystkie
+::       PX_STAGE przenumerować w obszar wolnych numerków, żeby indeks unikalny nie został
+::       naruszony
+         PX_STAGE.cntx_psh();
+         PX_STAGE.index('TEX_PRV');
+         PX_STAGE.prefix(_args.PX_TEXd);
+         _nr:=PX_STAGE.size()+ZGH.size()+ZGP.size()+1;
+         {? PX_STAGE.first()
+         || {!
+            |?
+               PX_STAGE.NR:=_nr;
+               PX_STAGE.put();
+               _nr+=1;
+               PX_STAGE.next()
+            !}
+         ?};
+         PX_STAGE.cntx_pop()
+      ?};
+
+      ZGP.index('PNRPP');
+      _zgp_num:=0;
+      {? ZGH.first()
+      ||
+         {!
+         |?
+
+::          Na razie bez TPZ
+            ZGP.prefix(ZGH.ref(),'N');
+:: NUCO - dodanie planowania strategicznego na wydziały zmienna sterująca (tylko jedna operacja przenosi obciążenie na wydział)
+            q_px_wyd:=1;
+            _wydzial:=0;
+            {? ZGP.first()
+            || {!
+               |?
+                  _zgp_num+=1;
+::                Etap tylko wtedy, gdy powiazanie z zasobem (pomijamy przewodniki "techniczne")
+                  _can_add:=0;
+                  {? (ZGP.GRUPA<>null() | ZGP.PLACE<>null() | ZGP.WEW='N') & ZGP.PLANUJ='T'
+                  || _can_add:=1
+                  ?};
+                  _add:=1;
+                  {? _args.MODE=2
+                  || {? ZGP.PX_STAGE<>null()
+                     || _add:=0
+                     ?}
+                  ?};
+
+                  {? _can_add>0
+                  ||
+::                   tworzymy etap o numerze operacji, a do niego dopniemy kontenery
+                     {? _add>0
+                     || _can_continue:=1;
+                        PX_STAGE.blank(1)
+                     || {? ZGP.PX_STAGE<>null()
+                        || _can_continue:=1;
+                           ZGP.PX_STAGE()
+                        || _can_continue:=0
+                        ?}
+                     ?};
+                     {? _can_continue>0
+                     || PX_STAGE.PX_TEX:=_args.PX_TEXd;
+::                      wyznaczam liczbe porzadkowa
+                        {? _args.MODE=1
+                        ||
+                           _lp:=1;
+                           PX_STAGE.cntx_psh();
+                           PX_STAGE.index('TEX_NR');
+                           PX_STAGE.prefix(_args.PX_TEXd);
+                           _lp:=PX_STAGE.size()+1;
+                           PX_STAGE.cntx_pop()
+                        |? _args.MODE=2
+                        ||
+                           _lp:=_zgp_num
+                        ?};
+
+                        PX_STAGE.NR:=_lp;
+                        PX_STAGE.NAZWA:=ZGH.NRPRZ+' '+ZGP.OPIS;
+                        PX_STAGE.ALIGNMEN:='';
+                        PX_STAGE.NKO:=ZGP.NKO;
+                        PX_STAGE.TTM:=ZGP.TTM;
+                        PX_STAGE.TPZ:=exec('get_tpz','zl_guide');
+                        PX_STAGE.TOPER:=ZGP.TOPER;
+                        PX_STAGE.RTOPER:=$ZGP.TOPER;
+                        {? _add>0
+                        || _can_continue:=PX_STAGE.add()
+                        || _can_continue:=PX_STAGE.put()
+                        ?}
+                     ?};
+                     _px_oper:=1;
+                     {? _can_continue>0
+                     ||
+::                      stemplujemy ZGP utworzonym PX_STAGE
+                        exec('tie_zgp2stage','px_tex',ZGP.ref(),PX_STAGE.ref());
+
+::                      operacja wewnetrzna - gniazdo albo stanowisko, kooperacja - kontener specjalny
+                        _loc.PX_KONT:={? ZGP.WEW='T'
+:: NUCO - planowanie na wydział dla zleceń
+                                      || _px_kont:={? ZGP.GRUPA<>null()
+                                                   || _PX_KONT:=exec('get_px_kont','px_kont','G',ZGP.GRUPA,'R');
+                                                      {? _PX_KONT<>null()
+                                                      || _PX_KONT
+                                                      || _PX_KONT:=exec('get_px_kont','px_kont','S',ZGP.PLACE,'R');
+                                                         {? _PX_KONT<>null()
+                                                         || _PX_KONT
+                                                         || TWRKZPO.index('ELEMENTG');
+                                                            TWRKZPO.prefix(ZGP.PLACE);
+                                                            {? TWRKZPO.first()
+                                                            || exec('get_px_kont','px_kont','G',TWRKZPO.GRUPA,'R')
+                                                            || null()
+                                                            ?}
+                                                         ?}
+                                                      ?}
+                                                   || _PX_KONT:=exec('get_px_kont','px_kont','S',ZGP.PLACE,'R');
+                                                      {? _PX_KONT<>null()
+                                                      || _PX_KONT
+                                                      || TWRKZPO.index('ELEMENTG');
+                                                         TWRKZPO.prefix(ZGP.PLACE);
+                                                         {? TWRKZPO.first()
+                                                         || exec('get_px_kont','px_kont','G',TWRKZPO.GRUPA,'R')
+                                                         || null()
+                                                         ?}
+                                                      ?}
+                                                   ?};
+:: NUCO - planowanie na wydziały                                                   
+                                         {? _px_kont=null()
+                                         || _kod_wyd:={? ZGP.GRUPA<>null()
+                                                      || ZGP.GRUPA().WYD().KOD
+                                                      || ZGP.PLACE().WYD().KOD
+                                                      ?};
+                                            _px_kont:=exec('get_px_kont4ver','px_kont',exec('get_mainversion','px_ver'),_kod_wyd);
+                                            _wydzial:=1
+                                         ?};
+                                         _px_kont
+                                      |? ZGP.WEW='N'
+                                      || {? ZGP.PX_KONT<>null()
+                                         || _PX_KONT:=ZGP.PX_KONT
+                                         || _PX_KONT:=exec('get','#params',500360);
+                                            {? _PX_KONT<>''
+                                            || exec('get_px_kont4ver','px_kont',exec('get_mainversion','px_ver'),_PX_KONT)
+                                            || null()
+                                            ?}
+                                         ?}
+                                      || null()
+                                      ?};
+                        {? _add>0
+                        || PX_OPER.clear();
+                           PX_OPER.blank()
+                        || PX_OPER.prefix(PX_STAGE.ref());
+                           _px_oper:=PX_OPER.first()
+                        ?};
+                        {? _can_continue>0 & _px_oper>0
+                        ||
+                           PX_OPER.PX_STAGE:=PX_STAGE.ref();
+                           PX_OPER.PX_KONT:=_loc.PX_KONT;
+                           PX_OPER.COMMENT:=ZGP.OPIS;
+
+                           _coef_napr:=1;
+                           _il_napr:=exec('count_napr4zgp','braki');
+                           {? _il_napr>0
+                           || _coef_napr:=(ZGP.ILOSC-_il_napr)/ZGP.ILOSC
+                           ?};
+                           {! _it:=1.. PX_OPER.PX_KONT().IL_WYM
+                           |!
+
+                              _prec:=($('PX_OPER.PX_KONT().PREC'+$_it+''))();
+                              {? ZGP.WEW='N'
+                              ||
+::                               w wymiar z jednostka miary z parametru 500382 - czas na kooperacje
+                                 {? ($('PX_OPER.PX_KONT().JM'+$_it+'().KOD'))()=exec('get','#params',500382,2)
+                                 || _coef_dg:=exec('coef_dg','px_kont',ZGP.PX_KONT,ZGP.TMSTARTK,ZGP.TMENDK);
+                                    {? ZGP.TMSTARTK>0
+                                    || _time:=(ZGP.TMENDK-ZGP.TMSTARTK)/exec('minute','#tm_stamp')/60
+                                    || _time:=ZGP.DAYS_K*_coef_dg
+                                    ?};
+                                    ($('PX_OPER.CAP_USE'+$_it+':=_a'))(_time);
+                                    ($('PX_OPER.CAP_MAX'+$_it+':=_a'))(_coef_dg)
+                                 ?};
+::                               Dla kooperacji zuzycia stale niezalezne od XJM
+                                 PX_OPER.CONST:='T'
+                              |? ZGP.WEW='T'
+                              ||
+::                               w wymiar z jednostka miary z parametru 500380 - wrzucamy czas operacji
+                                 {? ZGP.NTIME>0 & ($('PX_OPER.PX_KONT().JM'+$_it+'().KOD'))()=exec('get','#params',500380,2)
+                                 || ($('PX_OPER.CAP_USE'+$_it+':=(ZGP.NTIME*{? ZGP.FIX_NORM=\'T\' || 1 || _a ?})$_b'))(_args.Qcoef*_coef_napr,_prec)
+                                 ?};
+
+::                               w wymiar z jednostka miary z parametru 500381 - wrzucamy czas maszynowy
+                                 {? ZGP.MTIME>0 & ($('PX_OPER.PX_KONT().JM'+$_it+'().KOD'))()=exec('get','#params',500381,2)
+                                 || ($('PX_OPER.CAP_USE'+$_it+':=(ZGP.MTIME*{? ZGP.FIX_NORM=\'T\' || 1 || _a ?})$_b'))(_args.Qcoef*_coef_napr,_prec)
+                                 ?}
+                              ?};
+
+::                            w wymiar zgodny z jednostka miary produktu - wrzucamy XJM
+:: NUCO - planowanie na wydział
+                              {? ($('PX_OPER.PX_KONT().JM'+$_it+'().KOD'))()=ZL.KTM().J().KOD
+                              || {? ~_wydzial
+                                 || ($('PX_OPER.CAP_USE'+$_it+':=(ZGP.ILOSC*_a)$_b'))(_args.Qcoef*_coef_napr,_prec)
+                                 || {? _loc.PX_KONT<>null() & q_px_wyd
+                                    || ($('PX_OPER.CAP_USE'+$_it+':=(ZGP.ILOSC*_a)$_b'))(_args.Qcoef*_coef_napr,_prec);
+                                       q_px_wyd:=0
+                                    || ($('PX_OPER.CAP_USE'+$_it+':=0'))()
+                                    ?}
+                                 ?}
+                              ?};
+::                            w pozostale wymiary wrzucamy XJM przeliczone wg MJM produktu
+                              MJM.index('JP');
+                              MJM.prefix(ZGH.ZLEC().KTM,ZL.KTM().J,($('PX_OPER.PX_KONT().JM'+$_it))());
+                              {? MJM.first()
+                              || ($('PX_OPER.CAP_USE'+$_it+':=(ZGP.ILOSC/MJM.PRZ*_a)$_b'))(_coef_napr,_prec)
+                              ?}
+                           !};
+
+                           {? PX_OPER.PX_KONT<>null()
+                            & ( PX_KONT.name()=ref_name(PX_OPER.PX_KONT)
+                              | PX_KONT.use(ref_name(PX_OPER.PX_KONT))
+                              )
+::                         & PX_OPER.PX_KONT().A='T'
+                           || {? _add>0
+                              || _can_continue:=PX_OPER.add()
+                              || _can_continue:=PX_OPER.put()
+                              ?}
+                           || _can_continue:=1
+                           ?};
+
+::                         Przepisanie domyślnych formuł z zasobu na operację
+                           {? _can_continue>0
+                           || _can_continue:=exec('default_kont_formulas','px_oper')
+                           ?}
+                        ?}
+                     ?};
+
+                     {? _add>0
+                     ||
+::                      Wypelnianie zestawow planistycznych
+                        {? _can_continue>0 & exec('is_px_set','px_param')>0
+                        || _can_continue:=exec('px_set_fill','px_stage',PX_STAGE.ref(),1,0)
+                        ?};
+
+::                      Generowanie PX_MAT - import surowcow
+                        _argsmat:=exec('import_zlim_a','px_mat');
+                        _argsmat.ZGP:=ZGP.ref();
+                        _argsmat.PX_STAGE:=PX_STAGE.ref();
+                        _argsmat.ZL:=ZGP.ZL;
+                        exec('import_zlim','px_mat',_argsmat);
+                        obj_del(_argsmat)
+                     ?}
+                  || _can_continue:=1
+                  ?};
+                  ZGP.next() & _can_continue>0
+               !}
+            ?};
+            ZGH.next()
+         !}
+      ?}
+   ?}
+?};
+Cntx.pop(PX_OPER,ZL,M,JM,ZGH,ZGP,PX_KONT,PX_STAGE,PX_MAT);
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\veryfyilosc
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Weryfikuje poprawnosc etapu - pod wzgledem istnienia zerowych zuzyc
+::   WE: _a - PX_OPER.ref()
+::       _b - REAL - wspolczynnik: ilosc do planu/XJM przepisu
+::   WY: STRING - komunikat o bledzie lub '' jesli wszystko ok
+::----------------------------------------------------------------------------------------------------------------------
+_px_oper:=_a;
+_coef:=_b;
+
+_result:='';
+PX_OPER.cntx_psh();PX_OPER.clear();
+PX_KONT.cntx_psh();
+{? PX_OPER.seek(_px_oper)
+||
+:: w tej tablicy znajduja sie dokladnosci w poszczegolnych wymiarach
+   _prec:=exec('precision_array','px_kont',PX_OPER.PX_KONT);
+:: Przeliczam zuzycia na podstawie formul
+   exec('recalculate_use','px_oper',PX_OPER.ref());
+   _cap_use:=exec('cap_use','px_oper');
+
+:: Mnoze przez XJM
+   exec('array_multiply','#array',_cap_use,_coef);
+
+:: Zaokraglam do dokladnosci kontenera
+   exec('array_round_mod','#array',_cap_use,_prec);
+
+:: Sprawdzam czy jest jakikolwiek niezerowy wymiar
+   {? exec('array_sum','#array',_cap_use)=0
+   || _result:='zawiera operację z zerowymi zużyciami we wszystkich wymiarach'@
+   ?};
+   {? _result=''
+   ||
+::    Sprawdzam czy pierwszy wymiar jest niezerowy
+:: NUCO - wyłączenie kontroli pierwszego wymiaru
+      {? _cap_use[1]=0;0
+      || _result:='zawiera operację z zerowym zużyciem w pierwszym wymiarze'@
+      ?}
+   ?}
+?};
+PX_OPER.cntx_pop();
+PX_KONT.cntx_pop();
+_result

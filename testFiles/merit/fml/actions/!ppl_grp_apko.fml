@@ -1,0 +1,978 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ppl_grp_apko.fml
+:: Utworzony: 22.03.2016
+:: Autor: TMR
+::======================================================================================================================
+:: Zawartość: Obsługa czynności ppl_grp_apko - Grupowy podział kosztów
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Grupowy podział kosztów - główna formuła czynności.
+::       Jeżeli w trybie serwisowym czynność nie będzie miała wskazanego pracownika, to będzie pobierała dane
+::       o godzinach akordowych dla wszystkich pracowników ze wszystkich oddziałów w ramach wskazanego roku i miesiąca
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+
+popup(1,'Grupowy podział kosztów'@,
+   'Kopiowanie podziałów miesięcznych dla pracowników'@,,
+      "exec('kopzdowwsz','!ppl_grp_apko')",
+   'Generowanie miesięcznego podziału kosztów'@,,
+      "exec('genmpk','!ppl_grp_apko')"
+);
+~~
+
+
+\kopzdowwsz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GL [8.60]
+:: OPIS: kopiowanie wszystkich podzialow z wybranego miesiaca na wybrany
+::   WE:
+::   WY:
+::  OLD: \kopzdowwsz/godz_kop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_TPAR:=tab_tmp(1,
+:  Dane podstawowe
+   'ROK_Z','INTEGER','Rok źródłowy'@,
+   'MSC_Z','INTEGER','Miesiąc źródłowy'@,
+   'ROK_DO','INTEGER','Rok docelowy'@,
+   'MSC_DO','INTEGER','Miesiąc docelowy'@,
+   'WYR','INTEGER','Czy kopiować definicje wyróżników?'@,
+   'NADP','INTEGER','Czy nadpisać istniejące zapisy?'@
+);
+
+_we:=_TPAR.mk_edit('Parametry kopiowania'@);
+_TPAR.win_esep(_we,'Dane podstawowe'@);
+_TPAR.win_efld(_we,,'ROK_Z',,,,,,,,'Rok źródłowy'@,,);
+_TPAR.efld_opt(_we,'mark=1',,'ROK_Z');
+_TPAR.win_efld(_we,,'MSC_Z',,,,,,,,'Miesiąc źródłowy'@);
+_TPAR.efld_opt(_we,'mark=1',,'MSC_Z');
+_TPAR.win_efld(_we,,'ROK_DO',,,,,,,,'Rok docelowy'@);
+_TPAR.efld_opt(_we,'mark=1',,'ROK_DO');
+_TPAR.win_efld(_we,,'MSC_DO',,,,,,,,'Miesiąc docelowy'@);
+_TPAR.efld_opt(_we,'mark=1',,'MSC_DO');
+_TPAR.win_esep(_we,'Opcje dodatkowe'@);
+_TPAR.win_efld(_we,,'WYR',,,,,,'Wyróżniki',0,'Kopiuje definicję wyróżników do miesiąca docelowego','check-box',
+                   'check_label="Kopiuj definicję wyróżników"',"1","0");
+_TPAR.win_efld(_we,,'NADP',,,,,,'Nadpisz',0,'Zastępuje istniejące zapisy w miesiącu docelowym','check-box',
+                   'check_label="Zastąp istniejące zapisy"',"1","0");
+exec('ok_esc','#window',_TPAR,_we);
+_TPAR.win_edit(_we);
+
+params_set(
+   'TPAR',_TPAR
+);
+
+_rok:={? VAR.O=null() || date~1 || VAR.O().R ?};
+_msc:={? VAR.O=null() || date~2 || VAR.O().M ?};
+
+_TPAR.ROK_Z:=_rok;
+_TPAR.MSC_Z:=_msc;
+_TPAR.ROK_DO:=_rok;
+_TPAR.MSC_DO:=_msc;
+_TPAR.WYR:=0;
+_TPAR.NADP:=0;
+
+{? _TPAR.edit(
+   "  _par:=params_get();
+      _TPAR:=_par.TPAR;
+      {? (_chk:=__CHK.record(_TPAR,,'ROK_Z','MSC_Z','ROK_DO','MSC_DO'))<>''
+      || _chk
+      || {? _TPAR.ROK_Z<1900 | _TPAR.MSC_Z<1 | _TPAR.MSC_Z>12
+         || FUN.emsg('Błędne dane'@);
+            'ROK_Z'
+         |? _TPAR.ROK_DO<1900 | _TPAR.MSC_DO<1 | _TPAR.MSC_DO>12
+         || FUN.emsg('Błędne dane'@);
+            'ROK_DO'
+         || {? _TPAR.ROK_Z=_TPAR.ROK_DO & _TPAR.MSC_Z=_TPAR.MSC_DO
+            || FUN.emsg('Nie można kopiować z tego samego okresu'@);
+               'MSC_DO'
+            || O.cntx_psh();
+               O.index('LISTYZAM');
+               O.prefix(exec('ref_firma','ustawienia'),'T',_TPAR.ROK_DO,_TPAR.MSC_DO);
+               {? O.first()
+               || O.cntx_pop();
+                  FUN.ask('Conajmniej jedna z list płac miesiąca'+
+                        ' docelowego jest zamknięta!\nKopiowanie zapisów'+
+                        ' może prowadzić do niespójności danych.\nCzy kontynuować?'@)
+               || O.cntx_pop();1
+               ?}
+            ?}
+         ?}
+      ?}
+   ")
+|| 1
+|| return()
+?};
+
+:: wybranie pracowników do dalszego przetwarzania
+_args:=exec('wybierz_args','pracownik');
+_args.DOMAIN:='PPL';
+_args.HDR_SEL:='1. Wstępny wybór pracowników'@;
+
+_wyb:=exec('wybierz','pracownik',_args);
+{? _wyb.STATUS<>''
+|| FUN.info(_wyb.STATUS);
+   return()
+|? ~_wyb.P.first()
+|| return()
+?};
+
+_tabP:=exec('tabP','!ppl_grp_apko','\'TXT\',\'STRING[60]\',\'Komunikat\'');
+_czyL:=PAR_SKID.get(396)='L';
+{? _czyL
+|| Cntx.psh(O,VAR,KT);
+   O.index('LISTYMIE');
+   O.prefix(exec('firma','ustawienia'),_TPAR.ROK_DO,_TPAR.MSC_DO)
+?};
+P.cntx_psh();
+P.prefix();
+_for:="
+   _tabP:=_a;
+   _TPAR:=_b;
+   _tabP.OK:=
+      exec('kopzdowmies','godz_kop',
+         P.ref(),
+         _TPAR.ROK_Z,
+         _TPAR.MSC_Z,
+         _TPAR.ROK_DO,
+         _TPAR.MSC_DO,
+         _TPAR.WYR,
+         _TPAR.NADP,
+         0
+      );
+   _tabP.TXT:=
+      {? _tabP.OK
+      || 'Skopiowano podziały'+_c
+      || 'Nie skopiowano podziałów'+_c
+      ?};
+   _tabP.add()
+";
+{!
+|? {? P.seek(_wyb.P.SQL)
+   || _tabP.blank();
+      _tabP.NAZWISKO:=P.OSOBA().NAZWISKO;
+      _tabP.PIERWSZE:=OSOBA.PIERWSZE;
+      _tabP.WYD:=P.WYDZIAL().SYMBOL;
+      _tabP.T:=P.T;
+      _tabP.IP:=P.IP;
+      {? _czyL
+      || {? O.first()
+         || {!
+            |? VAR.NAZWALIS:='L'+($O.R+2)+form(O.M,-2)+O.T().T;
+               _for(_tabP,_TPAR,' lista '+VAR.NAZWALIS);
+               O.next()
+            !}
+         ?}
+      || _for(_tabP,_TPAR,'')
+      ?}
+   ?};
+   _wyb.P.next()
+!};
+P.cntx_pop();
+{? _czyL || Cntx.pop(O,VAR,KT) ?};
+exec('show_info','!ppl_grp_apko',_tabP,1)
+
+
+\genmpk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.30]
+:: OPIS: Generuj miesieczny podzial kosztow (G.R='K') na podstawie godzin.
+::   WE:
+::   WY: ~~
+::  OLD: \genmpk/godziny.fml
+::----------------------------------------------------------------------------------------------------------------------
+_czyL:=PAR_SKID.get(396)='L';
+_czyPlugin:=Plugin.runnable('PPL_PLL_PODZ_KOSZT_M');
+_rodzaj:='G';
+_czyAkord:=0;
+{? exec('tte_lic','tte')='T' & exec('test_par','parametr',309,'A')
+|| G.cntx_psh();
+   G.use('godz'+('0000'+$O.R+4));
+   G.index('MSCRODZ');
+   G.prefix(exec('ref_firma','ustawienia'),O.M,'A');
+   _czyAkord:=G.first();
+   G.cntx_pop()
+?};
+_czyAkord;
+_czyPlugin;
+_wybor:=
+   FUN.choice('Wybierz źródło utworzenia podziału kosztów'@,
+      1,
+      'godziny Przepracowane'@,
+      ("{? _a || 'godziny Akordu'@ || {? _b || 'Formuła wdrożeniowa'@ || ~~ ?} ?}")(_czyAkord,_czyPlugin),
+      ("{? _a || 'Formuła wdrożeniowa'@ || ~~ ?}")(_czyAkord & _czyPlugin)
+   );
+{? _wybor=1
+|| _rodzaj:='G'
+|? (_wybor=2 & ~_czyAkord & _czyPlugin) | (_wybor=3 & _czyAkord & _czyPlugin)
+|| _rodzaj:='F'
+|? _wybor=2
+|| _rodzaj:='A'
+|| return(~~)
+?};
+
+_dtk:=date(O.R,O.M,0);
+
+:Koszty do podzialu.
+_tabR:=__RUB.sys_rub(10013,_dtk);
+
+{? ~_tabR.first()
+|| FUN.emsg('Nie można wygenerować miesięcznych podziałów.\n'@+
+            'Brak zdefiniowanych rubryk dla atrybutu "10013 - Koszty do podziału"'@);
+   return(~~)
+?};
+
+:Na liscie pracownicy nienalezacy do grupy MPKwgG beda pominieci (ale beda widoczni).
+{? _rodzaj<>'F'
+|| _tabP:=exec('grpprac','!ppl_grp_apko',
+      '\'TXT\',\'STRING[120]\',\'Komunikat\'',,
+      "{? O.T().K='' || 1 || ($O.T().K)() ?} & exec('Nalezy','grupprac','MPKwgG',P.ref(),date(O.R,O.M,0))");
+   {? ~_tabP.first() || return() ?};
+
+:Uzupelnij l.g. nieobecnosci.
+   exec('genlgn','!ppl_grp_apko',_tabP,_rodzaj);
+
+   G.use('godz'+('0000'+$O.R+4));
+:Zapamietaj godziny w podziale na pracownika i konto kosztow.
+   _tabG:=sql(
+      'select G.P, KK.REFERENCE KREF, KK.SYM, sum(G.G) LG, 0 MAC, 0 LP, cast(0 as real_type) PROC, PROJEKTY.SYM PROJ '+
+      'from :_a P join G using(P.REFSQL,G.P) join R using(G.K,R.REFERENCE) join KK using(G.KK,KK.REFERENCE) '+
+            'left join PROJEKTY using (G.PROJEKTY,PROJEKTY.REFERENCE) '+
+      'where G.M=:_b and R.RN in (:_c) and G.R=\':_d\' '+
+         {? _czyL || 'and (G.LT=\'\' or G.LT=\':_e\') ' || '' ?}+
+      'group by G.P, KK.REFERENCE, KK.SYM, PROJEKTY.SYM '+
+      'order by P, KREF, PROJ',
+      _tabP,O.M,__RUB.sys_sql(10012,_dtk),_rodzaj,VAR.NAZWALIS);
+   _ndxG:=obj_new(2);
+   _ndxG[1]:=_tabG.index('?');
+   _ndxG[2]:=_tabG.ndx_tmp(,,'P',,,'LG',,,'MAC',,,'SYM',,)
+
+|| G.use('godz'+('0000'+$O.R+4));
+   _tabPlugin:=Plugin.run('PPL_PLL_PODZ_KOSZT_M')(O.R,O.M,O.T().T);
+   {? ~(var_pres('_tabPlugin')>100 & _tabPlugin.size())
+   ||  FUN.emsg('Nie można wygenerować miesięcznych podziałów.\n'@+
+         'Brak danych o podziale kosztów zwróconych z formuły wdrożeniowej.'@);
+      return(~~)
+   ?};
+   {? _tabPlugin.first()
+   || _tabG:=
+         tab_tmp(4,
+            'P','STRING[32]','G.P',
+            'KREF','STRING[16]','KK.REFERENCE',
+            'SYM','STRING['+$MS.fld_len(KK,'SYM')+']','KK.SYM',
+            'PROJ','STRING['+$MS.fld_len(PROJEKTY,'SYM')+']','PROJEKTY.SYM',
+            'LG','REAL','sum(G.G)',
+            'MAC','INTEGER','0 MAC',
+            'LP','INTEGER','0 LP',
+            'PROC','REAL','cast(0 as real_type)'
+         );
+      _ndxG:=obj_new(2);
+      _ndxG[1]:=_tabG.index('?');
+      _ndxG[2]:=_tabG.ndx_tmp(,,'P',,,'LG',,,'MAC',,,'SYM',,);
+      _tabP:=exec('tabP','!ppl_grp_apko','\'TXT\',\'STRING[120]\',\'Komunikat\'');
+      Cntx.psh(P,KK,PROJEKTY);
+      Cntx.clr(P,KK,PROJEKTY);
+      {!
+      |? _tabG.blank(1);
+         _tabG.P:=
+            {? P.IP & +_tabPlugin.FORMA
+            || exec('FindInSet','#table',
+                  'P','PRACOIP',_tabPlugin.IP,exec('firma','ustawienia'),"$.ref()",,_tabPlugin.FORMA
+               )
+            || ''
+            ?};
+         {? +|_tabG.P & _tabPlugin.KOD
+         || _tabG.P+=$__RUB.ref(_tabPlugin.KOD)
+         ?};
+         _tabG.KREF:=
+            {? +_tabPlugin.KONTO
+            || exec('FindInSet','#table','KK','KONTAKOD',_tabPlugin.KONTO,exec('firma','ustawienia'),"$.ref()",1)
+            || ''
+            ?};
+         _tabG.SYM:=
+            {? +_tabPlugin.KONTO
+            || exec('FindInSet','#table','KK','KONTAKOD',_tabPlugin.KONTO,exec('firma','ustawienia'),".SYM",1)
+            || ''
+            ?};
+         _tabG.PROJ:=
+            {? +_tabPlugin.PROJ
+            || exec('FindInSet','#table','PROJEKTY','FIRMA',_tabPlugin.PROJ,exec('firma','ustawienia'),".SYM",1)
+            || ''
+            ?};
+         _tabG.LG:=_tabPlugin.PROC;
+         {? +|_tabG.P & +|_tabG.KREF & _tabG.LG>=0 & _tabG.LG<=100
+         || {? _tabG.add() & P.seek(16+_tabG.P,)
+            || _tabP.blank(1);
+               _tabP.NAZWISKO:=P.OSOBA().NAZWISKO;
+               _tabP.PIERWSZE:=OSOBA.PIERWSZE;
+               _tabP.WYD:=P.WYDZIAL().SYMBOL;
+               _tabP.T:=P.T;
+               _tabP.IP:=P.IP;
+               _tabP.REF:=#P.ref();
+               _tabP.REFSQL:=$P.ref();
+               {? ~_tabP.find_rec() || _tabP.add() ?}
+            ?}
+         ?};
+         _tabPlugin.next()
+      !};
+      Cntx.pop(P,KK,PROJEKTY)
+   ?}
+?};
+KK.cntx_psh(); KK.index('KONTAKOD'); KK.prefix(exec('ref_firma','ustawienia'));
+R.cntx_psh(); R.index('RUBKOD'); R.prefix();
+G.cntx_psh(); G.index('PODZ_ML');
+
+_dnP:=_tabP.first();
+{!
+|? _dnP
+|! {? _tabP.TXT<>''
+:     Juz jest cos nie tak - nie przetwarzamy pracownika.
+   || ~~
+
+   |? P.seek(_tabP.REF,P.name())
+   ||
+:     Stemplujemy godziny.
+      G.index('MSCKW_KK');
+      G.prefix(P.ref(),O.M,_rodzaj);
+      {? _rodzaj='G'
+      || {? G.first() || {! |? {? |G.LT='' || G.LT:=~-O.LT; G.put() ?}; G.next() !} ?}
+      ?};
+      G.index('PODZ_ML');
+
+      _lg:=_lp:=0;
+      _proc:=100;
+      _procL:=100;
+:     Jezeli najwieksza liczba godzin zostala zarejestrowana na konto macierzyste i inne konto(-a), to
+:     bledy zaokraglen wrzucimy na konto macierzyste - zaznaczmy konto macierzyste.
+      _kk:=exec('kk_hist','pracownik',P.ref(),_dtk);
+      _tabG.index(_ndxG[1]); _tabG.prefix(_tabP.REFSQL,$_kk);
+      {? _tabG.first() || _tabG.MAC:=1; _tabG.put() ?};
+      {? _rodzaj='F' & _tabR.first()
+      || {!
+         |? _tabG.prefix(_tabP.REFSQL+$__RUB.ref(_tabR.RN),$_kk);
+            {? _tabG.first() || _tabG.MAC:=1; _tabG.put() ?};
+            _tabR.next()
+         !}
+      ?};
+:     Czynnosci wstepne:
+:        - liczymy pozycje (LP), zeby wiedziec ktora jest ostatnia (do zaokraglen);
+:        - sumujemy liczbe godzin, zeby wiedziec czym jest 100%.
+      _tabG.index(_ndxG[2]); _tabG.prefix(_tabP.REFSQL,);
+      {? _tabG.first() || {! |? _lp+=1; _tabG.LP:=_lp; _tabG.put(); _lg+=_tabG.LG; _tabG.next() !} ?};
+      {? _rodzaj='F' & _tabR.first()
+      || _tabG.cntx_psh();
+         {!
+         |? _lgL:=_lpL:=0;
+            _procL:=100;
+            _tabG.prefix(_tabP.REFSQL+$__RUB.ref(_tabR.RN),);
+            {? _tabG.first() || {! |? _lpL+=1; _tabG.LP:=_lpL; _tabG.put(); _lgL+=_tabG.LG; _tabG.next() !} ?};
+            {? _lgL>0
+            || {? _tabG.first()
+               || {!
+                  |? _tabG.PROC:={? _tabG.LP=_lpL || _procL || 100*_tabG.LG/_lgL$2 ?};
+                     _tabG.put();
+                     _procL-=_tabG.PROC;
+                     _tabG.next()
+                  !}
+               ?}
+            ?};
+            _tabR.next()
+         !};
+         _tabG.cntx_pop()
+      ?};
+:     Wlasciwa zamiana godzin na udzialy procentowe.
+      {? _lg>0
+      || {? _tabG.first()
+         || {!
+            |? _tabG.PROC:={? _tabG.LP=_lp || _proc || 100*_tabG.LG/_lg$2 ?};
+:              ^ Na ostatni zapis (o najwiekszej liczbie godzin) zapisywane jest dopelnienie do 100%
+:               (z bledami zaokraglen).
+               _tabG.put();
+               _proc-=_tabG.PROC;
+               _tabG.next()
+            !}
+         ?};
+:        W tabeli _tabG mamy konta i policzone procenty.
+
+:        Usuwamy wszystkie wczesniejsze zapisy, zgodnie z parametrem 396.
+         _lista:={? _czyL || VAR.NAZWALIS || '' ?};
+         G.prefix(P.ref(),O.M,'K',_lista,);
+         {? G.first() || {! |? G.del() !} ?};
+:        Tworzymy nowe.
+         _dnR:=_tabR.first();
+         {!
+         |? _dnR
+         |! {? R.find_key(_tabR.RN)
+            || _dnG:=_tabG.first();
+               {!
+               |? _dnG
+               |! {? KK.find_key(_tabG.SYM,)
+                  || G.blank(1);
+                     G.P:=P.ref();
+                     G.M:=O.M;
+                     G.D:=_dtk;
+                     G.K:=R.ref();
+                     G.G:=_tabG.PROC;
+                     G.KK:=KK.ref();
+                     G.BL:='T';
+                     G.R:='K';
+                     G.PROJEKTY:=exec('FindInSet','#table','PROJEKTY',
+                        'FIRMA',
+                        _tabG.PROJ,
+                        exec('ref_firma','ustawienia'),,
+                        1
+                     );
+                     G.LT:=_lista;
+                     _tabP.OK+=G.add()
+                  || 'Brak konta kosztowego - na razie nie obslugujemy!!!'
+                  ?};
+                  _dnG:=_tabG.next()
+               !};
+
+               {? _rodzaj='F'
+               || _tabG.cntx_psh();
+                  _tabG.prefix(_tabP.REFSQL+$__RUB.ref(_tabR.RN),);
+                  _dnG:=_tabG.first();
+                  {? _dnG
+                  || G.cntx_psh();
+                     G.prefix(P.ref(),O.M,'K',_lista,_tabR.RN);
+                     {? G.first() || {! |? G.del() !} ?};
+                     G.cntx_pop()
+                  ?};
+                  {!
+                  |? _dnG
+                  |! {? KK.find_key(_tabG.SYM,)
+                     || G.blank(1);
+                        G.P:=P.ref();
+                        G.M:=O.M;
+                        G.D:=_dtk;
+                        G.K:=R.ref();
+                        G.KK:=KK.ref();
+                        G.BL:='T';
+                        G.R:='K';
+                        G.PROJEKTY:=exec('FindInSet','#table','PROJEKTY',
+                           'FIRMA',
+                           _tabG.PROJ,
+                           exec('ref_firma','ustawienia'),,
+                           1
+                        );
+                        G.LT:=_lista;
+                        G.G:=_tabG.PROC;
+                        _tabP.OK+=G.add()
+                     || 'Brak konta kosztowego - na razie nie obslugujemy!!!'
+                     ?};
+                     _dnG:=_tabG.next()
+                  !};
+                  _tabG.cntx_pop()
+               ?}
+
+            || 'Brak rubryki - na razie nie obslugujemy!!!'
+            ?};
+            _dnR:=_tabR.next()
+         !};
+         _tabP.TXT:={? _tabP.OK || 'Utworzono podziały'@ || 'Nie utworzono podziałów'@ ?};
+         _tabP.put()
+      ||
+         _tabP.TXT:='Nie utworzono podziałów - brak godzin pracy '
+                    'lub wprowadzone godziny pracy nie mają przypisanego konta kosztowego.'@;
+         _tabP.put()
+      ?}
+
+   || _tabP.TXT:='Znalezienie pracownika nie powiodło się!'@;
+      _tabP.put()
+   ?};
+   _dnP:=_tabP.next()
+!};
+
+exec('show_info','!ppl_grp_apko',_tabP,1);
+
+G.cntx_pop();
+R.cntx_pop();
+KK.cntx_pop();
+~~
+
+
+\genlgn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.30]
+:: OPIS: Procedura zlicza godziny nieobecnosci i zapisuje je w godzinach "przepracowanych" (G.R='G') z data ostatniego
+::       dnia m-ca z kodem zapisanym w atrybucie 100111. Sumuje nieobecnosci z atrybutem 100112 (wg dat) bez korekt.
+::       Procedura, wywolywana z poziomu listy plac, moze dzialac "samodzielnie" (brak parametru _a) lub jako
+::       "podwykonawca".
+::   WE: _a - Tabela tymczasowa z lista pracownikow, dla ktorych maja byc zliczone godziny nieobecnosci. Parametr
+::            opcjonalny.
+::       _b - rodzaj rejestrowanych godzin nieobecnosci G lub A
+::   WY: ~~
+::  OLD: \genlgn/godziny.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(SYSLOG)
+|| _tabP:=_a;
+   _info:=0
+||
+   {? exec('o_writable','lista_plac',O.LT)
+   || {? FUN.ask('Czy zaktualizować liczbę godzin nieobecności w tabeli godzin przepracowanych?'@)
+      || _tabP:=exec('grpprac','!ppl_grp_apko','\'TXT\',\'STRING[60]\',\'Komunikat\'');
+         {? _tabP.size()=0 || return() ?};
+         _info:=1
+      ?}
+   || return()
+   ?}
+?};
+
+_rodzaj:={? var_pres('_b')=type_of('') || _b || '' ?};
+
+{? _rodzaj<>'G' & _rodzaj<>'A'
+|| _rodzaj:='G';
+   {? exec('tte_lic','tte')='T'
+   || {? exec('test_par','parametr',309,'A')
+      || {? FUN.ask('Czy analizować, dla podziału płac, liczbę godzin nieobecności\n'
+                    'łącznie z godzinami akordowymi?'@)
+         ||  G.cntx_psh();
+             G.use('godz'+('0000'+$O.R+4));
+             G.index('MSCRODZ');
+             G.prefix(exec('ref_firma','ustawienia'),O.M,'A');
+             {? G.first()
+             || _rodzaj:='A';
+                G.cntx_pop()
+
+             || FUN.emsg('Brak godzin akordowych.'@+'\n\n'+'Operacja przerwana.'@);
+                return(G.cntx_pop())
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+
+_dtp:=date(O.R,O.M,1);
+_dtk:=date(O.R,O.M,0);
+
+:Czy podział dla list?
+_czyL:=PAR_SKID.get(396)='L';
+:Czy obslugujemy podzialy controllingowe?
+_controll:=PAR_SKID.get(80)='T' & exec('chk_skid_mb','godziny');
+
+CON_KH.cntx_psh(); CON_KH.index('CON_KHP');
+CON_KG.cntx_psh();
+_wm:=(form(O.R,-4,0,'9.')+2)+form(O.M,-2,0,'9.');
+{? CON_KG.name()+4<>_wm || CON_KG.use('cog'+_wm) ?};
+CON_KG.index('CON_KGT'); CON_KG.prefix();
+R.cntx_psh(); R.index('RUBKOD'); R.prefix();
+G.cntx_psh(); G.use('godz'+('0000'+$O.R+4)); G.index('MSCKW_KK'); G.prefix();
+P.cntx_psh(); P.prefix();
+
+:Numer rubryki wynikowej.
+_rub:=obj_new('RN','REF');
+_rub.RN:=__RUB.sys_kod(100111,_dtk);
+_rub.REF:={? R.find_key(_rub.RN) || R.ref() || null() ?};
+
+{? ~_tabP.first()
+:  Brak pracownikow do przetwarzania.
+|| ~~
+
+|? _rub.REF=null()
+:  Czy jest odpowiednia rubryka?
+|| FUN.emsg('W systemie brak rubryki nr %1.'@[$_rub.RN])
+
+||
+:  Suma l.g. nieobecnosci, ale tylko dla wybranych wczesniej pracownikow.
+   _tabN:=sql(
+      'select N.P, sum(N.NG) NG '+
+      'from :_a P join N using(P.REFSQL,N.P) join R using(N.NB,R.REFERENCE) '+
+      'where N.KOR=\'N\' and to_date(:_b)<=N.OD and N.DO<=to_date(:_c) and R.RN in (:_d) '+
+         {? _czyL || 'and N.LT=\':_e\' ' || '' ?}+
+      'group by N.P '+
+      'order by 1',
+      _tabP,_dtp,_dtk,__RUB.sys_sql(100112,_dtk),VAR.NAZWALIS);
+
+:: sprawdzenie czy możemy założyć transakcję
+   _mydo:=do_state()=0;
+
+   {!
+   |? {? P.seek(_tabP.REF,P.name())
+      || _kk:=exec('kk_hist','pracownik',P.ref(),_dtk);
+         _dom_proj:=P.PROJEKTY;
+         _ng:={? _tabN.find_key(_tabP.REFSQL) || _tabN.NG ?};
+         {? G.find_key(P.ref(),O.M,_rodzaj,_rub.RN)
+:           Zapis juz jest - ponowne naliczanie.
+         || {? _ng=0
+:              Teraz brak nieobecnosci - usuwamy zapis z CON_KG i z G.
+            || do();
+               {? CON_KG.find_key(P.ref(),G.ref()) || CON_KG.del() ?};
+               G.del();
+               {? ~end()
+               || _tabP.TXT:='Aktualizacja liczby godzin nieobecności nie powiodła się.'@;
+                  _tabP.put()
+               ?}
+
+            || {? _mydo || do() ?};
+
+               {? _ng<>G.G
+:                 Zmiana liczby godzin - aktualizujemy.
+               || G.G:=_ng;
+                  G.put()
+               ?};
+
+               {? _controll
+               || CON_KH.prefix('P',P.ref(),KST_PAR.SKID_MB);
+                  {? CON_KH.find_le(G.D)
+                  || {? CON_KG.find_key(P.ref(),G.ref())
+                     || _nowy:=0
+                     || _nowy:=1;
+                        CON_KG.blank(1);
+                        CON_KG.P:=P.ref();
+                        CON_KG.G:=G.ref()
+                     ?};
+                     _zm:=0;
+                     {? CON_KG.R<>G.K || CON_KG.R:=G.K; _zm+=1 ?};
+                     {? CON_KG.SKID_MB<>KST_PAR.SKID_MB || CON_KG.SKID_MB:=KST_PAR.SKID_MB; _zm+=1 ?};
+                     {? CON_KG.POZ_BUD<>CON_KH.POZ_BUD || CON_KG.POZ_BUD:=CON_KH.POZ_BUD; _zm+=1 ?};
+                     {? CON_KG.PODZORG<>CON_KH.PODZORG || CON_KG.PODZORG:=CON_KH.PODZORG; _zm+=1 ?};
+                     {? CON_KG.OB_KOSZ<>CON_KH.OB_KOSZ || CON_KG.OB_KOSZ:=CON_KH.OB_KOSZ; _zm+=1 ?};
+                     {? CON_KG.WYM4<>CON_KH.WYM4 || CON_KG.WYM4:=CON_KH.WYM4; _zm+=1 ?};
+                     {? CON_KG.WYM5<>CON_KH.WYM5 || CON_KG.WYM5:=CON_KH.WYM5; _zm+=1 ?};
+                     {? CON_KG.D<>G.D || CON_KG.D:=G.D; _zm+=1 ?};
+                     {? CON_KG.W<>G.G || CON_KG.W:=G.G; _zm+=1 ?};
+                     {? CON_KG.BL<>G.BL || CON_KG.BL:=G.BL; _zm+=1 ?};
+                     {? _nowy || CON_KG.add()
+                     |? _zm || CON_KG.put()
+                     ?}
+                  || undo();
+                     _tabP.TXT:='Brak schematu controllingowego dla pracownika.'@
+                  ?}
+
+               |? CON_KG.find_key(P.ref(),G.ref())
+:                 Juz nie obslugujemy podzialow controllingowych, ale kiedys chyba tak - usuwamy rekord z CON_KG.
+               || CON_KG.del();
+                  _tabP.TXT:='Usunięto informacje o godzinach w controllingu.'@;
+                  _tabP.put()
+               ?};
+
+               {? _mydo
+               || {? ~end()
+                  || {? _tabP.TXT=''
+                     || _tabP.TXT:='Aktualizacja informacji o godzinach nieobecności nie powiodła się.'@
+                     ?};
+                     _tabP.put()
+                  ?}
+               ?}
+            ?}
+
+         |? _ng>0
+:           Zapisu jeszcze nie ma - pierwsze naliczanie.
+         || {? _mydo || do() ?};
+            G.blank(1);
+            G.P:=P.ref();
+            G.M:=O.M;
+            G.D:=_dtk;
+            G.K:=_rub.REF;
+            G.G:=_ng;
+            G.KK:=_kk;
+            G.BL:='T';
+            G.R:=_rodzaj;
+            G.PROJEKTY:=_dom_proj;
+            G.add();
+            {? _controll
+            || CON_KH.prefix('P',P.ref(),KST_PAR.SKID_MB);
+               {? CON_KH.find_le(G.D)
+               || CON_KG.blank(1);
+                  CON_KG.P:=P.ref();
+                  CON_KG.G:=G.ref();
+                  CON_KG.R:=G.K;
+                  CON_KG.SKID_MB:=KST_PAR.SKID_MB;
+                  CON_KG.POZ_BUD:=CON_KH.POZ_BUD;
+                  CON_KG.PODZORG:=CON_KH.PODZORG;
+                  CON_KG.OB_KOSZ:=CON_KH.OB_KOSZ;
+                  CON_KG.WYM4:=CON_KH.WYM4;
+                  CON_KG.WYM5:=CON_KH.WYM5;
+                  CON_KG.D:=G.D;
+                  CON_KG.W:=G.G;
+                  CON_KG.BL:=G.BL;
+                  CON_KG.add()
+               || undo();
+                  _tabP.TXT:='Brak schematu controllingowego dla pracownika.'@
+               ?}
+            ?};
+            {? _mydo
+            || {? ~end()
+               || {? _tabP.TXT='' || _tabP.TXT:='Utworzenie informacji o godzinach nieobecności nie powiodło się.'@ ?};
+                  _tabP.put()
+               ?}
+            ?}
+         ?}
+      || _tabP.TXT:='Znalezienie pracownika nie powiodło się!'@;
+         _tabP.put()
+      ?};
+      _tabP.next()
+   !}
+?};
+
+{? _info || exec('show_info','!ppl_grp_apko',_tabP) ?};
+
+P.cntx_pop();
+G.cntx_pop();
+R.cntx_pop();
+CON_KG.cntx_pop();
+CON_KH.cntx_pop();
+~~
+
+
+\show_info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.30]
+:: OPIS: Procedura wewnetrzna, pokazuje raport z przetwarzania danych: generowania liczby godzin nieobecnosci (\genlgn)
+::       i/lub procentowego podzialu kosztow (\genmpk). Okienko z pracownikami i komunikatami jest wyswietlane
+::   WE: _a [TABLE]   - Tabela tymczasowa z lista pracownikow.
+::       _b [INTEGER] - wymuszenie wyświetlania komunikatów
+::   WY: ~~
+::  OLD: \show_info/godziny.fml
+::----------------------------------------------------------------------------------------------------------------------
+ _tabP:={? var_pres('_a')=type_of(SYSLOG) || _a || return() ?};
+_force:={? var_pres('_b')=type_of(0)      || _b || 0        ?};
+
+:Czy sa komunikaty do wyswietlenia?
+_err:=0;
+{? _tabP.first() || {! |? {? _tabP.TXT='' || _tabP.next() || _err:=1; 0 ?} !} ?};
+{? _err | _force
+|| _ws:=_tabP.mk_sel('Raport z przetwarzania'@,'T',,'#godzgen',,,,,'U','T');
+   _tabP.win_fld(_ws,,'T',,,-MS.fld_len(P,'T'),,,,,MS.comment(P,'T'));
+   _tabP.fld_fml('T','DISPLAY_FORMAT',exec('alignment_right_cnd','#field'));
+   _tabP.win_fld(_ws,,'NAZWISKO',,,-20,,,,,MS.comment(OSOBA,'NAZWISKO'));
+   _tabP.win_fld(_ws,,'PIERWSZE',,,-20,,,,,MS.comment(OSOBA,'PIERWSZE'));
+   _tabP.win_fld(_ws,,'WYD',,,16,,,'Jednostka organizacyjna'@,,'Jednostka organizacyjna'@);
+   _tabP.win_fld(_ws,,'TXT',,,50,,,,,'Komunikat przetwarzania'@);
+::   _tabP.win_fml(_ws,,'TXT',,'ICON_BEFORE',"{? cur_tab().OK || 'xwin16.png:13' || 'xwin16.png:14' ?}");
+   _tabP.win_sel(_ws);
+   _tabP.win_act(_ws,,'Szukaj');
+   _tabP.win_act(_ws,,'Kolejność');
+   _we:=_tabP.mk_edit(,,'#godzgen');
+   _tabP.win_efld(_we,,'TXT',,,,,,'');
+   _tabP.win_edit(_we);
+   _tabP.fld_attr(,2);
+   _tabP.select();
+   _tabP.fld_attr(,1)
+|| FUN.info('Przetwarzanie zakończone.'@)
+?};
+~~
+
+
+\grpprac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.30]
+:: OPIS: Formula umozliwia wybor grupy pracownikow do dalszego przetwarzania.
+::       Pierwszy parametr pozwala na zdefiniowanie dodatkowych pol w tabeli tymczasowej bedacej wynikiem.
+::       Kolejne dwa parametry (opcjonalne) sa formulami wykonywanymi z podczytanymi rekordami
+::       tabel P.
+::       Uwaga: Poprawnosc argumentow NIE jest weryfikowana.
+::   WE: _a - Dodatkowe pola w strukturze. Napis do wklejenia do tab_tmp postaci:
+::            '\'P1\',\'REAL\',\'P1\''
+::       _b - Formula, ktora okresla czy pracownik ma znalezc sie na liscie do wyboru [domyslnie "1"].
+::       _c - Formula, ktora okresla czy dla pracownika ma byc wykonana akcja [domyslnie "1"].
+::            Wynik formuly ma znaczenie wstepne i moze byc zmieniony przez operatora. Akcja nie jest tutaj okreslona,
+::            formula ma za zadanie jedynie wskazanie grupy pracownikow.
+::   WY: Tabela tymczasowa z rekordami odpowiadajacymi wybranym pracownikom (patrz struktura tabeli _tabP).
+::       Tabela moze byc pusta (nie zawierac zadnych rekordow).
+::  OLD: \grpprac/util.fml
+::----------------------------------------------------------------------------------------------------------------------
+_pola:={? var_pres('_a')=type_of('') || _a || ''  ?};
+  _if:={? var_pres('_b')=type_of("") || _b || "1" ?};
+  _go:={? var_pres('_c')=type_of("") || _c || "1" ?};
+
+_mob:='mobile_visible=1';
+_tabP:=exec('tabP','!ppl_grp_apko',_pola);
+_tabP.fld_attr(,2);
+_ws:=_tabP.mk_sel(,'T',0,'#wgrpprac',,,,,'U','T',,,,'maximized');
+_tabP.win_fld(_ws,,'T',,,-MS.fld_len(P,'T'),,,,,MS.comment(P,'T'));
+_tabP.fld_fml('T','DISPLAY_FORMAT',exec('alignment_right_cnd','#field'));
+_tabP.win_fld(_ws,,'NAZWISKO',,,-20,,,,,MS.comment(OSOBA,'NAZWISKO'),,,,,,_mob);
+_tabP.win_fld(_ws,,'PIERWSZE',,,-20,,,,,MS.comment(OSOBA,'PIERWSZE'),,,,,,_mob);
+_tabP.win_fld(_ws,,'WYD',,,-16,,,'Jednostka organizacyjna'@,,'Symbol jednostki organizacyjnej'@,,,,,,_mob);
+_tabP.win_fld(_ws,,'WYKONAJ',,,,,,'Zaznaczony'@,,'Pracownik zaznaczony do przetwarzania'@,2,,"1","0",,_mob);
+_tabP.win_act(_ws,,'Rekord',,,,"exec('rekprzed','color','__grpprac#W#0'+$cur_tab().WYKONAJ)");
+_tabP.win_act(_ws,,'Formuła','Pomiń'@@,,'Usuwa zaznaczenie wybranemu pracownikowi'@,
+                   "_tabP:=cur_tab(); _tabP.WYKONAJ:=0; _tabP.put()",,1);
+_tabP.win_btn(_ws,'text='+'Pomiń'@+',panel=right,align=begin','menu:P');
+_tabP.win_act(_ws,,'Formuła','Uwzględnij'@@,,'Uwzględnia wybranego pracownika'@,
+                   "_tabP:=cur_tab(); _tabP.WYKONAJ:=1; _tabP.put()");
+_tabP.win_btn(_ws,'text='+'Uwzględnij'@+',panel=right,align=begin','menu:U');
+_tabP.win_act(_ws,,'Formuła','Odwróć zaznaczenie wszystkim'@@,,'Odwraca aktualne zaznaczenie wszystkim pracownikom'@,
+   "  _tabP:=cur_tab();
+      _ref:=_tabP.ref();
+      {? _tabP.first() || {! |? _tabP.WYKONAJ:=~_tabP.WYKONAJ; _tabP.put(); _tabP.next() !} ?};
+      _tabP.seek(_ref)
+   ",,,,,,
+   'O',,'target=window'
+);
+_tabP.win_act(_ws,,'Formuła','pomiń Wszystkich'@@,,'Usuwa zaznaczenie wszystkim pracownikom'@,
+   "  _tabP:=cur_tab();
+      _ref:=_tabP.ref();
+      {? _tabP.first() || {! |? {? _tabP.WYKONAJ || _tabP.WYKONAJ:=0; _tabP.put() ?}; _tabP.next() !} ?};
+      _tabP.seek(_ref)
+   ",,,,,,
+   'W',,'target=window'
+);
+_tabP.win_act(_ws,,'Formuła','Dalej'@@,,'Rozpoczyna proces wprowadzania zapisów'@,"sel_exit()",,,,,,
+   'D',,'target=window'
+);
+_tabP.win_btn(_ws,'text='+'Dalej'@+',icon=xwin16.png:22,panel=bottom,align=end','menu:D');
+_tabP.win_act(_ws,,'Szukaj');
+_tabP.win_act(_ws,,'Kolejność');
+_tabP.win_act(_ws,,'Formuła','Legenda'@@,,,"exec('legenda','color','__grpprac#W#')",,,,,,
+   'L',,'target=window'
+);
+_grp:=_tabP.grp_make('Pracownicy'@,,'#ggrpprac',,,"
+   {? _a<>'sel_exit' & FUN.ask('Na pewno rezygnujesz?'@)
+   || _tabP:=cur_tab();
+      {? _tabP.first() || {! |? {? _tabP.WYKONAJ || _tabP.WYKONAJ:=0; _tabP.put() ?}; _tabP.next() !} ?};
+      1
+   |? _a='sel_exit'
+   || _odp:=0;
+      _tabP:=cur_tab();
+      _ref:=_tabP.ref();
+      {? _tabP.first() || {! |? _odp+=_tabP.WYKONAJ; _tabP.next() !} ?};
+      _tabP.seek(_ref);
+      {? _odp
+      || 1
+      || FUN.ask('Wszyscy pracownicy zostali pominięci. Na pewno chcesz kontynuować?'@)
+      ?}
+   ?}
+");
+_tabP.grp_sel(_grp,,_ws,,,,,,,,,,'maximized');
+_tabP.win_sel(_grp);
+
+:: wybranie pracowników do dalszego przetwarzania
+_args:=exec('wybierz_args','pracownik');
+_args.DOMAIN:='PPL';
+_args.HDR_SEL:='1. Wstępny wybór pracowników'@;
+
+_wyb:=exec('wybierz','pracownik',_args);
+{? _wyb.STATUS<>''
+|| FUN.info(_wyb.STATUS);
+   return(_tabP)
+|? ~_wyb.P.first()
+|| return(_tabP)
+?};
+
+FUN.info('W następnym kroku, spośród wybranych pracowników, domyślnie zaznaczeni będą\n'
+         'tylko ci pracownicy, którzy należą do grupy:\n'
+         '"MPKwgG - Pracownicy z miesięcznym podziałem kosztów wg godzin".'@);
+
+P.cntx_psh();
+P.prefix();
+{!
+|? {? P.seek(_wyb.P.SQL) & _if()
+   || _tabP.blank();
+      _tabP.NAZWISKO:=P.OSOBA().NAZWISKO;
+      _tabP.PIERWSZE:=OSOBA.PIERWSZE;
+      _tabP.WYD:=P.WYDZIAL().SYMBOL;
+      _tabP.T:=P.T;
+      _tabP.IP:=P.IP;
+      _tabP.REF:=#P.ref();
+      _tabP.REFSQL:=$P.ref();
+      _tabP.WYKONAJ:=_go();
+      _tabP.add()
+   ?};
+   _wyb.P.next()
+!};
+P.cntx_pop();
+
+_tabP.select();
+{? _tabP.first()
+|| {! |? {? _tabP.WYKONAJ || _tabP.next() || _tabP.del() ?} !}
+?};
+
+_tabP
+
+
+\tabP
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Tworzy tabelę tymczasową wykorzystywaną w przetwarzaniu grupowym pracowników
+::   WE: _a - Dodatkowe pola w strukturze. Napis do wklejenia do tab_tmp postaci:
+::            '\'P1\',\'REAL\',\'P1\''
+::   WY: tabela tymczasowa
+::----------------------------------------------------------------------------------------------------------------------
+_pola:={? var_pres('_a')=type_of('') || _a || '' ?};
+_sfld:='tab_tmp(3,'+
+   '\'WYD\',\'STRING[16]\',\'Jednostka org.\','+
+   '\'NAZWISKO\',\'STRING[30]\',\'Nazwisko\','+
+   '\'PIERWSZE\',\'STRING[20]\',\'Imię\','+
+   '\'T\',\'STRING[10]\',\'Nr teczki\','+
+   '\'IP\',\'INTEGER\',\'Identyfikator\','+
+   '\'REF\',\'INTEGER\',\'#P.ref()\','+
+   '\'OK\',\'INTEGER\',\'Wynik\','+
+   '\'REFSQL\',\'STRING[16]\',\'$P.ref()\','+
+   '\'WYKONAJ\',\'INTEGER\',\'Wykonaj?\''+
+   {? _pola='' || '' || ','+_pola ?}+')';
+
+($_sfld)()
+
+
+\tabPodz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Tabela tymczasowa definicji podziału kosztów.
+::   WE:
+::   WY: tabela
+::----------------------------------------------------------------------------------------------------------------------
+tab_tmp(3,
+   'IP','INTEGER',MS.name(P,'IP')+': '+P.comment(),
+   'FORMA','STRING['+$MS.fld_len(F_ZATR,'KOD')+']',MS.name(F_ZATR,'KOD')+': '+F_ZATR.comment(),
+   'PROC','REAL','% podziału kosztów',
+   'KONTO','STRING['+$MS.fld_len(KK,'SYM')+']',MS.name(KK,'SYM')+': '+KK.comment(),
+   'KOD','INTEGER',MS.name(R,'RN')+': '+R.comment(),
+   'PROJ','STRING['+$MS.fld_len(PROJEKTY,'SYM')+']',MS.name(PROJEKTY,'SYM')+': '+PROJEKTY.comment()
+)
+
+
+\testPodz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Przykład do testów
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=exec('tabPodz','!ppl_grp_apko');
+_tab.IP:=224;
+_tab.FORMA:='P';
+_tab.PROC:=20;
+_tab.KONTO:='520-HD1-0401';
+_tab.add();
+_tab.PROC:=80;
+_tab.KONTO:='520-HD1-0811';
+_tab.add();
+_tab.PROC:=40;
+_tab.KONTO:='520-HD1-0401';
+_tab.KOD:=500;
+_tab.add();
+_tab.PROC:=60;
+_tab.KONTO:='520-HD1-0811';
+_tab.add();
+
+_tab.blank();
+_tab.IP:=154;
+_tab.FORMA:='P';
+_tab.PROC:=15;
+_tab.KONTO:='8';
+_tab.add();
+_tab.PROC:=35;
+_tab.KONTO:='960-08';
+_tab.add();
+_tab.PROC:=50;
+_tab.KONTO:='111-1111-111';
+_tab.add();
+_tab.PROC:=45;
+_tab.KONTO:='8';
+_tab.KOD:=500;
+_tab.add();
+_tab.PROC:=55;
+_tab.KONTO:='960-08';
+_tab.add();
+
+_tab
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 6f9c7170d4e7e6d1ec02ba06708308b74d5641f4b71bdffa4369968f4d45a271eae1af3dd28b10b6a6be3c9ef0fb5f2300639270e858940925131d2c5af613e05797e9badb145e5645f66908979b651ff453db8265c324e780da08c0a54964f3d0f7135b818d3782b76fd52f0f4aebe3d5c8de9a46165c5530c5a0eff6ec7421

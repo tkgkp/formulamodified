@@ -1,0 +1,1350 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkw_por_iwpu.fml
+:: Utworzony: 25.08.2016
+:: Autor: TMR
+::======================================================================================================================
+:: Zawartość: Obsługa czynności webTerm-owej PKW_POR_IWPU - Weryfikacja planu urlopowego.
+::
+:: Statusy planów urlopowych:
+::  pole 'ST' - status planu
+::    'A' - aktywny
+::    'K' - korekta
+::    'U' - uzupełnienie
+::    'N' - archiwalny
+::
+::  pole 'AZ' - stan akceptacji
+::    'E' - plan w edycji
+::    '?' - plan czeka na weryfikację przełożonego.
+::    'T' - plan zaakceptowany przez przełożonego
+::    'N' - plan odrzucony przez przełożonego?
+::
+:: Przepływy:
+::    'E' -> {'?'}      Po edycji plan przesyłany jest do weryfikacji
+::    '?' -> {'T'/'N'}  Złożony wniosek [?] może zostać zaakceptowany [T] lub odrzucony [N].
+::    'T' -> {'K'/'U'}  Tylko dla zaakceptowanego planu [T] można utworzć korektę [K] lub uzupełnienie [U].
+::    'N' -> {'?'}      Plan odrzucony [N] może zostać ponownie przesłany do akceptacji (np. po poprawieniu).
+::
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Weryfikacja planu urlopowego (webTerm) - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# access=exec('access','!pkw_por_iwpu')
+::
+::# kind=WE, symbol=URL_PLAN, type=_URL_PLAN, name=Wskazanie na plan urlopowy, required=N, keyref=T
+
+::# kind=WEW, symbol=URL_PLAN, type=_URL_PLAN, name=Wskazanie na plan urlopowy, required=N
+
+::# kind=WY, symbol=URL_PLAN, type=_URL_PLAN, name=Wskazanie na plan urlopowy, required=N
+::# kind=WY, symbol=STATUS, type=STRING, name=Status planu urlopowego, required=N
+::# kind=WY, symbol=STAN, type=STRING, name=Stan akceptacji planu urlopowego, required=N
+
+params_set(_par:=params_get());
+
+_mp:=_par.mp;
+_in:=_par.in;
+_int:=_par.int;
+_out:=_par.out;
+_context:=_par.context;
+_akcja:=_mp.akcja();
+
+{? _akcja='webTermProcCancel'
+|| return(~~)
+?};
+
+exec('czytaj','#stalesys',date(),KST);
+
+_refresh:=0;
+_is_context:=obj_ntab(_context) & var_pres('URL_PLAN',_context)=type_of(null());
+
+{? _akcja='ZAKOŃCZ'
+|| {? _is_context
+   || _int.URL_PLAN:=_out.URL_PLAN:=_context.URL_PLAN;
+      _out.STATUS:=exec('FindAndGet','#table',URL_PLAN,_context.URL_PLAN,,'ST','');
+      _out.STAN:=exec('FindAndGet','#table',URL_PLAN,_context.URL_PLAN,,'AZ','');
+      _mp.save(_int,_out);
+      _mp.done();
+      _refresh:=1
+   || _mp.error('Brak wskazania planu urlopowego.'@)
+   ?}
+?};
+
+:: odświeżenie okna grupowego
+{? _refresh & (_is_context & _context.REFRESH)
+|| URL_PLAN.prefix();
+   {? URL_PLAN.seek(_context.URL_PLAN)
+   ||
+::    koniecznie trzeba teraz wywołać funkcję ustawiającą wartość pol zmiennych
+      exec('url_plan_red_p_gr_ob','!pkw_por_iwpu');
+::    teraz możemy odświeżyc okno
+      URL_PLAN.web_update('WEB_GR_P','URL_PLAN_RED_P')
+   ?}
+?};
+~~
+
+
+\web_main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Uruchomienie czynności z WWW
+::   WE: _a  [STRING]    - 'Proc' lub 'Todo' lub 'Area'
+::      [_b] [REFERENCE] - Wskazanie na instancję elementu w procesie
+::                         (bi_prel dla Todo) lub element procesu (b_prel dla Proc).
+::----------------------------------------------------------------------------------------------------------------------
+  _path:={? var_pres('_a')=type_of('')     || _a || return(~~) ?};
+  _prel:={? var_pres('_b')=type_of(null()) || _b || null()     ?};
+
+_par:=params_get();
+{? _path='Area'
+:: Uruchomienie z obszaru roboczego. - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+|| _web_params:=web_params_get(1);
+
+   exec('web_run','#b__box',
+         _web_params.B_PREL,_web_params.AKCJA,_web_params.PORTS_IN,'web_Area',,_web_params.CONTEXT)
+
+|? _path='Todo'
+:: Uruchomienie z listy zadań (czynność w procesie, wywołana z parametrem - wskazaniem wniosku urlopowego).  - - - - - -
+|| {? _prel=null() | ~(exec('env_wt','b_proces') & exec('init','pkw')) || return() ?};
+
+   _bi_prel:=_prel;
+   _ref:=null();
+
+:: ustalenie parametru wewnętrznego
+   _b_ele:=exec('FindAndGet','#table',BI_PREL,_bi_prel,,"B_PREL().B_ELE",null());
+
+   _kind_in:=exec('kind_in','#b_port');
+   _in:=exec('getPorts','#b_port',_b_ele,_kind_in,_bi_prel);
+   exec('fillPorts','#bi_port',_bi_prel,_kind_in,_in);
+
+   {? type_of(_in.URL_PLAN)=7
+   || _ref:=_in.URL_PLAN
+   ?};
+
+   {? _ref=null()
+   || _kind_int:=exec('kind_internal','#b_port');
+      _int:=exec('getPorts','#b_port',_b_ele,_kind_int,_bi_prel);
+      exec('fillPorts','#bi_port',_bi_prel,_kind_int,_int);
+      {? type_of(_int.URL_PLAN)=7
+      || _ref:=_int.URL_PLAN
+      ?}
+   ?};
+
+   URL_PLAN.prefix();
+   {? URL_PLAN.seek(_ref)
+   || exec('select_prac','!pkw_por_iwpu',_path,,URL_PLAN.uidref())
+
+   || FUN.emsg('Nie udało się znaleźć planu urlopowego.'@+'\n[ref: %1]'[$_ref])
+   ?}
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Opis na TODO
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_tab:=exec('init_desc_tab','pracownik');
+_rok:='';
+
+_url_plan:={? var_pres('URL_PLAN',_in) || _in.URL_PLAN || null() ?};
+
+_akcja:='';
+{? +app_info('web_sesid')
+|| _web_params:=web_params_get();
+   _akcja:={? obj_ntab(_web_params)  & var_pres('AKCJA',_web_params)>0
+           || _web_params.AKCJA
+           || ''
+           ?}
+?};
+
+{? _url_plan
+|| URL_PLAN.cntx_psh();
+   URL_PLAN.prefix();
+   {? URL_PLAN.seek(_url_plan)
+   || _rok:=$URL_PLAN.ROK;
+
+      P.cntx_psh();
+      P.prefix();
+      OSOBA.cntx_psh();
+      OSOBA.prefix();
+      UD_SKL.cntx_psh();
+      UD_SKL.prefix();
+      STN.cntx_psh();
+      STN.prefix();
+      _tab.ZAW_DANE:='T';
+      _tab.NAZWISKO:=URL_PLAN.P().OSOBA().NAZWISKO;
+      _tab.PIERWSZE:=OSOBA.PIERWSZE;
+      _tab.T:=P.T;
+      _tab.UD_SKL:=P.WYDZIAL().SYMBOL;
+      _tab.STN:=P.ST().ST;
+      STN.cntx_pop();
+      UD_SKL.cntx_pop();
+      OSOBA.cntx_pop();
+      P.cntx_pop()
+
+   ?};
+   URL_PLAN.cntx_pop()
+?};
+
+{? _akcja='KOREKTA'
+|| {? +_rok
+   || {? _tab.ZAW_DANE='T'
+      || 'Zakończ weryfikację planu urlopowego (korekta) na %1r. dla %2 %3, Numer teczki - %4, Jednostka - %5, Stanowisko %6'@@
+         [_rok,_tab.NAZWISKO,_tab.PIERWSZE,_tab.T,_tab.UD_SKL,_tab.STN]
+      || 'Zakończ weryfikację planu urlopowego (korekta) na %1r.'@@[_rok]
+      ?}
+   || {? _tab.ZAW_DANE='T'
+      || 'Zakończ weryfikację planu urlopowego (korekta) dla %1 %2, Numer teczki - %3, Jednostka - %4, Stanowisko %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.T,_tab.UD_SKL,_tab.STN]
+      || 'Zakończ weryfikację planu urlopowego (korekta)'@@
+      ?}
+   ?}
+|? _akcja='UZUPEŁNIJ'
+|| {? +_rok
+   || {? _tab.ZAW_DANE='T'
+      || 'Zakończ weryfikację planu urlopowego (uzupełnienie) na %1r. dla %2 %3, Numer teczki - %4, Jednostka - %5, Stanowisko %6'@@
+            [_rok,_tab.NAZWISKO,_tab.PIERWSZE,_tab.T,_tab.UD_SKL,_tab.STN]
+      || 'Zakończ weryfikację planu urlopowego (uzupełnienie) na %1r.'@@[_rok]
+      ?}
+   || {? _tab.ZAW_DANE='T'
+      || 'Zakończ weryfikację planu urlopowego (uzupełnienie) dla %1 %2, Numer teczki - %3, Jednostka - %4, Stanowisko %5'@@
+            [_tab.NAZWISKO,_tab.PIERWSZE,_tab.T,_tab.UD_SKL,_tab.STN]
+      || 'Zakończ weryfikację planu urlopowego (uzupełnienie)'@@
+      ?}
+   ?}
+|| {? +_rok
+   || {? _tab.ZAW_DANE='T'
+      || 'Zakończ weryfikację planu urlopowego na %1r. dla %2 %3, Numer teczki - %4, Jednostka - %5, Stanowisko %6'@@
+            [_rok,_tab.NAZWISKO,_tab.PIERWSZE,_tab.T,_tab.UD_SKL,_tab.STN]
+      || 'Zakończ weryfikację planu urlopowego na %1r.'@@[_rok]
+      ?}
+   || {? _tab.ZAW_DANE='T'
+      || 'Zakończ weryfikację planu urlopowego dla %1 %2, Numer teczki - %3, Jednostka - %4, Stanowisko %5'@@
+            [_tab.NAZWISKO,_tab.PIERWSZE,_tab.T,_tab.UD_SKL,_tab.STN]
+      || 'Zakończ weryfikację planu urlopowego'@@
+      ?}
+   ?}
+?}
+
+
+\url_plan_ctrl_wpu_gr_ob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Przed obsługa dla okna CTRL_WPU tabeli URL_PLAN
+::   WE: [_a] [INTEER] - numer roku do wyświetlenia
+::       [_b] [INTEER] - numer miesiąca do wyświetlenia
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_rok:={? var_pres('_a')=type_of(0) || _a || exec('web_global_params_get','pkw','PKW_POR_IWPU','ROK',date~1) ?};
+_msc:={? var_pres('_b')=type_of(0) || _b || 0 ?};
+exec('set_env','pkw_por');
+exec('czytaj','#stalesys',,KST_PAR,'URLOP','URL_CHOR');
+web_ctrl_call('URL_PLAN_CTRL_WPU',,'setTitle',
+   exec('nazwa','#system')+': '+'Weryfikacja planów urlopowych'@
+);
+web_ctrl_call('URL_PLAN_CTRL_WPU',,'setBody',exec('html_wpu','!pkw_por_iwpu',_rok,_msc));
+~~
+
+
+\url_plan_red_p_gr_ob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Przed obsługą okna RED_P w oknie grupowym WEB_GR_P tabeli URL_PLAN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+_url_plan:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+URL_PLAN.prefix();
+_ag:='';
+_grayed:=0;
+{? URL_PLAN.seek(_url_plan)
+|| {? URL_PLAN.AZ<>'?'
+   || _ag+='AO';
+      _grayed:=1
+   ?};
+   exec('url_plan_bd','plany_urlopowe')
+?};
+
+URL_PLAN.web_btn_eopt('WEB_GR_P','URL_PLAN_RED_P','AKC',{? _grayed || 'state=grayed' || '' ?});
+URL_PLAN.web_btn_eopt('WEB_GR_P','URL_PLAN_RED_P','ODRZ',{? _grayed || 'state=grayed' || '' ?});
+URL_PLAN.web_ewin_opt('WEB_GR_P','URL_PLAN_RED_P','grayed=');
+URL_PLAN.web_ewin_opt('WEB_GR_P','URL_PLAN_RED_P','grayed='+_ag);
+~~
+
+
+\url_plan_web_p_ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Obsługa akcji "Po odświeżeniu" okna WEB_P tabeli URL_PLAN.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+_params:=web_params_get();
+_path:={? var_pres('path',_params)>0 || _params.path || '' ?};
+
+:: Dostępność przycisków.
+_ag:='';
+
+:: akcja Rok [R]
+{? _path='Todo'
+|| _ag+='R'
+?};
+
+:: akcja Akceptuj [A] i Odrzuć [O]
+{? URL_PLAN.AZ<>'?'
+|| _ag+='AO'
+?};
+
+:: sprawdzenie aktywnych czynności
+{? exec('record_keyrefed','#b__box',URL_PLAN.uidref(),'PKW_POR_IWPU')=0 || _ag+='AO' ?};
+
+URL_PLAN.web_win_opt(web_top_win(),web_top_ident(),'grayed=');
+URL_PLAN.web_win_opt(web_top_win(),web_top_ident(),'grayed='+_ag);
+
+:: uzupełnienie informacji o roku planu
+exec('url_plan_hdr_rok','plany_urlopowe',URL_PLAN.ROK)
+
+
+\url_poz_web_iwpu_ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Obsługa akcji "Po odświeżeniu" okna WEB_IWPU tabeli URL_PLAN.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+URL_PLAN.cntx_psh();
+URL_PLAN.index('PRACROK');
+URL_PLAN.prefix();
+_url_plan:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+_url_plan_uid:='';
+
+:: Dostępność przycisków
+_empty:='';
+_not_empty:='';
+
+{? URL_PLAN.seek(_url_plan)
+|| _url_plan_uid:=URL_PLAN.uidref();
+   URL_POZ.cntx_psh();
+   URL_POZ.index('URL_POZ');
+   URL_POZ.prefix(URL_PLAN.ref());
+   {? URL_POZ.first()
+   || _not_empty:='';
+:: Czy sam mogę weryfikować własne plany
+      _self:=0;
+      _os_nad:=null();
+      P.cntx_psh();
+      _os_plan:=URL_POZ.URL_PLAN().P().OSOBA;
+      P.cntx_pop();
+:: pobranie pracowników przełożonych
+      _tab:=exec('prac_nad','stanprac',P.ref(),0,'TYPPOZ','AKCWNIO');
+      {? _tab.first()
+      || P.cntx_psh();
+         P.prefix();
+         {? P.seek(_tab.P,)
+         || _os_nad:=P.OSOBA
+         ?};
+         P.cntx_pop()
+      ?};
+
+      _self:=OPERATOR.USER().OSOBA=_os_nad;
+
+:: czy osoba przeglądająca może weryfikować plan
+      _can_verify:=((_os_nad<>null()) & ((_os_nad<>_os_plan) | ((_os_nad=_os_plan) & _self)));
+
+      {? URL_POZ.URL_PLAN().AZ='?' & _can_verify
+:: jeżeli dostępna weryfikacja planu
+      ||
+:: akcja Popraw i Usuń
+         {? URL_POZ.CAN_DEL<>'T'
+         || _not_empty+='PU'
+         ?}
+      ||
+         _not_empty+='DPU'
+      ?}
+   || _empty:='';
+      {? URL_PLAN.AZ<>'?'
+      || _empty:='D'
+      ?}
+   ?};
+   URL_POZ.cntx_pop()
+|| _not_empty:='DPU';
+   _empty:='D'
+?};
+
+:: sprawdzenie aktywnych czynności
+{? exec('record_keyrefed','#b__box',_url_plan_uid,'PKW_POR_IWPU')=0
+|| _not_empty:='DPU';
+   _empty:='D'
+?};
+
+_ag:=_not_empty+':'+_empty;
+
+URL_PLAN.cntx_pop();
+URL_PLAN.web_win_opt(web_top_win(),web_top_ident(),'grayed=');
+URL_PLAN.web_win_opt(web_top_win(),web_top_ident(),'grayed='+_ag)
+
+
+\url_plan_web_p_gr_ob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Przed obsługa dla okna WEB_WER tabeli URL_PLAN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+exec('url_plan_web_prefix','!pkw_por_iwpu');
+~~
+
+
+\url_plan_p_ctrl_gr_ob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Przed obsługa dla okna CTRL tabeli URL_PLAN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+web_ctrl_call('URL_PLAN_CTRL',,'setTitle',
+   exec('nazwa','#system')+': '+'Weryfikacja planów urlopowych'@
+);
+web_ctrl_call('URL_PLAN_CTRL',,'setBody',
+   exec('html','plany_urlopowe',exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN',''))
+);
+~~
+
+
+\url_plan_p_ctrl_lim_gr_ob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Przed obsługa dla okna CTRL_LIM tabeli URL_PLAN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+_ref:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+P.cntx_psh();
+OSOBA.cntx_psh();
+URL_PLAN.cntx_psh();
+URL_PLAN.index('PRACROK');
+URL_PLAN.prefix();
+{? URL_PLAN.seek(_ref)
+|| URL_PLAN.P().OSOBA();
+   web_ctrl_call('URL_PLAN_CTRL_LIM',,'setTitle',
+      exec('nazwa','#system')+': '+'Weryfikacja planów urlopowych'@
+   );
+   web_ctrl_call('URL_PLAN_CTRL_LIM',,'setHeadEnd',
+      '<div class="info_box title text_center">%1</div>'[exec('P','#to_string')]
+   );
+   web_ctrl_call('URL_PLAN_CTRL_LIM',,'setBody',exec('html_lim','plany_urlopowe','URL_PLAN_RED_P'))
+?};
+URL_PLAN.cntx_pop();
+OSOBA.cntx_pop();
+P.cntx_pop();
+~~
+
+
+\url_poz_web_p_gr_ob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Przed obsługą dla okna WEB_WER tabeli URL_POZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+_url_plan:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+_url_plan_ref:=null();
+URL_PLAN.cntx_psh();
+URL_PLAN.index('PRACROK');
+URL_PLAN.prefix();
+{? URL_PLAN.seek(_url_plan)
+|| _url_plan_ref:=URL_PLAN.ref()
+?};
+URL_PLAN.cntx_pop();
+URL_POZ.index('URL_POZ');
+URL_POZ.prefix(_url_plan_ref);
+~~
+
+
+\url_plan_akceptuj_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja przycisku "Akceptuj"
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('akceptuj_odrzuc','!pkw_por_iwpu','T')
+
+
+\url_plan_odrzuc_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja przycisku "Odrzuć"
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('akceptuj_odrzuc','!pkw_por_iwpu','N')
+
+
+\akceptuj_odrzuc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Akceptuj" lub "Odrzuć"
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('exist','#record') || return(~~) ?};
+
+_akceptuj:={? var_pres('_a')=type_of('') || _a || return(~~) ?};
+{? _akceptuj<>'T' & _akceptuj<>'N' || return(~~) ?};
+
+_url_plan:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+_act_uid:='PKW_POR_IWPU';
+URL_PLAN.cntx_psh();
+URL_PLAN.prefix();
+{? URL_PLAN.seek(_url_plan)
+   & exec('env_wt','b_proces') & exec('load_cur_prac','p_web') & exec('is_act','#b__box',_act_uid,1)
+|| URL_POZ.cntx_psh();
+   URL_POZ.index('URL_POZ');
+   URL_POZ.prefix(URL_PLAN.ref());
+   {? URL_POZ.size()
+   || OSOBA.cntx_psh();
+      OSOBA.index('OSOBA');
+      OSOBA.prefix();
+      {? OSOBA.seek(OPERATOR.USER().OSOBA)
+      || exec('url_wnio_edit','plany_urlopowe',URL_PLAN.ref(),_akceptuj,OSOBA.uidref(),_act_uid)
+      ?};
+      OSOBA.cntx_pop()
+   || FUN.info('Plan nie zawiera pozycji.'@)
+   ?};
+   URL_POZ.cntx_pop()
+|| FUN.emsg('Nie udało się wyszukanie rekordu planu urlopowego.')
+?};
+URL_PLAN.cntx_pop()
+
+
+\url_plan_web_p_rok_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Rok" okna wertowania WEB_P tabeli ULR_PLAN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+web_params_set(web_params_get());
+{? exec('env_wt','b_proces')
+|| exec('url_plan_rok','plany_urlopowe','PKW_POR_IWPU')
+?};
+0
+
+
+\url_poz_web_iwpu_add_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Dołącz" dla pozycji planu urlopowego
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+web_params_set(_web_params:=web_params_get());
+
+_url_plan:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+
+URL_PLAN.cntx_psh();
+URL_PLAN.prefix();
+{? URL_PLAN.seek(_url_plan)
+|| URL_POZ.blank(1);
+   URL_POZ.URL_PLAN:=URL_PLAN.ref();
+   URL_POZ.CAN_DEL:='T';
+   URL_PLAN.web_cntx_save(1);
+
+   URL_POZ.web_edit('WEB_RED','url_poz12345',,,"
+
+      URL_PLAN.web_cntx_load(1);
+      web_params_set(_web_params:=web_params_get());
+
+::    Ustawiam środowisko.
+      exec('env_wt','b_proces');
+
+      _result:='';
+      {? _a='OK'
+      || _result:=exec('add_urpl','plany_urlopowe',URL_POZ.URL_PLAN,,URL_POZ.OD,URL_POZ.DO,URL_POZ.RODZAJ,1);
+         {? +_result
+         || FUN.emsg(_result)
+         ?}
+      ?};
+      {? _result=''
+      || URL_POZ.web_eclose('WEB_RED');
+         exec('url_plan_red_p_gr_ob','!pkw_por_iwpu');
+         URL_PLAN.web_update('WEB_GR_P','URL_PLAN_RED_P')
+      ?}
+   ")
+?};
+URL_PLAN.cntx_pop();
+~~
+
+
+\url_poz_web_iwpu_put_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Popraw" dla pozycji planu urlopowego
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('exist','#record') || return(~~) ?};
+
+web_params_set(_web_params:=web_params_get());
+
+_url_plan:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+
+URL_PLAN.cntx_psh();
+URL_PLAN.prefix();
+{? URL_PLAN.seek(_url_plan)
+|| URL_PLAN.web_cntx_save(1);
+   URL_POZ.web_edit('WEB_RED','url_poz12345',,,"
+
+      URL_PLAN.web_cntx_load(1);
+      web_params_set(_web_params:=web_params_get());
+
+::    Ustawiam środowisko.
+      exec('env_wt','b_proces');
+
+      _result:='';
+      {? _a='OK'
+      || _result:=exec('add_urpl','plany_urlopowe',URL_POZ.URL_PLAN,URL_POZ.ref(),
+                                                   URL_POZ.OD,URL_POZ.DO,URL_POZ.RODZAJ,1);
+         {? +_result
+         || FUN.emsg(_result)
+         ?}
+      ?};
+      {? _result=''
+      || URL_POZ.web_eclose('WEB_RED');
+         exec('url_plan_red_p_gr_ob','!pkw_por_iwpu');
+         URL_PLAN.web_update('WEB_GR_P','URL_PLAN_RED_P')
+      ?}
+   ")
+?};
+URL_PLAN.cntx_pop();
+~~
+
+
+\url_poz_web_iwpu_del_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Usuń" dla pozycji planu urlopowego
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('exist','#record') || return(~~) ?};
+
+_fml:="
+   URL_POZ.web_cntx_load(1);
+   {? _a=1 & exec('env_wt','b_proces')
+   || _deleted:=exec('url_poz_delete','plany_urlopowe',URL_POZ.ref())>0;
+      {? ~_deleted
+      || FUN.info('Nie można usunąć wybranej pozycji planu urlopowego.'@)
+      ?};
+      _url_plan:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+      URL_PLAN.prefix();
+      {? URL_PLAN.seek(_url_plan)
+      || {? _deleted
+         || _szef:='';
+            {? exec('load_cur_prac','p_web')
+            || _szef:={? exec('p_web_cx_get_rodzaj','pkw')='W' || 'S' || '' ?}
+            ?};
+::          dodanie informacji, że plan został poprawiony
+            {? _szef='S'
+            || URL_PLAN.AP:='T';
+               URL_PLAN.put()
+            ?}
+         ?};
+         exec('url_plan_red_p_gr_ob','!pkw_por_iwpu');
+         URL_PLAN.web_update('WEB_GR_P','URL_PLAN_RED_P')
+      ?}
+
+   ?}";
+
+URL_POZ.web_cntx_save(1);
+web_ask(_fml,'Czy usunąć wybraną pozycję planu urlopowego?'@,'Plany urlopowe'@);
+~~
+
+
+\select_prac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Wyświetla okno grupowe weryfikacji planu urlopowego wybranego pracownika
+::   WE: [_a] [STRING]    - 'Proc' lub 'Todo' lub 'Area' (opcjonalnie)
+::       [_b] [REFERENCE] - wskazanie na element procesu (opcjonalne, ma sens dla _path='Proc')
+::       [_c] [STRING]    - uidref planu urlopowego
+::       [_d] [STRING]    - akronim okna, z którego wywołana została formuła (niestety ale klikając z okna z kontrolką
+::                          nie mam informacji o web_top_win więc muszę to przekazać parametrem
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+    _path:={? var_pres('_a')=type_of('')     || _a || ''            ?};
+  _b_prel:={? var_pres('_b')=type_of(null()) || _b || null()        ?};
+_url_plan:={? var_pres('_c')=type_of('')     || _c || ''            ?};
+ _top_win:={? var_pres('_d')=type_of('')     || _d || web_top_win() ?};
+
+:: Ustawiam środowisko.
+{? exec('env_wt','b_proces')
+||
+:: Zawsze zaczynamy, od przekazania parametrów "dalej".
+   web_params_set(
+         exec('obj_ntab_set','#array',
+            web_params_get(1),
+            'path',_path,
+            'b_prel',$_b_prel,
+            'top_win',_top_win,
+         )
+      );
+
+      URL_PLAN.cntx_psh();
+      URL_PLAN.prefix();
+      {? URL_PLAN.seek(_url_plan)
+      || exec('web_global_params_set','pkw','PKW_POR_IWPU','URL_PLAN',URL_PLAN.uidref());
+         exec('web_global_params_set','pkw','PKW_POR_IWPU','P',URL_PLAN.P);
+         exec('web_global_params_set','pkw','PKW_POR_IWPU','ROK',URL_PLAN.ROK);
+
+::       dodajemy pracowników podwładnych z odpowiednim typem
+         _typ:='AKCWNIO';
+         exec('p_web_cx_set_prefix','p_web',_typ);
+         {? ~P_WEB_CX.first()
+         || exec('p_web_cx_set','p_web',_typ)
+         ?};
+
+::       uzupełnienie informacji w tytule okna o roku planu
+         _rok:=exec('web_global_params_get','pkw','PKW_POR_IWPU','ROK',date~1);
+         URL_PLAN.web_win_init('WEB_GR_P',,'title= - %1r.'[$_rok]);
+
+         URL_PLAN.web_cntx_save(1);
+         {? _path='Todo'
+         || BI_TODO.web_cntx_save(1)
+         ?};
+
+         exec('web_global_params_set','pkw','PKW_POR_IWPU','WEB_GR_P_CLOSING',0);
+         URL_PLAN.web_select('WEB_GR_P','url_plan201613_',,,"
+            {? ~exec('web_global_params_get','pkw','PKW_POR_IWPU','WEB_GR_P_CLOSING',0)
+            || exec('web_global_params_set','pkw','PKW_POR_IWPU','WEB_GR_P_CLOSING',1);
+               _param:=web_params_get();
+               _path:=_param.path;
+               _top_win:=_param.top_win;
+               web_top_close();
+               URL_PLAN.web_cntx_load(1);
+               {? _path='Todo'
+               || BI_TODO.web_cntx_load(1);
+                  web_top_refresh(1)
+               |? _path='Proc'
+               || exec('web_title_clear','areatitle')
+               || {? _top_win='WEB_GR_W'
+                  || URL_PLAN.web_refresh('WEB_GR_W','P_WEB_CX_WEB_WPU')
+                  ?}
+               ?}
+            ?}
+         ")
+      ?};
+      URL_PLAN.cntx_pop()
+?};
+~~
+
+
+\web_gr_w_p_web_cx_ob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Przed obsługą dla okna WEB_WPU tabeli P_WEB_CX w oknie grupowym WEB_GR_W tabeli URL_PLAN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+:: ustalenie pracowników podwładnych dla typu AKCWNIO
+exec('p_web_cx_set_prefix','p_web','AKCWNIO');
+~~
+
+
+\url_plan_web_red_bo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Przed obsługą dla okienka redagowania WEB_RED
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\url_plan_web_prefix
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Ustawia prefix na tabeli URL_PLAN
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_p_ref:=exec('web_global_params_get','pkw','PKW_POR_IWPU','P_REF',null());
+_rok:=exec('web_global_params_get','pkw','PKW_POR_IWPU','ROK',date~1);
+
+{? _p_ref=null()
+:: Odczytuję zapamiętany kontekst tabeli P.
+|| {? exec('load_cur_prac','p_web')
+   || _p_ref:=P.ref()
+   ?}
+?};
+URL_PLAN.index('PRACROK');
+URL_PLAN.prefix(_p_ref,_rok);
+~~
+
+
+\p_web_wpu_wyswietl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Wyświetl" wywoływana jeśli nie ma zaznaczonego żadnego rekordu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: odznaczamy rekordy
+exec('p_web_cx_wpu_clear_all','pkw');
+:: odświeżamy okno kontrolki
+exec('url_plan_ctrl_wpu_gr_ob','!pkw_por_iwpu');
+
+FUN.info('Nie zaznaczono pracowników, którym należy wyświetlić plany urlopowe.'@);
+0
+
+
+\p_web_wpu_wyswietl_gr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Wświetl" wywoływana jeśli jest zaznaczony choć jeden rekord
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+web_params_set(web_params_get());
+{? exec('env_wt','b_proces')
+||
+:: odznaczamy rekordy
+   exec('p_web_cx_wpu_clear_all','pkw');
+
+:: ustawiamy znacznik zaznaczenia zdognie z wyborem
+   exec('p_web_cx_wpu_check_selected','!pkw_por_iwpu');
+
+:: odświeżamy okno kontrolki
+   exec('url_plan_ctrl_wpu_gr_ob','!pkw_por_iwpu')
+?};
+0
+
+
+\url_plan_red_p_wykres
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Wykres" wywoływana z okna RED_P tabeli URL_PLAN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_url_plan:=exec('web_global_params_get','pkw','PKW_POR_IWPU','URL_PLAN','');
+web_params_set(web_params_get());
+
+URL_PLAN.cntx_psh();
+URL_PLAN.prefix();
+{? URL_PLAN.seek(_url_plan) & exec('env_wt','b_proces')
+||
+:: odznaczamy rekordy
+   exec('p_web_cx_wwu_clear_all','pkw');
+
+:: dodajemy zaznaczenie dla pracownika
+   P_WEB_CX.cntx_psh();
+   exec('p_web_cx_set_prefix','p_web','AKCWNIO',,URL_PLAN.P);
+   {? P_WEB_CX.first()
+   || exec('add','wt_group','WWU',$P_WEB_CX.ref())
+   ?};
+   P_WEB_CX.cntx_pop();
+   URL_PLAN.web_select('WEB_GR_L')
+?};
+URL_PLAN.cntx_pop();
+~~
+
+
+\p_web_wpu_wykres
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Wykres" wywoływana jeśli nie ma zaznaczonego żadnego rekordu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: odznaczamy rekordy
+exec('p_web_cx_wwu_clear_all','pkw');
+
+:: odświeżamy okno kontrolki
+exec('url_plan_ctrl_wpu_gr_ob','!pkw_por_iwpu');
+
+FUN.info('Nie zaznaczono pracowników, którym należy wyświetlić wykres wykorzystania planów urlopowych.'@);
+0
+
+
+\p_web_wpu_wykres_gr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Akcja "Wykres" wywoływana jeśli jest zaznaczony choć jeden rekord
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+web_params_set(web_params_get());
+{? exec('env_wt','b_proces')
+||
+:: odznaczamy rekordy
+   exec('p_web_cx_wwu_clear_all','pkw');
+
+:: ustawiamy znacznik zaznaczenia zdognie z wyborem
+   exec('p_web_cx_wwu_check_selected','!pkw_por_iwpu');
+
+:: odświeżamy okno kontrolki
+   exec('url_plan_ctrl_wpu_gr_ob','!pkw_por_iwpu');
+
+:: wyświetlamy wykres
+   URL_PLAN.web_select('WEB_GR_L','wykreswy201610')
+?};
+0
+
+
+\p_web_cx_web_wpu_ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Obsługa akcji "Po odświeżeniu" okna WEB_WPU tabeli P_WEB_CX.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\p_web_cx_wpu_check_selected
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Ustawia znacznik zaznaczenia pola WPU tabeli P_WEB_CX zdognie z wyborem użytkownika
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('p_web_cx_pole_check_selected','pkw','WPU','T');
+~~
+
+
+\p_web_cx_wwu_check_selected
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Ustawia znacznik zaznaczenia pola WWU tabeli P_WEB_CX zdognie z wyborem użytkownika
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('p_web_cx_pole_check_selected','pkw','WWU','T');
+~~
+
+
+\p_web_wpu_uwzglednij_all
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Funkcja zaznacza rekord tabali P_WEB_CX
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('web_global_params_set','pkw','P_WEB_CX','TYPPOZ','AKCWNIO');
+exec('p_web_cx_uwzglednij_all','pkw')
+
+
+\plan_url
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KFI [2009]
+:: OPIS: Zwraca plany urlopowe na kazdy miesiac, pracownikow podwladnych lub plan jednego pracownika.
+::   WE: _a [REFERENCE] - wskazanie na plan urlopowy.
+::       _b [INTEGER]   - rok z ktorego sa pobierane plany urlopowe
+::       _c [STRING]    - S - plany pracownikow podwladnych, P - plan pracownika
+::  OLD: \plan_url/porta_ka.fml
+::----------------------------------------------------------------------------------------------------------------------
+_PLAN_URL:=tab_tmp(1,
+   'P',       'INTEGER',,
+   'REF',     'STRING[48]',,
+   'AZ',      'STRING[1]',,
+   'ST',      'STRING[1]',,
+   'IMIE',    'STRING[20]',,
+   'NAZWISKO','STRING[30]',,
+   'T',       'STRING[9]',,
+   'M1',      'STRING[62]',,
+   'MD1',      'STRING[62]',,
+   'M2',      'STRING[58]',,
+   'MD2',      'STRING[58]',,
+   'M3',      'STRING[62]',,
+   'MD3',      'STRING[62]',,
+   'M4',      'STRING[60]',,
+   'MD4',      'STRING[60]',,
+   'M5',      'STRING[62]',,
+   'MD5',      'STRING[62]',,
+   'M6',      'STRING[60]',,
+   'MD6',      'STRING[60]',,
+   'M7',      'STRING[62]',,
+   'MD7',      'STRING[62]',,
+   'M8',      'STRING[62]',,
+   'MD8',      'STRING[62]',,
+   'M9',      'STRING[60]',,
+   'MD9',      'STRING[60]',,
+   'M10',     'STRING[62]',,
+   'MD10',      'STRING[62]',,
+   'M11',     'STRING[60]',,
+   'MD11',      'STRING[60]',,
+   'M12',     'STRING[62]',,
+   'MD12',      'STRING[62]',
+);
+
+_ref:={? var_pres('_a')=type_of(null()) || _a || null()            ?};
+_rok:={? var_pres('_b')=type_of(0)      || _b || return(_PLAN_URL) ?};
+ _co:={? var_pres('_c')=type_of('')     || _c || return(_PLAN_URL) ?};
+
+{? _co='S'
+|| exec('p_web_cx_set_prefix','p_web','AKCWNIO')
+?};
+
+:: konieczne ustawienie zmiennej KST_PAR w bieżącej obsłudze, przed wywołaniem exec('dni_mies','plany_urlopowe...)
+exec('czytaj','#stalesys',date(_rok,1,1),KST_PAR,'URLOP','URL_CHOR');
+_uzupdni:="{! _msc:=1..12
+           |! exec('dni_mies','plany_urlopowe',_msc,1,_a,_b)
+           !}";
+
+P_WEB_CX.cntx_psh();
+P_WEB_CX.prefix();
+OSOBA.cntx_psh();
+P.cntx_psh();
+P.prefix();
+URL_PLAN.cntx_psh();
+URL_PLAN.index('ROK');
+URL_PLAN.prefix();
+_lTab:=exec('get','wt_group','WPU');
+{? _co='S'
+|| {? _lTab.first()
+   || {!
+      |? {? P_WEB_CX.seek(_lTab.KEY)
+         || P_WEB_CX.P();
+            _PLAN_URL.blank(1);
+            _PLAN_URL.P:=P_WEB_CX.P;
+            _PLAN_URL.T:=P_WEB_CX.P().T;
+            _PLAN_URL.IMIE:=P_WEB_CX.P().OSOBA().PIERWSZE;
+            _PLAN_URL.NAZWISKO:=OSOBA.NAZWISKO;
+
+            {? URL_PLAN.find_key(P.ref(),'A',_rok) & URL_PLAN.AZ<>'E' & URL_PLAN.AZ<>'N'
+            || _PLAN_URL.REF:=URL_PLAN.uidref();
+               _PLAN_URL.AZ:=URL_PLAN.AZ;
+               _PLAN_URL.ST:=URL_PLAN.ST;
+               _uzupdni(_PLAN_URL,URL_PLAN.ref());
+               _PLAN_URL.add()
+            ?};
+            {? URL_PLAN.find_key(P.ref,'K',_rok) & URL_PLAN.AZ<>'E' & URL_PLAN.AZ<>'N'
+            || _PLAN_URL.REF:=URL_PLAN.uidref();
+               _PLAN_URL.AZ:=URL_PLAN.AZ;
+               _PLAN_URL.ST:=URL_PLAN.ST;
+               _uzupdni(_PLAN_URL,URL_PLAN.ref());
+               _PLAN_URL.add()
+            ?};
+            {? URL_PLAN.find_key(P.ref,'U',_rok) & URL_PLAN.AZ<>'E' & URL_PLAN.AZ<>'N'
+            || _PLAN_URL.REF:=URL_PLAN.uidref();
+               _PLAN_URL.AZ:=URL_PLAN.AZ;
+               _PLAN_URL.ST:=URL_PLAN.ST;
+               _uzupdni(_PLAN_URL,URL_PLAN.ref());
+               _PLAN_URL.add()
+            ?}
+         ?};
+         _lTab.next()
+      !}
+   ?}
+|| {? URL_PLAN.seek(_ref)
+   || _PLAN_URL.P:=URL_PLAN.P;
+      _PLAN_URL.IMIE:=P_WEB_CX.P().OSOBA().PIERWSZE;
+      _PLAN_URL.NAZWISKO:=OSOBA.NAZWISKO;
+      _uzupdni(_PLAN_URL,URL_PLAN.ref());
+      _PLAN_URL.add()
+   ?}
+?};
+URL_PLAN.cntx_pop();
+P.cntx_pop();
+OSOBA.cntx_pop();
+P_WEB_CX.cntx_pop();
+_PLAN_URL
+
+
+\html_wpu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Graficzny widok planu urlopowego w postaci HTML.
+::   WE: [_a] [INTEER] - numer roku do wyświetlenia
+::       [_b] [INTEER] - numer miesiąca do wyświetlenia
+::   WY: String html do wyświetlenia w kontrolce
+::----------------------------------------------------------------------------------------------------------------------
+_par_rok:={? var_pres('_a')=type_of(0) || _a || date~1 ?};
+_par_msc:={? var_pres('_b')=type_of(0) || _b || 0      ?};
+
+exec('init','edit_kal');
+
+_ile_dni_fml:="
+   _do:=date(_a,_b,0);
+   _od:=date(_a,_b,1);
+   (_do-_od)+1
+";
+
+_ret:='';
+_ret:=
+   '<style type="text/css">\n'
+   '@media all {'
+      '.url_plan_tab {background-color: #F0F0F0; '
+                     'text-align: center;'
+                     '}'
+      '.title {min-height:13px; font-weight: bold; font-size: 12px;}\n'
+      '.plan_urlop { background-color: #FF9900; color: white;}\n'
+      '.urlop_nie_plan { background-color: #1FBC5B; color: white;}\n'
+      '.plan_dod { background-color: #FF9980; color: white;}\n'
+      '.urlop_plan { background-color: #8FBC8B; color: white;}\n'
+      '.brak { background-color: white;}\n'
+      '.weryfikacja { color: red;}\n'
+      '.text_left { text-align: left;}\n'
+      '.padding_text {padding: 3px 6px 4px 6px;}\n'
+      '.padding_tb {padding: 3px 0px 4px 0px;}\n'
+      '.border {border: 1px solid #F0F0F0;}\n'
+      '.info_box {margin-left: 20px; margin-top: 20px; font-weight: bold; font-size: 14px;}\n'
+   '}'
+   '</style>\n'
+;
+
+_class_fml:=exec('class_fml','plany_urlopowe');
+_title_fml:=exec('title_fml','plany_urlopowe');
+
+_tab:=exec('plan_url','!pkw_por_iwpu',,_par_rok,'S');
+
+_ret+='<div class="info_box">';
+_ret+='Plany urlopowe pracowników - %1r.'@[$_par_rok];
+_ret+='</div>';
+:: tworzymy tabelę z widokiem dni w poszczególnych miesiącach
+_ret+='<table class="url_plan_tab" style="width: 95%; margin: 20px; ">';
+
+:: wiersz nagłówkowy "Legenda"
+_ret+='<tr class="url_plan_tab">';
+_ret+='<td class="url_plan_tab text_left title padding_text" style="width: 9%;">'+'Legenda:'@+'</td>';
+_ret+='<td class="url_plan_tab" style="width: 91%;"><table class="url_plan_tab"><tr class="url_plan_tab">';
+_ret+='<td class="plan_urlop padding_text title"><div>'+_title_fml(1)+'</div></td>';
+_ret+='<td class="plan_dod padding_text title"><div>'+_title_fml(2)+'</div></td>';
+_ret+='<td class="urlop_plan padding_text title"><div>'+_title_fml(4)+'</div></td>';
+_ret+='<td class="urlop_nie_plan padding_text title"><div>'+_title_fml(3)+'</div></td>';
+_ret+='<td class="brak padding_text title"><div>'+_title_fml(0)+'</div></td>';
+_ret+='</tr></table></td>';
+_ret+='</tr>';
+_ret+='</table>';
+_ret+='<table class="url_plan_tab" style="width: 95%; margin: 20px; ">';
+
+_end:={? _par_msc || _ile_dni_fml(_par_rok,_par_msc) || 12 ?};
+
+:: wiersz nagłówkowy "Rok, Miesiąc"
+_ret+='<tr class="url_plan_tab">';
+_ret+='<td class="url_plan_tab padding_text"><div style="min-height:10px; font-weight: bold;">';
+_ret+='';
+_ret+='</div></td>';
+_ret+='<td class="url_plan_tab border padding_text"><div style="min-height:10px; font-weight: bold;">';
+_ret+='';
+_ret+='</div></td>';
+_ret+='<td colspan="'+$_end+'" class="url_plan_tab border padding_text brak">';
+_ret+='<div style="min-height:10px; font-weight: bold;';
+{? _par_msc
+|| _ret+='"><span style="min-height:10px; font-weight: bold;">';
+   _ret+=opis(_par_msc);
+   _ret+='</span><span';
+::  określenie formuły i przypisanie jej do akcji onclick elementu
+   _fml:="exec('url_plan_ctrl_wpu_gr_ob','!pkw_por_iwpu',"+$_par_rok+")";
+   _click_action:=exec('HTML_click_action','#web_srv',_fml);
+
+   _ret+=' style="cursor: pointer; text-decoration: underline; margin-left: 10px; min-height:10px; font-weight: bold;"';
+   _ret+=' onclick="'+_click_action+'">';
+   _ret+=$_par_rok;
+   _ret+='</span>'
+|| _ret+='">'+$_par_rok
+?};
+_ret+='</div></td>';
+_ret+='</tr>';
+
+:: wiersz nagłówkowy "Nazwisko, Imie, Status"
+_ret+='<tr class="url_plan_tab">';
+_ret+='<td class="url_plan_tab padding_text"><div style="min-height:10px; min-width: 200px; font-weight: bold;">';
+_ret+='Nazwisko i Imię'@;
+_ret+='</div></td>';
+_ret+='<td class="url_plan_tab border padding_text">'
+      '<div style="min-height:10px; min-width: 120px; font-weight: bold;">';
+_ret+='Status'@;
+_ret+='</div></td>';
+
+{! _day:=1.._end
+|! _ret+='<td class="url_plan_tab brak border padding_text"><div';
+   {? _par_msc
+   || _ret+=' style="min-height:10px; font-weight: bold;" ';
+      _ret+='>';
+      _ret+=$_day;
+      _ret+='</div>';
+      _ret+='<div>';
+      _ret+=week_short(date(_par_rok,_par_msc,_day)~4);
+      _ret+='</div>'
+   ||
+::  określenie formuły i przypisanie jej do akcji onclick elementu
+      _fml:="exec('url_plan_ctrl_wpu_gr_ob','!pkw_por_iwpu',"+$_par_rok+","+$_day+")";
+      _click_action:=exec('HTML_click_action','#web_srv',_fml);
+
+      _ret+=' style="min-height:10px; font-weight: bold; cursor: pointer; text-decoration: underline;" ';
+      _ret+=' onclick="'+_click_action+'"';
+      _ret+='>';
+      _ret+=opis(_day);
+      _ret+='</div>'
+   ?};
+   _ret+='</td>'
+!};
+_ret+='</tr>';
+
+:: sekcja danych
+{? _tab.first()
+|| {!
+   |? _ret+='<tr class="url_plan_tab">';
+      _ret+='<td class="url_plan_tab" style="width: 15%;">';
+      _ret+='<table class="url_plan_tab" style="width:100%; border-collapse: collapse;"><tr class="url_plan_tab">';
+      _ret+='<td class="brak text_left padding_text">';
+
+      _fml:="exec('select_prac','!pkw_por_iwpu',,,'"+_tab.REF+"','WEB_GR_W')";
+      _click_action:=exec('HTML_click_action','#web_srv',_fml);
+
+      _ret+='<div style="min-height:18px; cursor: pointer; text-decoration: underline;" ';
+      _ret+=' onclick="'+_click_action+'"';
+      _ret+='>';
+      _ret+=_tab.NAZWISKO+' '+_tab.IMIE+' ('+_tab.T+')';
+      _ret+='</div>';
+      _ret+='</td>';
+      _ret+='</tr></table>';
+      _ret+='</td>';
+
+      _ret+='<td class="url_plan_tab" style="width: 7%;">';
+      _ret+='<table class="url_plan_tab" style="width:100%; border-collapse: collapse;"><tr class="url_plan_tab">';
+      _status_class:={? _tab.AZ='?' || 'weryfikacja' || '' ?};
+      _ret+='<td class="brak padding_text '+_status_class+'">';
+      _ret+='<div style="min-height:18px;">';
+      _plan_status:=exec('plan_status_to_text','plany_urlopowe',_tab.AZ);
+      _ret+=_plan_status;
+      _ret+='</div>';
+      _ret+='</td>';
+      _ret+='</tr></table>';
+      _ret+='</td>';
+
+      {! _msc:=1.._end
+      |! _procent:=(78/_end);
+         _ret+='<td class="url_plan_tab" style="width: '+form(_procent,,,'9.')+'%">';
+         _ret+='<table class="url_plan_tab" style="width:100%; border-collapse: collapse;"><tr class="url_plan_tab">';
+
+         _msc_str:={? _par_msc
+                   || ($(("_a.MD")+$_par_msc))(_tab)
+                   || ($(("_a.M")+$_msc))(_tab)
+                   ?};
+         _msc_str:=_msc_str-1;
+
+         {? var_pres('_typy')>100 || obj_del(_typy) ?};
+         _typy:=spli_str(_msc_str,',');
+         _length:={? _par_msc || 1 || obj_len(_typy) ?};
+         {! _ind:=1.._length
+         |!
+            {? var_pres('_typ')>100 || obj_del(_typ) ?};
+            _typ:={? _par_msc
+                  || _typy[_msc]
+                  || spli_str(_typy[_ind],';')
+                  ?};
+
+            _rodzaj_urlopu:={? _par_msc || #_typ || #_typ[1] ?};
+            _liczba_dni:={? _par_msc || #_typ>0 || #_typ[2] ?};
+
+            _width:=(_liczba_dni/{? _par_msc || 1 || _ile_dni_fml(_par_rok,_msc) ?})*100;
+
+            _class:='url_plan_tab padding_tb ';
+            _class+=_class_fml(_rodzaj_urlopu);
+            _title:=_title_fml(_rodzaj_urlopu);
+
+            _ret+='<td class=\"'+_class+'\" style="width:'+$(_width$0)+'%">';
+            _ret+='<div style="min-height:18px;" title="'+_title+'">&nbsp;';
+            _ret+='</div>';
+            _ret+='</td>'
+         !};
+         _ret+='</tr></table>';
+         _ret+='</td>'
+      !};
+      _ret+='</tr>';
+      _tab.next()
+   !}
+?};
+_ret+='</table>';
+
+{? _tab.size()=0
+|| P_WEB_CX.cntx_psh();
+   _lTab:=exec('get','wt_group','WPU');
+   {? _lTab.first()
+   ||_ret+='<div class="info_box weryfikacja">';
+      _ret+='Brak planów urlopowych do weryfikacji dla zaznaczonych pracowników.'@;
+      _ret+='</div>'
+   ?};
+   P_WEB_CX.cntx_pop()
+?};
+_ret
+
+
+\access
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR & TMR [17.00]
+:: OPIS: Formuła uprawnień, decyduje o tym, czy dany użytkownik może uruchomić bieżącą instancję czynności.
+::   WE:
+::   WY: 0 - Użytkownik nie ma uprawnień do wykonania bieżącej instancji czynności.
+::       1 - Użytkownik ma uprawnienia do wykonania bieżącej instancji czynności.
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_env','pkw_por');
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+:: Użytkownik weryfikowany (być może zastępujący).
+_user:=_par.user;
+:: Użytkownik zastępowany lub ~~.
+_user_r:=_par.user_r;
+
+_ret:=0;
+
+_usr:={? _user_r=~~ || _user || _user_r ?};
+_osoba:=exec('FindAndGet','#table',USERS,_usr,,"OSOBA",null());
+{? _osoba=null()
+|| return(_ret)
+?};
+
+URL_PLAN.cntx_psh();
+URL_PLAN.prefix();
+P.cntx_psh();
+P.prefix();
+{? var_pres('URL_PLAN',_in)=type_of(null()) & _in.URL_PLAN<>null() &
+   URL_PLAN.seek(_in.URL_PLAN) & (URL_PLAN.AZ='?' | URL_PLAN.AZ='N') &
+   P.seek(URL_PLAN.P)
+
+:: Dla obsługi webTermowej nie będziemy sprawdzali uprawnień użytkownika do form współpracy czy jednostek
+:: organizacyjnych. Zakładamy, że ustalanie przełożonego jest wystarczającym sprawdzianem. Pozwala to nam zrezygnować
+:: ze żmudnego ustalania uprawnień pod jTermem dla użytkowników wyłącznie webowych.
+|| _TAB:=exec('przelozony','wnioski_urlopowe',URL_PLAN.P,1,'PKW_POR_IWPU');
+   {? _TAB.first() & P.seek(_TAB.P_SQL)
+   || {? URL_PLAN.AO<>P.OSOBA
+::       Aktualizacja bezpośredniego przełożonego na planie urlopowym.
+      || URL_PLAN.AO:=P.OSOBA;
+         URL_PLAN.put()
+      ?};
+      _ret:=P.OSOBA=_osoba
+   ?}
+
+:: Jeżeli jest jakiś problem z parametrem wejściowym (np. rekord planu urlopowego został usunięty), to
+:: na uruchomienie czynności pozwólmy każdemu. Tylko w ten sposób możemy sprawić, aby czynność zwinęła się.
+|| _ret:=1
+?};
+P.cntx_pop();
+URL_PLAN.cntx_pop();
+
+_ret
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:39 a2bcb25207d9efeb1236caf572be790ed7ad10f8b567f64cbcd2b118b333a9ed73ee6f9c9b0adcbb75aad465e95711d5d46b6ba6e432f3c6268e34e4eaea3a93ebe5a9c25d92e2f5f63df137b9668926c584641ccb116cf2dcb7b805646512e2765707b3cf45afdfdea5f16ea54114352b1b20949217fdeffcf657ec21bcdc07

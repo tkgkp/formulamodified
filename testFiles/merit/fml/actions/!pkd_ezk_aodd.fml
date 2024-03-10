@@ -1,0 +1,298 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_ezk_aodd.fml
+:: Utworzony: 15.10.2021
+:: Autor: IS
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PKD_EZK_AODD - Kończące się oddelegowania.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Kończące się oddelegowania - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=SERVICE
+::# permissions=F_ZATR,UD_SKL
+::
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+::
+:: Czynność zbiera informacje o pracownikach, których okres wypowiwedzenia ulega zmianie w czasie określonym parametrami
+:: wejściowymi OD i DO. Dla czynności serwisowej wymagana jest data OD i data DO.
+:: Jeżeli w podanym okresie współpracownik kończy kilka oddelegowań (podano długi okres badania) zostanie wykazane
+:: ostatnie z nich.
+::# kind=WE, symbol=OD, type=DATE, name=Data początkowa badanego okresu, required=N
+::# kind=WE, symbol=DO, type=DATE, name=Data końcowa badanego okresu, required=N
+::
+:: Parametr wejściowy UD_SCH pozwala wskazać symbol schematu (typu PODZORG), który posłuży do ustalenia jednostki
+:: organizacyjnej, przekazanej parametrem UD_SKL. Jeżeli parametr nie zostanie przekazany (ustawiony), to wybrany
+:: zostanie schemat domyślny lub (jeżeli domyślny nie został określony) pierwszy (w kolejności alfabetycznej).
+::# kind=WE, symbol=UD_SCH, type=STRING, name=Schemat organizacyjny, required=N, ^
+::#    fml_val="exec('ud_sch_wybierz','schemat',,_a).SYMBOL"
+::
+:: Parametr wejściowy UD_SKL pozwala wskazać jednostkę organizacyjną, do której będzie ograniczony zakres przetwarzania.
+:: Domyślnie przetwarzane będą wszystkie jednostki organizacyjne.
+::# kind=WE, symbol=UD_SKL, type=STRING, name=Jednostka organizacyjna, required=N, ^
+::#    fml_val="exec('ud_skl_wybierz','schemat',,,1,_a)"
+::
+:: Parametr wejściowy SQL_FROM umożliwia zbudowanie dodatkowych relacji na potrzeby dodatkowego warunku
+:: (patrz SQL_WHERE).
+:: Domyślnie przyjmuje wartość pustą.
+::# kind=WE, symbol=SQL_FROM, type=STRING, name=Dodatkowe relacje filtra, required=N
+::
+:: Parametr wejściowy SQL_WHERE umożliwia dodatkowe ograniczenie listy współpracowników. Warunek może odwoływać się
+:: do tabeli pracowników (poprzez alias "P" np. "P".ID>1000) oraz
+:: do tabeli osób (poprzez alias "1OSOBA" np. "1OSOBA".PLEC='K').
+:: Odwołania do innych tabel wymagają odpowiedniego użycia parametru SQL_FROM.
+:: Domyślnie SQL_WHERE przyjmuje wartość pustą.
+::# kind=WE, symbol=SQL_WHERE, type=STRING, name=Dodatkowy warunek filtra, required=N
+::
+:: Parametr wejściowy FML_TEST umożliwia dodatkową weryfikację wyboru współpracownika do przetwarzania. Jest treścią
+:: formuły w formacie napisu. Jeżeli formuła zwróci wartość 0 to dany współpracownik nie będzie przetwarzany.
+:: Formuła jest wykonywana przy ustawionych buforach tabel: P, OSOBA.
+:: Domyślnie przyjmuje wartość '1'.
+::# kind=WE, symbol=FML_TEST, type=STRING, name=Dodatkowy warunek wyboru, required=N
+::
+:: Parametr wejściowy BZUS określa czy wykazywać jedynie pracowników, którym kończy się oddelegowanie bez opłacania
+:: składek ZUS. Domyślnie: 'T'
+::# kind=WE, symbol=BZUS, type=STRING, name=Tylko oddelegowania bez opłacania składek ZUS? (T/N), required=N, ^
+::#    fml_val="exec('edit_boolean','#edit',{? _a=~~ || '' || _a ?},'Tylko oddelegowania bez opłacania składek ZUS?')"
+::
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+::
+:: Wynik działania czynności. Parametr szczególnie istotny w przypadku uruchomienia czynności usługowej.
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik czynności (OK,BŁĄD)", required=N
+::
+::# kind=WY, symbol=OD, type=DATE, name=Data początkowa badanego okresu, required=N
+::# kind=WY, symbol=DO, type=DATE, name=Data końcowa badanego okresu, required=N
+::
+::# kind=WY, symbol=SUB, type=STRING, name=Temat, required=N
+::# kind=WY, symbol=RCV, type=MEMO, name=Lista odbiorców, required=N
+::# kind=WY, symbol=BODYH, type=MEMO, name=Treść w formacie HTML, required=N
+::
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+_service:=_mp.isService();
+
+:: Utworzenie obiektu do przekazania do \input_chk_get/personel_alerty.fml:
+_objBzus:=obj_new('AKR','TYPE','NAZ','DESC','WD','PREC','CHB');
+_objBzus.AKR:='BZUS';
+_objBzus.TYPE:='STRING[1]';
+_objBzus.NAZ:='Tylko bez ZUS'@;
+_objBzus.DESC:='Tylko oddelegowania bez opłacania składek ZUS?'@;
+_objBzus.WD:=1;
+_objBzus.PREC:=0;
+_objBzus.CHB:=1;
+_objW:=obj_new(1);
+_objW[1]:=_objBzus;
+
+:: Wartości domyślne:
+{? _in.BZUS=~~ || _in.BZUS:='T' ?};
+
+_out.SUB:='Kończące się oddelegowania';
+_result:=exec('input_chk_get','personel_alerty',_service,_in,_out.SUB,_objW,1);
+obj_del(_objBzus);
+obj_del(_objW);
+{? _result=''
+|| _ret:=exec('run','!pkd_ezk_aodd',_service,_mp.buf_act.UID,_in,_out.SUB);
+   _out.RESULT:=_ret.RESULT;
+   _out.OD:=_in.OD;
+   _out.DO:=_in.DO;
+   _out.RCV:=_ret.RCV;
+   _out.BODYH:=_ret.BODYH
+
+|| {? ~_service
+   || FUN.emsg(_result);
+      _mp.cancel();
+      return()
+   ?};
+   _out.RESULT:='BŁĄD'
+?};
+_mp.save(,_out);
+_mp.done();
+
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Kończące się oddelegowania - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().mp.load(exec('kind_in','#b_port'));
+_d0:=date(0,0,0);
+:: warunek na dopisanie jednostki organizacyjnej
+_addUdSklInfo:=_in.UD_SKL<>~~ & _in.UD_SKL<>'';
+:: warunek na dopisanie [*]
+_addInfo:=(_in.SQL_FROM<>~~ & _in.SQL_FROM<>'') | (_in.SQL_WHERE<>~~ & _in.SQL_WHERE<>'')
+   | (_in.FML_TEST<>~~ & _in.FML_TEST<>'');
+
+{? _in.OD<>~~ & _in.OD<>_d0
+|| {? _in.DO=_d0 | _in.DO=~~
+   || {? _addUdSklInfo
+      || {? _addInfo
+         || 'Oddelegowania kończące się %1 i później %2 [*]'@@[_in.OD$1,_in.UD_SKL]
+         || 'Oddelegowania kończące się %1 i później %2'@@[_in.OD$1,_in.UD_SKL]
+         ?}
+      || {? _addInfo
+         || 'Oddelegowania kończące się %1 i później [*]'@@[_in.OD$1]
+         || 'Oddelegowania kończące się %1 i później'@@[_in.OD$1]
+         ?}
+      ?}
+   |? _in.OD=_in.DO
+   || {? _addUdSklInfo
+      || {? _addInfo
+         || 'Oddelegowania kończące się %1 %2 [*]'@@[_in.OD$1,_in.UD_SKL]
+         || 'Oddelegowania kończące się %1 %2'@@[_in.OD$1,_in.UD_SKL]
+         ?}
+      || {? _addInfo
+         || 'Oddelegowania kończące się %1 [*]'@@[_in.OD$1]
+         || 'Oddelegowania kończące się %1'@@[_in.OD$1]
+         ?}
+      ?}
+   || {? _addUdSklInfo
+      || {? _addInfo
+         || 'Oddelegowania kończące się w okresie od %1 do %2 %3 [*]'@@
+               [_in.OD$1,_in.DO$1,_in.UD_SKL]
+         || 'Oddelegowania kończące się w okresie od %1 do %2 %3'@@
+               [_in.OD$1,_in.DO$1,_in.UD_SKL]
+         ?}
+      || {? _addInfo
+         || 'Oddelegowania kończące się w okresie od %1 do %2 [*]'@@[_in.OD$1,_in.DO$1]
+         || 'Oddelegowania kończące się w okresie od %1 do %2'@@[_in.OD$1,_in.DO$1]
+         ?}
+      ?}
+   ?}
+|| 'Oddelegowania kończące się'@@
+?}
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Formuła odpowiedzialna za przetwarzanie danych. Formuła zakłada odpowiednie (względem parametrów wejściowych)
+::       filtry na tabeli P. Tak przygotowaną listę pracowników zwraca w postaci tabeli HTML.
+::   WE: _a [NUMBER] - czynność bezdialogowa (serwisowa) czy dialogowa  - 1/0
+::       _b [STRING] - uid czynności
+::       _c [OBJ]    - tablica nazwana z parametrami wejściowymi. Parametry powinny przejść weryfikację za pomocą
+::                     funkcji \input_chk_get/personel_alerty.fml. Struktura tablicy:
+::                     OD        [DATA]   - data początkowa
+::                     DO        [DATA]   - data końcowa
+::                     UD_SCH    [STRING] - schemat organizacyjny
+::                     UD_SKL    [STRING] - jednostka organizacyjna
+::                     SQL_FROM  [STRING] - dodatkowe relacje filtra
+::                     SQL_WHERE [STRING] - dodatkowy warunek filtra
+::                     FML_TEST  [STRING] - dodatkowy warunek wyboru
+::                     BZUS      [STRING] - czy tylko oddelegowania bez opłacania składek ZUS? [T/N]
+::       _d [STRING] - tytuł wiadomości e-mail
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_service:=_a;
+_actUid:=_b;
+_in:=_c;
+_sub:=_d;
+
+{? var_pres('BZUS',_in)<0 | type_of(_in.BZUS)<>type_of('') | ~+_in.BZUS
+|| _BZUS:=1
+|| _BZUS:=(_in.BZUS='T')
+?};
+
+P.cntx_psh();
+:: Założenie odpowiednich filtrów na tabelę P wg. tego co podano w _in:
+exec('fltr_p_ud_sql','personel_alerty',_service,_in);
+:: Wygenerowanie tabeli z danymi pracowników z kończącymi się oddelegowaniami:
+_TAB:=exec('odd_kon','personel_alerty',_in.OD,_in.DO,_in.FML_TEST,_BZUS);
+P.f_clear();
+P.cntx_pop();
+
+_ret:=obj_new('RCV','BODYH','RESULT');
+_ret.RCV:=_ret.BODYH:='';
+_ret.RESULT:='OK';
+
+:: Pobranie listy adresatów:
+_ret.RCV:=exec('emls_w_perm','personel_alerty',_actUid);
+{? ~+_ret.RCV || _ret.RESULT:='BŁĄD' ?};
+
+{? _TAB.first() & +_ret.RCV
+|| _th:="'<th [[STYLE_TABLE_TH]]>'+_a+'</th>'";
+   _td:="'<td [[STYLE_TABLE_TD]]>'+_a+'</td>'";
+
+   _ret.BODYH:=
+      '<h3>'+
+      {? _in.OD=_in.DO
+      || 'Pracownicy, którym oddelegowanie kończy się %1 r.'@ [_in.OD$6]
+      || 'Pracownicy, którym oddelegowanie kończy się w okresie od %1 r. do %2 r.'@ [_in.OD$6,_in.DO$6]
+      ?}+
+      '</h3>\n'
+
+      '<table [[STYLE_TABLE]]>\n'
+      '<tr [[STYLE_TABLE_TR]]>'+
+         _th('Lp.'@)+
+         _th('Nazwisko'@)+
+         _th('Imię'@)+
+         _th('PESEL'@)+
+         _th('Nr teczki'@)+
+         _th('Data zatrudnienia'@)+
+         _th('Data zwolnienia'@)+
+         _th('Jednostka organizacyjna'@)+
+         _th('Data od oddelegowania'@)+
+         _th('Data do oddelegowania'@)+
+         _th('Kraj oddelegowania'@)+
+         _th('Nazwa firmy oddelegowania'@)+
+         _th('Miejscowość oddelegowania'@)+
+         _th('Zastępstwo'@)+
+         _th('Noclegi'@)+
+         _th('Podatek'@)+
+         _th('Składki ZUS'@)+
+      '</tr>\n';
+
+   _lp:=0;
+   {!
+   |? _lp+=1;
+      _ret.BODYH+=
+         '<tr [[STYLE_TABLE_TR]]>'+
+            _td($_lp)+
+            _td(_TAB.NAZWISKO)+
+            _td(_TAB.PIERWSZE)+
+            _td(_TAB.PESEL)+
+            _td(_TAB.T)+
+            _td(_TAB.DZA$1)+
+            _td(_TAB.DZ$1)+
+            _td(_TAB.WYDZIAL)+
+            _td(_TAB.O_OD$1)+
+            _td(_TAB.O_DO$1)+
+            _td(_TAB.KRAJ)+
+            _td(_TAB.FIR_N)+
+            _td(_TAB.MIASTO)+
+            _td(_TAB.ZAST)+
+            _td(_TAB.ZAKW)+
+            _td(_TAB.POD)+
+            _td(_TAB.ZUS)+
+         '</tr>\n';
+      _TAB.next()
+   !};
+
+   _ret.BODYH+=
+      '</table>\n'
+      '<p>'+'Ta wiadomość została wygenerowana automatycznie - prosimy na nią nie odpowiadać.'@+'</p>'
+?};
+
+{? ~_service
+|| _notRcv:={? ~+_ret.RCV || '\n'+'Nie znaleziono adresu e-mail odbiorcy.'@ || '' ?};
+   FUN.info('%1\n%2: %3.%4'
+            ['Analiza danych zakończona.'@,'Liczba zapisów spełniających kryteria'@,$_TAB.size(),_notRcv],
+            '@'+_sub)
+?};
+
+_ret
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:22:51 2bbd5f23784e38c2523f79a9de607c80614d0364edf8f6179273b258d87ce5cc765a2723da1aba53fbc871ae0be45cb007c67d0bcc511cef1b3e042880b4749892134a2ab9b210d601d8410bd20975bb93292c23a451ef65850611813673dd2120cb6d8fe7b19e6516e87c37b70b2fb82c1a56ae7b2edfdd91ce21abb56bdefc

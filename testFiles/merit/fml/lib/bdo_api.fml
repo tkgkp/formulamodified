@@ -1,0 +1,4035 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: bdo_api.fml
+:: Utworzony: 12.11.2019
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły współpracy z BDO poprzez serwis REST
+::            Plik zawiera wszystkie funkcje komunikacji przez HTTP, niskopoziomowe mapowanie wywołań
+:: Źródło informacji: https://bdo.mos.gov.pl/integracja-z-bdo-api/
+:: Pilotażowy portal: https://test-bdo.mos.gov.pl/api/
+:: Struktura serwisu: https://test-bdo.mos.gov.pl/api/swagger/index.html
+::======================================================================================================================
+
+
+\env
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Środowisko obsługi zapytań HTTP
+::----------------------------------------------------------------------------------------------------------------------
+_env:=obj_new(
+:: Tablica parametrów wejściowych
+   'in',
+:: Tablica parametrów wyjściowych
+   'out',
+:: Tablica wynikowa
+   'RESULT'
+);
+_env.in:=~~;
+_env.out:=~~;
+_env.RESULT:=obj_new(
+   'STATUS','HEADER','DATA','MESSAGE',
+   'APP_STAT','APP_TEXT','LOG_REF','log_update'
+);
+_env.RESULT.STATUS:=0;
+_env.RESULT.HEADER:='';
+_env.RESULT.DATA:='';
+_env.RESULT.MESSAGE:='';
+_env.RESULT.APP_STAT:='';
+_env.RESULT.APP_TEXT:='';
+_env.RESULT.LOG_REF:='';
+_env.RESULT.log_update:="
+   {? var_pres('_a')=type_of('') || .APP_STAT+=_a ?};
+   {? var_pres('_b')=type_of('') || .APP_TEXT+=_b ?};
+   {? .LOG_REF<>''
+   || exec('mwac_log_app','zui',.LOG_REF,.APP_STAT,.APP_TEXT)
+   ?};
+   ~~
+";
+
+_env
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Uruchamia dowolne zapytanie BDO
+::   WE: _a - zapytanie
+::       _b - metoda (GET, POST, PUT, DELETE)
+::       _c - argument wywołania: JSON (string, file) albo tablica nazwana argumentów
+::       [_d] - token autoryzacyjny
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _request:=_a
+|| FUN.info('Parametr %1 musi być podany.'@['_a']);
+   return()
+?};
+
+{? var_pres('_b')=type_of('')
+|| {? _b='GET' | _b='POST' | _b='PUT' | _b='DELETE'
+   || _method:=_b
+   || FUN.info('Parametr %1 musi mieć wartość %2, %3, %4 lub %5.'@['_b','GET','POST','PUT','DELETE'])
+   ?}
+|| FUN.info('Parametr %1 musi być podany.'@['_b']);
+   return()
+?};
+
+{? var_pres('_c')=type_of('')
+|| _json:=_c
+|? var_pres('_c')>100
+|| _args:=_c
+?};
+
+:: czy autoryzacja tokenem
+{? var_pres('_d')=type_of(0)
+|| _auth:=_d
+|| _auth:=0
+?};
+
+_env:=exec('env','bdo_api');
+::_env.in:=_in;
+params_set('env',_env);
+
+:: URL
+_url:=exec('address','bdo_fun');
+
+:: Brak proxy - jeżeli to konieczne, trzeba będzie dodać wpis do FO
+_proxy:='';
+
+:: Sprawdzenie parameryzacji systemu
+{? _url=''
+|| _env.RESULT.STATUS:=0;
+   _env.RESULT.MESSAGE:='Błąd parametryzacji — nie podano adresu usługi (parametr %1).'@['100331']
+
+:: Uruchomienie zapytania
+||
+:: Tryb cichy poza transakcją
+:: ODKOMENTOWAĆ   {? do_state()=0 || _do:=0; _no_msg:=no_msg(1) || _do:=1 ?};
+   _inet:=inet_get(_url,_proxy);
+:: ODKOMENTOWAĆ   {? _do=0 || no_msg(_no_msg) ?};
+
+   {? type_of(_inet)<100
+   || _env.RESULT.STATUS:=0;
+      _env.RESULT.MESSAGE:='Błąd wywołania funkcji %1.'@['inet_get()']
+
+   ||
+::    Endpoint
+      _inet.url_append(_request);
+
+::    Nagłówki
+      _inet.append_header('accept: application/json');
+      _inet.append_header('Content-Type: application/json');
+      {? _auth
+      || _inet.append_header('Authorization: Bearer %1'[exec('token','bdo_api')])
+      ?};
+
+::    Parametry (w tablicy nazwanej albo indeksowanej)
+      {? var_pres('_args')>100
+      || {? obj_ntab(_args)
+         || _par_names:=obj_ntab_names(_args);
+            {! _it:=1.. obj_len(_args)
+            |! _inet.url_add_param(_par_names[_it],_args[_it])
+            !}
+         || {! _it:=1.. obj_len(_args)
+            |! _inet.url_add_param(_args[_it].name,_args[_it].value)
+            !}
+         ?}
+      ?};
+
+::    Logowanie do pliku - można ustawić do testowania dialogu z webserwisem
+      _logname:='bdo_api%1.log'[6+gsub(date$2,'.','')];
+      {? exec('is_verbose','bdo_fun') || _inet.set_verbose(_logname) ?};
+
+::    Pętla, żeby uruchomić ponownie zapytanie w przypadku błędu
+      _loop:=0; _ok:=0;
+
+      {!
+      |? _loop+=1;
+::       Wysłanie zapytania - wynik jako tekst albo plik w zależności od typu zapytania
+::       ZAWSZE TEKST (1) PLIK (0)
+         {? 0
+         ||
+::          Tryb cichy także w transakcji - błąd musi być obsłużony po end()
+            _do:=0;
+            _no_msg:=no_msg(1);
+::            {? do_state()=0 || _do:=0; _no_msg:=no_msg(1) || _do:=1 ?};
+            _utc_start:=utc_get();
+            {? _method='GET'
+            || _response:=_inet.http_get()
+            |? _method='POST'
+            || _response:=_inet.http_post(,_json)
+            |? _method='PUT'
+            || _response:=_inet.http_put(,_json)
+            |? _method='DELETE'
+            || _response:=_inet.http_delete(,_json)
+            ?};
+            _utc_stop:=utc_get();
+
+            {? _response<>0
+            || _env.RESULT.STATUS:=_inet.get_status();
+               _env.RESULT.HEADER:=_inet.get_header();
+               _env.RESULT.DATA:=utf8_maz(_inet.get_data())
+            ?};
+            {? _do=0 || no_msg(_no_msg) ?};
+            ~~
+         ||
+::          Tryb cichy także w transakcji - błąd musi być obsłużony po end()
+            _do:=0;
+            _no_msg:=no_msg(1);
+::            {? do_state()=0 || _do:=0; _no_msg:=no_msg(1) || _do:=1 ?};
+            _answer:=fopen(null(),'bw',,,1);
+            _utc_start:=utc_get();
+            {? _method='GET'
+            || _response:=_inet.http_get(_answer)
+            |? _method='POST'
+            || _response:=_inet.http_post(_answer,_json)
+            |? _method='PUT'
+            || _response:=_inet.http_put(_answer,_json)
+            |? _method='DELETE'
+            || _response:=_inet.http_delete(_answer,_json)
+            ?};
+            _utc_stop:=utc_get();
+
+            {? _response<>0
+            || _env.RESULT.STATUS:=_inet.get_status();
+               _env.RESULT.HEADER:=_inet.get_header();
+               _env.RESULT.DATA:=_answer.copy('ur')
+            ?};
+            {? _do=0 || no_msg(_no_msg) ?};
+            ~~
+         ?};
+
+::       Zapis do rejestru zdarzeń
+         _is_mwac_log:=exec('is_mwac_log','bdo_fun');
+         _mwac_log_ref:='';
+         {? (_is_mwac_log=1 & (_response<200 | _response>=300)) | _is_mwac_log=2
+         ||
+::          Wyznaczenie nazwy metody
+            _method_name:=_inet.get_url();
+            _pos:=(_method_name*'/api/api/');
+            {? _pos>0
+            || _method_name:=(_pos+22)-_method_name
+            || _pos:=(_method_name*'/api/GeneralResources/');
+               {? _pos>0
+               || _method_name:=(_pos+4)-_method_name
+               || _pos:=(_method_name*'/api/');
+                  _method_name:=(_pos+18)-_method_name
+               ?}
+            ?};
+            _pos:=(_method_name*'?');
+            {? _pos>0
+            || _method_name:=_method_name-(+_method_name-_pos+1)
+            ?};
+
+            _mwac_log_ref:=exec('mwac_log','zui',
+               _method_name,
+               _inet.get_url(),
+               _method,
+               _inet.get_status(),
+               _utc_start,
+               _utc_stop,
+               {? _method='GET' || '' || _json ?},
+               _env.RESULT.DATA,
+               _inet.get_header(1),
+               _inet.get_header(0)
+            )
+         ?};
+
+::       Uruchomienie formuły interpretującej wynik zapytania
+         {? _response=200 | _response=201 | _response=204
+         || _ok:=1;
+::          Specjalna obsługa - wyciągnięcie z nagłówków limitu zapytań i oczekiwanie 10s, jeśli jest zerowy
+::          oraz 1s, jeśli limit jest mniejszy niż 60s (dziwna i dyskusyjna własność API,
+::          że przy limicie 60 zapytań na minutę kolejne nie może być szybciej niż po sekundzie)
+            _x_limit:=1;
+            _x_reset:='';
+            _headers:=spli_str(_env.RESULT.HEADER,'\n');
+            _size:=obj_len(_headers);
+            {! _it:=1.. _size
+            |! {? 23+_headers[_it]='X-Rate-Limit-Remaining:'
+               || _x_limit:=#(24-form(_headers[_it]))
+               ?}
+            !};
+            obj_del(_headers);
+            {? _x_limit=0
+            || delay(10)
+            |? _x_limit<60
+            || delay(1)
+            ?};
+            ~~
+         |? _response=0
+         || _env.RESULT.STATUS:=-errno();
+            _env.RESULT.MESSAGE:='Problem z połączeniem z adresem:\n%1'@[_url]
+         ||
+::          Specjalna obsługa - oczekiwanie 10s (lub Retry-After, jeśli podane) jak status 429 - Too Many Requests
+            {? _response=429
+            ||
+               _retry_after:=10;
+               _headers:=spli_str(_env.RESULT.HEADER,'\n');
+               _size:=obj_len(_headers);
+               {! _it:=1.. _size
+               |! {? 12+_headers[_it]='Retry-After:'
+                  || _retry_after:=#(12-form(_headers[_it]))
+                  ?}
+               !};
+               obj_del(_headers);
+               delay(_retry_after)
+            ?};
+            _env.RESULT.STATUS:=_response;
+            _env.RESULT.MESSAGE:=exec('status_not200','bdo_api',_response,_env.RESULT.DATA,_env.RESULT.HEADER)
+         ?};
+
+::       Zapis do rejestru zdarzeń
+         {? _mwac_log_ref<>''
+         || _env.RESULT.LOG_REF:=_mwac_log_ref;
+            _env.RESULT.log_update('|BDO|R:%1|'[$_ok])
+         ?};
+
+::       UWAGA: pętla jest obecnie wyłączona
+         _ok=0 & _loop<1
+      !}
+   ?}
+?};
+
+_env.RESULT
+
+
+::======================================================================================================================
+:: Auth
+::======================================================================================================================
+
+
+\AccessToken
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Generowanie tokenu autoryzacyjnego dla miejsca prowadzenia działalności
+::   WE: _a - identyfikator miejsca prowadzenia działalności (KH_ODB.NRMPDBDO)
+::   WY: ~~ albo obiekt, który zawiera pola: AccessToken, TokenType, ExpiresIn
+::----------------------------------------------------------------------------------------------------------------------
+_identificationNumber:=_a;
+_clientId:=exec('ClientId','bdo_fun');
+_clientSecret:=exec('ClientSecret','bdo_fun');
+
+_json:='
+   {  "paginationParameters":
+      {  "order": { "isAscending": true },
+         "page": { "index": 1, "size": 100 }
+      },
+      "clientId": %1,
+      "clientSecret": %2
+   }
+'
+[json_value(_clientId),json_value(_clientSecret)];
+
+_obj:=exec('run','bdo_api','WasteRegister/v1/Auth/getEupList','POST',_json);
+
+{? _obj.STATUS=200
+||
+   _places:=json_parse(_obj.DATA);
+:: eupId miejsca prowadzenia działalności
+   _eupId:='';
+   {! _it:=1.. obj_len(_places.items)
+   |! {? _places.items[_it].identificationNumber=_identificationNumber
+      || _eupId:=_places.items[_it].eupId
+      ?}
+   !};
+   obj_del(_obj);
+
+   {? _eupId=''
+   || FUN.emsg('Brak uprawnień do obsługi miejsca prowadzenia działalności %1.'@[_identificationNumber]);
+      ~~
+   || _json:='
+         {  "eupId": %1,
+            "clientId": %2,
+            "clientSecret": %3
+         }
+      '
+      [json_value(_eupId),json_value(_clientId),json_value(_clientSecret)];
+
+      _obj:=exec('run','bdo_api','WasteRegister/v1/Auth/generateEupAccessToken','POST',_json);
+::    _result zawiera pola: AccessToken, TokenType, ExpiresIn
+      _result:=json_parse(_obj.DATA);
+      _result
+   ?}
+
+||
+:: Komunikat wyłączony - i tak z reguły jest potem kolejny
+::   FUN.emsg(_obj.MESSAGE);
+   ~~
+?}
+
+
+\token
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera token (nie ustawia jego wartości)
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__BDO_TOKEN')=type_of('')
+|| __BDO_TOKEN
+|| FUN.emsg('Nie ustawiono danych autoryzacyjnych do portalu BDO.'@);
+   ''
+?}
+
+
+::======================================================================================================================
+:: CardStatus
+::======================================================================================================================
+
+
+\CardStatus
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera słownik statusów kart
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=~~;
+_obj:=exec('run','bdo_api','WasteRegister/v1/CardStatus','GET',_args,1);
+{? _obj.STATUS<>200
+|| FUN.emsg('Nie można odczytać słownika statusów kart przekazania odpadów.'@+'\n'+_obj.MESSAGE)
+?};
+_obj
+
+
+::======================================================================================================================
+:: Country
+::======================================================================================================================
+
+
+\Country
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera słownik krajów
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=~~;
+_obj:=exec('run','bdo_api','GeneralResources/v1/Country','GET',_args,1);
+_obj
+
+
+\Country_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera słownik krajów ograniczony do kryterium wyszukiwania
+::   WE: _a - kod kraju
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+{? var_pres('_a')=type_of('')
+|| _codeName:=_a;
+   _args:='{"codeName": %1}'[json_value(_codeName)];
+   _obj:=exec('run','bdo_api','GeneralResources/v1/Country/search','POST',_args,1);
+   _obj
+|| ~~
+?}
+
+
+::======================================================================================================================
+:: DocumentService
+::======================================================================================================================
+
+
+\kpok_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera wydruk KPOK
+::   WE: _a - kpokId
+::   WY: obiekt wynikoml
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:=obj_new('KpokId'); _args.KpokId:=_kpokId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/kpok/printingpage','GET',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\kpok_confirmation
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera wydruk potwierdzenia KPOK
+::   WE: _a - kpokId
+::   WY: obiekt wynikowl
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:=obj_new('KpokId'); _args.KpokId:=_kpokId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/kpok/confirmation','GET',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\kpok_transfer_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera wydruk KPOK w trybie Przekazanie
+::   WE: _a - kpokId
+::   WY: obiekt wynikfml
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:=obj_new('KpokId'); _args.KpokId:=_kpokId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/kpok/transfer/printingpage','GET',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\kpok_receive_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera wydruk KPOK w trybie Przekazanie
+::   WE: _a - kpokId
+::   WY: obiekt wyni.fml
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:=obj_new('KpokId'); _args.KpokId:=_kpokId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/kpok/receive/printingpage','GET',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\kpo_confirmation
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera wydruk potwierdzenia KPO
+::   WE: _a - kpoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_args:=obj_new('KpoId'); _args.KpoId:=_kpoId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/kpo/confirmation','GET',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\kpo_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera wydruk KPO
+::   WE: _a - kpoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_args:=obj_new('KpoId'); _args.KpoId:=_kpoId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/kpo/printingpage','GET',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\keok_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobiera wydruk KEOK
+::   WE: _a - keokId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_args:=obj_new('KeokId'); _args.KeokId:=_keokId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/keok/printingpage','GET',_args,1);
+_obj.log_update(_keokId);
+_obj
+
+
+\keo_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobiera wydruk KEO
+::   WE: _a - keoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_args:=obj_new('KeoId'); _args.KeoId:=_keoId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/keo/printingpage','GET',_args,1);
+_obj.log_update(_keoId);
+_obj
+
+
+\keon_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobiera wydruk KEON
+::   WE: _a - keonId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keonId:=_a;
+_args:=obj_new('KeonId'); _args.KeonId:=_keonId;
+_obj:=exec('run','bdo_api','WasteRegister/DocumentService/v1/keon/printingpage','GET',_args,1);
+_obj.log_update(_keonId);
+_obj
+
+
+::======================================================================================================================
+:: Health
+::======================================================================================================================
+
+
+\HealthCheck
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Sprawdza działanie systemu BDO
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+:: UWAGA: prawdopodobnie błąd specyfikacji - dodany drugi ciąg 'api/' w endpoincie
+:: UWAGA: metoda nie wymaga autoryzacji tokenem
+_obj:=exec('run','bdo_api','api/WasteRegister/WasteTransferCard/v1/HealthCheck','GET');
+_obj
+
+
+::======================================================================================================================
+:: Kpo
+::======================================================================================================================
+
+
+\Kpo_transportconfirmation_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Potwierdzony transport'
+::   WE: _a - KpoId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpoId','CompanyType'); _args.KpoId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/transportconfirmation/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpoId,_args.CompanyType]);
+_obj
+
+
+\Kpo_planned_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Planowana'
+::   WE: _a - KpoId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpoId','CompanyType'); _args.KpoId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/planned/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpoId,_args.CompanyType]);
+_obj
+
+
+\Kpo_approved_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Zatwierdzona'
+::   WE: _a - KpoId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpoId','CompanyType'); _args.KpoId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/approved/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpoId,_args.CompanyType]);
+_obj
+
+
+\Kpo_withdrawn_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Wycofana'
+::   WE: _a - KpoId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpoId','CompanyType'); _args.KpoId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/withdrawn/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpoId,_args.CompanyType]);
+_obj
+
+
+\Kpo_confirmationgenerated_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Wygenerowane potwierdzenie'
+::   WE: _a - KpoId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpoId','CompanyType'); _args.KpoId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/confirmationgenerated/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpoId,_args.CompanyType]);
+_obj
+
+
+\Kpo_receiveconfirmation_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Potwierdzenie przejęcia'
+::   WE: _a - KpoId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpoId','CompanyType'); _args.KpoId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/receiveconfirmed/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpoId,_args.CompanyType]);
+_obj
+
+
+\Kpo_rejected_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Odrzucona'
+::   WE: _a - KpoId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpoId','CompanyType'); _args.KpoId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/rejected/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpoId,_args.CompanyType]);
+_obj
+
+
+\Kpo_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera "dane do wydruku" KPO
+::   WE: _a - kpoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_args:=obj_new('KpoId'); _args.KpoId:=_kpoId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/printingpage','GET',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_sender_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wyszukiwarka kart, gdzie podmiot występuje w roli Przekazującego
+::   WE: _a - index
+::       _b - size
+::       [_c] - transportDateRange
+::       [_d] - transportDateFrom
+::       [_e] - transportDateTo
+::       [_f] - wasteCodeAndDescription
+::       [_g] - vehicleRegNumber
+::       [_h] - transportTime
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_transportDateRange:={? var_pres('_c')=type_of('') || _c || 'false' ?};
+_transportDateFrom:={? var_pres('_d')=type_of('') || _d || '' ?};
+_transportDateTo:={? var_pres('_e')=type_of('') || _e || '' ?};
+_wasteCodeAndDescription:={? var_pres('_f')=type_of('') || _f || '' ?};
+_vehicleRegNumber:={? var_pres('_g')=type_of('') || _g || '' ?};
+_transportTime:={? var_pres('_h')=type_of('') || _h || '' ?};
+_args:='
+   {
+      "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "kpoId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "searchInCarriers": true,
+      "searchInReceivers": true,
+      "name": "",
+      "locality": "",
+      "street": "",
+      "nip": "",
+      "identificationNumber": "",
+      "wasteCodeAndDescription": %6,
+      "cardNumber": "",
+      "cardStatusCodeNames": "",
+      "transportTime": %8,
+      "receiveConfirmationTime": "",
+      "senderFirstNameAndLastName": "",
+      "receiverFirstNameAndLastName": "",
+      "vehicleRegNumber": %7,
+      "transportDateRange": %3,
+      "transportDateFrom": %4,
+      "transportDateTo": %5,
+      "receiveConfirmationDateRange": false,
+      "receiveConfirmationDateFrom": "",
+      "receiveConfirmationDateTo": ""
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   _transportDateRange,
+   json_value(_transportDateFrom),
+   json_value(_transportDateTo),
+   json_value(_wasteCodeAndDescription),
+   json_value(_vehicleRegNumber),
+   json_value(_transportTime)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/sender/search','POST',_args,1);
+_obj
+
+
+\Kpo_receiver_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wyszukiwarka kart, gdzie podmiot występuje w roli Odbiorcy
+::   WE: _a - index
+::       _b - size
+::       [_c] - transportDateRange
+::       [_d] - transportDateFrom
+::       [_e] - transportDateTo
+::       [_f] - wasteCodeAndDescription
+::       [_g] - vehicleRegNumber
+::       [_h] - transportTime
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_transportDateRange:={? var_pres('_c')=type_of('') || _c || 'false' ?};
+_transportDateFrom:={? var_pres('_d')=type_of('') || _d || '' ?};
+_transportDateTo:={? var_pres('_e')=type_of('') || _e || '' ?};
+_wasteCodeAndDescription:={? var_pres('_f')=type_of('') || _f || '' ?};
+_vehicleRegNumber:={? var_pres('_g')=type_of('') || _g || '' ?};
+_transportTime:={? var_pres('_h')=type_of('') || _h || '' ?};
+_args:='
+   {
+      "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "kpoId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "searchInCarriers": true,
+      "searchInSenders": true,
+      "name": "",
+      "locality": "",
+      "street": "",
+      "nip": "",
+      "identificationNumber": "",
+      "wasteCodeAndDescription": %6,
+      "cardNumber": "",
+      "cardStatusCodeNames": "",
+      "transportTime": %8,
+      "receiveConfirmationTime": "",
+      "senderFirstNameAndLastName": "",
+      "receiverFirstNameAndLastName": "",
+      "vehicleRegNumber": %7,
+      "transportDateRange": %3,
+      "transportDateFrom": %4,
+      "transportDateTo": %5,
+      "receiveConfirmationDateRange": false,
+      "receiveConfirmationDateFrom": "",
+      "receiveConfirmationDateTo": ""
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   _transportDateRange,
+   json_value(_transportDateFrom),
+   json_value(_transportDateTo),
+   json_value(_wasteCodeAndDescription),
+   json_value(_vehicleRegNumber),
+   json_value(_transportTime)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/receiver/search','POST',_args,1);
+_obj
+
+
+\Kpo_carrier_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wyszukiwarka kart, gdzie podmiot występuje w roli Transportującego
+::   WE: _a - index
+::       _b - size
+::       [_c] - transportDateRange
+::       [_d] - transportDateFrom
+::       [_e] - transportDateTo
+::       [_f] - wasteCodeAndDescription
+::       [_g] - vehicleRegNumber
+::       [_h] - transportTime
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_transportDateRange:={? var_pres('_c')=type_of('') || _c || 'false' ?};
+_transportDateFrom:={? var_pres('_d')=type_of('') || _d || '' ?};
+_transportDateTo:={? var_pres('_e')=type_of('') || _e || '' ?};
+_wasteCodeAndDescription:={? var_pres('_f')=type_of('') || _f || '' ?};
+_vehicleRegNumber:={? var_pres('_g')=type_of('') || _g || '' ?};
+_transportTime:={? var_pres('_h')=type_of('') || _h || '' ?};
+_args:='
+   {
+      "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "kpoId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "searchInReceivers": true,
+      "searchInSenders": true,
+      "name": "",
+      "locality": "",
+      "street": "",
+      "nip": "",
+      "identificationNumber": "",
+      "wasteCodeAndDescription": %6,
+      "cardNumber": "",
+      "cardStatusCodeNames": "",
+      "transportTime": %8,
+      "receiveConfirmationTime": "",
+      "senderFirstNameAndLastName": "",
+      "receiverFirstNameAndLastName": "",
+      "vehicleRegNumber": %7,
+      "transportDateRange": %3,
+      "transportDateFrom": %4,
+      "transportDateTo": %5,
+      "receiveConfirmationDateRange": false,
+      "receiveConfirmationDateFrom": "",
+      "receiveConfirmationDateTo": ""
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   _transportDateRange,
+   json_value(_transportDateFrom),
+   json_value(_transportDateTo),
+   json_value(_wasteCodeAndDescription),
+   json_value(_vehicleRegNumber),
+   json_value(_transportTime)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/carrier/search','POST',_args,1);
+_obj
+
+
+\Kpo_create_plannedcard
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Tworzy kartę przekazania odpadów
+::   WE: _a - carrierCompanyId
+::       _b - receiverCompanyId
+::       _c - receiverEupId
+::       _d - wasteCodeId
+::       _e - vehicleRegNumber
+::       _f - wasteMass
+::       _g - plannedTransportTime
+::       _h - wasteProcessId
+::       [_i] - additionalInfo
+::       [_j] - wasteCodeExtended
+::       [_k] - wasteCodeExtendedDescription
+::       [_l] - isWasteGenerating
+::       [_m] - wasteGeneratedTerytPk
+::       [_n] - wasteGeneratingAdditionalInfo
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_carrierCompanyId:=_a;
+_receiverCompanyId:=_b;
+_receiverEupId:=_c;
+_wasteCodeId:=_d;
+_vehicleRegNumber:=_e;
+_wasteMass:=_f;
+_plannedTransportTime:=_g;
+_wasteProcessId:=_h;
+_additionalInfo:={? var_pres('_i')=type_of('') || _i || '' ?};
+_wasteCodeExtended:={? var_pres('_j')=type_of('') || _j || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_k')=type_of('') || _k || '' ?};
+_isWasteGenerating:={? var_pres('_l')=type_of('') || _l || 'false' ?};
+_wasteGeneratedTerytPk:={? var_pres('_m')=type_of('') || _m || '' ?};
+_wasteGeneratingAdditionalInfo:={? var_pres('_n')=type_of('') || _n || '' ?};
+_args:='
+   {
+      "carrierCompanyId": %1,
+      "receiverCompanyId": %2,
+      "receiverEupId": %3,
+      "wasteCodeId": %4,
+      "vehicleRegNumber": %5,
+      "wasteMass": %6,
+      "plannedTransportTime": %7,
+      "wasteProcessId": %8,
+      "certificateNumberAndBoxNumbers": "",
+      "additionalInfo": %9,
+      "wasteCodeExtended": %10,
+      "wasteCodeExtendedDescription": %11,
+      "hazardousWasteReclassification": false,
+      "hazardousWasteReclassificationDescription": "",
+      "isWasteGenerating": %12,
+      "wasteGeneratedTerytPk": %13,
+      "wasteGeneratingAdditionalInfo": %14
+   }
+'
+[  json_value(_carrierCompanyId),
+   json_value(_receiverCompanyId),
+   json_value(_receiverEupId),
+   json_value(_wasteCodeId),
+   json_value(_vehicleRegNumber),
+   json_value(_wasteMass),
+   json_value(_plannedTransportTime),
+   json_value(_wasteProcessId),
+   json_value(_additionalInfo),
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _isWasteGenerating,
+   {? _wasteGeneratedTerytPk='' || 'null' || json_value(_wasteGeneratedTerytPk) ?},
+   {? _wasteGeneratingAdditionalInfo='' || 'null' || json_value(_wasteGeneratingAdditionalInfo) ?}
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/create/plannedcard','POST',_args,1);
+_obj
+
+
+\Kpo_revise
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Korekta odrzuconej karty
+::   WE: _a - kpoId
+::       _b - wasteCodeId
+::       _c - wasteMass
+::       [_d] - wasteCodeExtended
+::       [_e] - wasteCodeExtendedDescription
+::       [_f] - hazardousWasteReclassification
+::       [_g] - hazardousWasteReclassificationDescription
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_wasteCodeId:=_b;
+_wasteMass:=_c;
+_wasteCodeExtended:={? var_pres('_d')=type_of('') || _d || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_e')=type_of('') || _e || '' ?};
+_hazardousWasteReclassification:={? var_pres('_f')=type_of('') || _f || 'false' ?};
+_hazardousWasteReclassificatioD:={? var_pres('_g')=type_of('') || _g || '' ?};
+_args:='
+{
+   "kpoId": %1,
+   "wasteCodeId": %2,
+   "wasteMass": %3,
+   "wasteCodeExtended": %4,
+   "wasteCodeExtendedDescription": %5,
+   "hazardousWasteReclassification": %6,
+   "hazardousWasteReclassificationDescription": %7
+}'
+[  json_value(_kpoId),
+   json_value(_wasteCodeId),
+   json_value(_wasteMass),
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _hazardousWasteReclassification,
+   json_value(_hazardousWasteReclassificatioD)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/revise','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_status_transportconfirmat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Potwierdzenie przejęcia -> Potwierdzenie transportu
+::   WE: _a - kpoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_args:='{"kpoId": %1}'[json_value(_kpoId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/status/transportconfirmation','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_carrier_upd_approved_gener
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Zatwierdzona -> Potwierdzenie wygenerowane (dla roli transportującego)
+::   WE: _a - kpoId
+::       _b - _vehicleRegNumber
+::       _c - _realTransportTime
+::       _d - _realTransportDate
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_vehicleRegNumber:=_b;
+_realTransportTime:=_c;
+_realTransportDate:=_d;
+_args:='
+   {  "kpoId": %1,
+      "vehicleRegNumber": %2,
+      "realTransportTime": %3,
+      "realTransportDate": %4,
+   }
+'
+[  json_value(_kpoId),
+   json_value(_vehicleRegNumber),
+   json_value(_realTransportTime),
+   json_value(_realTransportDate)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/carrier/update/approved/generateconfirmation','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_sender_upd_approved_gener
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Zatwierdzona -> Potwierdzenie wygenerowane (dla roli przekazującego)
+::   WE: _a - kpoId
+::       _b - wasteCodeId
+::       _c - wasteProcessId
+::       _d - wasteMass
+::       _e - vehicleRegNumber
+::       _f - certificateNumber
+::       _g - plannedTransportTime
+::       _h - realTransportTime
+::       _i - additionalInfo
+::       [_j] - wasteCodeExtended
+::       [_k] - wasteCodeExtendedDescription
+::       [_l] - isWasteGenerating
+::       [_m] - wasteGeneratedTerytPk
+::       [_n] - wasteGeneratingAdditionalInfo
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_wasteCodeId:=_b;
+_wasteProcessId:=_c;
+_wasteMass:=_d;
+_vehicleRegNumber:=_e;
+_certificateNumber:=_f;
+_plannedTransportTime:=_g;
+_realTransportTime:=_h;
+_additionalInfo:=_i;
+_wasteCodeExtended:={? var_pres('_j')=type_of('') || _j || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_k')=type_of('') || _k || '' ?};
+_isWasteGenerating:={? var_pres('_l')=type_of('') || _l || 'false' ?};
+_wasteGeneratedTerytPk:={? var_pres('_m')=type_of('') || _m || '' ?};
+_wasteGeneratingAdditionalInfo:={? var_pres('_n')=type_of('') || _n || '' ?};
+_args:='
+   {  "kpoId": %1,
+      "wasteCodeId": %2,
+      "wasteProcessId": %3,
+      "wasteMass": %4,
+      "vehicleRegNumber": %5,
+      "certificateNumber": %6,
+      "plannedTransportTime": %7,
+      "realTransportTime": %8,
+      "additionalInfo": %9,
+      "wasteCodeExtended": %10,
+      "wasteCodeExtendedDescription": %11,
+      "hazardousWasteReclassification": false,
+      "hazardousWasteReclassificationDescription": "",
+      "isWasteGenerating": %12,
+      "wasteGeneratedTerytPk": %13,
+      "wasteGeneratingAdditionalInfo": %14
+   }
+'
+[  json_value(_kpoId),
+   json_value(_wasteCode),
+   json_value(_wasteProcessId),
+   json_value(_wasteMass),
+   json_value(_vehicleRegNumber),
+   json_value(_certificateNumber),
+   json_value(_plannedTransportTime),
+   json_value(_realTransportTime),
+   json_value(_additionalInfo),
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _isWasteGenerating,
+   {? _wasteGeneratedTerytPk='' || 'null' || json_value(_wasteGeneratedTerytPk) ?},
+   {? _wasteGeneratingAdditionalInfo='' || 'null' || json_value(_wasteGeneratingAdditionalInfo) ?}
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/sender/update/approved/generateconfirmation','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_update_plannedcard
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Modyfikuje planowaną kartę przekazania odpadów
+::   WE: _a - kpoId
+::       _b - carrierCompanyId
+::       _c - receiverCompanyId
+::       _d - receiverEupId
+::       _e - wasteCodeId
+::       _f - vehicleRegNumber
+::       _g - wasteMass
+::       _h - plannedTransportTime
+::       _i - wasteProcessId
+::       [_j] - wasteCodeExtended
+::       [_k] - wasteCodeExtendedDescription
+::       [_l] - isWasteGenerating
+::       [_m] - wasteGeneratedTerytPk
+::       [_n] - wasteGeneratingAdditionalInfo
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_carrierCompanyId:=_b;
+_receiverCompanyId:=_c;
+_receiverEupId:=_d;
+_wasteCodeId:=_e;
+_vehicleRegNumber:=_f;
+_wasteMass:=_g;
+_plannedTransportTime:=_h;
+_wasteProcessId:=_i;
+_wasteCodeExtended:={? var_pres('_j')=type_of('') || _j || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_k')=type_of('') || _k || '' ?};
+_isWasteGenerating:={? var_pres('_l')=type_of('') || _l || 'false' ?};
+_wasteGeneratedTerytPk:={? var_pres('_m')=type_of('') || _m || '' ?};
+_wasteGeneratingAdditionalInfo:={? var_pres('_n')=type_of('') || _n || '' ?};
+_args:='
+   {
+      "kpoId": %1,
+      "carrierCompanyId": %2,
+      "receiverCompanyId": %3,
+      "receiverEupId": %4,
+      "wasteCodeId": %5,
+      "vehicleRegNumber": %6,
+      "wasteMass": %7,
+      "plannedTransportTime": %8,
+      "wasteProcessId": %9,
+      "certificateNumberAndBoxNumbers": "",
+      "additionalInfo": "",
+      "wasteCodeExtended": %10,
+      "wasteCodeExtendedDescription": %11,
+      "hazardousWasteReclassification": false,
+      "hazardousWasteReclassificationDescription": "",
+      "isWasteGenerating": %12,
+      "wasteGeneratedTerytPk": %13,
+      "wasteGeneratingAdditionalInfo": %14
+   }
+'
+[  json_value(_kpoId),
+   json_value(_carrierCompanyId),
+   json_value(_receiverCompanyId),
+   json_value(_receiverEupId),
+   json_value(_wasteCodeId),
+   json_value(_vehicleRegNumber),
+   json_value(_wasteMass),
+   json_value(_plannedTransportTime),
+   json_value(_wasteProcessId),
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _isWasteGenerating,
+   {? _wasteGeneratedTerytPk='' || 'null' || json_value(_wasteGeneratedTerytPk) ?},
+   {? _wasteGeneratingAdditionalInfo='' || 'null' || json_value(_wasteGeneratingAdditionalInfo) ?}
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/update/plannedcard','POST',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_approve
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Planowana -> Zatwierdzona
+::   WE: _a - kpoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_args:='{"kpoId": %1}'[json_value(_kpoId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/approve','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_withdrawn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Zatwierdzona lub Potwierdzenie wygenerowane -> Wycofana
+::   WE: _a - kpoId
+::       _b - remarks
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_remarks:=_b;
+_args:='{"kpoId": %1, "remarks": %2}'[json_value(_kpoId),json_value(_remarks)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/withdrawn','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_generateconfirmation
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Zatwierdzona -> Potwierdzenie wygenerowane
+::   WE: _a - kpoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_args:='{"kpoId": %1}'[json_value(_kpoId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/generateconfirmation','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_reject
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Potwierdzenie wygenerowane -> Odrzucone
+::   WE: _a - kpoId
+::       _b - remarks
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_remarks:=_b;
+_args:='{"kpoId": %1, "remarks": %2}'[json_value(_kpoId),json_value(_remarks)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/reject','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_assign_receiveconfirmation
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Potwierdzenie wygenerowane -> Potwierdzenie przejęcia
+::   WE: _a - kpoId
+::       _b - correctedWasteMass
+::       _c - remarks
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_correctedWasteMass:=_b;
+_remarks:=_c;
+_args:='
+   {  "kpoId": %1,
+      "correctedWasteMass": %2,
+      "remarks": %3
+   }
+'
+[  json_value(_kpoId),
+   json_value(_correctedWasteMass),
+   json_value(_remarks)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/assign/receiveconfirmation','PUT',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+\Kpo_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Usunięcie karty o statusie 'Planowana'
+::   WE: _a - kpoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpoId:=_a;
+_args:='{"kpoId": %1}'[json_value(_kpoId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpo/delete','DELETE',_args,1);
+_obj.log_update(_kpoId);
+_obj
+
+
+::======================================================================================================================
+:: Kpok
+::======================================================================================================================
+
+
+\Kpok_transportconfirmation_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Potwierdzony transport'
+::   WE: _a - KpokId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpokId','CompanyType'); _args.KpokId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/transportconfirmation/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpokId,_args.CompanyType]);
+_obj
+
+
+\Kpok_planned_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Planowana'
+::   WE: _a - KpokId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpokId','CompanyType'); _args.KpokId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/planned/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpokId,_args.CompanyType]);
+_obj
+
+
+\Kpok_approved_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Zatwierdzona'
+::   WE: _a - KpokId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpokId','CompanyType'); _args.KpokId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/approved/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpokId,_args.CompanyType]);
+_obj
+
+
+\Kpok_withdrawn_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Wycofana'
+::   WE: _a - KpokId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpokId','CompanyType'); _args.KpokId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/withdrawn/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpokId,_args.CompanyType]);
+_obj
+
+
+\Kpok_confirmationgenerated_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Wygenerowane potwierdzenie'
+::   WE: _a - KpokId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpokId','CompanyType'); _args.KpokId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/confirmationgenerated/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpokId,_args.CompanyType]);
+_obj
+
+
+\Kpok_receiveconfirmation_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Potwierdzenie przejęcia'
+::   WE: _a - KpokId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpokId','CompanyType'); _args.KpokId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/receiveconfirmed/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpokId,_args.CompanyType]);
+_obj
+
+
+\Kpok_rejected_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Informacje o karcie ze statusem 'Odrzucona'
+::   WE: _a - KpoId
+::       _b - CompanyType (Sender, Carrier, Receiver)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('KpokId','CompanyType'); _args.KpokId:=_a; _args.CompanyType:=_b;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/rejected/card','GET',_args,1);
+_obj.log_update('%1|%2'[_args.KpokId,_args.CompanyType]);
+_obj
+
+
+\Kpok_printingpage_transfer
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera "dane do wydruku" KPO dla podtypu Przekazanie
+::   WE: _a - kpokId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:=obj_new('KpokId'); _args.KpokId:=_kpokId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/printingpage/transfer','GET',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_printingpage_receive
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera "dane do wydruku" KPO dla podtypu Odbiór
+::   WE: _a - kpokId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:=obj_new('KpokId'); _args.KpokId:=_kpokId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/printingpage/receive','GET',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_sender_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wyszukiwarka kart, gdzie podmiot występuje w roli Przekazującego
+::   WE: _a - index
+::       _b - size
+::       [_c] - transportDateRange
+::       [_d] - transportDateFrom
+::       [_e] - transportDateTo
+::       [_f] - wasteCodeAndDescription
+::       [_g] - vehicleRegNumber
+::       [_h] - transportTime
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_transportDateRange:={? var_pres('_c')=type_of('') || _c || 'false' ?};
+_transportDateFrom:={? var_pres('_d')=type_of('') || _d || '' ?};
+_transportDateTo:={? var_pres('_e')=type_of('') || _e || '' ?};
+_wasteCodeAndDescription:={? var_pres('_f')=type_of('') || _f || '' ?};
+_vehicleRegNumber:={? var_pres('_g')=type_of('') || _g || '' ?};
+_transportTime:={? var_pres('_h')=type_of('') || _h || '' ?};
+_args:='
+   {
+      "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "kpokId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "searchInCarriers": true,
+      "searchInReceivers": true,
+      "name": "",
+      "locality": "",
+      "street": "",
+      "nip": "",
+      "identificationNumber": "",
+      "wasteCodeAndDescription": %6,
+      "cardNumber": "",
+      "cardStatusCodeNames": "",
+      "transportTime": %8,
+      "receiveConfirmationTime": "",
+      "senderFirstNameAndLastName": "",
+      "receiverFirstNameAndLastName": "",
+      "vehicleRegNumber": %7,
+      "transportDateRange": %3,
+      "transportDateFrom": %4,
+      "transportDateTo": %5,
+      "receiveConfirmationDateRange": false,
+      "receiveConfirmationDateFrom": "",
+      "receiveConfirmationDateTo": ""
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   _transportDateRange,
+   json_value(_transportDateFrom),
+   json_value(_transportDateTo),
+   json_value(_wasteCodeAndDescription),
+   json_value(_vehicleRegNumber),
+   json_value(_transportTime)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/sender/search','POST',_args,1);
+_obj
+
+
+\Kpok_receiver_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wyszukiwarka kart, gdzie podmiot występuje w roli Odbiorcy
+::   WE: _a - index
+::       _b - size
+::       [_c] - transportDateRange
+::       [_d] - transportDateFrom
+::       [_e] - transportDateTo
+::       [_f] - wasteCodeAndDescription
+::       [_g] - vehicleRegNumber
+::       [_h] - transportTime
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_transportDateRange:={? var_pres('_c')=type_of('') || _c || 'false' ?};
+_transportDateFrom:={? var_pres('_d')=type_of('') || _d || '' ?};
+_transportDateTo:={? var_pres('_e')=type_of('') || _e || '' ?};
+_wasteCodeAndDescription:={? var_pres('_f')=type_of('') || _f || '' ?};
+_vehicleRegNumber:={? var_pres('_g')=type_of('') || _g || '' ?};
+_transportTime:={? var_pres('_h')=type_of('') || _h || '' ?};
+_args:='
+   {
+      "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "kpokId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "searchInCarriers": true,
+      "searchInSenders": true,
+      "name": "",
+      "locality": "",
+      "street": "",
+      "nip": "",
+      "identificationNumber": "",
+      "wasteCodeAndDescription": %6,
+      "cardNumber": "",
+      "cardStatusCodeNames": "",
+      "transportTime": %8,
+      "receiveConfirmationTime": "",
+      "senderFirstNameAndLastName": "",
+      "receiverFirstNameAndLastName": "",
+      "vehicleRegNumber": %7,
+      "transportDateRange": %3,
+      "transportDateFrom": %4,
+      "transportDateTo": %5,
+      "receiveConfirmationDateRange": false,
+      "receiveConfirmationDateFrom": "",
+      "receiveConfirmationDateTo": ""
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   _transportDateRange,
+   json_value(_transportDateFrom),
+   json_value(_transportDateTo),
+   json_value(_wasteCodeAndDescription),
+   json_value(_vehicleRegNumber),
+   json_value(_transportTime)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/receiver/search','POST',_args,1);
+_obj
+
+
+\Kpok_carrier_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wyszukiwarka kart, gdzie podmiot występuje w roli Transportującego
+::   WE: _a - index
+::       _b - size
+::       [_c] - transportDateRange
+::       [_d] - transportDateFrom
+::       [_e] - transportDateTo
+::       [_f] - wasteCodeAndDescription
+::       [_g] - vehicleRegNumber
+::       [_h] - transportTime
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_transportDateRange:={? var_pres('_c')=type_of('') || _c || 'false' ?};
+_transportDateFrom:={? var_pres('_d')=type_of('') || _d || '' ?};
+_transportDateTo:={? var_pres('_e')=type_of('') || _e || '' ?};
+_wasteCodeAndDescription:={? var_pres('_f')=type_of('') || _f || '' ?};
+_vehicleRegNumber:={? var_pres('_g')=type_of('') || _g || '' ?};
+_transportTime:={? var_pres('_h')=type_of('') || _h || '' ?};
+_args:='
+   {
+      "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "kpokId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "searchInReceivers": true,
+      "searchInSenders": true,
+      "name": "",
+      "locality": "",
+      "street": "",
+      "nip": "",
+      "identificationNumber": "",
+      "wasteCodeAndDescription": %6,
+      "cardNumber": "",
+      "cardStatusCodeNames": "",
+      "transportTime": %8,
+      "receiveConfirmationTime": "",
+      "senderFirstNameAndLastName": "",
+      "receiverFirstNameAndLastName": "",
+      "vehicleRegNumber": %7,
+      "transportDateRange": %3,
+      "transportDateFrom": %4,
+      "transportDateTo": %5,
+      "receiveConfirmationDateRange": false,
+      "receiveConfirmationDateFrom": "",
+      "receiveConfirmationDateTo": ""
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   _transportDateRange,
+   json_value(_transportDateFrom),
+   json_value(_transportDateTo),
+   json_value(_wasteCodeAndDescription),
+   json_value(_vehicleRegNumber),
+   json_value(_transportTime)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/carrier/search','POST',_args,1);
+_obj
+
+
+\Kpok_create_plannedreceivecard
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Tworzy kartę przekazania odpadów dla podtypu Odbiór
+::   WE: _a - carrierCompanyId
+::       _b - receiverCompanyId
+::       _c - receiverEupId
+::       _d - communeId
+::       _e - communeArea
+::       _f - wasteCodeId
+::       _g - vehicleRegNumber
+::       _h - plannedTransportTime
+::       [_i] - additionalInfo
+::       [_j] - wasteCodeExtended
+::       [_k] - wasteCodeExtendedDescription
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_carrierCompanyId:=_a;
+_receiverCompanyId:=_b;
+_receiverEupId:=_c;
+_communeId:=_d;
+_communeArea:=_e;
+_wasteCodeId:=_f;
+_vehicleRegNumber:=_g;
+_plannedTransportTime:=_h;
+_additionalInfo:={? var_pres('_i')=type_of('') || _i || '' ?};
+_wasteCodeExtended:={? var_pres('_j')=type_of('') || _j || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_k')=type_of('') || _k || '' ?};
+_args:='
+   {
+      "carrierCompanyId": %1,
+      "receiverCompanyId": %2,
+      "receiverEupId": %3,
+      "communeId": %4,
+      "communeArea": %5,
+      "wasteCodeId": %6,
+      "vehicleRegNumber": %7,
+      "plannedTransportTime": %8,
+      "additionalInfo": %9,
+      "wasteCodeExtended": %10,
+      "wasteCodeExtendedDescription": %11,
+      "hazardousWasteReclassification": false,
+      "hazardousWasteReclassificationDescription": ""
+   }
+'
+[  json_value(_carrierCompanyId),
+   json_value(_receiverCompanyId),
+   json_value(_receiverEupId),
+   json_value(_communeId),
+   json_value(_communeArea),
+   json_value(_wasteCodeId),
+   json_value(_vehicleRegNumber),
+   json_value(_plannedTransportTime),
+   json_value(_additionalInfo),
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/create/plannedreceivecard','POST',_args,1);
+_obj
+
+
+\Kpok_create_plannedtransfercard
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Tworzy kartę przekazania odpadów dla podtypu Przekazanie
+::   WE: _a - carrierCompanyId
+::       _b - receiverCompanyId
+::       _c - receiverEupId
+::       _d - communeId
+::       _e - communeArea
+::       _f - wasteCodeId
+::       _g - vehicleRegNumber
+::       _h - wasteMass
+::       _i - plannedTransportTime
+::       [_j] - additionalInfo
+::       [_k] - wasteCodeExtended
+::       [_l] - wasteCodeExtendedDescription
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_carrierCompanyId:=_a;
+_receiverCompanyId:=_b;
+_receiverEupId:=_c;
+_communeId:=_d;
+_communeArea:=_e;
+_wasteCodeId:=_f;
+_vehicleRegNumber:=_g;
+_wasteMass:=_h;
+_plannedTransportTime:=_i;
+_additionalInfo:={? var_pres('_j')=type_of('') || _j || '' ?};
+_wasteCodeExtended:={? var_pres('_k')=type_of('') || _k || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_l')=type_of('') || _l || '' ?};
+_args:='
+   {
+      "carrierCompanyId": %1,
+      "receiverCompanyId": %2,
+      "receiverEupId": %3,
+      "communeId": %4,
+      "communeArea": %5,
+      "wasteCodeId": %6,
+      "vehicleRegNumber": %7,
+      "wasteMass": %8,
+      "plannedTransportTime": %9,
+      "additionalInfo": %10,
+      "wasteCodeExtended": %11,
+      "wasteCodeExtendedDescription": %12,
+      "hazardousWasteReclassification": false,
+      "hazardousWasteReclassificationDescription": ""
+   }
+'
+[  json_value(_carrierCompanyId),
+   json_value(_receiverCompanyId),
+   json_value(_receiverEupId),
+   json_value(_communeId),
+   json_value(_communeArea),
+   json_value(_wasteCodeId),
+   json_value(_vehicleRegNumber),
+   json_value(_wasteMass),
+   json_value(_plannedTransportTime),
+   json_value(_additionalInfo),
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/create/plannedtransfercard','POST',_args,1);
+_obj
+
+
+\Kpok_revise
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Korekta odrzuconej karty
+::   WE: _a - kpokId
+::       _b - wasteCodeId
+::       _c - wasteMass
+::       [_d] - wasteCodeExtended
+::       [_e] - wasteCodeExtendedDescription
+::       [_f] - hazardousWasteReclassification
+::       [_g] - hazardousWasteReclassificationDescription
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_wasteCodeId:=_b;
+_wasteMass:=_c;
+_wasteCodeExtended:={? var_pres('_d')=type_of('') || _d || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_e')=type_of('') || _e || '' ?};
+_hazardousWasteReclassification:={? var_pres('_f')=type_of('') || _f || 'false' ?};
+_hazardousWasteReclassificatioD:={? var_pres('_g')=type_of('') || _g || '' ?};
+_args:='
+{
+  "kpokId": %1,
+  "wasteCodeId": %2,
+  "wasteMass": %3,
+  "wasteCodeExtended": %4,
+  "wasteCodeExtendedDescription": %5,
+  "hazardousWasteReclassification": %6,
+  "hazardousWasteReclassificationDescription": %7
+}'
+[  json_value(_kpokId),
+   json_value(_wasteCodeId),
+   json_value(_wasteMass),
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _hazardousWasteReclassification,
+   json_value(_hazardousWasteReclassificatioD)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/revise','PUT',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_status_transportconfirmat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Potwierdzenie przejęcia -> Potwierdzenie transportu
+::   WE: _a - kpokId
+::       _b - receiptEndingTime
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_receiptEndingTime:=_b;
+_args:='{"kpokId": %1, "receiptEndingTime": %2}'[json_value(_kpokId),json_value(_receiptEndingTime)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/status/transportconfirmation','PUT',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_reject_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Potwierdzenie wygenerowane -> Odrzucone
+::   WE: _a - kpokId
+::       _b - remarks
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_remarks:=_b;
+_args:='{"kpokId": %1, "remarks": %2}'[json_value(_kpokId),json_value(_remarks)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/reject/card','PUT',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_assign_receiveconfirmation
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Potwierdzenie wygenerowane -> Potwierdzenie przejęcia
+::   WE: _a - kpokId
+::       _b - correctedWasteMass
+::       _c - remarks
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_correctedWasteMass:=_b;
+_remarks:=_c;
+_args:='
+   {  "kpokId": %1,
+      "correctedWasteMass": %2,
+      "remarks": %3
+   }
+'
+[  json_value(_kpokId),
+   json_value(_correctedWasteMass),
+   json_value(_remarks)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/assign/receiveconfirmation','PUT',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_approve_card
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Planowana -> Zatwierdzona
+::   WE: _a - kpokId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:='{"kpokId": %1}'[json_value(_kpokId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/approve/card','PUT',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_promote_confirmationgener
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Zatwierdzona -> Potwierdzenie wygenerowane
+::   WE: _a - kpokId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:='{"kpokId": %1}'[json_value(_kpokId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/promote/confirmationgenerated','PUT',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_card_withdrawn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zmiana statusu karty: Zatwierdzona lub Potwierdzenie wygenerowane -> Wycofana
+::   WE: _a - kpokId
+::       _b - remarks
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_remarks:=_b;
+_args:='{"kpokId": %1, "remarks": %2}'[json_value(_kpokId),json_value(_remarks)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/card/withdrawn','PUT',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+\Kpok_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Usunięcie karty o statusie 'Planowana'
+::   WE: _a - kpokId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_kpokId:=_a;
+_args:='{"kpokId": %1}'[json_value(_kpokId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteTransferCard/v1/Kpok/delete','DELETE',_args,1);
+_obj.log_update(_kpokId);
+_obj
+
+
+::======================================================================================================================
+:: Keo
+::======================================================================================================================
+
+
+\Keo_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie karty ewidencji odpadów
+::   WE: _a - wasteCodeId
+::       _b - wasteMass
+::       [_c] - isWasteGenerating
+::       [_d] - isWasteCollecting
+::       [_e] - isSalvage
+::       [_f] - isNeutralization
+::       [_g] - wasteCodeExtended
+::       [_h] - wasteCodeExtendedDescription
+::       [_i] - hazardousWasteReclassification
+::       [_j] - hazardousWasteReclassificationDescription
+::       [_k] - installationName
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_wasteCodeId:=_a;
+_wasteMass:=_b;
+_isWasteGenerating:={? var_pres('_c')=type_of('') || _c || 'false' ?};
+_isWasteCollecting:={? var_pres('_d')=type_of('') || _d || 'false' ?};
+_isSalvage:={? var_pres('_e')=type_of('') || _e || 'false' ?};
+_isNeutralization:={? var_pres('_f')=type_of('') || _f || 'false' ?};
+_wasteCodeExtended:={? var_pres('_g')=type_of('') || _g || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_h')=type_of('') || _h || '' ?};
+_hazardousWasteReclassification:={? var_pres('_i')=type_of('') || _i || 'false' ?};
+_hazardousWasteReclassDesc:={? var_pres('_j')=type_of('') || _j || '' ?};
+_installationName:={? var_pres('_k')=type_of('') || _k || '' ?};
+_args:='
+   {  "wasteCodeId": %1,
+      "isWasteGenerating": %3,
+      "isWasteCollecting": %4,
+      "isSalvage": %5,
+      "isNeutralization": %6,
+      "wasteMass": %2,
+      "wasteCodeExtended": %7,
+      "wasteCodeExtendedDescription": %8,
+      "hazardousWasteReclassification": %9,
+      "hazardousWasteReclassificationDescription": %10,
+      "installationName": %11
+   }
+'
+[  json_value(_wasteCodeId),
+   json_value(_wasteMass),
+   _isWasteGenerating,
+   _isWasteCollecting,
+   _isSalvage,
+   _isNeutralization,
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _hazardousWasteReclassification,
+   json_value(_hazardousWasteReclassDesc),
+   json_value(_installationName)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/create','POST',_args,1);
+_obj
+
+
+\Keo_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Edycja karty ewidencji odpadów
+::   WE: _a - keoId
+::       _b - wasteCodeId
+::       _c - wasteMass
+::       [_d] - isWasteGenerating
+::       [_e] - isWasteCollecting
+::       [_f] - isSalvage
+::       [_g] - isNeutralization
+::       [_h] - wasteCodeExtended
+::       [_i] - wasteCodeExtendedDescription
+::       [_j] - hazardousWasteReclassification
+::       [_k] - hazardousWasteReclassificationDescription
+::       [_l] - installationName
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_wasteCodeId:=_b;
+_wasteMass:=_c;
+_isWasteGenerating:={? var_pres('_d')=type_of('') || _d || 'false' ?};
+_isWasteCollecting:={? var_pres('_e')=type_of('') || _e || 'false' ?};
+_isSalvage:={? var_pres('_f')=type_of('') || _f || 'false' ?};
+_isNeutralization:={? var_pres('_g')=type_of('') || _g || 'false' ?};
+_wasteCodeExtended:={? var_pres('_h')=type_of('') || _h || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_i')=type_of('') || _i || '' ?};
+_hazardousWasteReclassification:={? var_pres('_j')=type_of('') || _j || 'false' ?};
+_hazardousWasteReclassDesc:={? var_pres('_k')=type_of('') || _k || '' ?};
+_installationName:={? var_pres('_l')=type_of('') || _l || '' ?};
+_args:='
+   {  "keoId": %1,
+      "wasteCodeId": %2,
+      "isWasteGenerating": %4,
+      "isWasteCollecting": %5,
+      "isSalvage": %6,
+      "isNeutralization": %7,
+      "wasteMass": %3,
+      "wasteCodeExtended": %8,
+      "wasteCodeExtendedDescription": %9,
+      "hazardousWasteReclassification": %10,
+      "hazardousWasteReclassificationDescription": %11,
+      "installationName": %12
+   }
+'
+[  json_value(_keoId),
+   json_value(_wasteCodeId),
+   json_value(_wasteMass),
+   _isWasteGenerating,
+   _isWasteCollecting,
+   _isSalvage,
+   _isNeutralization,
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _hazardousWasteReclassification,
+   json_value(_hazardousWasteReclassDesc),
+   json_value(_installationName)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/update','PUT',_args,1);
+_obj.log_update(_keoId);
+_obj
+
+
+\Keo_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie karty ewidencji odpadów
+::   WE: _a - keoId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_args:='{"keoId": %1}'[json_value(_keoId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/delete','DELETE',_args,1);
+_obj.log_update(_keoId);
+_obj
+
+
+\Keo_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka kart ewidencji odpadów
+::   WE: _a - index
+::       _b - size
+::       _c - wasteCode
+::       _d - cardNumber
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_wasteCode:=_c;
+_cardNumber:=_d;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "cardNumber"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "wasteCode": %3,
+      "cardNumber": %4
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_wasteCode),
+   json_value(_cardNumber)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/search','POST',_args,1);
+_obj
+
+
+\Keo_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych karty ewidencji odpadów do wydruku
+::   WE: _a - keoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_args:=obj_new('KeoId'); _args.KeoId:=_keoId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/card/printingpage','GET',_args,1);
+_obj.log_update(_keoId);
+_obj
+
+
+\Keo_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie karty ewidencji odpadów
+::   WE: _a - keoId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_args:=obj_new('KeoId'); _args.KeoId:=_keoId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/card','GET',_args,1);
+_obj.log_update(_keoId);
+_obj
+
+
+\Keo_generated_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Wytworzone'
+::   WE: _a - keoId
+::       _b - installationName
+::       _c - wasteMassInstallation
+::       _d - wasteMassExcludingInstallation
+::       _e - wasteFromServices
+::       _f - communeId
+::       _g - manufactureDate
+::       _h - hazardousWasteReclassification
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_installationName:=_b;
+_wasteMassInstallation:=_c;
+_wasteMassExcludingInstallation:=_d;
+_wasteFromServices:=_e;
+_communeId:=_f;
+_manufactureDate:=_g;
+_hazardousWasteReclassification:=_h;
+_args:='
+   {  "keoId": %1,
+      "installationName": %2,
+      "wasteMassInstallation": %3,
+      "wasteMassExcludingInstallation": %4,
+      "wasteFromServices": %5,
+      "communeId": %6,
+      "manufactureDate": %7,
+      "hazardousWasteReclassification": %8
+   }
+'
+[  json_value(_keoId),
+   json_value(_installationName),
+   json_value(_wasteMassInstallation),
+   json_value(_wasteMassExcludingInstallation),
+   _wasteFromServices,
+   {? _communeId='' || 'null' || json_value(_communeId) ?},
+   json_value(_manufactureDate),
+   _hazardousWasteReclassification
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoGenerated/create','POST',_args,1);
+_obj
+
+
+\Keo_generated_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Wytworzone'
+::   WE: _a - keoGeneratedId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoGeneratedId:=_a;
+_args:='{"keoGeneratedId": %1}'[json_value(_keoGeneratedId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoGenerated/delete','DELETE',_args,1);
+_obj.log_update(_keoGeneratedId);
+_obj
+
+
+\Keo_generated_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Wytworzone' kart ewidencji odpadów
+::   WE: _a - index
+::       _b - size
+::       _c - keoId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keoId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keoGeneratedId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keoId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keoId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoGenerated/search','POST',_args,1);
+_obj
+
+
+\Keo_generated_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu 'Wytworzone'
+::   WE: _a - keoGeneratedId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoGeneratedId:=_a;
+_args:=obj_new('KeoGeneratedId'); _args.KeoGeneratedId:=_keoGeneratedId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoGenerated/card','GET',_args,1);
+_obj.log_update(_keoGeneratedId);
+_obj
+
+
+\Keo_excavated_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Wydobycie'
+::   WE: _a - keoId
+::       _b - wasteMassExcavated
+::       _c - excavatedDate
+::       _d - installationName
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_wasteMassExcavated:=_b;
+_excavatedDate:=_c;
+_installationName:=_d;
+_args:='
+   {  "keoId": %1,
+      "wasteMassExcavated": %2,
+      "excavatedDate": %3,
+      "installationName": %4
+   }
+'
+[  json_value(_keoId),
+   json_value(_wasteMassExcavated),
+   json_value(_excavatedDate),
+   json_value(_installationName)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoExcavated/create','POST',_args,1);
+_obj
+
+
+\Keo_excavated_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Wydobycie'
+::   WE: _a - keoExcavatedId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoExcavatedId:=_a;
+_args:='{"keoExcavatedId": %1}'[json_value(_keoExcavatedId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoExcavated/delete','DELETE',_args,1);
+_obj.log_update(_keoExcavatedId);
+_obj
+
+
+\Keo_excavated_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Wydobycie' kart ewidencji odpadów
+::   WE: _a - index
+::       _b - size
+::       _c - keoId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keoId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keoExcavatedId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keoId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keoId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoExcavated/search','POST',_args,1);
+_obj
+
+
+\Keo_excavated_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu 'Wydobyte'
+::   WE: _a - keoExcavatedId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoExcavatedId:=_a;
+_args:=obj_new('KeoExcavatedId'); _args.KeoExcavatedId:=_keoExcavatedId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoExcavated/card','GET',_args,1);
+_obj.log_update(_keoExcavatedId);
+_obj
+
+
+\Keo_collected_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Przyjęte'
+::   WE: _a - keoId
+::       _b - kpoId
+::       _c - kpokId
+::       _d - collectedDate
+::       _e - collectedMass
+::       _f - collectionWay
+::       _g - countryId
+::       _h - locality
+::       _i - street
+::       _j - buildingNumber
+::       _k - localNumber
+::       _l - _postalCode
+::       _m - _additionalInfo
+::       _n - installationName
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_kpoId:=_b;
+_kpokId:=_c;
+_collectedDate:=_d;
+_collectedMass:=_e;
+_collectionWay:=_f;
+_countryId:=_g;
+_locality:=_h;
+_street:=_i;
+_buildingNumber:=_j;
+_localNumber:=_k;
+_postalCode:=_l;
+_additionalInfo:=_m;
+_installationName:=_n;
+
+::  "kpokId": "string",
+::  "collectionWay": "string",
+_args:='
+   {  "keoId": %1,
+      "kpoId": %2,
+      "kpokId":%3,
+      "collectedDate": %4,
+      "collectedMass": %5,
+      "collectionWay": %6,
+      "countryId": %7,
+      "locality": %8,
+      "street": %9,
+      "buildingNumber": %10,
+      "localNumber": %11,
+      "postalCode": %12,
+      "additionalInfo": %13,
+      "installationName": %14
+   }
+'
+[  json_value(_keoId),
+   json_value(_kpoId),
+   json_value(_kpokId),
+   json_value(_collectedDate),
+   json_value(_collectedMass),
+   json_value(_collectionWay),
+   {? _countryId=0 || 'null' || json_value(_countryId) ?},
+   json_value(_locality),
+   json_value(_street),
+   json_value(_buildingNumber),
+   json_value(_localNumber),
+   json_value(_postalCode),
+   json_value(_additionalInfo),
+   json_value(_installationName)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoCollected/create','POST',_args,1);
+_obj
+
+
+\Keo_collected_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Przyjęte'
+::   WE: _a - keoCollectedId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoCollectedId:=_a;
+_args:='{"keoCollectedId": %1}'[json_value(_keoCollectedId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoCollected/delete','DELETE',_args,1);
+_obj.log_update(_keoCollectedId);
+_obj
+
+
+\Keo_collected_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Przyjęte' kart ewidencji odpadów
+::   WE: _a - index
+::       _b - size
+::       _c - keoId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keoId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keoCollectedId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keoId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keoId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoCollected/search','POST',_args,1);
+_obj
+
+
+\Keo_collected_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu 'Przyjęte'
+::   WE: _a - keoCollectedId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoCollectedId:=_a;
+_args:=obj_new('KeoCollectedId'); _args.KeoCollectedId:=_keoCollectedId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoCollected/card','GET',_args,1);
+_obj.log_update(_keoCollectedId);
+_obj
+
+
+\Keo_treated_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Przetwarzane'
+::   WE: _a - keoId
+::       _b - treatedWasteMass
+::       _c - pcbContent
+::       _d - processR
+::       _e - processD
+::       _f - wasteProcessId
+::       _g - isRecycle
+::       _h - isFillingUpDisadvantagedAreas
+::       _i - isPreparationForReUse
+::       _j - isAnotherRecoveryProcess
+::       _k - isNeutralization
+::       _l - installationName
+::       _m - wasteRecycleTime
+::       _n - lossOfWasteStatus
+::       _o - type
+::       _p - massInTonnes
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_treatedWasteMass:=_b;
+_pcbContent:=_c;
+_processR:=_d;
+_processD:=_e;
+_wasteProcessId:=_f;
+_isRecycle:=_g;
+_isFillingUpDisadvantagedAreas:=_h;
+_isPreparationForReUse:=_i;
+_isAnotherRecoveryProcess:=_j;
+_isNeutralization:=_k;
+_installationName:=_l;
+_wasteRecycleTime:=_m;
+_lossOfWasteStatus:=_n;
+_type:=_o;
+_massInTonnes:=_p;
+_args:='
+   {  "keoId": %1,
+      "treatedWasteMass": %2,
+      "pcbContent": %3,
+      "processR": %4,
+      "processD": %5,
+      "wasteProcessId": %6,
+      "isRecycle": %7,
+      "isFillingUpDisadvantagedAreas": %8,
+      "isPreparationForReUse": %9,
+      "isAnotherRecoveryProcess": %10,
+      "isNeutralization": %11,
+      "installationName": %12,
+      "wasteRecycleTime": %13,
+      "lossOfWasteStatus": %14,
+      "type": %15,
+      "massInTonnes": %16
+   }
+'
+[  json_value(_keoId),
+   json_value(_treatedWasteMass),
+   json_value(_pcbContent),
+   _processR,
+   _processD,
+   json_value(_wasteProcessId),
+   _isRecycle,
+   _isFillingUpDisadvantagedAreas,
+   _isPreparationForReUse,
+   _isAnotherRecoveryProcess,
+   _isNeutralization,
+   json_value(_installationName),
+   json_value(_wasteRecycleTime),
+   _lossOfWasteStatus,
+   json_value(_type),
+   json_value(_massInTonnes)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoTreated/create','POST',_args,1);
+_obj
+
+
+\Keo_treated_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Przetwarzanie'
+::   WE: _a - keoTreatedId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoTreatedId:=_a;
+_args:='{"keoTreatedId": %1}'[json_value(_keoTreatedId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoTreated/delete','DELETE',_args,1);
+_obj.log_update(_keoTreatedId);
+_obj
+
+
+\Keo_treated_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Przetwarzane' kart ewidencji odpadów
+::   WE: _a - index
+::       _b - size
+::       _c - keoId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keoId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keoTreatedId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keoId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keoId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoTreated/search','POST',_args,1);
+_obj
+
+
+\Keo_treated_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu 'Przetwarzane'
+::   WE: _a - keoTreatedId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoTreatedId:=_a;
+_args:=obj_new('KeoTreatedId'); _args.KeoTreatedId:=_keoTreatedId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoTreated/card','GET',_args,1);
+_obj.log_update(_keoTreatedId);
+_obj
+
+
+\Keo_forwarded_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Przekazane'
+::   WE: _a - keoId
+::       _b - transferWay
+::       _c - kpoId
+::       _d - kpokId
+::       _e - wasteCollectionDate
+::       _f - wasteMass
+::       _g - countryId
+::       _h - locality
+::       _i - street
+::       _j - buildingNumber
+::       _k - localNumber
+::       _l - postalCode
+::       _m - transportDate
+::       _n - isRoadTransport
+::       _o - isRailwayTransport
+::       _p - isMaritimeTransport
+::       _q - isAirTransport
+::       _r - isInlandWaterTransport
+::       _s - processR
+::       _t - processD
+::       _u - wasteProcessId
+::       _v - isRecycle
+::       _w - additionalInfo
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoId:=_a;
+_transferWay:=_b;
+_kpoId:=_c;
+_kpokId:=_d;
+_wasteCollectionDate:=_e;
+_wasteMass:=_f;
+_countryId:=_g;
+_locality:=_h;
+_street:=_i;
+_buildingNumber:=_j;
+_localNumber:=_k;
+_postalCode:=_l;
+_transportDate:=_m;
+_isRoadTransport:=_n;
+_isRailwayTransport:=_o;
+_isMaritimeTransport:=_p;
+_isAirTransport:=_q;
+_isInlandWaterTransport:=_r;
+_processR:=_s;
+_processD:=_t;
+_wasteProcessId:=_u;
+_isRecycle:=_v;
+_additionalInfo:=_w;
+_args:='
+   {  "keoId": %1,
+      "transferWay": %2,
+      "kpoId": %3,
+      "kpokId": %4,
+      "wasteCollectionDate": %5,
+      "wasteMass": %6,
+      "countryId": %7,
+      "locality": %8,
+      "street": %9,
+      "buildingNumber": %10,
+      "localNumber": %11,
+      "postalCode": %12,
+      "transportDate": %13,
+      "isRoadTransport": %14,
+      "isRailwayTransport": %15,
+      "isMaritimeTransport": %16,
+      "isAirTransport": %17,
+      "isInlandWaterTransport": %18,
+      "processR": %19,
+      "processD": %20,
+      "wasteProcessId": %21,
+      "isRecycle": %22,
+      "additionalInfo": %23
+   }
+'
+[  json_value(_keoId),
+   json_value(_transferWay),
+   json_value(_kpoId),
+   json_value(_kpokId),
+   json_value(_wasteCollectionDate),
+   json_value(_wasteMass),
+   json_value(_countryId),
+   json_value(_locality),
+   json_value(_street),
+   json_value(_buildingNumber),
+   json_value(_localNumber),
+   json_value(_postalCode),
+   json_value(_transportDate),
+   _isRoadTransport,
+   _isRailwayTransport,
+   _isMaritimeTransport,
+   _isAirTransport,
+   _isInlandWaterTransport,
+   _processR,
+   _processD,
+   json_value(_wasteProcessId),
+   _isRecycle,
+   json_value(_additionalInfo)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoForwarded/create','POST',_args,1);
+_obj
+
+
+\Keo_forwarded_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Przekazane'
+::   WE: _a - keoForwardedId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoForwardedId:=_a;
+_args:='{"keoForwardedId": %1}'[json_value(_keoForwardedId)];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoForwarded/delete','DELETE',_args,1);
+_obj.log_update(_keoForwardedId);
+_obj
+
+
+\Keo_forwarded_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Przekazane' kart ewidencji odpadów
+::   WE: _a - index
+::       _b - size
+::       _c - keoId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keoId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keoForwardedId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keoId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keoId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoForwarded/search','POST',_args,1);
+_obj
+
+
+\Keo_forwarded_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu 'Przekazane'
+::   WE: _a - keoForwardedId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keoForwardedId:=_a;
+_args:=obj_new('KeoForwardedId'); _args.KeoForwardedId:=_keoForwardedId;
+_obj:=exec('run','bdo_api','WasteRegister/WasteRecordCard/v1/Keo/KeoForwarded/card','GET',_args,1);
+_obj.log_update(_keoForwardedId);
+_obj
+
+
+::======================================================================================================================
+:: Keok
+::======================================================================================================================
+
+
+\Keok_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie karty ewidencji odpadów komunalnych
+::   WE: _a - wasteCodeId
+::       _b - wasteOriginTerytId
+::       _c - initialWasteMass
+::       [_d] - isWasteReceive
+::       [_e] - isWasteCollecting
+::       [_f] - isSalvage
+::       [_g] - isNeutralization
+::       [_h] - wasteCodeExtended
+::       [_i] - wasteCodeExtendedDescription
+::       [_j] - hazardousWasteReclassification
+::       [_k] - hazardousWasteReclassificationDescription
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_wasteCodeId:=_a;
+_wasteOriginTerytId:=_b;
+_initialWasteMass:=_c;
+_isWasteReceive:={? var_pres('_d')=type_of('') || _d || 'false' ?};
+_isWasteCollecting:={? var_pres('_e')=type_of('') || _e || 'false' ?};
+_isSalvage:={? var_pres('_f')=type_of('') || _f || 'false' ?};
+_isNeutralization:={? var_pres('_g')=type_of('') || _g || 'false' ?};
+_wasteCodeExtended:={? var_pres('_h')=type_of('') || _h || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_i')=type_of('') || _i || '' ?};
+_hazardousWasteReclassification:={? var_pres('_j')=type_of('') || _j || 'false' ?};
+_hazardousWasteReclassDesc:={? var_pres('_k')=type_of('') || _k || '' ?};
+_args:='
+   {  "wasteCodeId": %1,
+      "wasteOriginTerytId": %2,
+      "initialWasteMass": %3,
+      "isWasteReceive": %4,
+      "isWasteCollecting": %5,
+      "isSalvage": %6,
+      "isNeutralization": %7,
+      "wasteCodeExtended": %8,
+      "wasteCodeExtendedDescription": %9,
+      "hazardousWasteReclassification": %10,
+      "hazardousWasteReclassificationDescription": %11
+   }
+'
+[  json_value(_wasteCodeId),
+   json_value(_wasteOriginTerytId),
+   json_value(_initialWasteMass),
+   _isWasteReceive,
+   _isWasteCollecting,
+   _isSalvage,
+   _isNeutralization,
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _hazardousWasteReclassification,
+   json_value(_hazardousWasteReclassDesc)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok','POST',_args,1);
+_obj
+
+
+\Keok_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Edycja karty ewidencji odpadów komunalnych
+::   WE: _a - keokId
+::       _b - wasteCodeId
+::       _c - wasteOriginTerytId
+::       _d - initialWasteMass
+::       [_e] - isWasteReceive
+::       [_f] - isWasteCollecting
+::       [_g] - isSalvage
+::       [_h] - isNeutralization
+::       [_i] - wasteCodeExtended
+::       [_j] - wasteCodeExtendedDescription
+::       [_k] - hazardousWasteReclassification
+::       [_l] - hazardousWasteReclassificationDescription
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_wasteCodeId:=_b;
+_wasteOriginTerytId:=_c;
+_initialWasteMass:=_d;
+_isWasteReceive:={? var_pres('_e')=type_of('') || _e || 'false' ?};
+_isWasteCollecting:={? var_pres('_f')=type_of('') || _f || 'false' ?};
+_isSalvage:={? var_pres('_g')=type_of('') || _g || 'false' ?};
+_isNeutralization:={? var_pres('_h')=type_of('') || _h || 'false' ?};
+_wasteCodeExtended:={? var_pres('_i')=type_of('') || _i || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_j')=type_of('') || _j || '' ?};
+_hazardousWasteReclassification:={? var_pres('_k')=type_of('') || _k || 'false' ?};
+_hazardousWasteReclassDesc:={? var_pres('_l')=type_of('') || _l || '' ?};
+_args:='
+   {  "keokId": %1,
+      "wasteCodeId": %2,
+      "wasteOriginTerytId": %3,
+      "initialWasteMass": %4,
+      "isWasteReceive": %5,
+      "isWasteCollecting": %6,
+      "isSalvage": %7,
+      "isNeutralization": %8,
+      "wasteCodeExtended": %9,
+      "wasteCodeExtendedDescription": %10,
+      "hazardousWasteReclassification": %11,
+      "hazardousWasteReclassificationDescription": %12
+   }
+'
+[  json_value(_keokId),
+   json_value(_wasteCodeId),
+   json_value(_wasteOriginTerytId),
+   json_value(_initialWasteMass),
+   _isWasteReceive,
+   _isWasteCollecting,
+   _isSalvage,
+   _isNeutralization,
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription),
+   _hazardousWasteReclassification,
+   json_value(_hazardousWasteReclassDesc)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok','PUT',_args,1);
+_obj.log_update(_keokId);
+_obj
+
+
+\Keok_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie karty ewidencji odpadów komunalnych
+::   WE: _a - keokId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_args:='{"keokId": %1}'[json_value(_keokId)];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok','DELETE',_args,1);
+_obj.log_update(_keokId);
+_obj
+
+
+\Keok_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wyszukiwarka kart ewidencji odpadów komunalnych
+::   WE: _a - index
+::       _b - size
+::       _c - wasteCode
+::       _d - cardNumber
+::       _e - wasteOriginTerytId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_wasteCode:=_c;
+_cardNumber:=_d;
+_wasteOriginTerytId:=_e;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "cardNumber"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "wasteCode": %3,
+      "cardNumber": %4,
+      "wasteOriginTerytId": %5
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_wasteCode),
+   json_value(_cardNumber),
+   json_value(_wasteOriginTerytId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/search','POST',_args,1);
+_obj
+
+
+\Keok_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych karty ewidencji odpadów komunalnych do wydruku
+::   WE: _a - keokId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_args:=obj_new('KeokId'); _args.KeokId:=_keokId;
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/card/printingpage','GET',_args,1);
+_obj.log_update(_keokId);
+_obj
+
+
+\Keok_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie karty ewidencji odpadów komunalnych
+::   WE: _a - keokId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_args:=obj_new('KeokId'); _args.KeokId:=_keokId;
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok','GET',_args,1);
+_obj.log_update(_keokId);
+_obj
+
+
+\Keok_collected_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Odbiór'
+::   WE: _a - keokId
+::       _b - kpokId
+::       _c - additionalInfo
+::       _d - collectedWasteMass
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_kpokId:=_b;
+_additionalInfo:=_c;
+_collectedWasteMass:=_d;
+_args:='
+   {  "keokId": %1,
+      "kpokId": %2,
+      "additionalInfo": %3,
+      "collectedWasteMass": %4
+
+   }
+'
+[  json_value(_keokId),
+   json_value(_kpokId),
+   json_value(_additionalInfo),
+   json_value(_collectedWasteMass)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/collectedFromRealEstateOwner','POST',_args,1);
+_obj
+
+
+\Keok_collected_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Odbiór'
+::   WE: _a - keokCollectedFromRealEstateOwnerId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokCollectedFromREOwnerId:=_a;
+_args:='{"keokCollectedFromRealEstateOwnerId": %1}'[json_value(_keokCollectedFromREOwnerId)];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/collectedFromRealEstateOwner','DELETE',_args,1);
+_obj.log_update(_keokCollectedFromREOwnerId);
+_obj
+
+
+\Keok_collected_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Odbiór' kart ewidencji odpadów komunalnych
+::   WE: _a - index
+::       _b - size
+::       _c - keokId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keokId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keokCollectedFromRealEstateOwnerId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keokId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keokId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/collectedFromRealEstateOwner/search','POST',_args,1);
+_obj
+
+
+\Keok_collected_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu 'Odbiór'
+::   WE: _a - keokCollectedFromRealEstateOwnerId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokCollectedFromREOwnerId:=_a;
+_args:=obj_new(1);
+_args[1]:=obj_new('name','value');
+_args[1].name:='KeokCollectedFromRealEstateOwnerId';
+_args[1].value:=_keokCollectedFromREOwnerId;
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/collectedFromRealEstateOwner','GET',_args,1);
+_obj.log_update(_keokCollectedFromREOwnerId);
+_obj
+
+
+\Keok_received_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Przyjęte'
+::   WE: _a - keokId
+::       _b - kpokId
+::       _c - collectionWay
+::       _d - receivedWasteMass
+::       _e - receiveDate
+::       _f - additionalInfo
+::       _g - installationName
+::       _h - kpoId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_kpokId:=_b;
+_collectionWay:=_c;
+_receivedWasteMass:=_d;
+_receiveDate:=_e;
+_additionalInfo:=_f;
+_installationName:=_g;
+_kpoId:=_h;
+_args:='
+   {  "keokId": %1,
+      "kpokId": %2,
+      "kpoId": %8,
+      "collectionWay": %3,
+      "receivedWasteMass": %4,
+      "receiveDate": %5,
+      "additionalInfo": %6,
+      "installationName": %7
+   }
+'
+[  json_value(_keokId),
+   json_value(_kpokId),
+   json_value(_collectionWay),
+   json_value(_receivedWasteMass),
+   json_value(_receiveDate),
+   json_value(_additionalInfo),
+   json_value(_installationName),
+   json_value(_kpoId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/received','POST',_args,1);
+_obj
+
+
+\Keok_received_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Przyjęte'
+::   WE: _a - keokReceivedId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokReceivedId:=_a;
+_args:='{"keokReceivedId": %1}'[json_value(_keokReceivedId)];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/received','DELETE',_args,1);
+_obj.log_update(_keokReceivedId);
+_obj
+
+
+\Keok_received_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Przyjęte' kart ewidencji odpadów komunalnych
+::   WE: _a - index
+::       _b - size
+::       _c - keokId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keokId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keokReceivedId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keokId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keokId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/received/search','POST',_args,1);
+_obj
+
+
+\Keok_received_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: _a - keokReceivedId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokReceivedId:=_a;
+_args:=obj_new('KeokReceivedId'); _args.KeokReceivedId:=_keokReceivedId;
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/received','GET',_args,1);
+_obj.log_update(_keokReceivedId);
+_obj
+
+
+\Keok_processed_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Przetwarzane'
+::   WE: _a - keokId
+::       _b - processedWasteMass
+::       _c - wasteProcessId
+::       _d - pcbContent
+::       _e - isRecycle
+::       _f - isFillingUpDisadvantagedAreas
+::       _g - isPreparationForReUse
+::       _h - isPreparationForReuse
+::       _i - isAnotherRecoveryProcess
+::       _j - isNeutralization
+::       _k - installationName
+::       _l - wasteRecycleTime
+::       _m - lossOfWasteStatus
+::       _n - type
+::       _o - massInTonnes
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_processedWasteMass:=_b;
+_wasteProcessId:=_c;
+_pcbContent:=_d;
+_isRecycle:=_e;
+_isFillingUpDisadvantagedAreas:=_f;
+_isPreparationForReUse:=_g;
+_isPreparationForReuse:=_h;
+_isAnotherRecoveryProcess:=_i;
+_isNeutralization:=_j;
+_installationName:=_k;
+_wasteRecycleTime:=_l;
+_lossOfWasteStatus:=_m;
+_type:=_n;
+_massInTonnes:=_o;
+_args:='
+   {  "keokId": %1,
+      "processedWasteMass": %2,
+      "wasteProcessId": %3,
+      "pcbContent": %4,
+      "isRecycle": %5,
+      "isFillingUpDisadvantagedAreas": %6,
+      "isPreparationForReUse": %7,
+      "isPreparationForReuse": %8,
+      "isAnotherRecoveryProcess": %9,
+      "isNeutralization": %10,
+      "installationName": %11,
+      "wasteRecycleTime": %12,
+      "lossOfWasteStatus": %13,
+      "type": %14,
+      "massInTonnes": %15
+   }
+'
+[  json_value(_keokId),
+   json_value(_processedWasteMass),
+   json_value(_wasteProcessId),
+   json_value(_pcbContent),
+   _isRecycle,
+   _isFillingUpDisadvantagedAreas,
+   _isPreparationForReUse,
+   _isPreparationForReuse,
+   _isAnotherRecoveryProcess,
+   _isNeutralization,
+   json_value(_installationName),
+   json_value(_wasteRecycleTime),
+   _lossOfWasteStatus,
+   json_value(_type),
+   json_value(_massInTonnes)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/processed','POST',_args,1);
+_obj
+
+
+\Keok_processed_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Przetwarzane'
+::   WE: _a - keokProcessedId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokProcessedId:=_a;
+_args:='{"keokProcessedId": %1}'[json_value(_keokProcessedId)];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/processed','DELETE',_args,1);
+_obj.log_update(_keokProcessedId);
+_obj
+
+
+\Keok_processed_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Przetwarzane' kart ewidencji odpadów komunalnych
+::   WE: _a - index
+::       _b - size
+::       _c - keokId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keokId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keokProcessedId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keokId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keokId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/processed/search','POST',_args,1);
+_obj
+
+
+\Keok_processed_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu 'Przetwarzane'
+::   WE: _a - keokProcessedId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokProcessedId:=_a;
+_args:=obj_new('KeokProcessedId'); _args.KeokProcessedId:=_keokProcessedId;
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/processed','GET',_args,1);
+_obj.log_update(_keokProcessedId);
+_obj
+
+
+\Keok_transferred_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu ze statusem 'Przekazane'
+::   WE: _a - keokId
+::       _b - kpoId
+::       _c - kpokId
+::       _d - additionalInfo
+::       _e - receivedWasteMass
+::       _f - transferAbroad
+::       _g - transferToNaturalPersons
+::       _h - ownerExemptFromRecords
+::       _i - wasteCollectionDate
+::       _j - countryId
+::       _k - locality
+::       _l - street
+::       _m - buildingNumber
+::       _n - localNumber
+::       _o - postalCode
+::       _p - transportDate
+::       _q - isRoadTransport
+::       _r - isRailwayTransport
+::       _s - isMaritimeTransport
+::       _t - isAirTransport
+::       _u - isInlandWaterTransport
+::       _v - processR
+::       _w - processD
+::       _x - wasteProcessId
+::       _y - isRecycle
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokId:=_a;
+_kpoId:=_b;
+_kpokId:=_c;
+_additionalInfo:=_d;
+_receivedWasteMass:=_e;
+_transferAbroad:=_f;
+_transferToNaturalPersons:=_g;
+_ownerExemptFromRecords:=_h;
+_wasteCollectionDate:=_i;
+_countryId:=_j;
+_locality:=_k;
+_street:=_l;
+_buildingNumber:=_m;
+_localNumber:=_n;
+_postalCode:=_o;
+_transportDate:=_p;
+_isRoadTransport:=_q;
+_isRailwayTransport:=_r;
+_isMaritimeTransport:=_s;
+_isAirTransport:=_t;
+_isInlandWaterTransport:=_u;
+_processR:=_v;
+_processD:=_w;
+_wasteProcessId:=_x;
+_isRecycle:=_y;
+_args:='
+   {  "keokId": %1,
+      "kpoId": %2,
+      "kpokId": %3,
+      "additionalInfo": %4,
+      "receivedWasteMass": %5,
+      "transferAbroad": %6,
+      "transferToNaturalPersons": %7,
+      "ownerExemptFromRecords": %8,
+      "wasteCollectionDate": %9,
+      "countryId": %10,
+      "locality": %11,
+      "street": %12,
+      "buildingNumber": %13,
+      "localNumber": %14,
+      "postalCode": %15,
+      "transportDate": %16,
+      "isRoadTransport": %17,
+      "isRailwayTransport": %18,
+      "isMaritimeTransport": %19,
+      "isAirTransport": %20,
+      "isInlandWaterTransport": %21,
+      "processR": %22,
+      "processD": %23,
+      "wasteProcessId": %24,
+      "isRecycle": %25
+   }
+'
+[  json_value(_keokId),
+   json_value(_kpoId),
+   json_value(_kpokId),
+   json_value(_additionalInfo),
+   json_value(_receivedWasteMass),
+   json_value(_transferAbroad),
+   json_value(_transferToNaturalPersons),
+   json_value(_ownerExemptFromRecords),
+   json_value(_wasteCollectionDate),
+   {? _countryId=0 || 'null' || json_value(_countryId) ?},
+   json_value(_locality),
+   json_value(_street),
+   json_value(_buildingNumber),
+   json_value(_localNumber),
+   json_value(_postalCode),
+   json_value(_transportDate),
+   _isRoadTransport,
+   _isRailwayTransport,
+   _isMaritimeTransport,
+   _isAirTransport,
+   _isInlandWaterTransport,
+   _processR,
+   _processD,
+   {? _wasteProcessId=0 || 'null' ||  json_value(_wasteProcessId) ?},
+   _isRecycle
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/transferred','POST',_args,1);
+_obj
+
+
+\Keok_transferred_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu ze statusem 'Przekazane'
+::   WE: _a - keokTransferredId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokTransferredId:=_a;
+_args:='{"keokTransferredId": %1}'[json_value(_keokTransferredId)];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/transferred','DELETE',_args,1);
+_obj.log_update(_keokTransferredId);
+_obj
+
+
+\Keok_transferred_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów 'Przekazane' kart ewidencji odpadów komunalnych
+::   WE: _a - index
+::       _b - size
+::       _c - keokId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keokId:=_c;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keokTransferredId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keokId": %3
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keokId)
+];
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/transferred/search','POST',_args,1);
+_obj
+
+
+\Keok_transferred_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu 'Przekazane'
+::   WE: _a - keokTransferredId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keokTransferredId:=_a;
+_args:=obj_new('KeokTransferredId'); _args.KeokTransferredId:=_keokTransferredId;
+_obj:=exec('run','bdo_api','WasteRegister/MunicipalWasteRecordCard/v1/Keok/transferred','GET',_args,1);
+_obj.log_update(_keokTransferredId);
+_obj
+
+
+::======================================================================================================================
+:: Keon
+::======================================================================================================================
+
+
+\Keon_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie karty ewidencji odpadów niebezpiecznych
+::   WE: _a - wasteCodeId
+::       [_b] - wasteCodeExtended
+::       [_c] - wasteCodeExtendedDescription
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_wasteCodeId:=_a;
+_wasteCodeExtended:={? var_pres('_b')=type_of('') || _b || 'false' ?};
+_wasteCodeExtendedDescription:={? var_pres('_c')=type_of('') || _c || 'false' ?};
+_args:='
+   {  "wasteCodeId": %1,
+      "wasteCodeExtended": %2,
+      "wasteCodeExtendedDescription": %3
+   }
+'
+[  json_value(_wasteCodeId),
+   _wasteCodeExtended,
+   json_value(_wasteCodeExtendedDescription)
+];
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/create','POST',_args,1);
+_obj
+
+
+\Keon_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie karty ewidencji odpadów niebezpiecznych
+::   WE: _a - keonId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keonId:=_a;
+_args:='{"keonId": %1}'[json_value(_keonId)];
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/delete','DELETE',_args,1);
+_obj.log_update(_keonId);
+_obj
+
+
+\Keon_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka kart ewidencji odpadów niebezpiecznych
+::   WE: _a - index
+::       _b - size
+::       _c - wasteCode
+::       _d - cardNumber
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_wasteCode:=_c;
+_cardNumber:=_d;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "cardNumber"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "wasteCode": %3,
+      "cardNumber": %4
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_wasteCode),
+   json_value(_cardNumber)
+];
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/search','POST',_args,1);
+_obj
+
+
+\Keon_printingpage
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych karty ewidencji odpadów niebezpiecznych do wydruku
+::   WE: _a - keonId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keonId:=_a;
+_args:=obj_new('KeonId'); _args.KeonId:=_keonId;
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/card/printingpage','GET',_args,1);
+_obj.log_update(_keonId);
+_obj
+
+
+\Keon_summary
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobioera zestawienie danych
+::   WE: _a - keonId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keonId:=_a;
+_args:=obj_new('KeonId'); _args.KeonId:=_keonId;
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/summary','GET',_args,1);
+_obj.log_update(_keonId);
+_obj
+
+
+\Keon_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie karty ewidencji odpadów niebezpiecznych
+::   WE: _a - keonId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keonId:=_a;
+_args:=obj_new('KeonId'); _args.KeonId:=_keonId;
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/card','GET',_args,1);
+_obj.log_update(_keonId);
+_obj
+
+
+\Keon_item_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Tworzenie wpisu
+::   WE: _a - keonId
+::       _b - receiveConfirmationTime
+::       _c - documentNumber
+::       _d - wasteMass
+::       _e - senderCompanyId
+::       _f - receiverCompanyId
+::       _g - isDealer
+::       _h - isBroker
+::       _i - isKpo
+::       _j - isKpok
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keonId:=_a;
+_receiveConfirmationTime:=_b;
+_documentNumber:=_c;
+_wasteMass:=_d;
+_senderCompanyId:=_e;
+_receiverCompanyId:=_f;
+_isDealer:=_g;
+_isBroker:=_h;
+_isKpo:=_i;
+_isKpok:=_j;
+_args:='
+   {  "keonId": %1,
+      "receiveConfirmationTime": %2,
+      "documentNumber": %3,
+      "wasteMass": %4,
+      "senderCompanyId": %5,
+      "receiverCompanyId": %6,
+      "isDealer": %7,
+      "isBroker": %8,
+      "isKpo": %9,
+      "isKpok": %10
+   }
+'
+[  json_value(_keonId),
+   json_value(_receiveConfirmationTime),
+   json_value(_documentNumber),
+   json_value(_wasteMass),
+   json_value(_senderCompanyId),
+   json_value(_receiverCompanyId),
+   _isDealer,
+   _isBroker,
+   _isKpo,
+   _isKpok
+];
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/item/create','POST',_args,1);
+_obj
+
+
+\Keon_item_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Usuwanie wpisu
+::   WE: _a - keonItemId
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keonItemId:=_a;
+_args:='{"keonItemId": %1}'[json_value(_keonItemId)];
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/item/delete','DELETE',_args,1);
+_obj.log_update(_keonItemId);
+_obj
+
+
+\Keon_item_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Wyszukiwarka wpisów kart ewidencji odpadów niebezpiecznych
+::   WE: _a - index
+::       _b - size
+::       _c - keonId
+::       _d - isDealer
+::       _e - isBroker
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_index:=_a;
+_size:=_b;
+_keonId:=_c;
+_isDealer:=_d;
+_isBroker:=_e;
+_args:='
+   {  "paginationParameters": {
+         "order": {
+            "isAscending": true,
+            "orderColumn": "keonItemId"
+         },
+         "page": {
+            "index": %1,
+            "size": %2
+         }
+      },
+      "keonId": %3,
+      "isDealer": %4,
+      "isBroker": %5
+   }
+'
+[  json_value(_index),
+   json_value(_size),
+   json_value(_keonId),
+   _isDealer,
+   _isBroker
+];
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/search/keonitems','POST',_args,1);
+_obj
+
+
+\Keon_item_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.37]
+:: OPIS: Pobranie danych wpisu
+::   WE: _a - keonItemId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_keonItemId:=_a;
+_args:=obj_new('KeonItemId'); _args.KeonItemId:=_keonItemId;
+_obj:=exec('run','bdo_api','WasteRegister/HazardousWasteRecordCard/v1/Keon/item','GET',_args,1);
+_obj.log_update(_keonItemId);
+_obj
+
+
+::======================================================================================================================
+:: WasteCode
+::======================================================================================================================
+
+
+\WasteCode
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera słownik kodów odpadów
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+_args:=~~;
+_obj:=exec('run','bdo_api','WasteRegister/v1/WasteCode','GET',_args,1);
+_obj
+
+
+\WasteCode_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera słownik kodów odpadów ograniczony do kryterium wyszukiwania
+::   WE: _a - kod odpadu
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _code:=_a;
+   _args:='{"code": %1}'[json_value(_code)];
+   _obj:=exec('run','bdo_api','WasteRegister/v1/WasteCode/search','POST',_args,1);
+   _obj
+|| ~~
+?}
+
+
+::======================================================================================================================
+:: WasteProcess
+::======================================================================================================================
+
+
+\WasteProcess
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera słownik procesów przetwarzania odpadów
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=~~;
+_obj:=exec('run','bdo_api','WasteRegister/v1/WasteProcess','GET',_args,1);
+{? _obj.STATUS<>200
+|| FUN.emsg('Nie można odczytać słownika procesów przetwarzania odpadów.'@+'\n\n'+_obj.MESSAGE)
+?};
+_obj
+
+
+\WasteProcess_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera słownik procesów przetwarzania odpadów ograniczony do kryterium wyszukiwania
+::   WE: _a - nazwa procesu
+::       _b - oznaczenie kodowe procesu
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+{? var_pres('_a')=type_of('') & var_pres('_b')=type_of('')
+|| _name:=_a;
+   _codeName:=_b;
+   _args:='{"name": %1,"codeName": %2}'[json_value(_name),json_value(_codeName)];
+   _obj:=exec('run','bdo_api','WasteRegister/v1/WasteProcess/search','POST',_args,1);
+   {? _obj.STATUS<>200
+   || FUN.emsg('Nie można odczytać słownika procesów przetwarzania odpadów.'@+'\n\n'+_obj.MESSAGE)
+   ?};
+   _obj
+|| ~~
+?}
+
+
+::======================================================================================================================
+:: Search
+::======================================================================================================================
+
+
+\Search_searchcompany
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zwraca listę podmiotów
+::   WE: _a - query
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('query'); _args.query:=_a;
+_obj:=exec('run','bdo_api','WasteRegister/v1/Search/searchcompany','GET',_args,1);
+_obj
+
+
+\Search_getcompanybyid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera dane podmiotu
+::   WE: _a - companyId
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('companyId'); _args.companyId:=_a;
+_obj:=exec('run','bdo_api','WasteRegister/v1/Search/getcompanybyid','GET',_args,1);
+_obj.log_update(_args.companyId);
+_obj
+
+
+\Search_geteupbyid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera dane miejsca prowadzenia działalności
+::   WE: _a - eupId
+::   WY: obiekt wynikowl
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('eupId'); _args.eupId:=_a;
+_obj:=exec('run','bdo_api','WasteRegister/v1/Search/geteupbyid','GET',_args,1);
+_obj.log_update(_args.eupId);
+_obj
+
+
+\Search_geteupsbycompanyid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera dane miejsc prowadzenia działalności dla podmiotu
+::   WE: _a - companyId
+::   WY: obiekt wynikoml
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('companyId'); _args.companyId:=_a;
+_obj:=exec('run','bdo_api','WasteRegister/v1/Search/geteupsbycompanyid','GET',_args,1);
+_obj.log_update(_args.companyId);
+_obj
+
+
+\Search_searcheupsbycompanyid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera listę miejsc prowadzenia działalności dla podmiotu
+::   WE: _a - companyId
+::       [_b] - query
+::   WY: obiekt wynikoml
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('companyId','query');
+_args.companyId:=_a;
+_args.query:={? var_pres('_b')=type_of('') || _b || '' ?};
+_obj:=exec('run','bdo_api','WasteRegister/v1/Search/searcheupsbycompanyid','GET',_args,1);
+_obj.log_update(_args.companyId);
+_obj
+
+
+\Search_searchterytcommune
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zwraca listę gmin
+::   WE: _a - query
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('query'); _args.query:=_a;
+_obj:=exec('run','bdo_api','WasteRegister/v1/Search/searchterytcommune','GET',_args,1);
+_obj
+
+
+\Search_getterytcommunebyid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zwraca rekord z danymi gminy
+::   WE: _a - query
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=obj_new('query'); _args.query:=_a;
+_obj:=exec('run','bdo_api','WasteRegister/v1/Search/getterytcommunebyid','GET',_args,1);
+_obj
+
+
+::======================================================================================================================
+
+
+\status_not200
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Treść komunikatu o statusie innym niż 200
+::   WE: _a - status
+::       [_b] - dane do sparsowania i uzupełnienia komunikatu
+::       [_c] - nagłówek do sparsowania i uzupełnienia komunikatu
+::   WY: Opis statusu
+::----------------------------------------------------------------------------------------------------------------------
+_status:=_a;
+_result:='System BDO zwrócił kod: %1.'@[$_status]+'\n';
+{? var_pres('_b')=type_of('')
+|| _data:=_b;
+:: Jeżeli dane zaczynają się od cydzysłowu, to biorę jako zrozumiały tekst wewnątrz cudzysłowów
+   {? 1+_data='"'
+   ||
+::      _result+=utf8_maz(1-_data-1)
+      _result+=(1-_data-1)
+:: w przeciwnym wypadku (jak coś jest) biorę wszystko co jest (błąd krytyczny, który nie powinien wystąpić)
+   |? +_data>0
+   ||
+::      _result+='\n'+utf8_maz(_data)
+      _result+='\n'+(_data)
+:: w przeciwnym wypadku wydłubuję coś z nagłówka
+   || {? var_pres('_c')=type_of('')
+      || _header:=_c;
+         _tab:=spli_str(_header,'\n');
+         {! _it:=1 .. obj_len(_tab)
+         |! {? 8+_tab[_it]='HTTP/1.1'
+            || _result+='\n'+(9-_tab[_it])
+            ?}
+         !}
+      ?}
+   ?}
+?};
+_result
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:16 25e0916f051d1e4e49fe932ddf166662dd43117f453d06138c634eb4032fa92e76f5a0fc9f2f6145bf9f6cbc995c48032effa3a12f7a96e19a55bc61d74655c77942e1860df7a2e2985ec700190255536b41b19ba000cdcd4b8171e31413b9c49d082ce3e439e948f6b10eb809d5b23fe25cab8561ecf96bbd99314c939be4dd

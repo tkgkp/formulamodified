@@ -1,0 +1,3425 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: pl_split.fml
+:: Utworzony: 18.05.2015
+:: Autor: WH
+::======================================================================================================================
+:: Zawartość: Formuły obsługujące dzielenie i scalanie pozycji planu operacyjnego
+::======================================================================================================================
+
+\split_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tablica parametrów dla split
+::   WY: _args
+::  OLD: \split_a/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new(
+::    Pozycja planu którą podzielić
+      'PL_OPER'
+::    Zlecenie na którym wystąpiło dzielenie
+      ,'ZL'
+::    Dla wywołań rekurencyjnych - pozycja planu grupy którą przeskoczyć
+      ,'PL_OGR'
+::    Ilość którą pozostawić na starym kawałku
+      ,'IL_OLD'
+::    Ilość którą tworzyć na nowych kawałkach
+      ,'IL_NEW'
+::    Czas który pozostawić na starym kawałku (w minutach)
+      ,'DUR_OLD'
+::    Czas który tworzyć na nowych kawałkach (w minutach)
+      ,'DUR_NEW'
+::    Tryb dzielenia operacji: SINGLE, PATH
+      ,'MODE'
+::    Kierunek tworzenia nowej ścieżki: -1 - wstecz, 1 - do przodu
+      ,'DIR'
+::    Proporcje wg których dzielić kolejne pozycje planu
+      ,'TAB_PROP'
+::    Opis podziału
+      ,'DESC'
+::    Podział do którego dodawać nowe pozycje planu
+      ,'PL_SPLIT'
+::    Czy dodawać info o proporcji, czy korzystać z proporcji wyznaczonej wcześniej
+      ,'PROP_ADD'
+::    Czy wywołanie rekurencyjne
+      ,'REC'
+::    Kolor starej pozycji planu
+      ,'COLOROLD'
+::    Kolor nowej pozycji planu
+      ,'COLORNEW'
+::    Tabela z refami przetworzonych PL_OPERów
+      ,'VISITED'
+::    Tabela z refami przetworzonych PL_OGRów
+      ,'VISITED2'
+::    Numery kolejno dodawanych ZGPów (wartości ujemne, dekrementowane po dodaniu każdego nowego ZGPa)
+      ,'ZGP_NRP'
+::    Tabelka tymczasowa zawierająca oryginalne ilości limitów przed korektami
+      ,'ZLIM_OLD'
+::    Tabela z refami ZGHów które należy przenumerować po dokonaniu podziału
+      ,'ZGH_RNUM'
+
+              );
+_args.PL_OPER:=null();
+_args.ZL:=null();
+_args.PL_OGR:=null();
+_args.IL_OLD:=0;
+_args.IL_NEW:=0;
+_args.DUR_OLD:=0;
+_args.DUR_NEW:=0;
+_args.COLOROLD:='';
+_args.COLORNEW:='';
+_args.MODE:='SINGLE';
+_args.DIR:=1;
+_args.TAB_PROP:=tab_tmp(1,
+   'LP','INTEGER','Liczba porządkowa',
+   'PROP','REAL','Proporcja');
+_args.DESC:='';
+_args.PL_SPLIT:=null();
+_args.PROP_ADD:=1;
+_args.REC:=0;
+_args.VISITED:=exec('ref_table','#table');
+_args.VISITED2:=exec('ref_table','#table');
+_args.ZGP_NRP:=-1;
+_args.ZLIM_OLD:=exec('tab_old_zlim','po_split');
+_args.ZGH_RNUM:=exec('ref_table','#table');
+_args
+
+
+\split
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Dzieli podaną pozycję planu
+::   WE: _a - obj_new() - argumenty funkcji - wynik działania exec('split_a','po_split')
+::   WY: PL_SPLIT.ref() złączenie do utworzonego podziału, lub null jeśli zakończyło się niepowodzeniem
+::  OLD: \split/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('split_a','po_split')
+?};
+_can_continue:=1;
+_result:=null();
+PL_OPER.cntx_psh();
+PL_OPER.clear();
+
+:: Jest podzielny PL_OPER
+{? _args.PL_OPER<>null() & exec('splittable','po_split',_args.PL_OPER)
+||
+   {? PL_OPER.seek(_args.PL_OPER) & _args.VISITED.r_find(_args.PL_OPER)=0
+   ||
+      _args.VISITED.add(PL_OPER.ref());
+::    Weryfikuję poprawność przekazanych argumentów
+      {? _args.REC=0
+      || _can_continue:=exec('verify','po_split',_args)
+      ?};
+
+      {? _can_continue>0
+      ||
+::       Zapamiętuję starego PL_OPERa przed modyfikacjami
+         _buffer:=exec('PL_OPER','buffer');
+         _buffer.get();
+
+::       Tworzę rekord tabeli PL_SPLIT
+         {? _args.PL_SPLIT=null()
+         ||
+            PL_SPLIT.blank();
+            PL_SPLIT.PL_PART:=PL_OPER.PL_PART;
+            PL_SPLIT.PL_OPER:=PL_OPER.ref();
+            PL_SPLIT.USERS:=OPERATOR.USER;
+            PL_SPLIT.DATE:=date();
+            PL_SPLIT.TIME:=time();
+            PL_SPLIT.MODE:=_args.MODE;
+            PL_SPLIT.DESC:=_args.DESC;
+            PL_SPLIT.UID:=exec('uid','#blank');
+            _uid_src:='';
+            {? PL_OPER.PL_SPLIT<>null()
+            ||
+::             Jeśli dzielona operacja należy już do jakiegoś podziału to tworzonemu podziałowi
+::             nawijam wskazanie na tamten podział - w ten sposób powstaje drzewo między podziałami
+::             i pozwala mi sprawdzić który podział był jeszcze dzielony czy nie
+               PL_SPLIT.cntx_psh();
+               PL_SPLIT.clear();
+               PL_OPER.PL_SPLIT();
+               _uid_src:=PL_SPLIT.UID;
+               PL_SPLIT.cntx_pop()
+
+            ?};
+            PL_SPLIT.UID_SRC:=_uid_src;
+            _can_continue:=PL_SPLIT.add();
+            _args.PL_SPLIT:=PL_SPLIT.ref()
+         ?};
+
+         {? _can_continue>0
+         ||
+            _prop:=1;
+::          Modyfikuję starego pl_opera
+            {? _args.IL_OLD>0
+            ||
+               {? _args.PROP_ADD>0
+               ||
+::                Wyznaczam proporcję na podsawie ilości
+                  _prop:=_args.IL_OLD/PL_OPER.ILOSC;
+                  _prop:=exec('min','#math',1,_prop);
+                  _prop:=exec('max','#math',0,_prop);
+
+::                Przypisuję ilość podaną w argumencie
+                  PL_OPER.ILOSC:=_args.IL_OLD
+               ||
+::                Pobieram wcześniej wyznaczoną proporcję dla starych pozycji planu
+                  _args.TAB_PROP.cntx_psh();
+                  _args.TAB_PROP.prefix(1);
+                  {? _args.TAB_PROP.first()
+                  || _prop:=_args.TAB_PROP.PROP
+                  ?};
+                  _args.TAB_PROP.cntx_pop();
+
+::                Wyznaczam ilość na podstawie proporcji
+                  PL_OPER.ILOSC:=PL_OPER.ILOSC*_prop
+               ?};
+               {? _args.COLOROLD<>''
+               || PL_OPER.KOLOR:=_args.COLOROLD
+               ?};
+               PL_OPER.SPLIT_NR:=1;
+               PL_OPER.PL_SPLIT:=_args.PL_SPLIT;
+               _new_duration:=PL_OPER.DURATION-PL_OPER.TP-PL_OPER.TZ;
+               _new_duration:=exec('max','#math',0,_new_duration);
+               _new_duration:=_new_duration*_prop;
+               _new_duration:=_new_duration+PL_OPER.TP+PL_OPER.TZ;
+               PL_OPER.DURATION:=_new_duration;
+               _can_continue:=PL_OPER.put()
+            |? _args.DUR_OLD>0
+            ||
+               {? _args.PROP_ADD>0
+               ||
+::                Wyznaczam proporcję na podstawie czasu trwania
+                  _prop:=_args.DUR_OLD/PL_OPER.DURATION;
+                  _prop:=exec('min','#math',1,_prop);
+                  _prop:=exec('max','#math',0,_prop);
+
+::                Przypisuję czas trwania podany w argumencie
+                  PL_OPER.DURATION:=_args.DUR_OLD
+               ||
+::                Pobieram wcześniej wyznaczoną proporcję dla starych pozycji planu
+                  _args.TAB_PROP.cntx_psh();
+                  _args.TAB_PROP.prefix(1);
+                  {? _args.TAB_PROP.first()
+                  || _prop:=_args.TAB_PROP.PROP
+                  ?};
+                  _args.TAB_PROP.cntx_pop();
+
+::                Wyznaczam czas na podstawie proporcji
+                  _new_duration:=PL_OPER.DURATION-PL_OPER.TP-PL_OPER.TZ;
+                  _new_duration:=exec('max','#math',0,_new_duration);
+                  _new_duration:=_new_duration*_prop;
+                  _new_duration:=_new_duration+PL_OPER.TP+PL_OPER.TZ;
+                  PL_OPER.DURATION:=_new_duration
+               ?};
+               {? _args.COLOROLD<>''
+               || PL_OPER.KOLOR:=_args.COLOROLD
+               ?};
+               PL_OPER.SPLIT_NR:=1;
+               PL_OPER.PL_SPLIT:=_args.PL_SPLIT;
+               PL_OPER.ILOSC:=PL_OPER.ILOSC*_prop;
+               _can_continue:=PL_OPER.put()
+            ?};
+            {? _args.PROP_ADD>0
+            || _args.TAB_PROP.clear();
+               _args.TAB_PROP.blank();
+               _args.TAB_PROP.LP:=_args.TAB_PROP.size()+1;
+               _args.TAB_PROP.PROP:=_prop;
+               _args.TAB_PROP.add()
+            ?}
+         ?};
+
+::       Przed utworzeniem nowych pozycji planu i pozycji przewodników koryguję limity
+         {? _can_continue>0 & _buffer.ZGP<>null()
+         || _can_continue:=exec('correct_zlimy','po_split',_args,_buffer.ZGP,_prop)
+         ?};
+
+         {? _can_continue>0
+         ||
+::          Tworzę nowe pozycje planu
+            _can_continue:=exec('create_new_pozy','po_split',_args,_buffer)
+         ?};
+         _buf_zgp:=~~;
+::       Koryguję pozycję przewodnika
+         {? _can_continue>0 & _buffer.ZGP<>null()
+         || _buf_zgp:=exec('ZGP','buffer');
+            _buf_zgp.cntx_get(_buffer.ZGP);
+            _can_continue:=exec('correct_zgp','po_split',_buffer.ZGP,_prop,_args)
+         ?};
+
+         {? _can_continue>0
+         ||
+::          Porównuję ilość i czas trwania wszystkich zmodyfikowanych i nowych ploperów
+::          z tym co było orgynalnie i różnicę dodaję do starego plopera
+            _sum_il:=PL_OPER.ILOSC;
+            _sum_dur:=PL_OPER.DURATION-PL_OPER.TP-PL_OPER.TZ;
+            _sum_dur:=exec('max','#math',0,_sum_dur);
+            PL_OPER.cntx_psh();
+            PL_OPER.index('SPLITSRC');
+            PL_OPER.prefix(PL_SPLIT.ref(),_buffer.UID);
+            {? PL_OPER.first()
+            || {!
+               |?
+                  _sum_il+=PL_OPER.ILOSC;
+                  _sum_dur+=PL_OPER.DURATION-PL_OPER.TP-PL_OPER.TZ;
+                  PL_OPER.next()
+               !}
+            ?};
+            PL_OPER.cntx_pop();
+            _diff_il:=_buffer.ILOSC-_sum_il;
+            _diff_dur:=_buffer.DURATION-_buffer.TP-_buffer.TZ-_sum_dur;
+            {? _diff_il<>0 | _diff_dur<>0
+            ||
+::             Wynikły jakieś róznice więc trzeba skorygować oryginalną pozycję planu
+               PL_OPER.ILOSC+=_diff_il;
+               PL_OPER.DURATION+=_diff_dur;
+               _can_continue:=PL_OPER.put()
+            ?}
+         ?};
+
+         {? _can_continue>0
+         ||
+::          Porównuję ilość i czas trwania wszystkich zmodyfikowanych i nowych ZGPów
+::          z tym co było oryginalne i różnicę dodaję do starego ZGPa
+            {? type_of(_buf_zgp)>100
+            || ZGP.cntx_psh(); ZGP.clear();
+               {? ZGP.seek(_buf_zgp.Ref)
+               ||
+                  _sum_il:=ZGP.ILOSC;
+                  _sum_ntime:=ZGP.NTIME;
+                  _sum_mtime:=ZGP.MTIME;
+
+                  ZGP.cntx_psh();
+                  ZGP.index('SPLITSRC');
+                  ZGP.prefix(PL_SPLIT.ref(),_buf_zgp.UID);
+                  {? ZGP.first()
+                  || {!
+                     |? _sum_il+=ZGP.ILOSC;
+                        _sum_ntime+=ZGP.NTIME;
+                        _sum_mtime+=ZGP.MTIME;
+                        ZGP.next()
+                     !}
+                  ?};
+                  ZGP.cntx_pop();
+
+                  _diff_il:=_buf_zgp.ILOSC-_sum_il;
+                  _diff_ntime:=_buf_zgp.NTIME-_sum_ntime;
+                  _diff_mtime:=_buf_zgp.MTIME-_sum_mtime;
+
+                  {? _diff_il<>0 | _diff_ntime<>0 | _diff_mtime<>0
+                  || ZGP.cntx_psh(); ZGP.clear();
+                     {? ZGP.seek(_buf_zgp.Ref)
+                     || ZGP.ILOSC+=_diff_il;
+                        ZGP.NTIME+=_diff_ntime;
+                        ZGP.MTIME+=_diff_mtime;
+                        _can_continue:=ZGP.put()
+                     ?};
+                     ZGP.cntx_pop()
+                  ?}
+               ?};
+               ZGP.cntx_pop();
+               ~~
+            ?}
+         ?};
+
+         {? _can_continue>0 & _args.MODE='PATH'
+         || _args.PROP_ADD:=0;
+
+            PL_NEXT.cntx_psh();
+            {? _args.DIR>0
+            || PL_NEXT.index('PL_OPER');
+               PL_NEXT.prefix(_args.PL_OPER);
+               {? PL_NEXT.first()
+               || {!
+                  |?
+::                   uruchamiam podział dla kolejnych PL_OPERów
+                     _ploper:=_args.PL_OPER;
+                     _plogr:=_args.PL_OGR;
+                     _args.PL_OPER:=PL_NEXT.NEXT;
+                     _args.PL_OGR:=PL_NEXT.NEXT_OGR;
+                     _rec:=_args.REC;
+                     _args.REC:=1;
+::                   !!! REKURENCJA !!!
+                     _split:=exec('split','po_split',_args);
+                     _args.PL_SPLIT:=_split;
+                     _args.REC:=_rec;
+                     _args.PL_OPER:=_ploper;
+                     _args.PL_OGR:=_plogr;
+                     PL_NEXT.next() & _split<>null()
+                  !}
+               ?}
+            |? _args.DIR<0
+            || PL_NEXT.index('NEXT');
+               PL_NEXT.prefix(_args.PL_OPER);
+               {? PL_NEXT.first()
+               || {!
+                  |?
+::                   uruchamiam podział dla kolejnych PL_OPERów
+                     _ploper:=_args.PL_OPER;
+                     _plogr:=_args.PL_OGR;
+                     _args.PL_OPER:=PL_NEXT.PL_OPER;
+                     _args.PL_OGR:=PL_NEXT.PL_OGR;
+                     _rec:=_args.REC;
+                     _args.REC:=1;
+::                   !!! REKURENCJA !!!
+                     _split:=exec('split','po_split',_args);
+                     _args.PL_SPLIT:=_split;
+                     _args.REC:=_rec;
+                     _args.PL_OPER:=_ploper;
+                     _args.PL_OGR:=_plogr;
+                     PL_NEXT.next() & _split<>null()
+                  !}
+               ?}
+            ?};
+            PL_NEXT.cntx_pop()
+         ?}
+      ?}
+   ?}
+
+:: Jest niepodzielny PL_OPER, czyli pomijam go i jadę dalej wg następników/poprzedników
+|? _args.PL_OPER<>null()
+|| PL_OPER.cntx_psh();
+   PL_OPER.clear();
+   {? PL_OPER.seek(_args.PL_OPER) & _args.VISITED.r_find(_args.PL_OPER)=0
+   || KOMM.add('Pominięto podział dla operacji ze stałą normą czasową: \'%1 — %2\''@[PL_OPER.SYMBOL,PL_OPER.OPIS]);
+      _args.VISITED.add(PL_OPER.ref());
+      PL_NEXT.cntx_psh();
+      {? _args.DIR>0
+      ||
+         PL_NEXT.index('PL_OPER');
+         PL_NEXT.prefix(PL_OPER.ref());
+         {? PL_NEXT.first()
+         || {!
+            |?
+::             uruchamiam podział dla kolejnych PL_OPERów
+               _ploper:=_args.PL_OPER;
+               _plogr:=_args.PL_OGR;
+               _args.PL_OPER:=PL_NEXT.NEXT;
+               _args.PL_OGR:=PL_NEXT.NEXT_OGR;
+               _rec:=_args.REC;
+               _args.REC:=1;
+::             !!! REKURENCJA !!!
+               _split:=exec('split','po_split',_args);
+               _args.REC:=_rec;
+               _args.PL_SPLIT:=_split;
+               _args.PL_OPER:=_ploper;
+               _args.PL_OGR:=_plogr;
+               PL_NEXT.next() & _split<>null()
+            !}
+         ?}
+      |? _args.DIR<0
+      ||
+         PL_NEXT.index('NEXT');
+         PL_NEXT.prefix(PL_OPER.ref());
+         {? PL_NEXT.first()
+         || {!
+            |?
+::             uruchamiam podział dla kolejnych PL_OPERów
+               _ploper:=_args.PL_OPER;
+               _plogr:=_args.PL_OGR;
+               _args.PL_OPER:=PL_NEXT.PL_OPER;
+               _args.PL_OGR:=PL_NEXT.PL_OGR;
+               _rec:=_args.REC;
+               _args.REC:=1;
+::             !!! REKURENCJA !!!
+               _split:=exec('split','po_split',_args);
+               _args.REC:=_rec;
+               _args.PL_SPLIT:=_split;
+               _args.PL_OPER:=_ploper;
+               _args.PL_OGR:=_plogr;
+               PL_NEXT.next() & _split<>null()
+            !}
+         ?}
+      ?};
+      PL_NEXT.cntx_pop()
+   ?};
+   PL_OPER.cntx_pop();
+   ~~
+
+:: Omijam PL_OGRY i jadę dalej wg ich następników/poprzedników
+|? _args.PL_OGR<>null()
+|| PL_OGR.cntx_psh();
+   PL_OGR.clear();
+   {? PL_OGR.seek(_args.PL_OGR) & _args.VISITED2.r_find(_args.PL_OGR)=0
+   || _args.VISITED2.add(PL_OGR.ref());
+      PL_NEXT.cntx_psh();
+      {? _args.DIR>0
+      ||
+         PL_NEXT.index('PL_OGR');
+         PL_NEXT.prefix(PL_OGR.ref());
+         {? PL_NEXT.first()
+         || {!
+            |?
+::             uruchamiam podział dla kolejnych PL_OPERów
+               _ploper:=_args.PL_OPER;
+               _plogr:=_args.PL_OGR;
+               _args.PL_OPER:=PL_NEXT.NEXT;
+               _args.PL_OGR:=PL_NEXT.NEXT_OGR;
+               _rec:=_args.REC;
+               _args.REC:=1;
+::             !!! REKURENCJA !!!
+               _split:=exec('split','po_split',_args);
+               _args.REC:=_rec;
+               _args.PL_SPLIT:=_split;
+               _args.PL_OPER:=_ploper;
+               _args.PL_OGR:=_plogr;
+               PL_NEXT.next() & _split<>null()
+            !}
+         ?}
+      |? _args.DIR<0
+      ||
+         PL_NEXT.index('NEXT_OGR');
+         PL_NEXT.prefix(PL_OGR.ref());
+         {? PL_NEXT.first()
+         || {!
+            |?
+::             uruchamiam podział dla kolejnych PL_OPERów
+               _ploper:=_args.PL_OPER;
+               _plogr:=_args.PL_OGR;
+               _args.PL_OPER:=PL_NEXT.PL_OPER;
+               _args.PL_OGR:=PL_NEXT.PL_OGR;
+               _rec:=_args.REC;
+               _args.REC:=1;
+::             !!! REKURENCJA !!!
+               _split:=exec('split','po_split',_args);
+               _args.REC:=_rec;
+               _args.PL_SPLIT:=_split;
+               _args.PL_OPER:=_ploper;
+               _args.PL_OGR:=_plogr;
+               PL_NEXT.next() & _split<>null()
+            !}
+         ?}
+      ?};
+      PL_NEXT.cntx_pop()
+   ?};
+   PL_OGR.cntx_pop();
+   ~~
+?};
+PL_OPER.cntx_pop();
+PL_OPER.get();
+
+{? _can_continue>0 & _args.REC=0 & _args.MODE='PATH'
+||
+:: Po wykonaniu całego podziału uruchamiam odtwarzanie powiązań między operacjami dla całego podziału
+   _args_next:=exec('copy_nexts_sp_a','po_split');
+   _args_next.PL_OPER:=_args.PL_OPER;
+   _args_next.DIR:=_args.DIR;
+   _args_next.PL_SPLIT:=_args.PL_SPLIT;
+   _can_continue:=exec('copy_nexts_sp','po_split',_args_next);
+   {? _can_continue=0
+   || KOMM.add('Nie udało się kopiowanie następników operacji dla nowo utworzonej ścieżki.'@,2,,1)
+   ?}
+?};
+
+{? _can_continue>0 & _args.REC=0
+||
+:: Po wykonaniu całego podziału przenumerowuje pozycje przewodników, ponieważ mogły się zmienić
+   _can_continue:=exec('zgh_renumerate','po_split',_args.ZGH_RNUM.tab,'SPLIT');
+   {? _can_continue=0
+   || KOMM.add('Nie udało się przenumerowanie pozycji przewodników na zleceniu. Wszystkie zmiany zostały wycofane.'@,2,,1)
+   ?}
+?};
+{? _can_continue>0
+|| _result:=_args.PL_SPLIT
+?};
+_result
+
+
+\create_new_pozy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tworzy nowe pozycje planu na podstawie przekazanej pozycji
+::   WE: _a - obj_new() - argumenty funkcji split - wynik działania exec('split_a','po_split')
+::       _b - obj_new() - bufor pozycji która jest dzielona
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PRYWATNA>
+::  OLD: \create_new_pozy/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+_buffer:=_b;
+
+_can_continue:=1;
+_result:=0;
+
+PL_OPER.cntx_psh(); PL_OPER.clear();
+_il_left:=_buffer.ILOSC-_args.IL_OLD;
+_dur_left:=_buffer.DURATION-_args.DUR_OLD;
+
+_args.IL_NEW:=exec('min','#math',_args.IL_NEW,_il_left);
+_args.DUR_NEW:=exec('min','#math',_args.DUR_NEW,_dur_left);
+
+{? _args.IL_NEW>0
+||
+   _it:=2;
+   {!
+   |? _buffer.set();
+      _prop:=1;
+      _il_new:=_args.IL_NEW;
+      {? _args.PROP_ADD>0
+      ||
+::       Wyznaczam nową proporcję na podstawie ilości
+         _args.IL_NEW:=exec('min','#math',_args.IL_NEW,_il_left);
+         _prop:=_args.IL_NEW/PL_OPER.ILOSC;
+         _prop:=exec('min','#math',1,_prop);
+         _prop:=exec('max','#math',0,_prop);
+         PL_OPER.ILOSC:=_args.IL_NEW
+      ||
+
+::       Pobieram wcześniej wyznaczoną proporcję dla nowych pozycji planu
+         _args.TAB_PROP.cntx_psh();
+         _args.TAB_PROP.prefix(_it);
+         {? _args.TAB_PROP.first()
+         || _prop:=_args.TAB_PROP.PROP
+         || KOMM.add('Nie znaleziono proporcji dla nowej pozycji planu: %1 %2 proporcja nr: %3'@[PL_OPER.SYMBOL,PL_OPER.OPIS,$_it],7,,1);
+            _can_continue:=0
+         ?};
+         _args.TAB_PROP.cntx_pop();
+
+         {? _can_continue>0 & _args.ZL<>null() & PL_OPER.ZGP<>null() & _args.ZL<>PL_OPER.ZGP().ZL
+         ||
+::          Jestem na innym zleceniu niż było oryginalnie dzielone, więc muszę wykonać
+::          korektę _il_left, ponieważ ilość na moim zleceniu może być różna niż na zleceniu
+::          które było pierwotnie dzielone
+            _args.TAB_PROP.cntx_psh();
+            _args.TAB_PROP.prefix(1);
+            _prop_kor:=1;
+            {? _args.TAB_PROP.first()
+            || _prop_kor:=_args.TAB_PROP.PROP
+            || KOMM.add('Nie znaleziono proporcji dla nowej pozycji planu: %1 %2 proporcja nr: %3'@[PL_OPER.SYMBOL,PL_OPER.OPIS,$_it],7,,1);
+               _can_continue:=0
+            ?};
+            _args.TAB_PROP.cntx_pop();
+            _il_left:=_buffer.ILOSC-(_buffer.ILOSC*_prop_kor)
+         ?};
+
+::       Wyznaczam ilość na podstawie proporcji
+         _il_new:=PL_OPER.ILOSC*_prop;
+         _il_new:=exec('min','#math',_il_new,_il_left);
+         PL_OPER.ILOSC:=_il_new
+      ?};
+      {? _can_continue>0
+      ||
+::         KOMM.info('Tworzona pozycja: '+PL_OPER.SYMBOL+' '+PL_OPER.OPIS+' ilosc: '+$PL_OPER.ILOSC+' zostało: '+$_il_left,,1);
+         {? _args.COLORNEW<>''
+         || PL_OPER.KOLOR:=_args.COLORNEW
+         ?};
+         PL_OPER.PL_SPLIT:=_args.PL_SPLIT;
+         PL_OPER.SPLIT_NR:=_it;
+         _new_duration:=PL_OPER.DURATION-PL_OPER.TP-PL_OPER.TZ;
+         _new_duration:=exec('max','#math',0,_new_duration);
+         _new_duration:=_new_duration*_prop;
+         _new_duration:=_new_duration+PL_OPER.TP+PL_OPER.TZ;
+         PL_OPER.DURATION:=_new_duration;
+         PL_OPER.UID:=exec('uid','#blank');
+         PL_OPER.UID_SRC:=_buffer.UID;
+         _can_continue:=PL_OPER.add()
+      ?};
+      {? _can_continue>0
+      || _args.VISITED.add(PL_OPER.ref())
+      ?};
+
+::    Jeśli stara pozycja powiązana z pozycjami przewodnika to tworzę również nową pozycję przewodnika
+      {? _can_continue>0
+      || {? _buffer.ZGP<>null()
+         || {? var_pres('_buf_zgp')>100
+            || obj_del(_buf_zgp)
+            ?};
+            _buf_zgp:=exec('ZGP','buffer');
+            _buf_zgp.cntx_get(_buffer.ZGP);
+            _new_zgp:=exec('create_new_zgp','po_split',_args,_buf_zgp,_prop);
+            {? _new_zgp<>null()
+            || PL_OPER.ZGP:=_new_zgp;
+               _can_continue:=PL_OPER.put()
+            || _can_continue:=0;
+               KOMM.add('Nie udało się kopiowanie pozycji przewodnika dla pozycji planu: %1'@[PL_OPER.OPIS],2,,1)
+            ?}
+         ?}
+      ?};
+
+      {? _can_continue>0 & _args.MODE='SINGLE'
+      ||
+::       Kopiuje wszystkie powiązania międzyoperacyjne
+         _can_continue:=exec('copy_nexts','po_split',_buffer.Ref,PL_OPER.ref(),1)
+      |? _can_continue & _args.MODE='PATH'
+      ||
+::       Kopiuje powiązania międzyoperacyjne dotyczące grup operacji
+         _can_continue:=exec('copy_nexts','po_split',_buffer.Ref,PL_OPER.ref(),2)
+      ?};
+      {? _can_continue>0
+      ||
+::       Kopiuje PL_OZy
+         _can_continue:=exec('copy_plozy','po_split',_buffer.Ref,PL_OPER.ref())
+      ?};
+      {? _can_continue>0 & _args.PROP_ADD>0
+      || _args.TAB_PROP.clear();
+         _args.TAB_PROP.blank();
+         _args.TAB_PROP.LP:=_args.TAB_PROP.size()+1;
+         _args.TAB_PROP.PROP:=_prop;
+         _args.TAB_PROP.add()
+      ?};
+      _il_left-=_il_new;
+      _it+=1;
+      _il_left>0 & _can_continue>0
+   !}
+|? _args.DUR_NEW>0
+|| _it:=2;
+   {!
+   |? _buffer.set();
+      _prop:=1;
+      {? _args.PROP_ADD>0
+      ||
+::       Wyznaczam nową proporcję na podstawie czasu
+         _args.DUR_NEW:=exec('min','#math',_args.DUR_NEW,_dur_left);
+         _prop:=_args.DUR_NEW/PL_OPER.DURATION;
+         _prop:=exec('min','#math',1,_prop);
+         _prop:=exec('max','#math',0,_prop);
+         PL_OPER.DURATION:=_args.DUR_NEW
+      ||
+::       Pobieram wcześniej wyznaczoną proporcję dla nowych pozycji planu
+         _args.TAB_PROP.cntx_psh();
+         _args.TAB_PROP.prefix(_it);
+         {? _args.TAB_PROP.first()
+         || _prop:=_args.TAB_PROP.PROP
+         || KOMM.add('Nie znaleziono proporcji dla nowej pozycji planu: %1'@[PL_OPER.OPIS],7,,1);
+            _can_continue:=0
+         ?};
+         _args.TAB_PROP.cntx_pop();
+
+         {? _can_continue>0 & _args.ZL<>null() & PL_OPER.ZGP<>null() & _args.ZL<>PL_OPER.ZGP().ZL
+         ||
+::          Jestem na innym zleceniu niż było oryginalnie dzielone, więc muszę wykonać
+::          korektę _dur_left, ponieważ czas trwania na moim zleceniu może być różny niż na zleceniu
+::          które było pierwotnie dzielone
+            _args.TAB_PROP.cntx_psh();
+            _args.TAB_PROP.prefix(1);
+            _prop_kor:=1;
+            {? _args.TAB_PROP.first()
+            || _prop_kor:=_args.TAB_PROP.PROP
+            || KOMM.add('Nie znaleziono proporcji dla nowej pozycji planu: %1 %2 proporcja nr: %3'@[PL_OPER.SYMBOL,PL_OPER.OPIS,$_it],7,,1);
+               _can_continue:=0
+            ?};
+            _args.TAB_PROP.cntx_pop();
+            _dur_left:=_buffer.DURATION-(_buffer.DURATION*_prop_kor)
+         ?};
+
+::       Wyznaczam czas trwania na podstawie proporcji
+         _dur_new:=PL_OPER.DURATION*_prop;
+         _dur_new:=exec('min','#math',_dur_new,_dur_left);
+         PL_OPER.DURATION:=_dur_new
+      ?};
+      {? _can_continue>0
+      ||
+         {? _args.COLORNEW<>''
+         || PL_OPER.KOLOR:=_args.COLORNEW
+         ?};
+         PL_OPER.PL_SPLIT:=_args.PL_SPLIT;
+         PL_OPER.SPLIT_NR:=_it;
+         PL_OPER.ILOSC:=PL_OPER.ILOSC*_prop;
+         PL_OPER.UID:=exec('uid','#blank');
+         PL_OPER.UID_SRC:=_buffer.UID;
+         _can_continue:=PL_OPER.add()
+      ?};
+
+::    Jeśli stara pozycja powiązana z pozycjami przewodnika to tworzę również nową pozycję przewodnika
+      {? _can_continue>0
+      || {? _buffer.ZGP<>null()
+         || {? var_pres('_buf_zgp')>100
+            || obj_del(_buf_zgp)
+            ?};
+            _buf_zgp:=exec('ZGP','buffer');
+            _buf_zgp.cntx_get(_buffer.ZGP);
+            _new_zgp:=exec('create_new_zgp','po_split',_args,_buf_zgp,_prop);
+            {? _new_zgp<>null()
+            || PL_OPER.ZGP:=_new_zgp;
+               _can_continue:=PL_OPER.put()
+            || _can_continue:=0;
+               KOMM.add('Nie udało się kopiowanie pozycji przewodnika dla pozycji planu: %1'@[PL_OPER.OPIS],2,,1)
+            ?}
+         ?}
+      ?};
+
+      {? _can_continue>0 & _args.MODE='SINGLE'
+      ||
+::       Kopiuje wszystkie powiązania międzyoperacyjne
+         _can_continue:=exec('copy_nexts','po_split',_buffer.Ref,PL_OPER.ref(),1)
+      |? _can_continue & _args.MODE='PATH'
+      ||
+::       Kopiuje powiązania międzyoperacyjne dotyczące grup operacji
+         _can_continue:=exec('copy_nexts','po_split',_buffer.Ref,PL_OPER.ref(),2)
+      ?};
+      {? _can_continue>0
+      ||
+::       Kopiuje PL_OZy
+         _can_continue:=exec('copy_plozy','po_split',_buffer.Ref,PL_OPER.ref())
+      ?};
+      {? _can_continue>0 & _args.PROP_ADD>0
+      || _args.TAB_PROP.clear();
+         _args.TAB_PROP.blank();
+         _args.TAB_PROP.LP:=_args.TAB_PROP.size()+1;
+         _args.TAB_PROP.PROP:=_prop;
+         _args.TAB_PROP.add()
+      ?};
+      _dur_left-=PL_OPER.DURATION;
+      _it+=1;
+      _dur_left>0 & _can_continue>0
+   !}
+?};
+PL_OPER.cntx_pop();
+PL_OPER.get();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\copy_nexts
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Kopiuje powiązania operacyjne z jednej operacji na drugą
+::   WE: _a - PL_OPER.ref() - operacja źródłowa
+::       _b - PL_OPER.ref() - operacja docelowa
+::       _c - INTEGER - tryb kopiowania:  1 - wszystkie następniki
+::                                        2 - tylko te które dotyczą grup operacji
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \copy_nexts/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_src:=_a;
+_dst:=_b;
+_mode:=_c;
+
+_result:=0;
+_can_continue:=1;
+
+PL_NEXT.cntx_psh();
+:: 1. Kopiujemy nastepniki operacji
+PL_NEXT.index('PL_OPER');
+PL_NEXT.prefix(_src);
+{? PL_NEXT.first()
+|| {!
+   |?
+      _can_add:=1;
+      {? _mode=2
+      || {? PL_NEXT.NEXT_OGR=null()
+         || _can_add:=0
+         ?}
+      ?};
+      {? _can_add>0
+      || _can_add:=exec('chk_next_uniq','po_split',_dst,,1)
+      ?};
+      {? _can_add>0
+      || PL_NEXT.cntx_psh();
+         PL_NEXT.clear();
+         PL_NEXT.PL_OPER:=_dst;
+         _can_continue:=PL_NEXT.add();
+         PL_NEXT.cntx_pop()
+      ?};
+      PL_NEXT.next() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+||
+:: 2. Kopiujemy poprzedniki operacji
+   PL_NEXT.index('NEXT');
+   PL_NEXT.prefix(_src);
+   {? PL_NEXT.first()
+   || {!
+      |? _can_add:=1;
+         {? _mode=2
+         || {? PL_NEXT.PL_OGR=null()
+            || _can_add:=0
+            ?}
+         ?};
+         {? _can_add>0
+         || _can_add:=exec('chk_next_uniq','po_split',_dst,,2)
+         ?};
+         {? _can_add>0
+         || PL_NEXT.cntx_psh();
+            PL_NEXT.clear();
+            PL_NEXT.NEXT:=_dst;
+            _can_continue:=PL_NEXT.add();
+            PL_NEXT.cntx_pop()
+         ?};
+         PL_NEXT.next() & _can_continue>0
+      !}
+   ?}
+?};
+PL_NEXT.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\copy_naszgp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Kopiuje powiązania między pozycjami przewodnika z jednej pozycji na drugą
+::   WE: _a - ZGP.ref() - operacja źródłowa
+::       _b - ZGP.ref() - operacja docelowa
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \copy_nexts/pl_split.fml
+::  OLD: \copy_naszgp/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_src:=_a;
+_dst:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+NASZGP.cntx_psh();
+:: 1. Kopiujemy nastepniki operacji
+NASZGP.index('OPNAST');
+NASZGP.prefix(_src);
+{? NASZGP.first()
+|| {!
+   |?
+      _can_add:=1;
+      {? _can_add>0
+      || _can_add:=exec('chk_nasz_uniq','po_split',_dst,,1)
+      ?};
+      {? _can_add>0
+      || NASZGP.cntx_psh();
+         NASZGP.clear();
+         NASZGP.OPER:=_dst;
+         _can_continue:=NASZGP.add();
+         NASZGP.cntx_pop()
+      ?};
+      NASZGP.next() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+||
+:: 2. Kopiujemy poprzedniki operacji
+   NASZGP.index('NASTOP');
+   NASZGP.prefix(_src);
+   {? NASZGP.first()
+   || {!
+      |? _can_add:=1;
+         {? _can_add>0
+         || _can_add:=exec('chk_nasz_uniq','po_split',_dst,,2)
+         ?};
+         {? _can_add>0
+         || NASZGP.cntx_psh();
+            NASZGP.clear();
+            NASZGP.NRNAST:=_dst;
+            _can_continue:=NASZGP.add();
+            NASZGP.cntx_pop()
+         ?};
+         NASZGP.next() & _can_continue>0
+      !}
+   ?}
+?};
+NASZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\copy_nexts_sp_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tablica parametrów dla \copy_nexts_sp
+::   WY: _args
+::  OLD: \copy_nexts_sp_a/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new(
+      'PL_OPER'
+       ,'PL_OGR'
+       ,'PL_SPLIT'
+       ,'VISITED'
+       ,'VISITED2'
+       ,'DIR'
+              );
+_args.PL_OPER:=null();
+_args.PL_OGR:=null();
+_args.PL_SPLIT:=null();
+_args.DIR:=0;
+_args.VISITED:=exec('ref_table','#table');
+_args.VISITED2:=exec('ref_table','#table');
+_args
+
+
+\copy_nexts_sp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Uzupełnia powiązania międzyoperacyjne dla całego podziału
+::   WE: _args
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \copy_nexts_sp/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('copy_nexts_sp_a','po_split')
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_OPER.cntx_psh(); PL_OPER.clear();
+PL_NEXT.cntx_psh();
+{? _args.PL_OPER<>null()
+|| {? PL_OPER.seek(_args.PL_OPER) & _args.VISITED.r_find(_args.PL_OPER)=0
+   ||
+      _args.VISITED.add(PL_OPER.ref());
+::    1. Tworzymy kopie nastepnikow
+      PL_NEXT.index('PL_OPER');
+      PL_NEXT.prefix(PL_OPER.ref());
+      {? PL_NEXT.first()
+      || {!
+         |?
+            {? PL_NEXT.NEXT<>null()
+            ||
+               _zl:=null();
+               _sciezka:='';
+               _zl_nast:=null();
+               _zgp_oper:=exec('get_zgp','po_split',PL_NEXT.PL_OPER);
+               _zgp_next:=exec('get_zgp','po_split',PL_NEXT.NEXT);
+               {? _zgp_oper<>null() & _zgp_next<>null()
+               ||
+                  PL_OPER.cntx_psh();
+                  NASZGP.cntx_psh();
+                  NASZGP.index('OPNAST');
+                  NASZGP.prefix(_zgp_oper,_zgp_next);
+                  {? NASZGP.first()
+                  || _zl:=NASZGP.KTL;
+                     _sciezka:=NASZGP.SCIEZKA;
+                     _zl_nast:=NASZGP.ZLNAST
+                  ?};
+                  NASZGP.cntx_pop();
+                  PL_OPER.cntx_pop()
+               ?};
+
+::             Iterujemy po dzieciach biezacej operacji
+               PL_OPER.cntx_psh();
+               PL_OPER.index('UID_SRC');
+               PL_OPER.prefix(PL_OPER.UID);
+               {? PL_OPER.first()
+               || {!
+                  |?
+::                   Stoję na dziecku
+
+::                   Szukam rekordu docelowego dla strzałki
+                     _dst:=exec('find_oper','po_split',_args.PL_SPLIT,PL_NEXT.NEXT,PL_OPER.SPLIT_NR);
+                     {? _dst<>null()
+                     || PL_NEXT.cntx_psh();
+                        PL_NEXT.NEXT:=_dst;
+::                      Sprawdzam czy można dodać
+                        _can_add:=exec('chk_next_uniq','po_split',PL_OPER.ref(),,1);
+                        {? _can_add>0
+                        || PL_NEXT.cntx_psh();
+                           PL_NEXT.clear();
+                           PL_NEXT.NEXT:=_dst;
+                           PL_NEXT.PL_OPER:=PL_OPER.ref();
+                           _can_continue:=PL_NEXT.add();
+
+                           {? _can_continue>0
+                           ||
+::                            Jeśli dodałem PL_NEXTa to dodaję też NASZGPa jeśli PL_OPERY powiązane z ZGPami
+                              _zgp_oper:=exec('get_zgp','po_split',PL_NEXT.PL_OPER);
+                              _zgp_next:=exec('get_zgp','po_split',PL_NEXT.NEXT);
+
+                              {? _zgp_oper<>null() & _zgp_next<>null()
+                              || _can_add:=exec('chk_nasz_uniq2','po_split',_zgp_oper,_zgp_next);
+                                 {? _can_add>0
+                                 || NASZGP.cntx_psh();
+                                    NASZGP.clear();
+                                    NASZGP.blank();
+                                    NASZGP.KTL:=_zl;
+                                    NASZGP.OPER:=_zgp_oper;
+                                    NASZGP.NRNAST:=_zgp_next;
+                                    NASZGP.SCIEZKA:=_sciezka;
+                                    NASZGP.ZLNAST:=_zl_nast;
+                                    _can_continue:=NASZGP.add(1);
+                                    NASZGP.cntx_pop()
+                                 ?}
+                              ?}
+                           ?};
+                           PL_NEXT.cntx_pop()
+                        ?};
+                        PL_NEXT.cntx_pop()
+                     || KOMM.add('Nie znaleziono następnika dla operacji: %1. Wszystkie zmiany zostały wycofane.'@[PL_OPER.OPIS],2,,1);
+                        _can_continue:=0
+                     ?};
+                     PL_OPER.next() & _can_continue>0
+                  !}
+               ?};
+               PL_OPER.cntx_pop()
+            ?};
+            PL_NEXT.next() & _can_continue>0
+         !}
+      ?};
+
+::    2. Tworzymy kopie poprzedników
+      PL_NEXT.index('NEXT');
+      PL_NEXT.prefix(PL_OPER.ref());
+      {? PL_NEXT.first()
+      || {!
+         |?
+            {? PL_NEXT.PL_OPER<>null()
+            ||
+               _zl:=null();
+               _sciezka:='';
+               _zl_nast:=null();
+               _zgp_oper:=exec('get_zgp','po_split',PL_NEXT.PL_OPER);
+               _zgp_next:=exec('get_zgp','po_split',PL_NEXT.NEXT);
+               {? _zgp_oper<>null() & _zgp_next<>null()
+               ||
+                  PL_OPER.cntx_psh();
+                  NASZGP.cntx_psh();
+                  NASZGP.index('OPNAST');
+                  NASZGP.prefix(_zgp_oper,_zgp_next);
+                  {? NASZGP.first()
+                  || _zl:=NASZGP.KTL;
+                     _sciezka:=NASZGP.SCIEZKA;
+                     _zl_nast:=NASZGP.ZLNAST
+                  ?};
+                  NASZGP.cntx_pop();
+                  PL_OPER.cntx_pop()
+               ?};
+
+
+::             Iterujemy po dzieciach biezacej operacji
+               PL_OPER.cntx_psh();
+               PL_OPER.index('UID_SRC');
+               PL_OPER.prefix(PL_OPER.UID);
+               {? PL_OPER.first()
+               || {!
+                  |?
+::                   Stoję na dziecku
+
+::                   Szukam rekordu źródłowego dla strzałki
+                     _dst:=exec('find_oper','po_split',_args.PL_SPLIT,PL_NEXT.PL_OPER,PL_OPER.SPLIT_NR);
+                     {? _dst<>null()
+                     || PL_NEXT.cntx_psh();
+                        PL_NEXT.PL_OPER:=_dst;
+::                      Sprawdzam czy można dodać
+                        _can_add:=exec('chk_next_uniq','po_split',PL_OPER.ref(),,2);
+                        {? _can_add>0
+                        || PL_NEXT.cntx_psh();
+                           PL_NEXT.clear();
+                           PL_NEXT.PL_OPER:=_dst;
+                           PL_NEXT.NEXT:=PL_OPER.ref();
+                           _can_continue:=PL_NEXT.add();
+
+                           {? _can_continue>0
+                           ||
+::                            Jeśli dodałem PL_NEXTa to dodaję też NASZGPa jeśli PL_OPERY powiązane z ZGPami
+                              _zgp_oper:=exec('get_zgp','po_split',PL_NEXT.PL_OPER);
+                              _zgp_next:=exec('get_zgp','po_split',PL_NEXT.NEXT);
+
+                              {? _zgp_oper<>null() & _zgp_next<>null()
+                              || _can_add:=exec('chk_nasz_uniq2','po_split',_zgp_oper,_zgp_next);
+                                 {? _can_add>0
+                                 || NASZGP.cntx_psh();
+                                    NASZGP.clear();
+                                    NASZGP.blank();
+                                    NASZGP.KTL:=_zl;
+                                    NASZGP.OPER:=_zgp_oper;
+                                    NASZGP.NRNAST:=_zgp_next;
+                                    NASZGP.SCIEZKA:=_sciezka;
+                                    NASZGP.ZLNAST:=_zl_nast;
+                                    _can_continue:=NASZGP.add(1);
+                                    NASZGP.cntx_pop()
+                                 ?}
+                              ?}
+                           ?};
+                           PL_NEXT.cntx_pop()
+                        ?};
+                        PL_NEXT.cntx_pop()
+                     || KOMM.add('Nie znaleziono poprzednika dla operacji: %1. Wszystkie zmiany zostały wycofane.'@[PL_OPER.OPIS],2,,1);
+                        _can_continue:=0
+                     ?};
+                     PL_OPER.next() & _can_continue>0
+                  !}
+               ?};
+               PL_OPER.cntx_pop()
+            ?};
+            PL_NEXT.next() & _can_continue
+         !}
+      ?};
+
+      PL_NEXT.cntx_psh();
+      {? _args.DIR>0
+      || PL_NEXT.index('PL_OPER');
+         PL_NEXT.prefix(_args.PL_OPER);
+         {? PL_NEXT.first()
+         || {!
+            |?
+::             uruchamiam kopiowanie dla kolejnych PL_OPERów
+               _ploper:=_args.PL_OPER;
+               _plogr:=_args.PL_OGR;
+               _args.PL_OPER:=PL_NEXT.NEXT;
+               _args.PL_OGR:=PL_NEXT.NEXT_OGR;
+::             !!! REKURENCJA !!!
+               _can_continue:=exec('copy_nexts_sp','po_split',_args);
+               _args.PL_OPER:=_ploper;
+               _args.PL_OGR:=_plogr;
+               PL_NEXT.next() & _can_continue>0
+            !}
+         ?}
+      |? _args.DIR<0
+      || PL_NEXT.index('NEXT');
+         PL_NEXT.prefix(_args.PL_OPER);
+         {? PL_NEXT.first()
+         || {!
+            |?
+::             uruchamiam kopiowanie dla kolejnych PL_OPERów
+               _ploper:=_args.PL_OPER;
+               _plogr:=_args.PL_OGR;
+               _args.PL_OPER:=PL_NEXT.PL_OPER;
+               _args.PL_OGR:=PL_NEXT.PL_OGR;
+::             !!! REKURENCJA !!!
+               _can_continue:=exec('copy_nexts_sp','po_split',_args);
+               _args.PL_OPER:=_ploper;
+               _args.PL_OGR:=_plogr;
+               PL_NEXT.next() & _can_continue>0
+            !}
+         ?}
+      ?};
+      PL_NEXT.cntx_pop()
+
+   ?}
+|? _args.PL_OGR<>null()
+||
+:: Omijam PL_OGRY i jadę dalej wg ich następników/poprzedników
+   PL_OGR.cntx_psh();
+   PL_OGR.clear();
+   {? PL_OGR.seek(_args.PL_OGR) & _args.VISITED2.r_find(_args.PL_OGR)=0
+   || _args.VISITED2.add(PL_OGR.ref());
+      PL_NEXT.cntx_psh();
+      {? _args.DIR>0
+      ||
+         PL_NEXT.index('PL_OGR');
+         PL_NEXT.prefix(PL_OGR.ref());
+         {? PL_NEXT.first()
+         || {!
+            |?
+::             uruchamiam kopiowanie dla kolejnych PL_OPERów
+               _ploper:=_args.PL_OPER;
+               _plogr:=_args.PL_OGR;
+               _args.PL_OPER:=PL_NEXT.NEXT;
+               _args.PL_OGR:=PL_NEXT.NEXT_OGR;
+::             !!! REKURENCJA !!!
+               _can_continue:=exec('copy_nexts_sp','po_split',_args);
+               _args.PL_OPER:=_ploper;
+               _args.PL_OGR:=_plogr;
+               PL_NEXT.next() & _can_continue>0
+            !}
+         ?}
+      |? _args.DIR<0
+      ||
+         PL_NEXT.index('NEXT_OGR');
+         PL_NEXT.prefix(PL_OGR.ref());
+         {? PL_NEXT.first()
+         || {!
+            |?
+::             uruchamiam kopiowanie dla kolejnych PL_OPERów
+               _ploper:=_args.PL_OPER;
+               _plogr:=_args.PL_OGR;
+               _args.PL_OPER:=PL_NEXT.PL_OPER;
+               _args.PL_OGR:=PL_NEXT.PL_OGR;
+::             !!! REKURENCJA !!!
+               _can_continue:=exec('copy_nexts_sp','po_split',_args);
+               _args.PL_OPER:=_ploper;
+               _args.PL_OGR:=_plogr;
+               PL_NEXT.next() & _can_continue>0
+            !}
+         ?}
+      ?};
+      PL_NEXT.cntx_pop()
+   ?};
+   PL_OGR.cntx_pop();
+   ~~
+?};
+
+PL_NEXT.cntx_pop();
+PL_OPER.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\chk_next_uniq
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Sprawdza czy po podmianie pola PL_OPER lub NEXT w rekordzie tabeli PL_NEXT nie powstanie
+::       rekord który już istnieje i spowoduje konflikt indeksu unikalnego
+::   WE: _a - PL_OPER.ref - docelowy PL_OPER
+::       [_b] - PL_NEXT.ref lub bieżący rekord
+::       [_c] - INTEGER - tryb sprawdzania - [1] - podmieniać pole PL_OPER i sprawdzać
+::                                            2 - podmieniać pole NEXT i sprawdzać
+::   WY: 0 - istnieje już taki rekord
+::       1 - brak rekordu
+::  TAG: <PRYWATNA>
+::  OLD: \chk_next_uniq/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dst:=_a;
+_ref:=null();
+{? var_pres('_b')=type_of(PL_NEXT.ref())
+|| _ref:=_b
+?};
+_mode:=1;
+{? var_pres('_c')=type_of(0)
+|| _mode:=_c
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_NEXT.cntx_psh();
+{? _ref<>null()
+|| PL_NEXT.clear();
+   {? PL_NEXT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? _mode=1
+   ||
+      {? _can_continue>0 & PL_NEXT.NEXT<>null()
+      ||
+         PL_NEXT.cntx_psh();
+         PL_NEXT.index('PL_OPER');
+         PL_NEXT.prefix(_dst,PL_NEXT.NEXT);
+         {? PL_NEXT.size()>0
+         || _can_continue:=0
+         ?};
+         PL_NEXT.cntx_pop()
+      ?};
+      {? _can_continue>0 & PL_NEXT.NEXT_OGR<>null()
+      || PL_NEXT.cntx_psh();
+         PL_NEXT.index('PL_OPER2');
+         PL_NEXT.prefix(_dst,PL_NEXT.NEXT_OGR);
+         {? PL_NEXT.size()>0
+         || _can_continue:=0
+         ?};
+         PL_NEXT.cntx_pop()
+      ?}
+   |? _mode=2
+   ||
+      {? _can_continue>0 & PL_NEXT.PL_OPER<>null()
+      ||
+         PL_NEXT.cntx_psh();
+         PL_NEXT.index('NEXT');
+         PL_NEXT.prefix(_dst,PL_NEXT.PL_OPER);
+         {? PL_NEXT.size()>0
+         || _can_continue:=0
+         ?};
+         PL_NEXT.cntx_pop()
+      ?};
+      {? _can_continue>0 & PL_NEXT.PL_OGR<>null()
+      || PL_NEXT.cntx_psh();
+         PL_NEXT.index('NEXT2');
+         PL_NEXT.prefix(_dst,PL_NEXT.PL_OGR);
+         {? PL_NEXT.size()>0
+         || _can_continue:=0
+         ?};
+         PL_NEXT.cntx_pop()
+      ?}
+   ?}
+?};
+PL_NEXT.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\chk_nasz_uniq
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Sprawdza czy po podmianie pola OPER lub NRNAST w rekordzie tabeli NASZGP nie powstanie
+::       rekord który już istnieje i spowoduje konflikt indeksu unikalnego
+::   WE: _a - ZGP.ref - docelowa pozycja przewodnika
+::       [_b] - NASZGP.ref lub bieżący rekord
+::       [_c] - INTEGER - tryb sprawdzania - [1] - podmieniać pole OPER i sprawdzać
+::                                            2 - podmieniać pole NRNAST i sprawdzać
+::   WY: 0 - istnieje już taki rekord
+::       1 - brak rekordu
+::  OLD: \chk_nasz_uniq/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dst:=_a;
+_ref:=null();
+{? var_pres('_b')=type_of(NASZGP.ref())
+|| _ref:=_b
+?};
+_mode:=1;
+{? var_pres('_c')=type_of(0)
+|| _mode:=_c
+?};
+
+_result:=0;
+_can_continue:=1;
+
+NASZGP.cntx_psh();
+{? _ref<>null()
+|| NASZGP.clear();
+   {? NASZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? _mode=1
+   ||
+      {? _can_continue>0 & NASZGP.NRNAST<>null()
+      ||
+         NASZGP.cntx_psh();
+         NASZGP.index('OPNAST');
+         NASZGP.prefix(_dst,NASZGP.NRNAST);
+         {? NASZGP.size()>0
+         || _can_continue:=0
+         ?};
+         NASZGP.cntx_pop()
+      ?}
+   |? _mode=2
+   ||
+      {? _can_continue>0 & NASZGP.OPER<>null()
+      ||
+         NASZGP.cntx_psh();
+         NASZGP.index('NASTOP');
+         NASZGP.prefix(_dst,NASZGP.OPER);
+         {? NASZGP.size()>0
+         || _can_continue:=0
+         ?};
+         NASZGP.cntx_pop()
+      ?}
+   ?}
+?};
+NASZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\chk_nasz_uniq2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Sprawdza czy po dodaniu rekordu NASZGP nie powstanie
+::       rekord który już istnieje i spowoduje konflikt indeksu unikalnego
+::   WE: _a - ZGP.ref - źródłowa pozycja przewodnika
+::       _b - ZGP.ref - docelowa pozycja przewodnika
+::   WY: 0 - istnieje już taki rekord
+::       1 - brak rekordu
+::  OLD: \chk_nasz_uniq2/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_src:=_a;
+_dst:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+NASZGP.cntx_psh();
+NASZGP.index('OPNAST');
+NASZGP.prefix(_src,_dst);
+{? NASZGP.size()>0
+|| _can_continue:=0
+?};
+NASZGP.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\find_oper
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Znajduje operację do której przypiąć powiązanie na podstawie podziału który został dokonany
+::   WE: _a - PL_SPLIT.ref() - podział
+::       _b - PL_OPER.ref() - operacja źródłowa
+::       _c - INTEGER - numer wewnątrz podziału
+::   WY: PL_OPER.ref lub null jeśli nie znaleziono
+::  OLD: \find_oper/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_split:=_a;
+_pl_oper:=_b;
+_num:=_c;
+
+_result:=null();
+PL_OPER.cntx_psh(); PL_OPER.clear();
+{? PL_OPER.seek(_pl_oper)
+|| {? PL_OPER.PL_SPLIT<>null()
+   ||
+      PL_OPER.index('SPLITSRC');
+      PL_OPER.prefix(_split,PL_OPER.UID,_num);
+      {? PL_OPER.first()
+      || _result:=PL_OPER.ref()
+      ?}
+   ||
+::    Operacja nie brała udziału w podziale więc zwracam źródłową
+      _result:=PL_OPER.ref()
+   ?}
+?};
+PL_OPER.cntx_pop();
+_result
+
+
+\get_zgp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Z przekazanego PL_OPERa zwraca powiązanego z nim ZGPa
+::   WE: [_a] - PL_OPER.ref lub bieżący rekord
+::   WY: ZGP.ref jeśli jest lub null
+::  OLD: \get_zgp/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_OPER.ref())
+|| _ref:=_a
+?};
+
+_result:=null();
+_can_continue:=1;
+
+PL_OPER.cntx_psh();
+{? _ref<>null()
+|| PL_OPER.clear();
+   {? PL_OPER.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| _result:=PL_OPER.ZGP
+?};
+PL_OPER.cntx_pop();
+_result
+
+
+\copy_plozy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Kopiuje obciążenia na zasobach z jednej operacji na drugą
+::   WE: _a - PL_OPER.ref() - operacja źródłowa
+::       _b - PL_OPER.ref() - operacja docelowa
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \copy_plozy/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_src:=_a;
+_dst:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+PL_OZ.cntx_psh();
+PL_OZ.index('PL_OPER');
+PL_OZ.prefix(_src);
+{? PL_OZ.first()
+|| {!
+   |? _can_add:=1;
+      PL_OZ.cntx_psh();
+      PL_OZ.prefix(_dst,PL_OZ.PL_RES);
+      {? PL_OZ.size()>0
+      || _can_add:=0
+      ?};
+      PL_OZ.cntx_pop();
+
+      {? _can_add>0
+      || PL_OZ.cntx_psh();
+         PL_OZ.clear();
+         PL_OZ.PL_OPER:=_dst;
+         _can_continue:=PL_OZ.add();
+         PL_OZ.cntx_pop()
+      ?};
+      PL_OZ.next() & _can_continue>0
+   !}
+?};
+
+PL_OZ.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\verify
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Weryfikuje poprawność argumentów funkcji podziału, jeżeli coś jest nie tak dodaje info do KOMMa
+::   WE: _a - obj_new() - argumenty funkcji split - wynik działania exec('split_a','po_split')
+::       [_b] - PL_OPER.ref lub bieżący rekord
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \verify/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+
+_ref:=null();
+{? var_pres('_b')=type_of(PL_OPER.ref())
+|| _ref:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_OPER.cntx_psh();
+{? _ref<>null()
+|| PL_OPER.clear();
+   {? PL_OPER.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? _args.IL_OLD>0 | _args.IL_NEW>0
+   ||
+::    Użytkownik dzieli pozycję planu podając ilości
+
+      {? _args.IL_OLD>0 & _args.IL_OLD>PL_OPER.ILOSC
+      || _can_continue:=0;
+         KOMM.add('Ilość do wykonania pozostawiona na istniejącej pozycji planu nie może być większa od ilości pierwotnej.'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.IL_NEW>0 & _args.IL_NEW>PL_OPER.ILOSC
+      || _can_continue:=0;
+         KOMM.add('Ilość do wykonania na nowych pozycjach nie może być większa od ilości pierwotnej.'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.IL_OLD>0 & _args.IL_NEW=0
+      || _can_continue:=0;
+         KOMM.add('Ilość do wykonania na nowych pozycjach musi być większa od zera.'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.IL_NEW>0 & _args.IL_OLD=0
+      || _can_continue:=0;
+         KOMM.add('Ilość do wykonania pozostawiona na istniejącej pozycji planu musi być większa od zera.'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.IL_OLD+_args.IL_NEW>PL_OPER.ILOSC
+      || _can_continue:=0;
+         KOMM.add('Suma ilość do wykonania pozostawiona na istniejącej pozycji i na nowych pozycjach nie może być większa od ilości pierwotnej.'@,7,,1)
+      ?};
+      {? _can_continue>0 & PL_OPER.IL_WYK>0 & _args.IL_OLD<PL_OPER.IL_WYK
+      || _can_continue:=0;
+         KOMM.add('Ilość do wykonania pozostawiona na istniejącej pozycji planu nie może być mniejsza od ilości już wykonanej.'@,7,,1)
+      ?};
+      ~~
+   |? _args.DUR_OLD>0 | _args.DUR_NEW>0
+   ||
+::    Użytkownik dzieli pozycję planu podając czas trwania
+      {? PL_OPER.IL_WYK>0
+      || _can_continue:=0;
+         KOMM.add('Do pozycji planu zostało zarejestrowane wykonanie, aby ją podzielić należy podać ilości do wykonania a nie czas trwania'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.DUR_OLD>0 & _args.DUR_OLD>PL_OPER.DURATION
+      || _can_continue:=0;
+         KOMM.add('Czas trwania operacji pozostawiony na istniejącej pozycji planu nie może być większy od czasu pierwotnego.'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.DUR_NEW>0 & _args.DUR_NEW>PL_OPER.DURATION
+      || _can_continue:=0;
+         KOMM.add('Czas trwania operacji na nowych pozycjach nie może być większy od czasu pierwotnego.'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.DUR_OLD>0 & _args.DUR_NEW=0
+      || _can_continue:=0;
+         KOMM.add('Czas trwania operacji na nowych pozycjach musi być większy od zera.'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.DUR_NEW>0 & _args.DUR_OLD=0
+      || _can_continue:=0;
+         KOMM.add('Czas trwania operacji pozostawiony na istniejącej pozycji planu musi być większy od zera.'@,7,,1)
+      ?};
+      {? _can_continue>0 & _args.DUR_OLD+_args.DUR_NEW>PL_OPER.DURATION
+      || _can_continue:=0;
+         KOMM.add('Suma czasu trwania pozostawionego na istniejącej pozycji i na nowych pozycjach nie może być większa od czasu trwania pierwotnego.'@,7,,1)
+      ?};
+      ~~
+   ?}
+?};
+PL_OPER.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Kasuje podany rekord tabeli PL_SPLIT (wykonywane w transakcji!!!)
+::   WE: _a - PL_SPLIT.ref()
+::   WY: >0 -wyczyszczone,
+::       <=0 -niewyczyszczone
+::  TAG: <PUBLICZNA><DEL>
+::UWAGA: Parametry bez [] są wymagane, formula może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::  OLD: \delete/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+:: jeżeli transakcja została zerwana, to nie ma sensu przetwarzać formuły
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+:: sprawdzam, czy to w tej formule będę zakładał transakcję, czy już jest założona
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+PL_SPLIT.cntx_psh(); PL_SPLIT.clear();
+{? PL_SPLIT.seek(_ref)
+|| {? exec('clean','po_split',_ref)>0
+   || {? PL_SPLIT.del(,1)>0
+      || _result:=1
+      || undo();
+         _result:=-3
+      ?}
+   || _result:=-2
+   ?}
+|| _result:=0
+?};
+
+{? _result<0
+|| undo()
+?};
+
+PL_SPLIT.cntx_pop();
+{? _mydo || end() ?};
+_result
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Czyści powiązania do rekordu tabeli PL_SPLIT
+::   WE: _a - PL_SPLIT.ref()
+::   WY: >0  -wyczyszczone,
+::       <=0 -niewyczyszczone
+::  TAG: <PRYWATNA><CLEAN>
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::  OLD: \clean/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+:: --- powiązania do ---
+PL_OPER.cntx_psh();
+PL_OPER.index('PL_SPLIT');
+PL_OPER.prefix(_ref);
+{? PL_OPER.first()
+|| {!
+   |? PL_OPER.cntx_psh(); PL_OPER.clear();
+      PL_OPER.PL_SPLIT:=null();
+      _can_continue:=PL_OPER.put();
+      PL_OPER.cntx_pop();
+      PL_OPER.first() & _can_continue>0
+   !}
+?};
+PL_OPER.cntx_pop();
+
+:: Usuwam wszystkie podziały potomne
+PL_SPLIT.cntx_psh();
+PL_SPLIT.index('UID_SRC');
+PL_SPLIT.prefix(PL_SPLIT.UID);
+{? PL_SPLIT.first()
+|| {!
+   |? _can_continue:=exec('delete','po_split',PL_SPLIT.ref());
+      PL_SPLIT.first() & _can_continue>0
+   !}
+?};
+PL_SPLIT.cntx_pop();
+
+:: Czyszczę powiązania na pozycjach przewodnika
+ZGP.cntx_psh();
+ZGP.index('PL_SPLIT');
+ZGP.prefix(PL_SPLIT.ref());
+{? ZGP.first()
+|| {!
+   |? ZGP.cntx_psh();
+      ZGP.clear();
+      ZGP.PL_SPLIT:=null();
+      _can_continue:=ZGP.put();
+      ZGP.cntx_pop();
+      ZGP.first() & _can_continue>0
+   !}
+?};
+ZGP.cntx_pop();
+
+:: Czyszczę powiązania na limitach
+ZLIM.cntx_psh();
+exec('openmask','zl_common',PL_SPLIT.PL_PART().ZL);
+ZLIM.index('PL_SPLIT');
+ZLIM.prefix(PL_SPLIT.ref());
+{? ZLIM.first()
+|| {!
+   |? ZLIM.cntx_psh();
+      ZLIM.clear();
+      ZLIM.PL_SPLIT:=null();
+      _can_continue:=ZLIM.put();
+      ZLIM.cntx_pop();
+      ZLIM.first() & _can_continue>0
+   !}
+?};
+ZLIM.cntx_pop();
+
+:: --- wszystkie powiazania usuniete? ---
+
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end() ?};
+
+_result
+
+
+\merge
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Scala utworzony podział, tzn wszystkie pozycje planu które zostały utworzone podczas podziału
+::       są usuwane a ich ilości są dosumowywane do oryginalnych pozycji z których powstały
+::   WE: _a - PL_SPLIT.ref() - podział który usunąć
+::   WY: obj_new - tablica refów zawierająca refy PL_OZ które trzeba przeplanować w planie
+::                 wynik działania exec('ref_table','#table')
+::  OLD: \merge/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_pl_split:=_a;
+
+_result:=exec('ref_table','#table');
+_res_empty:=exec('ref_table','#table');
+_zgh_renum:=exec('ref_table','#table');
+_can_continue:=1;
+
+ZLIM.cntx_psh();
+ZGP.cntx_psh();
+ZGH.cntx_psh();
+PL_SPLIT.cntx_psh(); PL_SPLIT.clear();
+PL_OPER.cntx_psh();
+{? PL_SPLIT.seek(_pl_split)
+||
+   _zl:=PL_SPLIT.PL_PART().ZL;
+
+:: Otwieram maske dla limitow
+   exec('openmask','zl_common',_zl);
+
+   _plpart:=PL_SPLIT.PL_PART;
+
+   PL_OPER.index('PL_SPLIT');
+:: Buduję listę operacji które należy scalić
+   _tab:=exec('merge_list','po_split');
+   _tab.clear();
+
+:: Buduję listę limitów powiązanych z pl_splitem które trzeba usunąć
+   _tab_lim:=exec('merge_list_zlim','po_split');
+
+:: Scalam operacje
+   {? _tab.last()
+   || {!
+      |? _ploper:=exec('FindAndGet','#table',PL_OPER,_tab.PL_OPER,,,null());
+         PL_OPER.clear();
+         {? PL_OPER.seek(_ploper)
+         ||
+            {? PL_OPER.UID_SRC<>''
+            ||
+::             Badam czy operacja źródłowa znajduje się na liście operacji które są scalane,
+::             jeśli tak to scalam tę operacje do źródła
+               _tab.cntx_psh();
+               _tab.prefix(PL_OPER.UID_SRC);
+               {? _tab.first()
+               || _can_continue:=exec('ploper_to_src','po_split',_ploper)
+               ?};
+               _tab.cntx_pop()
+            ?}
+         ?};
+         _tab.prev() & _can_continue>0
+      !}
+   || _can_continue:=0
+   ?};
+
+   {? _can_continue>0
+   ||
+::    Tutaj powinny zostać same pozycje źródłowe czyli te z numerem 1
+      PL_OPER.prefix(PL_SPLIT.ref());
+      {? PL_OPER.first()
+      || {!
+         |?
+            {? PL_OPER.ZGP<>null()
+            ||
+::             Pozycja planu powiązana z przewodnikiem wiec go dodaje do przewodnikow które
+::             trzeba przenumerować
+               _zgh_renum.add(PL_OPER.ZGP().NRZLP)
+            ?};
+            _next:=0;
+            _ref_nxt:=null();
+            PL_OPER.cntx_psh();
+            {? PL_OPER.next()
+            || _ref_nxt:=PL_OPER.ref()
+            ?};
+            PL_OPER.cntx_pop();
+
+            {? PL_OPER.SPLIT_NR=1
+            ||
+               _new_split:=null();
+               PL_SPLIT.cntx_psh();
+               {? PL_SPLIT.UID_SRC<>''
+               || PL_SPLIT.index('UID');
+                  PL_SPLIT.prefix(PL_SPLIT.UID_SRC);
+                  {? PL_SPLIT.first()
+                  || _new_split:=PL_SPLIT.ref()
+                  ?}
+               ?};
+
+               PL_SPLIT.cntx_pop();
+::             Czyszczę operację z podziału lub przypisuję jej nowy podział
+               PL_OPER.cntx_psh();
+               PL_OPER.clear();
+               PL_OPER.PL_SPLIT:=_new_split;
+               _can_continue:=PL_OPER.put();
+
+               {? _can_continue>0
+               ||
+::                Dodaje do wyniku refy PL_OZow które trzeba przeplanować
+                  PL_OZ.cntx_psh();
+                  PL_OZ.index('PL_OPER');
+                  PL_OZ.prefix(PL_OPER.ref());
+                  {? PL_OZ.first()
+                  || {!
+                     |? _result.add(PL_OZ.ref());
+                        PL_OZ.next()
+                     !}
+                  ?};
+                  PL_OZ.cntx_pop()
+               ?};
+               PL_OPER.cntx_pop()
+            || KOMM.error('Scalenie pozycji planu zakończone niepowodzeniem - pozostały pozycje ze ścieżek wyższych niż 1.'@,0,1);
+               _can_continue:=0
+            ?};
+
+            {? _ref_nxt<>null()
+            || _next:=PL_OPER.seek(_ref_nxt)
+            ?};
+            _next>0 & _can_continue>0
+         !}
+      ?};
+
+      {? _can_continue>0
+      ||
+::       Usuwam korekty limitów które powstały podczas dzielenia
+         _can_continue:=exec('delete_zlim','po_split',_tab_lim)
+      ?};
+
+      {? _can_continue>0
+      ||
+::       Usuwam podział
+         _can_continue:=exec('delete','po_split',PL_SPLIT.ref())
+      ?};
+
+      {? _can_continue>0
+      ||
+::       Iteruję po pozostałych podziałach przewodnika i dla operacji które były kilka razy dzielone
+::       odtwarzam PL_SPLIT, ponieważ mógł zostać wyczyszczony podczas usuwania ostatniego podziału
+         PL_OPER.clear();
+         PL_SPLIT.index('PL_PART');
+         PL_SPLIT.prefix(_plpart);
+         {? PL_SPLIT.first()
+         || {!
+            |? {? PL_SPLIT.PL_OPER<>null()
+               ||
+::                Podczytuję PL_OPERA
+                  PL_SPLIT.PL_OPER();
+                  {? PL_OPER.PL_SPLIT=null()
+                  || PL_OPER.PL_SPLIT:=PL_SPLIT.ref();
+                     _can_continue:=PL_OPER.put()
+                  ?}
+               ?};
+               PL_SPLIT.next() & _can_continue>0
+            !}
+         ?}
+      ?}
+   ?};
+
+   {? _can_continue>0
+   ||
+::    Iteruję po pozostałych podziałach przewodnika i usuwam sieroce podziały które nie mają już żadnych pozycji planu
+      PL_SPLIT.index('PL_PART');
+      PL_SPLIT.prefix(_plpart);
+      {? PL_SPLIT.first()
+      || {!
+         |?
+            _next:=0;
+            _ref_nxt:=null();
+            PL_SPLIT.cntx_psh();
+            {? PL_SPLIT.next()>0
+            || _ref_nxt:=PL_SPLIT.ref()
+            ?};
+            PL_SPLIT.cntx_pop();
+
+            PL_OPER.index('PL_SPLIT');
+            PL_OPER.prefix(PL_SPLIT.ref());
+            {? PL_OPER.size()=0
+            || _can_continue:=exec('delete','po_split',PL_SPLIT.ref())
+            ?};
+
+            {? _ref_nxt<>null()
+            || _next:=PL_SPLIT.seek(_ref_nxt)
+            ?};
+            _next>0 & _can_continue>0
+         !}
+      ?}
+   ?};
+   {? _can_continue>0
+   ||
+::    Uruchamiam przenumerowywanie przewodników żeby zlikwidować dziury w numeracji
+      _can_continue:=exec('zgh_renumerate','po_split',_zgh_renum.tab,'MERGE')
+   ?};
+   {? _can_continue>0 & _zl<>null()
+   ||
+::    Aktualizuje przepi planistyczny zlecenia
+      _can_continue:=exec('zl_tex_update','px_tex',_zl,2)
+   ?}
+?};
+PL_OPER.cntx_pop();
+PL_SPLIT.cntx_pop();
+ZLIM.cntx_pop();
+ZGP.cntx_pop();
+ZGH.cntx_pop();
+:: Zwracam wynik
+{? _can_continue>0
+|| _result
+|| KOMM.add('Scalenie zakończone niepowodzeniem.'@,2,,1);
+   _res_empty
+?}
+
+
+\ploper_to_src
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Scala podanego pl_opera do plopera źródłowego
+::   WE: [_a] - PL_OPER.ref lub bieżący rekord
+::       [_b] - PL_SPLIT.ref() - podział w obrębie którego szukać PL_OPERów źródłowych
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \ploper_to_src/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_OPER.ref())
+|| _ref:=_a
+?};
+_pl_split:=null();
+{? var_pres('_b')=type_of(PL_SPLIT.ref())
+|| _pl_split:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+ZGH.cntx_psh();
+PL_OPER.cntx_psh();
+{? _ref<>null()
+|| PL_OPER.clear();
+   {? PL_OPER.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _what:=PL_OPER.OPIS+' uid: '+PL_OPER.UID_SRC;
+   _zgp:=PL_OPER.ZGP;
+   _what_zgp:='';
+   {? PL_OPER.ZGP<>null()
+   || _what_zgp:=PL_OPER.ZGP().NRZLP().NRPRZ+' '+ZGP.OPIS
+   ?};
+   {? PL_OPER.UID_SRC<>''
+   || _buffer:=exec('PL_OPER','buffer');
+      _buffer.get();
+      PL_OPER.cntx_psh();
+      {? _pl_split<>null()
+      || PL_OPER.index('PL_SPLIT');
+         PL_OPER.prefix(_pl_split,PL_OPER.UID_SRC)
+      ||
+         PL_OPER.index('UID');
+         PL_OPER.prefix(PL_OPER.UID_SRC)
+      ?};
+
+      {? PL_OPER.first()
+      ||
+::       Stroję na źródłowej operacji, doklejam do niej ilości i czas
+         PL_OPER.ILOSC+=_buffer.ILOSC;
+         PL_OPER.DURATION+=(_buffer.DURATION-_buffer.TP-_buffer.TZ);
+         _can_continue:=PL_OPER.put();
+
+         {? _can_continue>0
+         ||
+::          Jeśli powiodło się doklejenie to usuwam pozycję którą doklejałem
+            _can_continue:=exec('del_ploper','po_plan',$_buffer.Ref,,,,0)
+         ?};
+
+         {? _can_continue>0 & _zgp<>null()
+         ||
+::          Scalam pozycję przewodnika
+            _can_continue:=exec('zgp_to_src','po_split',_zgp,_pl_split);
+            {? _can_continue=0
+            || KOMM.add('Nie udało się scalić pozycji przewodnika: %1'@[_what_zgp],2,,1)
+            ?}
+         ?}
+      ?};
+      PL_OPER.cntx_pop()
+   ?}
+?};
+PL_OPER.cntx_pop();
+ZGP.cntx_pop();
+ZGH.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\zgp_to_src
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Scala podanego ZGPa do ZGPa źródłowego
+::   WE: [_a] - ZGP.ref lub bieżący rekord
+::       [_b] - PL_SPLIT.ref() - podział w obrębie którego szukać ZGPów źródłowych
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \zgp_to_src/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZGP.ref())
+|| _ref:=_a
+?};
+_pl_split:=null();
+{? var_pres('_b')=type_of(PL_SPLIT.ref())
+|| _pl_split:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+{? _ref<>null()
+|| ZGP.clear();
+   {? ZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? ZGP.UID_SRC<>''
+   || _buffer:=exec('ZGP','buffer');
+      _buffer.get();
+      ZGP.cntx_psh();
+      {? _pl_split<>null()
+      || ZGP.index('PL_SPLIT');
+         ZGP.prefix(_pl_split,ZGP.UID_SRC)
+      ||
+         ZGP.index('UID');
+         ZGP.prefix(ZGP.UID_SRC)
+      ?};
+
+      {? ZGP.first()
+      ||
+::       Stroję na źródłowej operacji, doklejam do niej ilości i czasy
+         ZGP.ILOSC+=_buffer.ILOSC;
+         ZGP.NTIME+=_buffer.NTIME;
+         ZGP.MTIME+=_buffer.MTIME;
+         _can_continue:=ZGP.put();
+
+         {? _can_continue>0
+         || _can_continue:=exec('merge_nilimity','po_split',_buffer.Ref,_pl_split)
+         ?};
+
+         {? _can_continue>0 & exec('zlims_nosplit','po_split',_buffer.Ref)>0
+         || _can_continue:=exec('merge_zlims','po_split',_buffer.Ref,ZGP.ref())
+         ?};
+
+         {? _can_continue>0
+         || ZGP.clear();
+            {? ZGP.seek(_buffer.Ref)
+            ||
+::             Jeśli powiodło się doklejenie to usuwam pozycję przewodnika którą doklejałem
+               _old_var:=VAR.GRUPA;
+               VAR.GRUPA:='T';
+               _can_continue:=exec('zgp_del','zl_guide',1,0);
+               VAR.GRUPA:=_old_var
+            ?}
+         ?}
+      ?};
+      ZGP.cntx_pop()
+   ?}
+?};
+ZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\nielim_to_src
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Scala surowiec nielimitwany do źródła
+::   WE: [_a] - ZLIM.ref lub bieżący rekord
+:        [_b] - PL_SPLIT.ref() - podział w obrębie którego szukać ZLIMów źródłowych
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \nielim_to_src/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+
+_ref:=null();
+{? var_pres('_a')=type_of(ZLIM.ref())
+|| _ref:=_a
+?};
+_pl_split:=null();
+{? var_pres('_b')=type_of(PL_SPLIT.ref())
+|| _pl_split:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZLIM.cntx_psh();
+{? _ref<>null()
+|| ZLIM.clear();
+   {? ZLIM.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| {? ZLIM.LIMIT='N' & ZLIM.UID_SRC<>''
+   ||
+      _buffer:=exec('ZLIM','buffer');
+      _buffer.get();
+      {? _pl_split<>null()
+      || ZLIM.index('PL_SPLI2');
+         ZLIM.prefix(_pl_split,ZLIM.UID_SRC)
+      ||
+         ZLIM.index('UID');
+         ZLIM.prefix(ZLIM.UID_SRC)
+      ?};
+
+      {? ZLIM.first()
+      ||
+::       Stoję na nielimicie źródłowym
+
+::       Scalam ilość surową niezaokgrąglaną i dopiero ją wpisuję w rzeczywisty limit
+         ZLIM.IL_RAW+=_buffer.IL_RAW;
+         _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM);
+         {? _dokl>0
+         || ZLIM.IL_RAW:=(ZLIM.IL_RAW)$_dokl
+         || ZLIM.IL_RAW:=ceil(ZLIM.IL_RAW)
+         ?};
+::       Przepisuję ilość surową do limitu
+         ZLIM.LIL:=ZLIM.IL_RAW;
+         _can_continue:=ZLIM.put()
+      ?};
+      {? _can_continue>0
+      ||
+         ZLIM.clear();
+         {? ZLIM.seek(_buffer.Ref)
+         || _what:=ZLIM.KTM().KTM+' poz. '+$ZLIM.NR;
+::          Po scaleniu usuwam nielimit scalony
+            _can_continue:=exec('ZLIM_del_brut','zl_limit',1,0);
+            {? _can_continue=0
+            || KOMM.add('Nie udało się usunięcie surowca nielimitowanego: %1'@[_what],2,,1)
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+ZLIM.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\merge_nilimity
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Po scaleniu ZGPa scala też jego wszystkie surowce nielimitowane
+::   WE: _a - ZGP.ref lub bieżący rekord
+::        [_b] - PL_SPLIT.ref() - podział w obrębie którego szukać ZLIMów źródłowych
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \merge_nilimity/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZGP.ref())
+|| _ref:=_a
+?};
+_pl_split:=null();
+{? var_pres('_b')=type_of(PL_SPLIT.ref())
+|| _pl_split:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+{? _ref<>null()
+|| ZGP.clear();
+   {? ZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   ZLIM.cntx_psh();
+   exec('openmask','zl_common',ZGP.ZL);
+   ZLIM.index('ZGP_NM');
+   ZLIM.prefix(ZGP.ref(),'N');
+   {? ZLIM.first()
+   || {!
+      |? _ref_nxt:=null();
+         _next:=0;
+         ZLIM.cntx_psh();
+         {? ZLIM.next()
+         || _ref_nxt:=ZLIM.ref()
+         ?};
+         ZLIM.cntx_pop();
+         _can_continue:=exec('nielim_to_src','po_split',,_pl_split);
+
+         {? _ref_nxt<>null()
+         || _next:=ZLIM.seek(_ref_nxt)
+         ?};
+         _next>0 & _can_continue>0
+      !}
+   ?};
+   ZLIM.cntx_pop()
+?};
+ZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\fill_tree
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Dla podanego PL_SPLITa zbiera wszystkie PL_OPERY należące do niegooraz PL_OPERy z podziałów potomnych
+::   WE: [_a] - PL_SPLIT.ref lub bieżący rekord
+::       [_b] - tab_tmp - tabela którą zasilić, jeśli nie podane to utworzyć nową
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \fill_tree/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_SPLIT.ref())
+|| _ref:=_a
+?};
+{? var_pres('_b')>100
+|| _tab:=_b
+|| _tab:=exec('ploper_tab','po_split')
+?};
+
+_result:=0;
+_can_continue:=1;
+
+_tab.cntx_psh();
+PL_SPLIT.cntx_psh();
+{? _ref<>null()
+|| PL_SPLIT.clear();
+   {? PL_SPLIT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+:: Najpierw dodaję swoje operacje
+   PL_OPER.cntx_psh();
+   PL_OPER.index('PL_SPLIT');
+   PL_OPER.prefix(PL_SPLIT.ref());
+   {? PL_OPER.first()
+   || {!
+      |? _can_continue:=exec('ploper_tab_add','po_split',_tab);
+         PL_OPER.next() & _can_continue>0
+      !}
+   ?};
+   PL_OPER.cntx_pop();
+
+:: Iteruję po dzieciach
+   {? _can_continue>0
+   || PL_SPLIT.index('UID_SRC');
+      PL_SPLIT.prefix(PL_SPLIT.UID);
+      {? PL_SPLIT.first()
+      || {!
+         |?
+::          Dla podziału potomnego uruchamiam rekurencyjnie i zbieram też jego operacje
+            _can_continue:=exec('fill_tree','po_split',,_tab,0);
+            PL_SPLIT.next() & _can_continue>0
+         !}
+      ?}
+   ?}
+?};
+PL_SPLIT.cntx_pop();
+_tab.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\ploper_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tabela tymczasowa prezentująca drzewo operacji powiązanych między sobą
+::   WY: tab_tmp()
+::  OLD: \ploper_tab/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp(3,
+:: 'POLE','TYP','Nazwa w oknie',
+   'OPER_UID','STRING[15]','Identyfikator operacji',
+   'PL_OPER','STRING[16]','Ref operacji',
+   'PL_SPLIT','STRING[16]','Ref podziału');
+_tab
+
+
+\ploper_tab_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Dodaje bieżącą operację do tabelki tymczasowej ploper_tab
+::   WE: _a - tab_tmp - tabela do której dodać
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \ploper_tab_add/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+
+_result:=1;
+_tab.cntx_psh();
+_tab.prefix(PL_OPER.UID);
+{? _tab.size()=0
+|| _tab.blank();
+   _tab.OPER_UID:=PL_OPER.UID;
+   _tab.PL_OPER:=$PL_OPER.ref();
+   _tab.PL_SPLIT:=$PL_OPER.PL_SPLIT;
+   _result:=_tab.add()
+?};
+_tab.cntx_pop();
+_result
+
+
+\zlim_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tabela tymczasowa prezentująca limity
+::   WY: tab_tmp()
+::  OLD: \zlim_tab/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp(1,
+:: 'POLE','TYP','Nazwa w oknie',
+   'ZLIM','STRING[16]','Ref limitu'
+   ,'ZL','STRING[16]','Ref zlecenia'
+   );
+_tab
+
+
+\zlim_tab_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Dodaje bieżący limit do tabelki tymczasowej zlim_tab
+::   WE: _a - tab_tmp - tabela do której dodać
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \zlim_tab_add/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+
+_result:=1;
+_tab.cntx_psh();
+_tab.prefix($ZLIM.ref());
+{? _tab.size()=0
+|| _tab.blank();
+   _tab.ZLIM:=$ZLIM.ref();
+   _tab.ZL:=$ZLIM.ZLEC;
+   _result:=_tab.add()
+?};
+_tab.cntx_pop();
+_result
+
+
+\merge_list
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Dla danego podziału zwraca listę operacji które zostaną ze sobą scalone.
+::       Uwaga, operacje które zostaną zwrócone mogą należeć do innych podziałów
+::   WE: [_a] - PL_SPLIT.ref lub bieżący rekord
+::   WY: tab_tmp - wynik exec('ploper_tab','po_split')
+::  OLD: \merge_list/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=exec('ploper_tab','po_split');
+
+_ref:=null();
+{? var_pres('_a')=type_of(PL_SPLIT.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_SPLIT.cntx_psh();
+{? _ref<>null()
+|| PL_SPLIT.clear();
+   {? PL_SPLIT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   PL_OPER.cntx_psh();
+   PL_OPER.index('PL_SPLIT');
+   PL_OPER.prefix(PL_SPLIT.ref());
+   {? PL_OPER.size()>0
+   || _can_continue:=exec('fill_tree','po_split',,_tab)
+   || _can_continue:=0;
+      KOMM.add('Do przekazanego podziału nie należą żadne operacje - scalenie zakończone niepowodzeniem.'@,2,,1)
+   ?};
+   PL_OPER.cntx_pop()
+?};
+PL_SPLIT.cntx_pop();
+{? _can_continue>0
+||
+:: Zwracam wypełnioną tabelę
+   _tab
+||
+:: Zwracam pustą tabelę
+   exec('ploper_tab','po_split')
+?}
+
+
+\correct_zgp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Koryguje zapis pozycji przewodnika
+::   WE: [_a] - ZGP.ref lub bieżący rekord
+::        _b  - REAL - proporcja którą potraktować normy czasowe i limity surowcowe
+::       [_c] - _args - argumenty funkcji dzielącej, wynik działania exec('split_a','po_split')
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \correct_zgp/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZGP.ref())
+|| _ref:=_a
+?};
+_prop:=_b;
+
+{? var_pres('_c')>100
+|| _args:=_c
+|| _args:=exec('split_a','po_split')
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+{? _ref<>null()
+|| ZGP.clear();
+   {? ZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| ZGP.PL_SPLIT:=_args.PL_SPLIT;
+   ZGP.NTIME:=ZGP.NTIME*_prop;
+   ZGP.MTIME:=ZGP.MTIME*_prop;
+   ZGP.ILOSC:=ZGP.ILOSC*_prop;
+   _can_continue:=ZGP.put();
+   ~~
+?};
+ZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\correct_zlimy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Koryguje limity pozycji przewodnika
+::   WE:  _a  - obj_new() - argumenty funkcji split - wynik działania exec('split_a','po_split')
+::       [_b] - ZGP.ref lub bieżący rekord
+::        _c  - REAL - proporcja którą potraktować limity
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \correct_zlimy/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+
+_ref:=null();
+{? var_pres('_b')=type_of(ZGP.ref())
+|| _ref:=_b
+?};
+_prop:=_c;
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+{? _ref<>null()
+|| ZGP.clear();
+   {? ZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _tab:=_args.ZLIM_OLD;
+:: Przed korektą limitów zapamiętuję ich oryginalne ilości
+   ZLIM.cntx_psh();
+   exec('openmask','zl_common',ZGP.ZL);
+   ZLIM.index('ZGP_KM');
+   ZLIM.prefix(ZGP.ref());
+   {? ZLIM.first()
+   || {!
+      |?
+         _tab.prefix($ZLIM.ref());
+         {? _tab.size()=0
+         || _tab.blank();
+            _tab.ZLIM:=$ZLIM.ref();
+            _tab.LIL:=exec('sum_il','zl_limit',ZLIM.ref());
+            _tab.add()
+         ?};
+         ZLIM.next()
+      !}
+   ?};
+   _can_continue:=exec('lim_kor_zgp','zl_limit',ZGP.ref(),_prop,ZGP.ILOSC,_args.PL_SPLIT,1);
+   ZLIM.cntx_pop()
+?};
+ZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\create_new_zgp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tworzy nowe pozycje przewodnika na podstawie przekazanej pozycji
+::   WE: _a - obj_new() - argumenty funkcji split - wynik działania exec('split_a','po_split')
+::       _b - obj_new() - bufor ZGP który jest dzielony
+::       _c - REAL - proporcja wg której tworzyć nową pozycję planu
+::   WY: ZGP.ref lub null() - ref dodanego rekordu
+::  OLD: \create_new_zgp/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+_buffer:=_b;
+_prop:=_c;
+
+_can_continue:=1;
+_result:=null();
+
+_added:=null();
+_buf_added:=exec('ZGP','buffer');
+
+ZL.cntx_psh();
+ZGP.cntx_psh(); ZGP.clear();
+{? _prop>0
+||
+   _buffer.set();
+:: Wyznaczam normy czasowe na podstawie proporcji (o ile nie jest to operacja ze stałąnormą czasową)
+   {? ZGP.FIX_NORM<>'T'
+   || ZGP.NTIME:=_buffer.NTIME*_prop;
+      ZGP.MTIME:=_buffer.MTIME*_prop;
+      ZGP.PLNX:=ZGP.NTIME*ZGP.PLNH
+   ?};
+   _dokl:=ZGP.ZL().KTM().DOKL;
+   {? _dokl=0
+   || ZGP.ILOSC:=ceil(_buffer.ILOSC*_prop)
+   || ZGP.ILOSC:=_buffer.ILOSC*_prop$_dokl
+   ?};
+   ZGP.UID:=exec('uid','#blank');
+   ZGP.UID_SRC:=_buffer.UID;
+   ZGP.IL:=0;
+   ZGP.ILGEN:=0;
+   ZGP.IL_BRAK:=0;
+   ZGP.PL_SPLIT:=_args.PL_SPLIT;
+   ZGP.NRP:=_args.ZGP_NRP;
+   ZGP.IDEAN:=exec('bl_idean','kody_kresk',ZGP);
+   _args.ZGP_NRP-=1;
+   _can_continue:=ZGP.add();
+
+   {? _can_continue>0
+   || _added:=ZGP.ref();
+      _buf_added.get();
+::    Po utworzeniu nowego ZGPa dodaję ZGH do przewodników które trzeba przenumerować na końcu
+      _args.ZGH_RNUM.add(ZGP.NRZLP)
+   ?};
+
+   {? _can_continue>0
+   ||
+      _new_nrp:=ZGP.NRP;
+      _new_uid:=ZGP.UID;
+::    Kopiuje TPZ
+      ZGP.cntx_psh();
+      ZGP.index('TPZ');
+      ZGP.prefix('T',_buffer.UID);
+      {? ZGP.first()
+      ||
+         ZGP.clear();
+         ZGP.UID:=exec('uid','#blank');
+         ZGP.UID_TPZ:=_new_uid;
+::       ZGP.TPZREF:=_new_nrp;
+         ZGP.NRP:=_new_nrp;
+         _dokl:=ZGP.ZL().KTM().DOKL;
+         {? _dokl=0
+         || ZGP.ILOSC:=ceil(_buffer.ILOSC*_prop)
+         || ZGP.ILOSC:=_buffer.ILOSC*_prop$_dokl
+         ?};
+         ZGP.NAPRAW:=_buffer.NAPRAW;
+         ZGP.NAPR_TYP:=_buffer.NAPR_TYP;
+         ZGP.BRAKI_K:=_buffer.BRAKI_K;
+         ZGP.IDEAN:=exec('bl_idean','kody_kresk',ZGP);
+         _can_continue:=ZGP.add();
+         {? _can_continue=0
+         || _msg:='Nie udało się dodać pozycji przewodnika: %1. %2'@[$ZGP.NRP,ZGP.OPIS];
+            KOMM.add(_msg,2,,1)
+         ?}
+      ?};
+      ZGP.cntx_pop()
+   ?};
+   {? _can_continue>0
+   ||
+      ZLIM.cntx_psh();
+      exec('openmask','zl_common',_buffer.ZL);
+      ZLIM.index('ZGP_NM');
+      ZLIM.prefix(_buffer.Ref);
+      {? ZLIM.first()
+      || {!
+         |? {? ZLIM.KOR=0
+            || {? var_pres('_buf_zlim')>100
+               || obj_del(_buf_zlim)
+               ?};
+               _buf_zlim:=exec('ZLIM','buffer');
+               _buf_zlim.cntx_get(ZLIM.ref());
+               _can_continue:=exec('create_new_zlim','po_split',_args,_buf_zlim,_prop,_buf_added)
+            ?};
+            ZLIM.next() & _can_continue>0
+         !}
+      ?};
+      ZLIM.cntx_pop()
+   ?};
+   {? _can_continue>0 & _args.MODE='SINGLE'
+   ||
+::    Kopiuje wszystkie powiązania międzyoperacyjne
+      _can_continue:=exec('copy_naszgp','po_split',_buffer.Ref,ZGP.ref())
+   |? _can_continue>0 & _args.MODE='PATH'
+   || _zgp_gropped:=exec('zgp_planned','po_ogr',_buffer.Ref);
+      {? _zgp_gropped>0
+      ||
+::       Pozycja przewodnika została zaplanowana grupowo więc kopiuję dla niej wszystkie powiązania międzyoperacyjne
+         _can_continue:=exec('copy_naszgp','po_split',_buffer.Ref,ZGP.ref())
+      ?}
+   ?}
+?};
+ZGP.cntx_pop();
+ZL.cntx_pop();
+ZGP.get();
+{? _can_continue>0
+|| _result:=_added
+?};
+_result
+
+
+\create_new_zlim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tworzy nowy limit na podstawie przekazanej pozycji
+::   WE: _a - obj_new() - argumenty funkcji split - wynik działania exec('split_a','po_split')
+::       _b - obj_new() - bufor pozycji która jest dzielona
+::       _c - REAL - proporcja wg której tworzyć nową pozycję planu
+::       _d - obj_new() - bufor pozycji przewodnika do której przypiąć nowy limit
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \create_new_zlim/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=_a;
+_buffer:=_b;
+_prop:=_c;
+_buf_zgp:=_d;
+
+_can_continue:=1;
+_result:=0;
+
+ZLIM.cntx_psh(); ZLIM.clear();
+{? _prop>0
+||
+   _buffer.set();
+:: Wyznaczam normę na podstawie proporcji
+   _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM);
+
+   _sum_now:=exec('sum_il','zl_limit',_buffer.Ref);
+   _sum_old:=0;
+
+   _tab:=_args.ZLIM_OLD;
+   _tab.prefix($_buffer.Ref);
+   {? _tab.first()
+   || _sum_old:=_tab.LIL
+   ?};
+   _il:=_sum_old*_prop;
+
+   {? _dokl>0
+   || _il:=_il$_dokl
+   || _il:=ceil(_il)
+   ?};
+
+   ZLIM.LIL:=_il;
+   ZLIM.NR:=exec('ZLIM_NR_blank','zl_limit',_buffer.ZLEC,_buffer.LIMIT);
+   ZLIM.UID:=exec('uid','#blank');
+   ZLIM.UID_SRC:=_buffer.UID;
+   ZLIM.PL_SPLIT:=_args.PL_SPLIT;
+   ZLIM.ZGP:=_buf_zgp.Ref;
+   {? ZLIM.LIMIT='T'
+   || ZLIM.AKC:='N'
+   ?};
+   _can_continue:=ZLIM.add();
+
+   {? _can_continue>0 & ZLIM.LIMIT='T'
+   || _can_continue:=exec('ZLIM_akc','zl_limit',2,,,,0,1)
+   ?}
+?};
+ZLIM.cntx_pop();
+ZLIM.get();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\tab_old_zlim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tworzy tabelkę tymczasową w której będę zapamiętywał oryginalne ilości na limitach
+::       przed podziałem
+::   WY: tab_tmp
+::  OLD: \tab_old_zlim/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp(1,
+:: 'POLE','TYP','Nazwa w oknie',
+   'ZLIM','STRING[16]','Ref SQL limitu',
+   'LIL','REAL','Limit ilościowy'
+);
+_tab
+
+
+\zgh_renumerate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Przenumerowuje pozycje w przewodnikach
+::   WE: _a - tab_tmp - tablica zawierająca przewodniki wymagające przenumerowania
+::       _b - STRING - tryb przenumerowania: SPLIT - po podziale
+::                                           MERGE - po scaleniu
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \zgh_renumerate/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+_mode:=_b;
+
+_tab.cntx_psh();
+_tab.clear();
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+ZGP.index('PNRPP');
+{? _tab.first()
+||
+   {!
+   |?
+      _zgh:=exec('FindAndGet','#table',ZGH,_tab.SQL,,,null());
+      {? _zgh<>null()
+      || ZGP.prefix(_zgh,'N');
+
+         {? var_pres('_args')>100
+         || obj_del(_args)
+         ?};
+         _args:=exec('renum_args','zl_guide');
+         _args.MODE:=_mode;
+         _can_continue:=exec('renum_before','zl_guide',_args);
+         {? ZGP.first()
+         || _last_nr:=ZGP.NRP;
+
+            {!
+            |?
+               _ref_nxt:=null();
+               _next:=0;
+               ZGP.cntx_psh();
+               {? ZGP.next()
+               || _ref_nxt:=ZGP.ref()
+               ?};
+               ZGP.cntx_pop();
+
+               {? _mode='SPLIT'
+               ||
+::                Wpinam w proces te z ujemnymi numerami
+                  {? ZGP.NRP<0
+                  ||
+::                   Przenumerowuję
+                     _can_continue:=exec('renum','zl_guide',_args)
+                  ?}
+               |? _mode='MERGE'
+               ||
+::                Usuwam dziury w numeracji
+                  {? ZGP.NRP>_last_nr
+                  ||
+::                   Przenumerowuję
+                     _can_continue:=exec('renum','zl_guide',_args)
+                  ?}
+               ?};
+               _last_nr:=ZGP.NRP+1;
+
+               {? _ref_nxt<>null()
+               || _next:=ZGP.seek(_ref_nxt)
+               ?};
+
+               _next>0 & _can_continue>0
+            !}
+         ?};
+         {? _can_continue>0
+         || _can_continue:=exec('renum_after','zl_guide',_args)
+         ?}
+      ?};
+      _tab.next()
+   !}
+?};
+ZGP.cntx_pop();
+_tab.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\delete_zlim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Usuwa limity powiązane z pl_splitem
+::   WE: _a - tab_tmp - tabelka zawierająca refy limitów które należy usunąć
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \delete_zlim/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+ZLIM.cntx_psh(); ZLIM.clear();
+ZGP.cntx_psh();
+_tab.cntx_psh();
+{? _tab.first()
+|| KOMM.sect_beg('Usuwanie limitów oraz ich korekt powstałych podczas podziału planu.'@,,,1);
+   _chk_lim:=0;
+   _zl_tab:=tab_tmp(1,
+      'REF','STRING[16]','Ref SQL'
+      ,'ZL','STRING[100]','Nazwa pola 1'
+   );
+   {!
+   |? _zl:=exec('FindAndGet','#table',ZL,_tab.ZL,,,null());
+      exec('openmask','zl_common',_zl);
+      ZLIM.clear();
+      {? ZLIM.seek(_tab.ZLIM)
+      ||
+         {? ZLIM.LIMIT='T'
+         || ZLIM.ZGP();
+            _what:=ZLIM.KTM().KTM+' ('+'przewodnik'@+': '+exec('ZGP','#to_string')+')';
+            {? exec('korekta_after','zl_limit')>0
+            || _chk_lim:=1;
+
+               _zl_tab.prefix($ZLIM.ZLEC);
+               {? _zl_tab.size()=0
+               || _zl_tab.blank();
+                  _zl_tab.REF:=$ZLIM.ZLEC;
+                  _zl_tab.ZL:=ZLIM.ZLEC().SYM;
+                  _zl_tab.add()
+               ?}
+            ?};
+            _can_continue:=exec('ZLIM_del_brut','zl_limit',1,0);
+            {? _can_continue=0
+            || KOMM.add('Nie udało się usunięcie limitu: %1'@[_what],2,,1)
+            ?}
+         ?}
+      ?};
+      _tab.next()
+   !};
+   KOMM.sect_end();
+
+   {? _chk_lim>0
+   || _zl_tab.clear();
+      {? _zl_tab.first()
+      || {!
+         |? _msg:='Należy sprawdzić limity zlecenia: %1'
+                  ' ponieważ były one korygowane po podziale planu, który został właśnie usunięty.'@[_zl_tab.ZL];
+            KOMM.add(_msg,7,,1);
+            _zl_tab.next()
+         !}
+      ?}
+   ?}
+?};
+ZGP.cntx_pop();
+ZLIM.cntx_pop();
+_tab.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\merge_list_zlim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Pobiera listę limitów lub ich korekt które zostaną usunięte w wyniku scalenia
+::   WE: [_a] - PL_SPLIT.ref() lub bieżący rekord
+::   WY: tab_tmp - exec('zlim_tab','po_split')
+::  OLD: \merge_list_zlim/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=exec('zlim_tab','po_split');
+
+_ref:=null();
+{? var_pres('_a')=type_of(PL_SPLIT.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+ZLIM.cntx_psh();
+PL_SPLIT.cntx_psh();
+{? _ref<>null()
+|| PL_SPLIT.clear();
+   {? PL_SPLIT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| exec('openmask','zl_common',PL_SPLIT.PL_PART().ZL);
+   ZLIM.index('PL_SPLIT');
+   ZLIM.prefix(PL_SPLIT.ref());
+   {? ZLIM.first()
+   ||
+      {!
+      |? exec('zlim_tab_add','po_split',_tab);
+         ZLIM.next()
+      !}
+   ?}
+?};
+PL_SPLIT.cntx_pop();
+ZLIM.cntx_pop();
+_tab
+
+
+\zgp_split_fill
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Uaktualnia ZGPom pole UID_SRC i PL_SPLIT na podstawie powiązanych z nimi ploperami
+::   WE: _a - PL_PART.ref - przewodnik planistyczny
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \zgp_split_fill/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_plpart:=_a;
+
+_result:=1;
+
+ZGP.cntx_psh();
+ZGP.clear();
+PL_OPER.cntx_psh();
+PL_OPER.index('PL_PART');
+PL_OPER.prefix(_plpart);
+{? PL_OPER.first()
+|| {!
+   |? {? PL_OPER.ZGP<>null() & PL_OPER.PL_SPLIT<>null()
+      ||
+::       Podczytuję ZGPa
+         PL_OPER.ZGP();
+         _zgp_uid:='';
+
+         {? PL_OPER.UID_SRC<>''
+         ||
+            PL_OPER.cntx_psh();
+            PL_OPER.index('UID');
+            PL_OPER.prefix(PL_OPER.UID_SRC);
+            {? PL_OPER.first()
+            ||
+::             Stoję na ploperze źródłowym i jeśli jest powiązany z ZGPem to pobieram z niego UID
+               {? PL_OPER.ZGP<>null()
+               ||
+                  ZGP.cntx_psh();
+                  PL_OPER.ZGP();
+                  _zgp_uid:=ZGP.UID;
+                  ZGP.cntx_pop()
+               ?}
+            ?};
+            PL_OPER.cntx_pop()
+         ?};
+
+         PL_OPER.ZGP();
+         {? _zgp_uid<>''
+         || ZGP.UID_SRC:=_zgp_uid
+         ?};
+         ZGP.PL_SPLIT:=PL_OPER.PL_SPLIT;
+         _result:=ZGP.put()
+      ?};
+      PL_OPER.next()
+   !}
+?};
+ZGP.cntx_pop();
+PL_OPER.cntx_pop();
+_result
+
+
+\zlim_split_fill
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Uaktualnia ZLIMom nielimitowanym pole UID_SRC i PL_SPLIT na podstawie powiazanych z nimi ploperami
+::   WE: _a - ZGP.ref()
+::       _b - ZLIM.ref() - limit któremu nawinąć
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_zgp:=_a;
+_zlim:=_b;
+
+_ref:=null();
+{? var_pres('_a')=type_of(ZGP.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+
+ZGP.cntx_psh();
+{? _ref<>null()
+|| ZGP.prefix();
+   {? ZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? ZGP.UID_SRC<>'' & ZGP.PL_SPLIT<>null()
+   ||
+      ZLIM.cntx_psh();
+      ZLIM.prefix();
+      {? ZLIM.seek(_zlim)
+      || {? ZLIM.UID_SRC=''
+         ||
+::          Stoję na limicie który muszę powiązać
+            _uid_src:=exec('find_nielim','po_split',ZGP.UID_SRC,ZLIM.KTM);
+            {? _uid_src<>''
+            || ZLIM.UID_SRC:=_uid_src;
+               ZLIM.PL_SPLIT:=ZGP.PL_SPLIT;
+               _can_continue:=ZLIM.put()
+            ?}
+         ?}
+      ?};
+      ZLIM.cntx_pop();
+      ZLIM.get();
+      ~~
+   ?}
+?};
+ZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\find_nielim
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Znajduje nielimit źródłowy z którym należy powiązać nielimit z innego przewodnika
+::   WE: _a - STRING - ZGP.UID_SRC - identyfikator przeowdnika źródłowego
+::       _b - M.ref - indeks materiałowy
+::   WY: STRING - UID źródłwego limitu lub '' jeśli nie znaleziono
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_zgp_src:=_a;
+_ktm:=_b;
+
+_result:='';
+
+ZGP.cntx_psh();
+ZLIM.cntx_psh();
+
+ZGP.index('UID');
+ZGP.prefix(_zgp_src,);
+{? ZGP.first()
+||
+:: Stoję na źródłowej pozycji przewodnika
+   ZLIM.index('ZGP_KM');
+   ZLIM.prefix(ZGP.ref(),'N',0,_ktm);
+   {? ZLIM.first()
+   ||
+::    Znalazłem nielimit na źródłowej pozycji przewodnika na ten sam indeks więc zwracam jego UID
+      _result:=ZLIM.UID
+   ?}
+?};
+
+ZLIM.cntx_pop();
+ZGP.cntx_pop();
+_result
+
+
+\zlims_nosplit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Sprawdza czy pozycja przewodnika, która ma zostać scalona ma jakieś limity, które nie są powiązane
+::       z żadnym podziałem
+::   WE: _a - ZGP.ref() lub bieżący rekord
+::   WY: 0 - brak limitów niepowiązanych lub brak jakichkolwiek
+::       1 - są limity niepowiązane z podziałem, które pewnie trzeba będzie przepiąć jako korekty
+::  OLD: \zlims_nosplit/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZGP.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+{? _ref<>null()
+|| ZGP.clear();
+   {? ZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   ZLIM.cntx_psh();
+   exec('openmask','zl_common',ZGP.ZL);
+   ZLIM.index('ZGP_KM');
+   ZLIM.prefix(ZGP.ref(),'T',0);
+   {? ZLIM.first()
+   || {!
+      |?
+         {? ZLIM.PL_SPLIT=null()
+         || _result:=1
+         ?};
+         ZLIM.next() & _result=0
+      !}
+   ?};
+   ZLIM.cntx_pop();
+   ~~
+?};
+ZGP.cntx_pop();
+_result
+
+
+\merge_zlims
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Scala limity z dwóch pozycji przewodnika w taki sposób że dodaje limitom przewodnika docelowego korekty na
+::       podstawie limitów przewodnika źródłowego
+::   WE: _a - ZGP.ref - src - przewodnik źródłowy, z niego limity staną się korektami
+::       _b - ZGP.ref - dst - przewodnik docelowy, on dostanie korekty
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::  OLD: \merge_zlims/pl_split.fml
+::----------------------------------------------------------------------------------------------------------------------
+_src:=_a;
+_dst:=_b;
+
+ZLSTW.cntx_psh();
+ZLSTW.index('K');
+ZLSTW.prefix('~KOR_PLAN2');
+{? ZLSTW.first()
+|| _zlstw:=ZLSTW.ref()
+|| ZLSTW.KOD:='~KOR_PLAN2';
+   ZLSTW.NAZ:='Korekta wynikająca ze scalenia w planie operacyjnym';
+   {? ZLSTW.add() || _zlstw:=ZLSTW.ref() || _zlstw:=null() ?}
+?};
+ZLSTW.cntx_pop();
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+ZLIM.cntx_psh();
+ZGP.clear();
+{? ZGP.seek(_src)
+||
+:: Stoję na przewodniku źródłowym
+   exec('openmask','zl_common',ZGP.ZL);
+   ZLIM.index('ZGP_KM');
+   ZLIM.prefix(ZGP.ref());
+   {? ZLIM.first()
+   || _buffer:=exec('ZLIM','buffer');
+      {!
+      |?
+         {? ZLIM.KOR=0 & ZLIM.LIMIT='T' & ZLIM.PL_SPLIT=null()
+         ||
+            {? ZLIM.AKC='T'
+            ||
+::             Limit zaakceptowany, generuję korekty
+               _sum_il:=exec('sum_il','zl_limit',ZLIM.ref(),1);
+               {? _sum_il>0
+               ||
+                  _buffer.get();
+::                Przechodzę na przewodnik docelowy i w nim szukam limitu na ten sam materiał
+                  ZGP.clear();
+                  {? ZGP.seek(_dst)
+                  || ZLIM.cntx_psh();
+                     ZLIM.prefix(ZGP.ref(),'T',0,_buffer.KTM);
+                     {? ZLIM.first()
+                     ||
+                        _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM);
+::                      Znalazłem limit docelowy, tworzę w nim nową korektę
+::                      Zaokrąglam korektę do dokładności magazynowej
+                        {? _dokl>0
+                        || ZLIM.LIL:=(_sum_il)$_dokl
+                        || ZLIM.LIL:=ceil(_sum_il)
+                        ?};
+
+                        ZLIM.KOR:=ZLIM.NR;
+                        ZLIM.NR:=exec('ZLIM_NR_blank','zl_limit',ZLIM.ZLEC,ZLIM.LIMIT);
+                        ZLIM.BORNSTAT:=ZL.STAN;
+                        ZLIM.AKC:='N';
+                        ZLIM.WHY:=_zlstw;
+                        ZLIM.AUTO:='T';
+                        ZLIM.UID_SRC:=ZLIM.UID;
+                        ZLIM.PL_SPLIT:=null();
+                        ZLIM.clear();
+                        _can_continue:=ZLIM.add();
+
+                        {? _can_continue>0
+                        || _can_continue:=exec('ZLIM_akc','zl_limit',2,,,,0)
+                        ?}
+                     ||
+::                      Brak limitu docelowego, muszę utworzyć limit na ilość zerową
+                        _buffer.set();
+                        ZLIM.ZGP:=_dst;
+                        ZLIM.LIL:=0;
+                        ZLIM.NR:=exec('ZLIM_NR_blank','zl_limit',ZGP.ZL,ZLIM.LIMIT);
+                        ZLIM.WHY:=null();
+                        ZLIM.AKC:='T';
+                        ZLIM.clear();
+                        _can_continue:=ZLIM.add();
+                        {? _can_continue>0
+                        ||
+                           _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM);
+::                         Dodaję korektę niezerową
+                           _nr:=ZLIM.NR;
+                           ZLIM.KOR:=_nr;
+                           ZLIM.NR:=exec('ZLIM_NR_blank','zl_limit',ZLIM.ZLEC,ZLIM.LIMIT);
+                           {? _dokl>0
+                           || ZLIM.LIL:=(_sum_il)$_dokl
+                           || ZLIM.LIL:=ceil(_sum_il)
+                           ?};
+                           ZLIM.WHY:=_zlstw;
+                           ZLIM.AKC:='N';
+                           _can_continue:=ZLIM.add();
+                           {? _can_continue>0
+                           || _can_continue:=exec('ZLIM_akc','zl_limit',2,,,,0)
+                           ?}
+                        ?}
+                     ?};
+                     ZLIM.cntx_pop()
+                  ?}
+               ?}
+            ||
+::             Limit niezaakceptowany, doklejam ilość
+               _sum_il:=exec('sum_il','zl_limit',ZLIM.ref(),0);
+               {? _sum_il>0
+               ||  _buffer.get();
+::                Przechodzę na przewodnik docelowy i w nim szukam limitu na ten sam materiał
+                  ZGP.clear();
+                  {? ZGP.seek(_dst)
+                  || ZLIM.cntx_psh();
+                     ZLIM.prefix(ZGP.ref(),'T',0,_buffer.KTM);
+                     {? ZLIM.first()
+                     ||
+::                      Znalazłem limit docelowy
+                        ZLIM.IL_RAW+=_buffer.IL_RAW;
+                        _dokl:=exec('jaka_dok_m','jm',ZLIM.KTM);
+                        {? _dokl>0
+                        || ZLIM.IL_RAW:=(ZLIM.IL_RAW)$_dokl
+                        || ZLIM.IL_RAW:=ceil(ZLIM.IL_RAW)
+                        ?};
+::                      Przepisuję ilość surową do limitu
+                        ZLIM.LIL:=ZLIM.IL_RAW;
+                        _can_continue:=ZLIM.put()
+                     ||
+::                      Brak limitu docelowego, tworzę nowy limit
+                        _buffer.set();
+                        ZLIM.ZGP:=_dst;
+                        ZLIM.NR:=exec('ZLIM_NR_blank','zl_limit',ZGP.ZL,ZLIM.LIMIT);
+                        _can_continue:=ZLIM.add()
+                     ?};
+                     ZLIM.cntx_pop()
+                  ?}
+               ?}
+            ?}
+         ?};
+         ZLIM.next() & _can_continue>0
+      !}
+   ?}
+?};
+ZLIM.cntx_pop();
+ZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\splittable
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Sprawdza czy PL_OPER jest podzielny
+::   WE: _a - PL_OPER.ref()
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_pl_oper:=_a;
+
+_result:=exec('FindAndGet','#table',PL_OPER,_pl_oper,,"
+   ~((PL_OPER.ZGP<>null() & PL_OPER.ZGP().FIX_NORM='T') | (PL_OPER.TOPER<>null() & PL_OPER.TOPER().FIX_NORM='T'))
+",0);
+
+_result
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:39 4f7fe2ba97552b40f1ef6a00790b51a8e448f297d855779ef7a6f6ff0e52781852642c3f76ae22e944136630463b385777586cde1ee644da1297fcd00a32837d7636b750d1aeefadd531832d6e88ad9e3b0240d29554110fb3d76a309be7def9c901dd8a5918fa3bf9f4f77bc1d154142ba04e8813ac23146c23aacd03a0d930

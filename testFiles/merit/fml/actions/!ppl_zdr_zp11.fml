@@ -1,0 +1,554 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ppl_zdr_zp11.fml
+:: Utworzony: 09.10.2019
+:: Autor: wesosnow
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PPL_ZDR_ZP11 - Zestawienie zbiorcze PIT-11
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Metoda wywołania odpowiedniego zestawienia dla wybranego okresu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? __Rok<2018 | __Rok>=2019
+|| FUN.info('Zestawienie nie jest dostępne dla wersji deklaracji z roku %1.'@[$__Rok])
+|? __Rok=2018
+|| exec('zest_pit_9','!ppl_zdr_zp11')
+?}
+
+
+\zest_pit_9
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Główna metoda dla zestawienia PIT w wersji 9
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:= tab_tmp(2,
+                  'NAZ','STRING[30]','Nazwisko',
+                  'IM','STRING[20]','Imię',
+                  'PESEL','STRING[11]','PESEL',
+                  'P','STRING[16]','Referencja, pracownik',
+                  'VATDEK','STRING[16]','Referencja, deklaracja pracownika',
+                  'ROK','STRING[4]','Rok',
+                  'STATUS','STRING[10]','Status',
+                  'PRZYCH','REAL','Przychód',
+                  'PRZVAT','REAL','Przychód PIT',
+                  'RPRZYCH','REAL','Różnica',
+                  'POD','REAL','Zaliczka',
+                  'PODVAT','REAL','Zaliczka PIT',
+                  'RPOD','REAL','Różnica',
+                  'SKLD','REAL','Składki dochód',
+                  'SKLDVAT','REAL','Składki dochód PIT',
+                  'RSKLD','REAL','Różnica',
+                  'SKLP','REAL','Składki od podatku',
+                  'SKLPVAT','REAL','Składki od podatku PIT',
+                  'RSKLP','REAL','Różnica');
+
+_osoby:=tab_tmp(1,'OSOBR','STRING[16]','Osoba');
+
+VAT_DEK.cntx_psh();
+VAT_POZ.cntx_psh();
+P.cntx_psh();
+O.cntx_psh();
+LS.cntx_psh();
+RH.cntx_psh();
+
+O.index('LISTYPLP');
+O.prefix(exec('firma','ustawienia'),'P',__Rok);
+_p_upr:=exec('dostepne_p','schemat','PPL',P_FILTER.F_ZATR().KOD,'*');
+
+_ndx:=VAT_DEK.ndx_tmp(,,'P',,,'OKRES',,,'TYP',,);
+_counter:=0;
+_prgs:=100*_counter/_p_upr.size();
+{? _p_upr.first()
+|| _counter:=0;
+    _prgs:=100*_counter/_p_upr.size();
+    progress(_prgs,'Trwa przetwarzanie składników '@ + $int(_prgs)+'%','Zestawienie zbiorcze PIT-11 z roku '@ +$__Rok);
+    _podsumowanie:=obj_new('sumKW', 'sumVAT', 'sumPOD', 'sumPODV', 'sumSKLD', 'sumSKLDV', 'sumSKLP', 'sumSKLPV');
+    _pracref:=tab_tmp(1,'PRAC','STRING[16]','Pracownik');
+
+::  Pętla po pracownikach do których mamy uprawnienia
+    {! |?
+      {? P.seek(_p_upr.REF,,1) & ~_osoby.find_key(_p_upr.OSOBA)
+      || _pracref.prefix();
+         _pracref.erase();
+         _tab.blank();
+         exec('zest_pit_initpodsum','!ppl_zdr_zp11', _podsumowanie);
+         _osoby.OSOBR:=_p_upr.OSOBA;
+         _osoby.add();
+
+         _counter+=1;
+         _prgs:=100*_counter/_p_upr.size();
+         progress(_prgs,'Trwa przetwarzanie składników '@ + $int(_prgs)+'%','Zestawienie zbiorcze PIT-11 z roku '@ +$__Rok);
+
+         _tab.P:=$P.ref();
+         _tab.NAZ:=P.OSOBA().NAZWISKO;
+         _tab.IM:=P.OSOBA().PIERWSZE;
+         _tab.PESEL:=P.OSOBA().PESEL;
+         _tab.ROK:=$__Rok;
+         P.cntx_psh();
+
+::         Zbieram wszystkich pracowników, także zleceniobiorców na podstawie OSOBY
+         P.index('PRACOSOW');
+         P.prefix(exec('ref_firma','ustawienia'),P.OSOBA);
+         {? P.first()
+         || {! |?
+               exec('zest_pit_podsum','!ppl_zdr_zp11', _podsumowanie);
+               {? _podsumowanie.sumKW
+               || _pracref.PRAC:=$P.ref();
+                  _pracref.add()
+               ?};
+               P.next()
+            !}
+         ?};
+         P.cntx_pop();
+
+         _tab.PRZYCH:=_podsumowanie.sumKW;
+         _tab.POD:=_podsumowanie.sumPOD;
+         _tab.SKLD:=_podsumowanie.sumSKLD;
+         _tab.SKLP:=_podsumowanie.sumSKLP;
+
+::       Wybór deklaracji wchodzących w obliczenia
+         VAT_DEK.index(_ndx);
+
+         _deklaracje:=tab_tmp(1,
+                           'LP','INTEGER','LP',
+                           'PRAC','STRING[16]','Pracownik',
+                           'REFDEK','STRING[16]','Referencja',
+                           'WER','INTEGER','Wersja deklaracji',
+                           'FZATR','STRING[1]','Forma zatrudnienia');
+         {? _pracref.first()
+         ||   {! |?
+                  {? P.seek(_pracref.PRAC,,1)
+                  || VAT_DEK.prefix(P.ref(), $__Rok, 'PIT11');
+                     {? VAT_DEK.first()
+                     || {! |?
+                        _deklaracje.PRAC:=_pracref.PRAC;
+                        _deklaracje.REFDEK:=$VAT_DEK.ref();
+                        _deklaracje.WER:=VAT_DEK.WER;
+                        _deklaracje.FZATR:=P.F_ZATR().KOD;
+                        _deklaracje.add();
+                        VAT_DEK.next()
+                        !}
+                     ?}
+                  ?};
+                  _pracref.next()
+              !}
+         ?};
+
+::       Ostatnie wersje deklaracji dla każdego pracownika z osoby
+         _wynik:=sql('select PRAC, WER, REFDEK from :_a  main '+
+                'where WER=(select MAX(WER) from :_a child where main.LP=child.LP) '+
+                'OR FZATR like \'Z\'',_deklaracje);
+
+         {? _wynik.first()
+         || {! |?
+               VAT_DEK.seek(_wynik.REFDEK,,1);
+               {? VAT_DEK.P().F_ZATR = P_FILTER.F_ZATR || _tab.VATDEK:=$VAT_DEK.ref() ?};
+               VAT_POZ.index('NR_NRK');
+               VAT_POZ.prefix(VAT_DEK.ref(),);
+               {? VAT_POZ.first()
+               || {! |?
+                     {? VAT_POZ.P1 <> 32 & VAT_POZ.P1 <> 41 & VAT_POZ.P1 <> 68 & (1+ $VAT_POZ.P1) <> '7'
+                     || _podsumowanie.sumVAT+= VAT_POZ.KW1;
+                        _podsumowanie.sumPODV+= VAT_POZ.KW4
+                     |? VAT_POZ.P1=70
+                     || _podsumowanie.sumSKLDV+=VAT_POZ.KW1
+                     |? VAT_POZ.P1=72
+                     || _podsumowanie.sumSKLPV+=VAT_POZ.KW1
+                     ?};
+                     VAT_POZ.next()
+                  !}
+               ?};
+            _wynik.next()
+            !};
+
+            _tab.PRZVAT:=_podsumowanie.sumVAT;
+            _tab.PODVAT:=_podsumowanie.sumPODV;
+            _tab.SKLPVAT:=_podsumowanie.sumSKLPV;
+            _tab.SKLDVAT:=_podsumowanie.sumSKLDV
+         || _tab.STATUS:='Brak'
+         ?};
+         {? _tab.PRZYCH <> 0 | _tab.PRZVAT <> 0
+         || _tab.RPRZYCH:=_tab.PRZYCH-_tab.PRZVAT;
+            _tab.RPOD:=_tab.POD-_tab.PODVAT;
+            _tab.RSKLP:=_tab.SKLP-_tab.SKLPVAT;
+            _tab.RSKLD:=_tab.SKLD-_tab.SKLDVAT;
+            {? _tab.PRZVAT = 0
+            || _tab.STATUS:='Brak'
+            |? _tab.RPRZYCH <> 0 | _tab.RPOD <> 0 | _tab.RSKLP <> 0 | _tab.RSKLD <> 0
+            || _tab.STATUS:='Błędna'
+            || _tab.STATUS:='Poprawna'
+            ?};
+            _tab.add()
+         ?};
+         obj_del(_deklaracje);
+         obj_del(_wynik)
+      ?};
+      _p_upr.next()
+    !};
+    obj_del(_podsumowanie);
+    obj_del(_pracref)
+?};
+obj_del(_osoby);
+VAT_DEK.ndx_drop(_ndx);
+prgs_clr();
+
+_tytul:='Zestawienie zbiorcze PIT-11 '@
+         +{? P_FILTER.F_ZATR().KOD='P'
+         || 'Pracownicy'@
+         || 'Zleceniobiorcy'@
+         ?}+ ' z roku '@ +$__Rok;
+_win:=exec('zest_pit_wer','!ppl_zdr_zp11',_tab, _tytul);
+_tytul_act:='Składniki list płac '@+{? P_FILTER.F_ZATR().KOD='P' || 'pracownika'@ || 'zleceniobiorcy'@ ?};
+params_set('tablica',_tab, 'tytul',_tytul_act);
+_fun:="_tab:=params_get().tablica; exec('zest_pit_skladniki','!ppl_zdr_zp11', _tab, params_get().tytul); ''";
+_tab.win_act(_win,0,'Formuła','Składniki &list płac'@,,,_fun,,,,,);
+
+_fun:="_tab:=params_get().tablica; exec('zest_pit_pozycje','!ppl_zdr_zp11', _tab); ''";
+_tab.win_act(_win,0,'Formuła','Pozycje'@,,,_fun,,,,,,);
+_tab.win_act(_win,,'Szukaj');
+_tab.win_act(_win,,'Kolejność');
+_tab.win_sel(_win);
+
+_red:=exec('zest_pit_red','!ppl_zdr_zp11',_tab,_tytul,'red_zest_pit');
+_tab.win_edit(_red);
+_pat:=exec('zest_pit_red','!ppl_zdr_zp11',_tab, 'Wyszukiwanie'@,'patt_zest_pit');
+_tab.win_patt(_pat);
+_tab.select();
+
+LS.cntx_pop();
+VAT_DEK.cntx_pop();
+VAT_POZ.cntx_pop();
+P.cntx_pop();
+O.cntx_pop();
+RH.cntx_pop()
+
+
+\zest_pit_zlec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Oblicza podsumowanie do porównania z wartościami z PIT dla zleceniobiorcy
+::   WE: _a - tablica zmiennych do podsumowania
+::   WY: tablica zmiennych do podsumowania (wypełnione wartości)
+::----------------------------------------------------------------------------------------------------------------------
+_podsumowanie:=_a;
+RH.index('RACHDATA');
+RH.prefix(exec('firma','ustawienia'),P.OSOBA,__Rok);
+{? RH.first()
+|| {!
+   |? _um:=RH.ZLE().RU().K;
+      {? (~exec('licz_rhs','lista_licz',31)) & (~(',7,8,'*(','+_um+',')))
+      || LS.use(RH.O().LT);
+         LS.index('ZLEC');
+         _skl_kor:=0;
+
+::       Uwzględnienie korekt
+         KORN_Z.index('RH');
+         KORN_Z.prefix(RH.ref(),__Rok);
+         {? KORN_Z.first()
+         || {? var_pres('_tabrub')>100 || obj_del(_tabrub) ?};
+            _tabrub:=__RUB.sys_rub(5711,RH.DWY);
+            {? var_pres('_tabch')>100 || obj_del(_tabch) ?};
+            _tabch:=__RUB.sys_rub(5721,RH.DWY);
+            {!
+            |? KOR_Z.index('KORN_Z');
+               {? _tabrub.first()
+               || {!
+                  |? KOR_Z.prefix(KORN_Z.ref(),__RUB.ref(_tabrub.RN));
+                     {? KOR_Z.first || _skl_kor+=fabs(KOR_Z.KW) ?};
+                     _tabrub.next()
+                  !}
+               ?};
+               {? _tabch.first()
+               || {!
+                  |? KOR_Z.prefix(KORN_Z.ref(),__RUB.ref(_tabch.RN));
+                     {? KOR_Z.first || _skl_kor+=fabs(KOR_Z.KW) ?};
+                     _tabch.next()
+                  !}
+               ?};
+               KORN_Z.next()
+            !};
+            {? var_pres('_tabrub')>100 || obj_del(_tabrub); &_tabrub ?};
+            {? var_pres('_tabch')>100 || obj_del(_tabch); &_tabch ?}
+         ?};
+
+::          Sumowanie rubryk
+            _skl:=0;
+            _skl+=exec('zest_pit_liczrubryke_zlc','!ppl_zdr_zp11',765);
+            _skl+=exec('zest_pit_liczrubryke_zlc','!ppl_zdr_zp11',766);
+            _skl+=exec('zest_pit_liczrubryke_zlc','!ppl_zdr_zp11',767);
+
+::          przychód
+            _podsumowanie.sumKW+=_skl+exec('zest_pit_liczrubryke_zlc','!ppl_zdr_zp11',780)-_skl_kor;
+
+::          zaliczka na podatek
+            _podsumowanie.sumPOD+=exec('zest_pit_liczrubryke_zlc','!ppl_zdr_zp11',797);
+            _podsumowanie.sumPOD+=exec('zest_pit_liczrubryke_zlc','!ppl_zdr_zp11',798);
+
+::          składki, ubezpieczenia społeczne
+            _podsumowanie.sumSKLD+=_skl-_skl_kor;
+
+::          składki, ubezpieczenia zdrowotne
+            _podsumowanie.sumSKLP+=exec('zest_pit_liczrubryke_zlc','!ppl_zdr_zp11',793);
+            _podsumowanie.sumSKLP+=exec('zest_pit_liczrubryke_zlc','!ppl_zdr_zp11',794)
+      ?};
+      RH.next()
+   !}
+?}
+
+
+\zest_pit_prac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Oblicza podsumowanie do porównania z wartościami z PIT dla pracownika
+::   WE: _a - tablica zmiennych do podsumowania
+::   WY: tablica zmiennych do podsumowania (wypełnione wartości)
+::----------------------------------------------------------------------------------------------------------------------
+_podsumowanie:=_a;
+{? O.first()
+|| {! |?
+   LS.use(O.LT);
+   LS.index('PRACNRRU');
+
+:: sumowanie rubryk wchodzących w skład pierwszej kolumny(przychód) deklaracji pit11
+   _s1:=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',780);
+   _s10:=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',765);
+   _s10+=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',766);
+   _s10+=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',767);
+   _s12:=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',951);
+   _s15:=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',7021);
+   _s9:=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',793);
+   _s9+=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',794);
+
+   _podsumowanie.sumKW+=(_s1+_s10-_s12-_s15)$2;
+   _podsumowanie.sumKW+=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',7002);
+
+:: odliczam składki zus i zwrot składek emerytalno-rentownych
+   _podsumowanie.sumKW-=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',7021);
+   _podsumowanie.sumKW-=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',951);
+
+:: zaliczka na podatek
+   _podsumowanie.sumPOD+=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',797);
+   _podsumowanie.sumPOD+=exec('zest_pit_liczrubryke','!ppl_zdr_zp11',798);
+
+:: pozycja 70
+   _podsumowanie.sumSKLD+=(_s10-_s12-_s15)$2;
+
+:: pozycja 72
+   _podsumowanie.sumSKLP+=_s9;
+   O.next()
+   !}
+?};
+_podsumowanie
+
+
+\zest_pit_podsum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Decyduje o wywołaniu formuły obliczającej podsumowanie na podstawie kodu zatrudnienia
+::   WE: _a - tablica zmiennych do podsumowań
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? P.F_ZATR().KOD='P' || exec('zest_pit_prac','!ppl_zdr_zp11',_a) || exec('zest_pit_zlec','!ppl_zdr_zp11',_a) ?}
+
+
+\zest_pit_liczrubryke_zlc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Zwraca sumę kwot ze składnika.
+::       UWAGA, tabela maskowana - metoda działa na zadanym wcześniej zbiorze
+::   WE: _a - numer rubryki płacowej
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+LS.prefix(RH.ref(), _a);
+_sum:=0;
+{? LS.first()
+|| {! |?
+      _sum+=LS.KW;
+      LS.next()
+   !}
+?};
+_sum
+
+
+\zest_pit_liczrubryke
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Zwraca sumę kwot ze składnika.
+::       UWAGA, tabela maskowana - metoda działa na zadanym wcześniej zbiorze
+::   WE: _a - numer rubryki płacowej
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+LS.prefix(P.ref(),_a);
+_sum:=0;
+{? LS.first()
+|| {! |?
+      _sum+=LS.KW;
+      LS.next()
+   !}
+?};
+_sum
+
+
+\zest_pit_wer
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Okienko wertowania dla podsumowania
+::   WE: _a - tabela tymczasowa
+::       _b - tytuł okienka
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+_win:=_tab.mk_sel(_b,'P',,,,,,,'U','T',,,,'maximized',);
+_tab.win_fld(_win,,'NAZ',,,10,,,'Nazwisko'@,,'Aktualne nazwisko'@,,,,,,);
+_tab.win_fld(_win,,'IM',,,10,,,'Imię'@,,'Pierwsze imię osoby'@,,,,,,);
+_tab.win_fld(_win,,'PESEL',,,10,,,'PESEL'@,,'Numer PESEL osoby'@,,,,,,);
+_tab.win_fld(_win,,'ROK',,,4,,,'Rok'@,,'Rok podatkowy'@,,,,,,);
+_tab.win_fld(_win,,'STATUS',,,8,,,'Status'@,,'Status błędów w deklaracji PIT-11'@,,,,,,);
+_tab.win_fld(_win,,'PRZYCH',,,-12,,,'Przychód'@,,'Przychód wyliczony na podstawie składników list płac'@,,,,,,);
+_tab.win_fld(_win,,'PRZVAT',,,-12,,,'Przychód - PIT'@,,'Przychód jako suma kolumny przychodu z PIT-11'@,,,,,,);
+_tab.win_fld(_win,,'RPRZYCH',,,-12,,,'Różnica - przychód'@,,'Różnica sumy przychodu ze składników oraz sumy przychodu z PIT-11'@,,,,,,);
+_tab.win_fld(_win,,'POD',,,-12,0,,'Zaliczka'@,,'Zaliczka pobrana przez płatnika wyliczona na podstawie list płac'@,,,,,,);
+_tab.win_fld(_win,,'PODVAT',,,-12,0,,'Zaliczka - PIT'@,,'Zaliczka pobrana przez płatnika jako suma kolumny zaliczki z PIT-11'@,,,,,,);
+_tab.win_fld(_win,,'RPOD',,,-12,,,'Różnica - zaliczka'@,,'Różnica sumy zaliczki ze składników oraz sumy zaliczki z PIT-11'@,,,,,,);
+_tab.win_fld(_win,,'SKLD',,,-12,,,'Składki społeczne'@,,'Suma składek na ubezpieczenia społeczne wyliczona na podstawie składników list płac'@,,,,,,);
+_tab.win_fld(_win,,'SKLDVAT',,,-12,,,'Składki społeczne - PIT'@,,'Składki na ubezpieczenia społeczne na podstawie pozycji w PIT-11'@,,1,,,,);
+_tab.win_fld(_win,,'RSKLD',,,-12,,,'Różnica - społeczne'@,,'Różnica sumy składek społecznych ze składników oraz składek z pozycji PIT-11'@,,1,,,,);
+_tab.win_fld(_win,,'SKLP',,,-12,,,'Składki zdrowotne'@,,'Suma składek na ubezpieczenia zdrowotne wyliczona na podstawie składników list płac'@,,1,,,,);
+_tab.win_fld(_win,,'SKLPVAT',,,-12,,,'Składki zdrowotne - PIT'@,,'Składki na ubezpieczenia zdrowotne na podstawie pozycji w PIT-11'@,,1,,,,);
+_tab.win_fld(_win,,'RSKLP',,,-12,,,'Różnica - zdrowotne'@,,'Różnica sumy składek zdrowotnych ze składników oraz składek z pozycji PIT-11'@,,1,,,,);
+
+_win
+
+
+\zest_pit_red
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Okienko redagowania dla podsumowania
+::   WE: _a - tabela tymczasowa
+::       _b - tytuł okienka
+::       _c - identyfikator okienka
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+_red:=_tab.mk_edit(_b,,_c);
+_tab.win_efld(_red,,'NAZ');
+_tab.win_efld(_red,,'IM');
+_tab.win_efld(_red,,'PESEL');
+_tab.win_esep(_red);
+_tab.win_efld(_red,,'PRZYCH');
+_tab.win_efld(_red,,'PRZVAT');
+_tab.win_efld(_red,,'RPRZYCH');
+_tab.win_efld(_red,,'POD');
+_tab.win_efld(_red,,'PODVAT');
+_tab.win_efld(_red,,'RPOD');
+_tab.win_efld(_red,,'SKLD');
+_tab.win_efld(_red,,'SKLDVAT');
+_tab.win_efld(_red,,'RSKLD');
+_tab.win_efld(_red,,'SKLP');
+_tab.win_efld(_red,,'SKLPVAT');
+_tab.win_efld(_red,,'RSKLP');
+
+exec('ok_esc','#window',_tab,_red,,,,,,,exec('text_red_ok','#window'));
+
+_red
+
+
+\zest_pit_skladniki
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Okienko wertowania dla składników pracownika
+::   WE: _a - tabela tymczasowa
+::       _b - tytuł okienka
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+_rok:=#($__Rok +2);
+_sql:='select OSOBA.NAZWISKO AS NAZ, OSOBA.PIERWSZE AS IM, OSOBA.PESEL AS PESEL,  O.LT AS LT, O.RP AS R, O.MP AS M, R.RN AS RN, '+
+      'R.RT AS RT, LS.KW AS KW, LS.LP as LP '+
+      'from @LS '+
+      'inner join P '+
+      'inner join O '+
+      'inner join R using (RB, R.REFERENCE) '+
+      'inner join OSOBA using(P.OSOBA, OSOBA.REFERENCE) '+
+      'where (LS.REFERENCE like \'l'+$_rok+'%\' '+
+      'or LS.REFERENCE like \'l'+$(_rok-1)+'%\') '+
+      'and O.RP='+ $__Rok+ ' '+
+      'and P.REFERENCE like \''+_tab.P+'\' '+
+      'order by M, LP';
+
+_skl:=sql(_sql);
+_win:=_skl.mk_sel(_b+': '+_tab.NAZ+' '+_tab.IM,'P',,,,,,,'U','T',,0,,,,);
+_skl.win_fld(_win,,'NAZ',,,10,,,'Nazwisko'@,,'Aktualne nazwisko'@,,,,,,);
+_skl.win_fld(_win,,'IM',,,10,,,'Imię'@,,'Pierwsze imię osoby'@,,,,,,);
+_skl.win_fld(_win,,'PESEL',,,10,,,'PESEL'@,,'Numer PESEL osoby'@,,,,,,);
+_skl.win_fld(_win,,'LT',,,,,,'Lista płac'@,,'Symbol listy płac'@,,,,,,);
+params_set('tab',_skl);
+_skl.fld_fml('LT','BEFORE_DISPLAY',"_tab:=params_get().tab; _tab.LT:=~(-_tab.LT)");
+_skl.win_fld(_win,,'R',,,5,,,'Rok'@,,'Rok podatkowy'@,,,,,,);
+_skl.win_fld(_win,,'M',,,5,,,'Miesiąc'@,,'Miesiąc podatkowy'@,,,,,,);
+_skl.win_fld(_win,,'RN',,,5,,,'Kod składnika'@,,'Kod składnika płacowego'@,,,,,,);
+_skl.win_fld(_win,,'RT',,,,,,'Nazwa składnika'@,,'Opis składnika płacowego'@,,,,,,);
+_skl.win_fld(_win,,'KW',,,,,,'Kwota'@,,'Kwota / wartość'@,,,,,,);
+_skl.win_sel(_win);
+_skl.select()
+
+
+\zest_pit_pozycje
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Okienko wertowania dla pozycji PIT pracownika
+::   WE: _a - tabela tymczasowa
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+VAT_POZ.cntx_psh();
+VAT_DEK.cntx_psh();
+
+{? VAT_DEK.seek(_tab.VATDEK,,1)
+|| VAT_POZ.index('NR_NRK');
+   VAT_POZ.prefix(VAT_DEK.ref());
+   {? P_FILTER.F_ZATR().KOD='P' || VAT_POZ.win_sel('PIT11P_1')  || VAT_POZ.win_sel('PIT11Z_1') ?};
+   VAT_POZ.hdr_sel(': '+_tab.NAZ +' '+_tab.IM);
+   VAT_POZ.select()
+|? _tab.STATUS='Brak'
+|| FUN.info('Nie odnaleziono deklaracji.'@)
+|| {? P.seek(_tab.P,,1)
+   || FUN.info('Nie odnaleziono deklaracji dla '@
+      +{? P.F_ZATR().KOD='P' || 'pracownika.'@ || 'zleceniobiorcy.'@ ?})
+   ?}
+?};
+
+VAT_POZ.cntx_pop();
+VAT_DEK.cntx_pop()
+
+
+\zest_pit_initpodsum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [19.42]
+:: OPIS: Nadanie zerowych wartości dla tabeli
+::   WE: _a - tabela podsumowań
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_podsumowanie:=_a;
+_podsumowanie.sumKW:=0;
+_podsumowanie.sumVAT:=0;
+
+_podsumowanie.sumPOD:=0;
+_podsumowanie.sumPODV:=0;
+
+_podsumowanie.sumSKLD:=0;
+_podsumowanie.sumSKLDV:=0;
+
+_podsumowanie.sumSKLP:=0;
+_podsumowanie.sumSKLPV:=0
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:37 a1a2b6644b746f27b510e8662f4ee27f417a860b7b2a41d9b3d3ed7b9012763458b4b1ec914f998961b022c3613a10a7c31efca00c9e75401100715aae785d4aad94f262dbccc691c9e9f97ea69d55cf87fd5227efebb10160bfe8620d5a4f0c81d8b0310656e21a2d5b3516166f3f41bf2fb9d35d46139c2a22d8ee334db58b

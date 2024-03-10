@@ -1,0 +1,1065 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ppl_pll_rpot.fml
+:: Utworzony: 04.02.2016
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PPL_PLL_RPOT - Rejestracja potrąceń.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Rejestracja potrąceń - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+::
+::# kind=WE,   symbol=OSOBA,     type=_OSOBA,   name=Wskazanie osoby,   required=T, keyref=T
+
+_par:=params_get();
+_mp:=_par.mp;
+_in:=_par.in;
+_akcja:=_mp.akcja();
+
+_result:='';
+
+_uidref:=exec('ref2uid','#table',_in.OSOBA);
+{? _uidref=''
+|| _result:=exec('error','!ppl_pll_rpot')
+
+|? _mp.isMicro()
+|| {? _akcja='START'
+::    Wejście do okienka w ramach obszaru roboczego - uruchomienie procesu i pozostawienie go na liście zadań.
+   || _mp.keyRef(_uidref);
+      _mp.keep()
+
+   |? _akcja='STOP'
+::    Wyjście z okienka w ramach obszaru roboczego - anulowanie procesu.
+   || _mp.delRef(_uidref);
+      _mp.cancel()
+
+   |? _akcja<>''
+   || _result:='Czynność %1 nie obsługuje akcji %2.'@ [_mp.buf_act.UID,_akcja]
+
+   ?}
+
+|| {? _akcja='ZAKOŃCZ'
+   || _mp.done()
+
+   |? _mp.pathTodo()
+   || _value:=exec('select','!ppl_pll_rpot',_in.OSOBA);
+      {? type_of(_value)=type_of('')
+      || _result:=_value
+      |? _value
+      || _mp.done()
+      || _mp.keep()
+      ?}
+   ?}
+?};
+
+{? _result<>''
+:  Obsługa błędów
+|| _mp.error(_result);
+   FUN.emsg(_result)
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Rejestracja potrąceń - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=exec('desc','osoba',params_get().mp);
+
+{? _tab.ZAW_DANE='T'
+|| {? _tab.OBCY='T'
+   || 'Zarejestruj potrącenia: %1 %2: Paszport - %3'@@[_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT]
+   |? +_tab.PESEL
+   || 'Zarejestruj potrącenia: %1 %2: PESEL - %3'@@[_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL]
+   || 'Zarejestruj potrącenia: %1 %2: Data urodzenia - %3'@@[_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA]
+   ?}
+|| 'Zarejestruj potrącenia'@@
+?}
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Słownik komunikatów o błędach.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Rejestrowanie potrąceń niemożliwe.\nNie znaleziono osoby.'
+
+
+\select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa czynności wywołanej z listy zadań.
+::   WE: _a [REFERENCE] - Wskazanie osoby.
+::   WY: Komunikat o błędzie lub informacja o wyjściu z okna poprzez wywołanie sel_exit() - czyli "Zakończ".
+::  OLD: \kom_os_red_b/komornik.fml - Funkcja zbędna w 17.00 ze względu na wprowadzenie pola KOM_OS.SPLATA.
+::----------------------------------------------------------------------------------------------------------------------
+{? PAR_SKID.get(230)<>'T'
+|| FUN.info('Czynność niedostępna.\nParametr %1 (%2) nie jest ustawiony.'@ ['230',PAR_SKID.opis(230)]);
+   return(1)
+?};
+
+OSOBA.cntx_psh();
+OSOBA.prefix();
+{? type_of(_a)=type_of(null()) & _a<>null() & OSOBA.seek(_a)
+|| KOM_OS.cntx_psh();
+   KOM_OS.index('KOM_OS');
+   KOM_OS.prefix(exec('ref_firma','ustawienia'),OSOBA.ref());
+   KOM_OS.win_sel('WER_O');
+   KOM_OS.win_edit('RED');
+:: Dla obsługi w ramach procesu pole KOM_OS.RAZ nie jest dostępne.
+   KOM_OS.fld_fml('RAZ','BEFORE_EDIT',"0");
+   KOM_OS.win_patt('SZUK');
+   _ret:=KOM_OS.select();
+   KOM_OS.cntx_pop()
+|| _ret:=exec('error','!ppl_pll_rpot')
+?};
+OSOBA.cntx_pop();
+_ret
+
+
+\kom_os_modb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Przed modyfikacją rekordu.
+::       Formuła wywoływana z wyzwalaczy "Dołącz - przed" i "Popraw - przed" dla tabeli KOM_OS.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+: Zadbajmy o zaokrąglenia.
+KOM_OS.WART:=KOM_OS.WART$2;
+KOM_OS.RATA:=KOM_OS.RATA$2;
+
+: Porządki - zerowanie pól, które są "niedostępne".
+{? KOM_OS.RAZ<>'T'
+|| KOM_OS.KT:=null()
+?};
+1
+
+
+\kom_os_addb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wyzwalacz "Dołącz - przed" dla tabeli KOM_OS.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_os_modb','!ppl_pll_rpot')
+
+
+\kom_os_putb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wyzwalacz "Popraw - przed" dla tabeli KOM_OS.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_os_modb','!ppl_pll_rpot');
+:: Aktualizacja kwoty spłaty.
+:: Chirurgiczna aktualizacja w wyzwalaczach KOM_SP byłaby bardziej elegancka, ale mniej podatna na błędy.
+:: Przeliczanie przy każdym Popraw (wywoływanym również z wspomnianych wyzwalaczy) nie pozwoli na rozsynchronizowanie
+:: sumatora (ręczne zmiany KOM_OS.SPLATA).
+_splata:=0;
+KOM_SP.cntx_psh();
+KOM_SP.index('KOM_SP');
+KOM_SP.prefix(KOM_OS.ref());
+{? KOM_SP.first()
+|| {!
+   |? _splata+=KOM_SP.KW;
+      KOM_SP.next()
+   !}
+?};
+KOM_SP.cntx_pop();
+KOM_OS.SPLATA:=_splata;
+{? KOM_OS.WART>0 & KOM_OS.WART<KOM_OS.SPLATA
+|| undo(
+      'Potrącenie pracownicze: spłata większa niż zadłużenie.\n%1\n%2 | %3 | %4'@
+      [exec('record','#to_string',KOM_OS.OSOBA),exec('record','#to_string',KOM_OS.KOM_RP),$KOM_OS.ref(),$KOM_OS.WART]
+   );
+   0
+|| 1
+?}
+
+
+\kom_os_dela
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wyzwalacz "Usuń - po" dla tabeli KOM_OS.
+::   WE: _a [INTEGER] - Wynik operacji usuwania, przekazywany przez narzędzia.
+::   WY: ~~
+::  OLD: \kom_usun/komornik.fml - Część funkcjonalności została w akcji \kom_os_usun_b/!ppl_pll_rpot.fml.
+::----------------------------------------------------------------------------------------------------------------------
+{? ~_a | do_state()<>1
+|| return()
+?};
+{? (_ezal:=bfld('EZAL'))<>null()
+|| EZAL.cntx_psh();
+   EZAL.clear();
+   {? EZAL.seek(_ezal)
+   || {? EZAL.ZAM='T'
+      || undo()
+      || EZALPOZ.cntx_psh();
+         EZALPOZ.index('ZALICZKA');
+         EZALPOZ.prefix(EZAL.ref());
+         {? EZALPOZ.first()
+         || {!
+            |? {? 3+EZALPOZ.POCH='PPL'
+               || EZAL.PRZYCHOD-=EZALPOZ.PRZYCHOD;
+                  EZAL.ROZCHOD-=EZALPOZ.ROZCHOD;
+                  EZALPOZ.del()
+               || EZALPOZ.next()
+               ?}
+            !}
+         ?};
+         EZALPOZ.cntx_pop();
+         EZAL.WPLATA:=0;
+         EZAL.PRZ_P:='N';
+         EZAL.PLACE:='N';
+         EZAL.put()
+      ?}
+   ?};
+   EZAL.cntx_pop()
+?};
+~~
+
+
+\kom_os_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła odpowiedzialna za dynamiczne ustawianie właściwości pól tabeli KOM_OS.
+::       Formuła wywoływana jest w dwóch kontekstach pracy:
+::          - Po redagowaniu konkretnego pola, które determinuje właściwości wyświetlania innych pól.
+::          - Przed wyświetleniem okna redagowania (przed właściwymi akcjami Dołącz, Popraw, Wyświetl), ustawia
+::            właściwości wszystkich pól (wymagających tego).
+::       Kontekst pracy jest określany na podstawie argumentu wywołania.
+::   WE:  _a  [STRING] - Kontekst pracy:
+::             '1' - Obsługa jednego pola [domyślnie].
+::             '*' - Obsługa wszystkich pól.
+::       [_b] [TABLE]  - Uchwyt tabeli, w oknie redagowania której znajdują sie pola. Jeżeli _a='1', parametr jest
+::             opcjonalny - zostanie przyjęta bieżąca tabela.
+::       [_c] [STRING] - Akronim okna, w którym mają być ustawione właściwości pól. Jeżeli _a='1', parametr jest
+::             opcjonalny - zostanie przyjęte bieżące okno.
+::       [_d] [STRING] - Akronim pola, którego wartość determinuje właściwości wyświetlania innych pól. Parametr ma
+::             znaczenie wyłącznie dla _a='1'. [Domyślnie: bieżące pole].
+::   WY: 0 - Błąd argumentów wywołania.
+::       1 - Argumenty poprawne (właściwości ustawione).
+::  OLD: \typ_listy/komornik.fml
+::  OLD: \kom_25/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tryb:={? var_pres('_a')=type_of('') & (_a='1' | _a='*') || _a || '1' ?};
+{? var_pres('_b')=type_of(KOM_OS)
+|| _TAB:=_b
+|? _tryb='1'
+|| _TAB:=cur_tab(1,1)
+|| return(0)
+?};
+{? var_pres('_c')=type_of('')
+|| _we:=_c
+|? _tryb='1'
+|| _we:=cur_win(1,1)
+|| return(0)
+?};
+{? var_pres('_d')=type_of('')
+|| _fld:=_d
+|? _tryb='1'
+|| _fld:=cur_afld()
+|| _fld:=''
+?};
+
+:: W sposób specjalny obsługiwana jest dostępność pola KOM_OS.RAZ.
+_be:=KOM_OS.fld_fml('RAZ','*BEFORE_EDIT')<>"0";
+
+{? _fld=''
+|| _TAB.efld_opt(_we,'enable='+$_be,KOM_OS,'RAZ')
+?};
+
+{? _fld='' | _fld='PRZ'
+|| _TAB.efld_opt(_we,'mark='+$(KOM_OS.PRZ='W'),KOM_OS,'WIE');
+   _TAB.efld_opt(_we,'mark='+$(KOM_OS.PRZ='K'),KOM_OS,'KOM')
+?};
+
+{? _fld='' | _fld='RAZ'
+|| _TAB.efld_opt(_we,'enable='+$(_be & KOM_OS.RAZ='T'),KOM_OS,'KT')
+?};
+
+{? _fld='' | _fld='RATA'
+|| _TAB.efld_opt(_we,'enable='+$(KOM_OS.RATA=0),KOM_OS,'F')
+?};
+
+{? _fld='' | _fld='F'
+|| _TAB.efld_opt(_we,'enable='+$(KOM_OS.F=''),KOM_OS,'RATA')
+?};
+
+{? _we='RED'
+|| {? XINFO.TER_AKT<>'T'
+   || ADRES.btn_eopt(_we,'MIASTO','state=grayed');
+      ADRES.btn_eopt(_we,'ULICA','state=grayed')
+   || ADRES.btn_eopt(_we,'MIASTO','state=normal');
+      ADRES.btn_eopt(_we,'ULICA','state=normal')
+   ?}
+?};
+
+1
+
+
+\kom_os_x_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MAKO [2010]
+:: OPIS: Przed redagowaniem wybranych pól tabeli KOM_OS (blokada redagowania zapisów automatycznych).
+::   WE:
+::   WY:
+::  OLD: \kom_23/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? KOM_OS.AUTO<>'T'
+|| _acr:=cur_afld();
+   {? _acr='RATA'
+   || KOM_OS.F=''
+   |? _acr='F'
+   || KOM_OS.RATA=0
+   || 1
+   ?}
+?}
+
+
+\kom_os_kom_rp_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [2008]
+:: OPIS: Po redagowaniu pola KOM_OS.KOM_RP - formuła wypełnia priorytet dla potrącenia.
+::   WE:
+::   WY:
+::  OLD: \ustaw_prio/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? KOM_OS.KOM_RP<>null() & KOM_OS.P=0
+|| KOM_OS.P:=KOM_OS.KOM_RP().P
+?};
+1
+
+
+\kom_os_rata_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Po redagowaniu pola KOM_OS.RATA.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_os_efld_opt','!ppl_pll_rpot')
+
+
+\kom_os_f_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Po redagowaniu pola KOM_OS.RATA.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_os_efld_opt','!ppl_pll_rpot')
+
+
+\kom_os_prz_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Po redagowaniu pola KOM_OS.PRZ.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_os_efld_opt','!ppl_pll_rpot')
+
+
+\kom_os_raz_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Po redagowaniu pola KOM_OS.RAZ.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_os_efld_opt','!ppl_pll_rpot')
+
+
+\kom_os_kt_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Przed wyświetleniem pola KOM_OS_KT.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+KOM_OS.RAZ='T'
+
+
+\kom_os_bo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Okienko - przed" w oknach wertowania tabeli KOM_OS.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+KT.cntx_psh();
+KT.clear();
+KT.f_set('T','join "F_ZATR"','"KT".FIRMA=:_a and "F_ZATR".KOD<>\'Z\'',exec('firma','ustawienia'));
+
+:: ustal funkcjonalność dla pola TN zmiennej EDIT_VAR - obsługa KOM_OS.RA_DEF
+KOM_OS.efld_opt('RED','enable=%1'[$(__RUB.find_def('S',21181)<>0)],EDIT_VAR,'TN');
+EDIT_VAR.fld_fml('TN','BEFORE_DISPLAY',"exec('edit_var_tn_bd','!ppl_pll_rpot')");
+EDIT_VAR.fld_fml('TN','AFTER_EDIT',"exec('edit_var_tn_ae','!ppl_pll_rpot')");
+~~
+
+
+\kom_os_ao
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Okienko - po" w oknach wertowania tabeli KOM_OS.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+KT.f_clear();
+KT.cntx_pop();
+
+:: przywróć domyślne formuły pola TN zmiennej EDIT_VAR
+KOM_OS.efld_opt('RED','enable=1',EDIT_VAR,'TN');
+EDIT_VAR.fld_fml('TN','BEFORE_DISPLAY',"*");
+EDIT_VAR.fld_fml('TN','AFTER_EDIT',"*");
+~~
+
+
+\kom_os_dolacz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: "Dołącz - przed" w oknie tabeli KOM_OS.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+KOM_OS.blank();
+exec('kom_os_efld_opt','!ppl_pll_rpot','*',KOM_OS,'RED')
+
+
+\kom_os_popraw_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: "Popraw - przed" w oknie tabeli KOM_OS.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_os_efld_opt','!ppl_pll_rpot','*',KOM_OS,'RED')
+
+
+\kom_os_usun_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [2009]
+:: OPIS: "Usuń - przed" w oknie tabeli KOM_OS. Formuła sprawdza, czy można usunąć bieżący wiersz (wykonać właściwą
+::       akcję "Usuń").
+::   WY: 1 - Tak.
+::       0 - Nie.
+::  OLD: \kom_usun/komornik.fml - Część funkcjonalności została przeniesiona do \kom_os_dela/!ppl_pll_rpot.fml.
+::----------------------------------------------------------------------------------------------------------------------
+KOM_SP.cntx_psh();
+KOM_SP.index('KOM_SP');
+KOM_SP.prefix(KOM_OS.ref());
+_jsp:=KOM_SP.first();
+KOM_SP.cntx_pop();
+{? _jsp
+|| FUN.emsg('Bieżący zapis posiada rozliczenie.\nUsunięcie nie jest możliwe.'@);
+   return(0)
+?};
+
+EZAL.cntx_psh();
+_zam:=KOM_OS.EZAL().ZAM='T';
+EZAL.cntx_pop();
+
+{? _zam
+|| FUN.emsg(
+      'Zapis dotyczy zaliczki zwiazanej z obszarem "Zaliczki pracownicze".\n'
+      'Dokument posiada status "Zamknięty".\n'
+      'Akcja niedostępna.'@
+   );
+   return(0)
+?};
+
+1
+
+
+\kom_os_rozliczenie_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [2008]
+:: OPIS: Obsługa akcji "Rozliczenie" w oknie tabeli KOM_OS.
+::       Formuła wyświetla okno wertowania historii spłaty potrącenia.
+::  OLD: \rozliczenie/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+O.cntx_psh();
+RH.cntx_psh();
+ZC.cntx_psh();
+ZC.fld_fml('NU','DISPLAY_FORMAT',"'empty='+$(KOM_SP.RH=null())");
+P.cntx_psh();
+_fml:="'empty='+$(KOM_SP.P=null())";
+_df:=P.fld_fml('T','*DISPLAY_FORMAT');
+{? _df<>""
+|| _fml:=$(_df+"+','+"+_fml)
+?};
+P.fld_fml('T','DISPLAY_FORMAT',_fml);
+KOM_SP.cntx_psh();
+KOM_SP.index('KOM_SP');
+KOM_SP.prefix(KOM_OS.ref());
+KOM_SP.win_sel('WER');
+KOM_SP.win_edit('RED');
+KOM_SP.win_patt('RED');
+KOM_SP.select();
+KOM_SP.cntx_pop();
+P.fld_fml('T','DISPLAY_FORMAT',"*");
+P.cntx_pop();
+ZC.fld_fml('NU','DISPLAY_FORMAT',"*");
+ZC.cntx_pop();
+RH.cntx_pop();
+O.cntx_pop();
+~~
+
+
+\kom_os_zakoncz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Zakończ". Formuła wykonywana w dwóch środowiskach:
+::       - po wywołaniu z listy zadań (okno wertowania tabeli KOM_OS z doklejonym oknem redagowania tabeli P);
+::       - w ramach obszaru roboczego (okno wertowania tabeli KOM_OS jako składowa okna grupowego tabeli P).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? cur_tab(0,0)=KOM_OS
+|| sel_exit()
+
+|| params_set(params_get());
+   exec('pkd_run','pkd','ZAKOŃCZ')
+?}
+
+
+\kom_os_bw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: "Wyświetl - przed" w oknie tabeli KOM_OS.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_os_efld_opt','!ppl_pll_rpot','*',KOM_OS,'RED');
+KOM_OS.display()
+
+
+\kom_os_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [2008]
+:: OPIS: Obsługa akcji "Rekord - po" w oknie tabeli KOM_OS.
+::   WE:
+::   WY:
+::  OLD: \spr_potr/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_chk:=__CHK.record(KOM_OS,,'KOM_RP','OD','P'))<>''
+|| return(_chk)
+?};
+
+{? KOM_OS.DO<>date(0,0,0) & KOM_OS.DO<KOM_OS.OD
+|| FUN.emsg('"%1" nie może być wcześniejsza niż "%2".'@ [MS.name(KOM_OS,'DO'),MS.name(KOM_OS,'OD')]);
+   return('DO')
+?};
+
+{? KOM_OS.WART<0
+|| return(__CHK.err_fld(KOM_OS,'WART',1,'Dozwolone wartości nieujemne.'@))
+|? KOM_OS.RATA<0
+|| return(__CHK.err_fld(KOM_OS,'RATA',1,'Dozwolone wartości nieujemne.'@))
+|? KOM_OS.WART>0 & KOM_OS.WART<KOM_OS.RATA
+|| FUN.emsg(
+      'Wartość pola "%1" nie może być większa niż wartość pola "%2".'@ [MS.name(KOM_OS,'RATA'),MS.name(KOM_OS,'WART')]
+   );
+   return('RATA')
+|? KOM_OS.WART>0 & KOM_OS.WART<KOM_OS.SPLATA
+|| return(__CHK.err_fld(KOM_OS,'WART',1,'Spłata przekracza zadłużenie'@))
+|? KOM_OS.KOM_RP().F='' & KOM_OS.WART=0 & KOM_OS.RATA=0 & KOM_OS.F=''
+|| FUN.emsg(
+      'Co najmniej jedno z pól:\n'
+      ' - "%1"\n'
+      ' - "%2"\n'
+      ' - "%3"\n'
+      'musi być wypełnione.\n'
+      'Należy uzupełnić brakujące informacje.'@ [MS.name(KOM_OS,'WART'),MS.name(KOM_OS,'RATA'),MS.name(KOM_OS,'F')]
+   );
+   return('WART')
+?};
+
+{? KOM_OS.F<>''
+|| _tab:=form_chk($KOM_OS.F);
+   {? _tab.first()
+   || FUN.emsg(
+         'Formuła ma nieprawidłową składnię.\n\nZnak: %1\n%2\n\nNależy poprawić treść formuły.'@
+         [$_tab.ERR_COL,_tab.ERR_DESC]
+      );
+      return('F')
+   ?}
+?};
+
+{? KOM_OS.DPW<>date(0,0,0) & 12*(KOM_OS.OD~1)+(KOM_OS.OD~2)<12*(KOM_OS.DPW~1)+(KOM_OS.DPW~2) &
+   ~FUN.ask(
+      'Rok i miesiąc w polu "%1" są późniejsze niż w polu "%2".\nAkceptujesz?'@
+      [MS.name(KOM_OS,'DPW'),MS.name(KOM_OS,'OD')]
+   )
+|| return('DPW')
+?};
+
+{? KOM_OS.PRZ='K' & ~KOM_OS.KOM().BANK
+|| FUN.emsg('Nie można zdefiniować przelewu na konto komornika,\n należy wprowadzić konto bankowe komornika.'@);
+   return('KOM')
+
+|? KOM_OS.PRZ='W' & ~KOM_OS.WIE().BANK
+|| FUN.emsg('Nie można zdefiniować przelewu na konto wierzyciela,\n należy wprowadzić konto bankowe wierzyciela.'@);
+   return('WIE')
+?};
+
+_put:=-menu_txt()='popraw';
+_ref:={? _put || KOM_OS.ref() || null() ?};
+:sprawdzenie priorytetu
+{? ~exec('sprawdz_priorytet','komornik',
+   KOM_OS,_ref,KOM_OS.P,KOM_OS.KOM_RP().PROC,KOM_RP.MIN,KOM_RP.ZUS,KOM_RP.EMER,KOM_OS.RA_DEF)
+|| FUN.info(
+      'Niedozwolone jest, aby potrącenia z tym samym priorytetem \n'
+      'miały inny procent wynagrodzenia zasadniczego lub minimalnego. \n'
+      'Niedozwolone są także różnice w ustawieniu dodatkowych składnikow bez potrąceń.'@
+   );
+   return('P')
+?};
+
+_ok:=1;
+_kol:=KOM_OS.KOL;
+KOM_OS.cntx_psh();
+KOM_OS.index('KOM_OS');
+KOM_OS.prefix(exec('ref_firma','ustawienia'),OSOBA.ref(),'T',);
+{? KOM_OS.first()
+|| {!
+   |? {? KOM_OS.ref()<>_ref & _kol<>KOM_OS.KOL
+      || _ok:=0
+      || KOM_OS.next()
+      ?}
+   !}
+?};
+KOM_OS.cntx_pop();
+{? ~_ok
+|| FUN.emsg(
+      'Ze względu na wymagania metody rozliczenia potrąceń,\n'
+      'dla aktywnych zapisów miejsca potrąceń muszą być takie same.'@
+   );
+   return('KOL')
+?};
+
+''
+
+
+\kom_sp_moda
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Po modyfikacji rekordu.
+::       Formuła wywoływana z wyzwalaczy "Dołącz - po" i "Popraw - po" dla tabeli KOM_SP.
+::   WE: _a [REFERENCE] - Wskazanie rekordu tabeli KOM_OS.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of(null()) | ref_tab(_a)<>KOM_OS
+|| undo();
+   return()
+?};
+KOM_OS.cntx_psh();
+KOM_OS.clear();
+{? KOM_OS.seek(_a)
+|| KOM_OS.put()
+?};
+KOM_OS.cntx_pop();
+KOM_OS.get();
+~~
+
+
+\kom_sp_adda
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wyzwalacz "Dołącz - po" dla tabeli KOM_SP.
+::   WE: _a [INTEGER] - Wynik operacji usuwania, przekazywany przez narzędzia.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? ~_a | do_state()<>1
+|| return()
+?};
+
+exec('kom_sp_moda','!ppl_pll_rpot',KOM_SP.KOM_OS);
+~~
+
+
+\kom_sp_puta
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wyzwalacz "Popraw - po" dla tabeli KOM_SP.
+::   WE: _a [INTEGER] - Wynik operacji usuwania, przekazywany przez narzędzia.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? ~_a | do_state()<>1
+|| return()
+?};
+
+{? KOM_SP.KOM_OS<>bfld('KOM_OS')
+|| exec('kom_sp_moda','!ppl_pll_rpot',bfld('KOM_OS'))
+?};
+exec('kom_sp_moda','!ppl_pll_rpot',KOM_SP.KOM_OS);
+~~
+
+
+\kom_sp_dela
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wyzwalacz "Usuń - po" dla tabeli KOM_SP.
+::   WE: _a [INTEGER] - Wynik operacji usuwania, przekazywany przez narzędzia.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? ~_a | do_state()<>1
+|| return()
+?};
+
+exec('kom_sp_moda','!ppl_pll_rpot',bfld('KOM_OS'));
+~~
+
+
+\kom_sp_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła odpowiedzialna za dynamiczne ustawianie właściwości pól tabeli KOM_SP.
+::       Formuła wywoływana jest w dwóch kontekstach pracy:
+::          - Po redagowaniu konkretnego pola, które determinuje właściwości wyświetlania innych pól.
+::          - Przed wyświetleniem okna redagowania (przed właściwymi akcjami Dołącz, Popraw, Wyświetl), ustawia
+::            właściwości wszystkich pól (wymagających tego).
+::       Kontekst pracy jest określany na podstawie argumentu wywołania.
+::   WE:  _a  [STRING] - Kontekst pracy:
+::             '1' - Obsługa jednego pola [domyślnie].
+::             '*' - Obsługa wszystkich pól.
+::       [_b] [TABLE]  - Uchwyt tabeli, w oknie redagowania której znajdują sie pola. Jeżeli _a='1', parametr jest
+::             opcjonalny - zostanie przyjęta bieżąca tabela.
+::       [_c] [STRING] - Akronim okna, w którym mają być ustawione właściwości pól. Jeżeli _a='1', parametr jest
+::             opcjonalny - zostanie przyjęte bieżące okno.
+::       [_d] [STRING] - Akronim pola, którego wartość determinuje właściwości wyświetlania innych pól. Parametr ma
+::             znaczenie wyłącznie dla _a='1'. [Domyślnie: bieżące pole].
+::   WY: 0 - Błąd argumentów wywołania.
+::       1 - Argumenty poprawne (właściwości ustawione).
+::----------------------------------------------------------------------------------------------------------------------
+_tryb:={? var_pres('_a')=type_of('') & (_a='1' | _a='*') || _a || '1' ?};
+{? var_pres('_b')=type_of(KOM_SP)
+|| _TAB:=_b
+|? _tryb='1'
+|| _TAB:=cur_tab(1,1)
+|| return(0)
+?};
+{? var_pres('_c')=type_of('')
+|| _we:=_c
+|? _tryb='1'
+|| _we:=cur_win(1,1)
+|| return(0)
+?};
+{? var_pres('_d')=type_of('')
+|| _fld:=_d
+|? _tryb='1'
+|| _fld:=cur_afld()
+|| _fld:=''
+?};
+
+_fbe:=KOM_SP.fld_fml('R','*BEFORE_EDIT');
+_ed:=_fbe="" | _fbe();
+
+{? _fld=''
+|| _sval:=$_ed;
+   _TAB.efld_opt(_we,'mark='+_sval,KOM_SP,'R');
+   _TAB.efld_opt(_we,'mark='+_sval,KOM_SP,'M');
+   _TAB.efld_opt(_we,'mark='+_sval,KOM_SP,'KW')
+?};
+
+{? _fld='' | _fld='RP' | _fld='MP'
+|| KOM_OS.cntx_psh();
+   _enable:=KOM_SP.KOM_OS().PRZ<>'N';
+   _senable:=$_enable;
+   KOM_OS.cntx_pop();
+   _smark:=$(_enable & (~_ed | KOM_SP.RP<>0 | KOM_SP.MP<>0));
+
+   _TAB.efld_opt(_we,'enable=%1' [_senable],KOM_SP,'PRZ');
+   _TAB.efld_opt(_we,'enable=%1,mark=%2' [_senable,_smark],KOM_SP,'RP');
+   _TAB.efld_opt(_we,'enable=%1,mark=%2' [_senable,_smark],KOM_SP,'MP')
+?};
+
+1
+
+
+\kom_sp_x_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [2008]
+:: OPIS: Przed wyświetleniem wybranych pól relacyjnych (P, RH, O) tabeli KOM_SP.
+::  OLD: \spr_pole_spl/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+fld()<>null()
+
+
+\kom_sp_xp_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Po redagowaniu pól: KOM_SP.RP i KOM_SP.MP.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_sp_efld_opt','!ppl_pll_rpot')
+
+
+\kom_sp_dolacz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [2008]
+:: OPIS: Obsługa akcji "Dołącz - przed" w oknie WER tabeli KOM_SP (tylko dla opisu KP\KW).
+::  OLD: \dod_rozl/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+KOM_SP.blank();
+KOM_SP.KOM_OS:=KOM_OS.ref();
+KOM_SP.TYP:='R';
+KOM_SP.PRZ:='P';
+KOM_SP.OPIS:='KP/KW';
+
+exec('kom_sp_efld_opt','!ppl_pll_rpot','*',KOM_SP,'RED');
+
+{? KOM_SP.edit("exec('kom_sp_ae','!ppl_pll_rpot',0)")
+|| KOM_SP.add()
+?}
+
+
+\kom_sp_popraw_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [2008]
+:: OPIS: Obsługa akcji "Popraw - przed" w oknie WER tabeli KON_SP.
+::  OLD: \rozl_przed/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+_bl:=KOM_SP.TYP<>'R';
+
+{? _bl
+|| _err:=0;
+   O.cntx_psh();
+   _err:=KOM_SP.O & KOM_SP.O().Z<>'T';
+   O.cntx_pop();
+   {? _err
+   || FUN.info(
+         'Lista płac "%1" jest otwarta. Jej przeliczenie przywróci ustawienie automatyczne.\n'
+         'Zmiana roku i/lub miesiąca przelewu jest możliwa tylko dla zamkniętej listy.'@ [KOM_SP.OPIS]
+      );
+      return(0)
+   ?};
+
+   RH.cntx_psh();
+   _err:=KOM_SP.RH & KOM_SP.RH().BL<>'T';
+   RH.cntx_pop();
+   {? _err
+   || FUN.info(
+         'Rachunek "%1" nie jest zablokowany. Jego przeliczenie przywróci ustawienie automatyczne.\n'
+         'Zmiana roku i/lub miesiąca przelewu jest możliwa tylko dla zablokowanego rachunku.'@ [KOM_SP.OPIS]
+      );
+      return(0)
+   ?};
+   KOM_SP.PRZ:='P'
+?};
+
+{? _bl
+|| KOM_SP.fld_fml('R','BEFORE_EDIT',"0");
+   KOM_SP.fld_fml('M','BEFORE_EDIT',"0");
+   KOM_SP.fld_fml('KW','BEFORE_EDIT',"0")
+?};
+
+exec('kom_sp_efld_opt','!ppl_pll_rpot','*',KOM_SP,'RED');
+
+{? KOM_SP.edit("exec('kom_sp_ae','!ppl_pll_rpot',1)")
+|| KOM_SP.put()
+?};
+
+{? _bl
+|| KOM_SP.fld_fml('R','BEFORE_EDIT',"*");
+   KOM_SP.fld_fml('M','BEFORE_EDIT',"*");
+   KOM_SP.fld_fml('KW','BEFORE_EDIT',"*")
+?};
+
+~~
+
+
+\kom_sp_usun_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Usuń - przed" w oknie WER tabeli KOM_SP.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? KOM_SP.TYP<>'R'
+|| FUN.info('Akcja dostępna jedynie dla zapisu typu R.'@);
+   0
+|| 1
+?}
+
+
+\kom_sp_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Rekord - przed" w oknie WER tabeli KOM_SP.
+::   WE: _a [NUMBER] - Rekord bieżący? [0 - nie / 1 - tak]
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+KOM_SP.P();
+KOM_SP.RH().ZLE();
+
+{? _a
+|| _ag:='';
+   {? KOM_SP.KOM_OS().WART>0 & KOM_SP.KOM_OS().WART=KOM_SP.KOM_OS().SPLATA
+   || _ag+='D'
+   ?};
+   {? KOM_SP.TYP='A' & KOM_SP.KOM_OS().PRZ='N'
+   || _ag+='P'
+   ?};
+   {? KOM_SP.TYP<>'R'
+   || _ag+='U'
+   ?};
+   KOM_SP.actions_grayed('WER',_ag)
+?};
+~~
+
+
+\kom_sp_bw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Wyświetl - przed" dla tabeli KOM_SP.
+::  OLD: \wyswietl_rozl/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('kom_sp_efld_opt','!ppl_pll_rpot','*',KOM_SP,'RED');
+KOM_SP.display()
+
+
+\kom_sp_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [2008]
+:: OPIS: Obsługa akcji "Rekord - po" dla tabeli KOM_SP.
+::   WE: _a [INTEGER] - Tryb pracy:
+::          1 - Popraw [domyślnie];
+::          0 - Dołącz.
+::  OLD: \sprawdz_dod_roz/komornik.fml
+::  OLD: \popraw_po_sp/komornik.fml
+::----------------------------------------------------------------------------------------------------------------------
+_put:={? var_pres('_a')=type_of(0) || _a || 1 ?};
+
+_chk:=__CHK.table(KOM_SP,_put,,'R','M','KW');
+{? (type_of(_chk)=type_of('') & _chk<>'') | (type_of(_chk)=type_of(0) & ~_chk)
+|| return(_chk)
+?};
+
+_maxr:=5+date()~1;
+{? KOM_SP.R<1900 | KOM_SP.R>_maxr
+|| return(__CHK.err_fld(KOM_SP,'R',1,'Dozwolone wartości z przedziału %1-%2.'@ ['1900',$_maxr]))
+|? KOM_SP.M<1 | KOM_SP.M>12
+|| return(__CHK.err_fld(KOM_SP,'M',1,'Dozwolone wartości z przedziału %1-%2.'@ ['1','12']))
+|? date(KOM_SP.R,KOM_SP.M,1)<date(KOM_SP.KOM_OS().OD~1,KOM_SP.KOM_OS().OD~2,1)
+|| FUN.emsg('Rok i miesiąc spłaty nie mogą być wcześniejsze od daty rozpoczęcia spłaty (%1).'@ [KOM_SP.KOM_OS().OD$1]);
+   return('R')
+?};
+
+{? KOM_SP.KW<0
+|| FUN.emsg('"%1" nie może przyjmować wartości ujemnych.'@ [MS.name(KOM_SP,'KW')]);
+   return('KW')
+?};
+
+_kwb:=0;
+{? _put
+|| KOM_SP.cntx_psh();
+   {? KOM_SP.get()
+   || _kwb:=KOM_SP.KW
+   ?};
+   KOM_SP.cntx_pop()
+?};
+{? KOM_SP.KOM_OS().WART>0 & KOM_SP.KOM_OS().WART<KOM_SP.KOM_OS().SPLATA-_kwb+KOM_SP.KW
+|| KOM_SP.KW:=KOM_SP.KOM_OS().WART-KOM_SP.KOM_OS().SPLATA+_kwb;
+   return(__CHK.err_fld(KOM_SP,'KW',1,'Spłata przekracza zadłużenie'@))
+?};
+
+_fbe:=KOM_SP.fld_fml('R','*BEFORE_EDIT');
+_ed:=_fbe="" | _fbe();
+
+{? ~_ed | KOM_SP.RP<>0 | KOM_SP.MP<>0
+|| {? (_chk:=__CHK.record(KOM_SP,,'RP','MP'))<>''
+   || return(_chk)
+   |? KOM_SP.RP<1900 | KOM_SP.RP>_maxr
+   || return(__CHK.err_fld(KOM_SP,'RP',1,'Dozwolone wartości z przedziału %1-%2.'@ ['1900',$_maxr]))
+   |? KOM_SP.MP<1 | KOM_SP.MP>12
+   || return(__CHK.err_fld(KOM_SP,'MP',1,'Dozwolone wartości z przedziału %1-%2.'@ ['1','12']))
+   |? date(KOM_SP.RP,KOM_SP.MP,1)<date(KOM_SP.KOM_OS().OD~1,KOM_SP.KOM_OS().OD~2,1)
+   || FUN.emsg(
+         'Rok i miesiąc przelewu nie mogą być wcześniejsze od daty rozpoczęcia spłaty (%1).'@ [KOM_SP.KOM_OS().OD$1]);
+      {? KOM_SP.RP=KOM_SP.KOM_OS().OD~1
+      || return('MP')
+      || return('RP')
+      ?}
+   |? date(KOM_SP.RP,KOM_SP.MP,1)<date(KOM_SP.R,KOM_SP.M,1)
+   || FUN.emsg('Rok i miesiąc przelewu nie mogą być wcześniejsze od roku i miesiąca spłaty.'@);
+      {? KOM_SP.RP=KOM_SP.R
+      || return('MP')
+      || return('RP')
+      ?}
+   ?}
+?};
+
+''
+
+
+\urz_msc_btn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [20.14]
+:: OPIS: przycisk pola ADRES.MIASTO
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? XINFO.TER_AKT='T'
+|| exec('ter_msc_wybierz','teryt','ADRES','MIASTO')
+?}
+
+
+\urz_ul_btn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: wesos [20.14]
+:: OPIS: przycisk pola ADRES.UL
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? XINFO.TER_AKT='T'
+|| exec('ter_uli_wybierz','teryt','ADRES','ULICA','MIASTO')
+?}
+
+
+\edit_var_tn_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.37]
+:: OPIS: Przed wyświetleniem pola TN zmiennej EDIT_VAR
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+EDIT_VAR.TN:={? KOM_OS.RA_DEF<>null || 'T' || 'N' ?};
+1
+
+
+\edit_var_tn_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.37]
+:: OPIS: Po edycji pola TN zmiennej EDIT_VAR
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+{? EDIT_VAR.TN='T'
+|| {? __RUB.find_def('S',21181)<>0
+   || KOM_OS.RA_DEF:=RA_DEF.ref()
+   || EDIT_VAR.TN:='N'
+   ?}
+|| KOM_OS.RA_DEF:=null
+?};
+1
+
+:Sign Version 2.0 jowisz:1045 2021/09/17 15:17:00 05e3c247ddaaa820b5bb4dd5af89511b9166e19bb6c9d75e6252e3185dddf60ee22d86d6ea9ef63d87e323c38e02b50d0f1249314207a26ceec7458c82df6873f8d89092c2c5601ab61365b6065c39d0e8c1300184cca0e0bf3874478ad4d32e8efe9f9388520e77d68d7aedb2c43c51cf49f9fdd50ebf9760d411df9201a0b0

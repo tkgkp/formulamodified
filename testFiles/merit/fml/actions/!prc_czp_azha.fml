@@ -1,0 +1,294 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !prc_czp_azha.fml
+:: Utworzony: 17.12.2020
+:: Autor: DG
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PRC_CZP_AZHA - Powiadomienie o zatwierdzeniu harmonogramów.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.14]
+:: OPIS: Powiadomienie o zatwierdzeniu harmonogramów - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP,SERVICE
+::# permissions=F_ZATR,UD_SKL
+
+:: Parametry wyjściowe.
+::# kind=WY, symbol=SUB, type=STRING, name=Temat, required=N
+::# kind=WY, symbol=RCV, type=MEMO, name=Lista odbiorców, required=N
+::# kind=WY, symbol=BODYH, type=MEMO, name=Treść w formacie HTML, required=N
+
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+
+{? _mp.pathProc() | _mp.pathTodo()
+||
+:: Ustawienie domyślnej wartości parametru LOOP (żeby brama się nie zawiesiła).
+   _mp.save(exec('kind_out','#b_port'),'LOOP','N');
+:: Ustalenie / odzyskanie klucza grupującego.
+   _out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+   {? ~_mp.loop()
+::    Pierwszy obrót pętli - przygotujmy dane.
+::    Usuwamy wszystkie dotychczasowe klucze, które mogły zostać zapamiętane przy poprzednim uruchomieniu czynności
+::    (zakończonej _mp.keep()).
+   || _mp.grpkeyDelAll();
+
+::    Pobranie listy maili
+      _wyb:=exec('prepare','!prc_czp_azha');
+      {? _wyb.first()
+      || {!
+         |? _mp.grpkeyAdd(_wyb.MAIL);
+            _wyb.next()
+         !}
+      || _out.RCV:=_out.BODYH:=_out.SUB:='';
+         _mp.save(,_out);
+         _mp.done();
+         return()
+      ?}
+   ?};
+:: Jeżeli coś było nie tak (z parametrami wejściowymi, z wyborem), to zostało obsłużone powyżej.
+:: Tutaj jesteśmy już na etapie obsługi pętli.
+
+   do();
+   _mail:=_mp.grpkeyGet();
+   {? _mail<>~~
+   || _ret:=exec('run','!prc_czp_azha',_in,_mail);
+      _out.RCV:=_ret.RCV;
+      _out.BODYH:=_ret.BODYH;
+      _out.SUB:=_ret.SUB;
+      _mp.save(,_out)
+   ?};
+
+   {? _mp.grpkeyDel()
+   || {? _mp.grpkeyGet()<>~~
+::          Jeżeli jest jeszcze choć jeden element do przetworzenia, to pętla powinna być kontynuowana.
+      || _mp.loop_continue()
+      ?}
+   ?};
+
+   _mp.done();
+   end()
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.14]
+:: OPIS: Powiadomienie o zatwierdzeniu harmonogramów - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Powiadomienie o zatwierdzeniu planu czasu pracy'@@
+
+
+\prepare
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.14]
+:: OPIS: Funkcja generuje listę pracowników, do których ma zostać wysłany mail z przypomnieniem
+::  OLD: \pow_plan/mail.fml
+::----------------------------------------------------------------------------------------------------------------------
+P.cntx_psh();
+_ilosc:=1;
+_result:=tab_tmp(,'MAIL','STRING[100]','email',
+                  'LP','INTEGER','Lp');
+
+_HARM:=exec('lista','!prc_czp_azha',',PRC_POR_PZKP,PRC_POR_PZKW,');
+{? _HARM.first()
+|| _paczki:= _HARM.size%_ilosc+{? _HARM.size%*_ilosc || 1 || 0 ?};
+   {! _iter:=1.._paczki
+   |! {? _HARM.find_key(((_iter-1)*_ilosc)+1)
+      || {!
+         |? _result.MAIL:=_HARM.ADRES;
+            _result.LP:=_HARM.LP;
+            _result.add();
+            _HARM.next() & _HARM.LP<=_iter*_ilosc
+         !}
+      ?}
+   !}
+?};
+obj_del(_HARM);
+P.cntx_pop();
+_result
+
+
+\lista
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.14]
+:: OPIS: Funkcja zwraca uchwyt do tabeli, w której znajdują się adresy mailowe osób odpowiedzialnych
+::       za planowanie czasu pracy a ich pracownicy mają niezatwierdzone plany
+::   WE: _a [STRING] - czynności użytkowników internetowych do sprawdzenia, oddzielone przecinkami
+::       [_b] [INTEGER] - rok
+::       [_c] [INTEGER] - miesiac
+::   WY: tabela z adresami mailowymi
+::  OLD: \lista1/mail.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of('') || return(null)   ?};
+{? var_pres('MISC',@.CLASS)<=0 || exec(,'_misc') ?};
+{? var_pres('STRING',@.CLASS)<=0 || exec(,'_string') ?};
+:{? var_pres('__EMAIL')>100 || obj_del(__EMAIL); &__EMAIL ?};
+_MSC:=obj_new(@.CLASS.MISC);
+_len:=$_MSC.fld_len('USERS','EMAIL');
+: przygotuj liste odbiorcow powiadomienia
+_EMAIL:=tab_tmp(1,'LP','INTEGER','lp',
+                  'ADRES','STRING['+_len+']','email');
+_NDX:=_EMAIL.ndx_tmp(,1,'ADRES',,0,'ADRES',,0);
+_EMAIL.cntx_psh();
+_EMAIL.index(_NDX);
+_EMAIL.prefix();
+USERS.cntx_psh();
+USERS.index('OSOBA');
+B_USRROL.cntx_psh();
+B_USRROL.index('USER');
+B_ACTROL.cntx_psh();
+B_ACTROL.index('UNIK');
+B_ROLE.cntx_psh();
+B_ROLE.prefix();
+A_OKRP_M.cntx_psh();
+A_OKRP_M.index(_ind:=A_OKRP_M.ndx_tmp(,1,'A_OKRP','P',,'ROK',,,'MSC',,));
+_rok:=_msc:=0;
+{? var_pres('_b')=type_of(1) & var_pres('_c')=type_of(1)
+|| _rok:=_b; _msc:=_c
+|| {? date~2 = 12 || _msc:=1; _rok:=date~1+1 || _msc:=date~2+1; _rok:=date~1 ?}
+?};
+P.index('PRACONAZ');
+P.prefix();
+{? P.first()
+|| _lp:=0;
+   {!
+   |? {? P.DZA<=date & (P.DZ>=date | P.DZ=date(0,0,0))
+      || USERS.prefix(P.OSOBA);
+         {? USERS.first()
+         || {!
+            |? {? USERS.EMAIL<>''
+               || B_USRROL.prefix(REF.FIRMA,USERS.ref);
+                  {? B_USRROL.first()
+                  || {!
+                     |? B_ACTROL.prefix(REF.FIRMA,B_USRROL.B_ROLE);
+                        {? B_ACTROL.first()
+                        || {!
+                           |? {? _a*B_ACTROL.B_ACTION().UID
+                              || {? ~_EMAIL.find_key(USERS.EMAIL,USERS.EMAIL)
+                                 || _open:=0;
+::                                  sprawdzam czy plany dla powdladnych/siebie sa zatwierdzone
+                                    {? B_ACTROL.B_ACTION().UID*'PZKP'
+                                    || _PRAC:=exec('prac_pod','prc_plan',P.OSOBA);
+                                       {? _PRAC.first()
+                                       || {!
+                                          |? P.cntx_psh();
+                                             P.prefix();
+                                             {? P.seek(_PRAC.P,)
+                                             || {? P.GRAFIK='T'
+                                                || A_OKRP_M.prefix(P.ref,_rok,_msc);
+                                                   {? A_OKRP_M.first()
+                                                   || _open:= (A_OKRP_M.STATUS<>'Z' & A_OKRP_M.STATUS<>'X')
+                                                   ?}
+                                                ?}
+                                             ?};
+                                             P.cntx_pop();
+                                             ~_open & _PRAC.next()
+                                          !}
+                                       ?};
+                                       obj_del(_PRAC)
+                                    |? B_ACTROL.B_ACTION().UID*'PZKW'
+                                    || {? P.GRAFIK='T'
+                                       || A_OKRP_M.prefix(P.ref,_rok,_msc);
+                                          {? A_OKRP_M.first()
+                                          || _open:= (A_OKRP_M.STATUS<>'Z' & A_OKRP_M.STATUS<>'X')
+                                          ?}
+                                       ?}
+                                    ?};
+::                                  wysylam maila tylko jesli plany nie sa zatwierdzone
+                                    {? _open
+                                    || _EMAIL.ADRES:=USERS.EMAIL;
+                                       _lp+=1;
+                                       _EMAIL.LP:=_lp;
+                                       _EMAIL.add()
+                                    ?}
+                                 ?}
+                              ?}; B_ACTROL.next()
+                           !}
+                        ?}; B_USRROL.next()
+                     !}
+                  ?}
+               ?}; USERS.next()
+            !}
+         ?}
+      ?}; P.next()
+   !}
+?};
+A_OKRP_M.ndx_drop(_ind);
+A_OKRP_M.cntx_pop();
+B_ROLE.cntx_pop();
+B_ACTROL.cntx_pop();
+B_USRROL.cntx_pop();
+USERS.cntx_pop();
+_EMAIL.ndx_drop(_NDX);
+obj_del(_MSC);
+_EMAIL.cntx_pop();
+_EMAIL
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.14]
+:: OPIS: Formuła odpowiedzialna za przygotownie danych do wysyłanego powiadomienia. Formuła zwraca tablicę nazwaną
+::       z elementami potrzebnymi do wysłania powiadomienia.
+::   WE: _a [OBJ] - parametry wejściowe czynności
+::       _b [STRING] - email pracownika
+::       [_c] [STRING] - adres HTTP do grafików w systemie CMS Serwis Pracowniczy
+::  OLD: \bd_powplan/mail.fml
+::----------------------------------------------------------------------------------------------------------------------
+_in:=_a;
+_portUrl:={? var_pres('_c')=type_of('_c') || _c || REF.FIRMA().URL ?};
+
+_ret:=obj_new('RCV','BODYH','SUB');
+_ret.RCV:=_ret.BODYH:=_ret.SUB:='';
+
+_ret.RCV:=_b;
+
+:: Jeśli nie ma adresu, to przerywamy wykonanie
+{? _ret.RCV<>''
+|| _ret.SUB:='Przypomnienie o konieczności zatwierdzenia planu czasu pracy'@;
+
+   _ret.BODYH:=
+      '<p>'+
+         '<h4>'+
+            'Portal pracowniczy'@+
+         '</h4><br>'+
+         '<h4>'+
+            '<font color="black">'+
+               'Przypominamy o konieczności zatwierdzenia planu czasu pracy. <br>'
+               'Zgodnie z art.129 § 3 kodeksu pracy rozkład czasu pracy danego pracownika powinien być sporządzony '
+               'i przekazany pracownikowi co najmniej na 1 tydzień przed rozpoczęciem pracy w okresie, '
+               'na który został sporządzony ten rozkład.'@+
+            '</font>'+
+         '</h4>';
+
+   {? _portUrl<>''
+   || _ret.BODYH+=
+         '<h4>'+
+            '<a href="' + _portUrl + '">'+
+               'Harmonogramy - > Planowanie czasu pracy'@+
+            '</a>'+
+         '</h4>'
+   ?};
+
+   _ret.BODYH+=
+         '<br>'+
+      '</p>'+
+      '<p>'+
+         'Ta wiadomość została wygenerowana automatycznie - prosimy na nią nie odpowiadać.'@+
+      '</p>'
+?};
+_ret
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:22:53 e1385651b17998de72e45f757da266676e179cfa62baadcef9e8834afeb4a8a8b4f05f04c5419f812c077758f83f6faa068214c8d87446c3ab7bbf58354801ab88dfc76778fba2e72a74c9b97ff56d852d11b7bd1a0ffbabc9a358eecfefc98c3ec25b3677044bcffb9e509c7d56d2f404ea7930400d2d6656cf95a541fb2fad

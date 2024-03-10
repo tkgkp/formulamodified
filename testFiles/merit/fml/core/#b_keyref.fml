@@ -1,0 +1,653 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: b_keyref.fml
+:: Utworzony: 18.12.2014 [17.00]
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi tabeli B_KEYREF
+::======================================================================================================================
+
+
+\addKey4NextAct
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Funkcja przepisująca kluczowe rekordy do czynności. Zapisane będą te kluczowe rekordy, które występują
+::       w parametrach wejściowych tej czynności
+::   WE: _a - [REFERENCE]  - wskazanie na instancję czynności (BI_PREL) dla której zapisujemy kluczowe rekordy
+::       _b - [REFERENCE]  - wskazanie na użytkownika (USERS)
+::----------------------------------------------------------------------------------------------------------------------
+_bi_prel:={? var_pres('_a')=type_of(null())     || _a || return(0) ?};
+   _user:={? var_pres('_b')=type_of(null())     || _b || return(0) ?};
+
+_bi_proc:=null();
+_uid:='';
+
+:: ustal UID czynności na podstawie instancji czynności
+BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?}; BI_PREL.index('UID'); BI_PREL.prefix();
+B_PREL.cntx_psh();
+{? BI_PREL.seek(_bi_prel)
+||
+   B_ACTION.cntx_psh();
+   B_ACTION.index('B_ELE');
+   B_ACTION.prefix(BI_PREL.B_PREL().B_ELE);
+   {? B_ACTION.first()
+   || _uid:=B_ACTION.UID
+   ?};
+   B_ACTION.cntx_pop()
+?};
+BI_PREL.cntx_pop();
+B_PREL.cntx_pop();
+
+{? _uid<>''
+|| B_PORT.cntx_psh();
+   BI_PORT.cntx_psh(); {? BI_PORT.name()='' || BI_PORT.use('bi_o____') ?};
+   BI_PORT.index('PRELRODZ');
+   BI_PORT.prefix(_bi_prel,exec('kind_in','#b_port'),);
+   _loop:=BI_PORT.first();
+   {!
+   |? _loop
+   |! B_PORT.index('UNIK');
+::    Port standardowy czynności
+      B_PORT.prefix(BI_PORT.B_ELE,null(),null(),BI_PORT.B_PORT().KIND,BI_PORT.B_PORT().SYMBOL);
+      {? B_PORT.first() & B_PORT.KEYREF='T' & type_of(exec('value','#bi_port'))=type_of(null())
+      || exec('addKeyRef','#b_keyref',_bi_proc,_bi_prel,_user,_uid,BI_PORT.VALUE)
+      ?};
+::    Port dynamiczny (np. dla czynności ręcznej lub uniwersalnej serwisowej)
+      B_PORT.prefix(null(),BI_PORT.B_PREL,null(),BI_PORT.B_PORT().KIND,BI_PORT.B_PORT().SYMBOL);
+      {? B_PORT.first() & B_PORT.KEYREF='T' & type_of(exec('value','#bi_port'))=type_of(null())
+      || exec('addKeyRef','#b_keyref',_bi_proc,_bi_prel,_user,_uid,BI_PORT.VALUE)
+      ?};
+      _loop:=BI_PORT.next()
+   !};
+   BI_PORT.cntx_pop();
+   B_PORT.cntx_pop()
+?};
+~~
+
+
+\addKeyRef
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Funkcja dodająca wskazany rekord jako kluczowy rekord w procesie
+::   WE: _a - [REFERENCE] - wskazanie na instancję procesu
+::       _b - [REFERENCE] - wskazanie na instancję elementu w procesie
+::       _c - [REFERENCE] - wskazanie na użytkownika
+::       _d - [STRING]    - uid czynności
+::       _e - [STRING]    - sql ref kluczowego rekordu
+::   WY: 0 lub 1
+::----------------------------------------------------------------------------------------------------------------------
+_bi_proc:={? var_pres('_a')=type_of(null) || _a || null() ?};
+_bi_prel:={? var_pres('_b')=type_of(null) || _b || null() ?};
+  _users:={? var_pres('_c')=type_of(null) || _c || null() ?};
+_uid_act:={? var_pres('_d')=type_of('')   || _d || ''     ?};
+_key_ref:={? var_pres('_e')=type_of('')   || _e || ''     ?};
+
+{? (1+_key_ref)='_' & +_key_ref>49 || return(0) ?};
+{? +_key_ref<>48 & (1+_key_ref)<>'_' || return(0) ?};
+{? _bi_proc=null() & _bi_prel=null() & _uid_act='' || return(0) ?};
+
+
+{? _bi_proc<>null() & exec('check_ref','#bi_arch',_bi_proc)>0
+||
+:: Dla archiwalnego BI_PROCa nic nie robie, bo nie ma sensu
+   return(0)
+?};
+
+{? _bi_prel<>null() & exec('check_ref','#bi_arch',_bi_prel)>0
+||
+:: Dla archiwalnego BI_PRELa nic nie robie, bo nie ma sensu
+   return(0)
+?};
+
+_res:=0;
+:: ustal instancję procesu na podstawie instancji czynności
+{? _bi_proc=null()
+|| BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+   BI_PREL.index('ELSTATUS');
+   BI_PREL.prefix();
+   {? BI_PREL.seek(_bi_prel)
+   || _bi_proc:=BI_PREL.BI_PROC
+   ?};
+   BI_PREL.cntx_pop()
+?};
+:: jeżeli nie udało się znaleźć procesu ani uid czynności to kończymy z błędem
+{? _bi_proc=null() | _uid_act='' || return(0) ?};
+B_KEYREF.cntx_psh();
+B_KEYREF.index('KEYREF');
+:: sprawdzamy czy przekazywany rekord jest już powiązany ze wskazaną instancją procesu
+B_KEYREF.prefix(_key_ref,ref_name(_bi_proc),_bi_proc);
+{? B_KEYREF.first() & B_KEYREF.BI_PREL=null()
+|| B_KEYREF.BI_PREL:=_bi_prel;
+   B_KEYREF.UID_ACT:=_uid_act;
+   B_KEYREF.put()
+?};
+:: sprawdzenie czy przekazywany rekord nie jest już powiązany z tą samą instancją procesu i elementem procesu
+B_KEYREF.prefix(_key_ref,ref_name(_bi_proc),_bi_proc,ref_name(_bi_prel),_bi_prel);
+{? B_KEYREF.first()
+|| _res:=1
+|| B_KEYREF.blank(1);
+   B_KEYREF.UID_ACT:=_uid_act;
+   B_KEYREF.BI_PROC:=_bi_proc;
+   B_KEYREF.BI_PREL:=_bi_prel;
+   B_KEYREF.USERS:=_users;
+   B_KEYREF.KEY_REF:=_key_ref;
+   B_KEYREF.prefix();
+   _res:=B_KEYREF.add()
+?};
+B_KEYREF.cntx_pop();
+_res
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Kasuje podany rekord tabeli B_KEYREF
+::   WE: _a - [REFERENCE]  - B_KEYREF.ref()
+::   WY: >0 -wyczyszczone,
+::      <=0 -niewyczyszczone
+::----------------------------------------------------------------------------------------------------------------------
+_ref:={? var_pres('_a')=type_of(null) || _a || return(0) ?};
+
+:: jeżeli transakcja została zerwana, to nie ma sensu przetwarzać formuły
+{? do_state()=2 || return(-100) ?};
+
+_result:=0;
+_can_continue:=1;
+
+:: sprawdzam, czy to w tej formule będę zakładał transakcję, czy już jest założona
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+B_KEYREF.cntx_psh(); B_KEYREF.clear();
+{? B_KEYREF.seek(_ref)
+|| {? B_KEYREF.del(,1)>0
+   || _result:=1
+   || undo();
+      _result:=-3
+   ?}
+|| _result:=0
+?};
+B_KEYREF.cntx_pop();
+
+{? _result<0 || undo() ?};
+{? _mydo || end() ?};
+_result
+
+
+\delKeyRef
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Kasuje kluczowe rekordy dla elementu procesu. Jesli parametr _b nie podany to kasuje
+::       wszystkie kluczowe rekordy dla elementu, a jeśli podany to kasuje tylko ten jeden
+::   WE: _a - BI_PREL.ref - wskazanie na instancję elementu w procesie
+::       [_b] - STRING - uidref kluczowego rekordu
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_bi_prel:=_a;
+
+_key_ref:='';
+{? var_pres('_b')=type_of('')
+|| _key_ref:=_b
+?};
+
+_result:=1;
+_can_continue:=1;
+
+BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?}; BI_PREL.index('UID'); BI_PREL.clear();
+B_KEYREF.cntx_psh();
+
+:: Szukam instancji procesu
+_bi_proc:=null();
+{? BI_PREL.seek(_bi_prel)
+|| _bi_proc:=BI_PREL.BI_PROC
+?};
+
+{? _key_ref<>''
+||
+   B_KEYREF.index('KEYREF');
+   {? _bi_prel<>null() & _bi_proc<>null()
+   || B_KEYREF.prefix(_key_ref,ref_name(_bi_proc),_bi_proc,ref_name(_bi_prel),_bi_prel);
+      {? B_KEYREF.first()
+      || {? exec('delete','#b_keyref',B_KEYREF.ref())<=0
+         || _result:=0
+         ?}
+      ?}
+   ?}
+||
+   B_KEYREF.index('BI_PREL');
+   B_KEYREF.prefix(ref_name(_bi_prel),_bi_prel);
+   {? B_KEYREF.first()
+   || _can_continue:=1;
+      {!
+      |? _can_continue:=exec('delete','#b_keyref',B_KEYREF.ref());
+         B_KEYREF.first() & _can_continue>0
+      !}
+   ?};
+   {? _can_continue<=0
+   || _result:=0
+   ?}
+?};
+B_KEYREF.cntx_pop();
+BI_PREL.cntx_pop();
+_result
+
+
+\getInstPrel4Ref
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Funkcja zwracająca uruchomione instancje procesów dla wskazanego refa
+::   WE: _a - [ARRAY]   - tablica rekordów kluczowych
+::       _b - [STRING]  - UID czynności
+::   WY:      [obj_new] - tablica z refami instancji procesów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=obj_new(1);
+_res[1]:=null();
+
+_key_arr:={? var_pres('_a')=type_of(obj_new(1)) || _a || return(_res) ?};
+_uid_act:={? var_pres('_b')=type_of('')         || _b || return(_res) ?};
+
+:: Liczba rekordów kluczowych, które muszą się zgadzać.
+_size:=obj_len(_key_arr);
+B_KEYREF.cntx_psh();
+{? _size=1
+:: dla zwiększenia wydajności dla 1 keyref-a szukamy prefixując się
+:: bezpośrednio na tego keyref-a (znaczna większość przypadków)
+|| {? type_of(_key_arr[1])=type_of('')
+   || B_KEYREF.index('UID_REF');
+      B_KEYREF.prefix(_uid_act,_key_arr[1],);
+      {? B_KEYREF.first()
+      || _size:=B_KEYREF.size();
+         {? var_pres('_res')>100 || obj_del(_res) ?};
+         _res:=obj_new(_size);
+         _loop:=1;
+         {!
+         |? _res[_loop]:=B_KEYREF.BI_PREL;
+            _loop+=1;
+            B_KEYREF.next()
+         !}
+      ?}
+   ?}
+:: gdy mamy więcej rekordów kuczowych, to sprawdzamy która instancja elementu ma przypisane te rekordy kluczowe
+|| B_KEYREF.index('ABIPKEY');
+   B_KEYREF.prefix(_uid_act,);
+   _bi_prel:=null();
+   _count:=0;
+   _loop:=B_KEYREF.first();
+   {!
+   |? _loop
+   |! {? _bi_prel<>B_KEYREF.BI_PREL
+      || _bi_prel:=B_KEYREF.BI_PREL;
+         _count:=0
+      ?};
+
+      _lp:=1;
+      _next:=1;
+      {!
+      |? _next & _lp<=_size
+      |! {? type_of(_key_arr[1])=type_of('') & (_key_arr[_lp]=B_KEYREF.KEY_REF)
+         || _next:=0;
+            _count+=1
+         || _lp+=1
+         ?}
+      !};
+
+      {? _count=_size
+      || _res_new:=exec('obj_ntab_set','#array',_res,gsub($_bi_prel,' ','_'),_bi_prel);
+         {? var_pres('_res')>100 || obj_del(_res) ?};
+         _res:=_res_new;
+         {? var_pres('_res_new')>100 || obj_del(_res_new) ?};
+         _count:=0
+      ?};
+      _loop:=B_KEYREF.next()
+   !}
+?};
+B_KEYREF.cntx_pop();
+_res
+
+
+\getRef4InstProc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Funkcja zwracająca uidrefy dla uruchomionych instancji procesów
+::   WE: _a - [REFERENCE]  - wskazanie na instancje procesu
+::   WY:      [obj_new]    - obiekt z uidrefami rekordów zablokowanych dla wskazanej instancji procesu
+::----------------------------------------------------------------------------------------------------------------------
+_res:=obj_new(1);
+_res[1]:=~~;
+_bi_prel:={? var_pres('_a')=type_of(null) || _a || return(_res) ?};
+{? exec('check_ref','#bi_arch',_bi_prel)>0
+||
+:: Dla archiwalnego BI_PRELa nic nie zwracam, bo nie ma sensu
+   return(_res)
+?};
+B_KEYREF.cntx_psh();
+B_KEYREF.index('BI_PREL');
+B_KEYREF.prefix(ref_name(_bi_prel),_bi_prel);
+{? B_KEYREF.first()
+|| _size:=B_KEYREF.size();
+   {? var_pres('_res')>100 || obj_del(_res) ?};
+   _res:=obj_new(_size);
+   _loop:=1;
+   {!
+   |? _res[_loop]:=B_KEYREF.KEY_REF;
+      _loop+=1;
+      B_KEYREF.next()
+   !}
+?};
+B_KEYREF.cntx_pop();
+_res
+
+
+\trigRef_after
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Formuła wykonywana w triggerze po, który został założony metodą _d.trigRef
+::   WE: _a - INTEGER - rezultat akcji której dotyczył trigger (np wynik add(), del(,1), put)
+::       _b - STRING - akcja: 'add', 'put'
+::       _c - $BI_PREL.ref
+::       _d - STRING - akronim tabeli na której jest wykonywany trigger
+::       [_e] - INTEGER - 0/[1] - czy po utworzeniu keyRefa automatycznie wykonywać .keep()
+::       [_f] - INTEGER - 0/[1] - czy po utworzeniu keyRefa automatycznie wykonywać .descTodo()
+::       _g - rodzaj portu: wewnętrzny, zewnętrzny
+::       _h - symbol portu
+::       _i - rekord kluczowy, który zostanie usunięty
+::       _j - formuła na warunek logiczny
+::       _k - aktualizacja opisów zadań - tryb
+::       _l - grpkey - klucz grupujący
+::       _m - grpkey - uzupełniać pozycje klucza [0-nie, 1-tak]
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_act_res:=_a;
+_action:=_b;
+
+_bi_prel:=_c;
+_tab_acr:=_d;
+
+_port_kind:=_g;
+_port:=_h;
+
+_keyref:=_i;
+
+_ff_log:=_j;
+
+_desctodo:=_k;
+
+_grpkey:=_l;
+_grpkeyOn:=_m;
+
+_result:=~~;
+
+_auto_keep:=1;
+{? var_pres('_e')=type_of(0)
+|| _auto_keep:=_e
+?};
+
+_auto_desc:=1;
+{? var_pres('_f')=type_of(0)
+|| _auto_desc:=_f
+?};
+
+{? _act_res>0
+||
+:: Ze STRINGa robię prawdziwą tabelę
+   _table:=($_tab_acr)();
+
+:: Tworzę obiekt Menadżera Procesu
+   _class:={? __develop || @.Class.cProMan || @.CLASS.cProMan ?};
+   _mp:=obj_new(_class);
+
+:: Ustawiam kontekst dla Menadżera Procesów
+   {? _mp.setCntx(_bi_prel)>0
+   || _mp.desctodo:=_desctodo;
+      _proenv:=exec('proenv','#b_proman');
+      _stos:=_proenv.STOS_ALL;
+      {? _stos.topBiPrel()=_mp.bi_prel
+::    Ścieżka dla instancji ze szczytu stosu kontekstu menadżera procesu
+      || {? _ff_log() & (_action='add' | _action='put')
+         || _table.cntx_psh();
+::          Uruchamiam metodę keyRef Menadżera Procesów
+            _mp.keyRef(_table.uidref(),_auto_keep,_auto_desc);
+            {? _action='add'
+::          Dodatkowe operacje tylko dla dodawanego rekordu
+            || {? _port_kind=exec('kind_internal','#b_port') | _port_kind=exec('kind_out','#b_port')
+               || {? _mp.save(_port_kind,_port,_table.ref())=1
+::                Powiodło się zapisanie portu wartością odpowiadającą rekordowi kluczowemu
+                  || {? _keyref<>''
+::                   Usunięcie wskazanego rekordu kluczowego
+                     || _mp.delRef(_keyref)
+                     ?};
+::                   grpkey - dodanie pozycji
+                     {? _grpkeyOn
+                     || _mp.grpkey(_grpkey);
+                        _mp.grpkeyAdd(_table.uidref())
+                     ?}
+                  ?}
+               ?}
+            |? _action='put'
+            ||
+::             grpkey - dodanie pozycji
+               {? _grpkeyOn
+               || _mp.grpkey(_grpkey);
+                  _mp.grpkeyAdd(_table.uidref())
+               ?}
+            ?};
+            _table.cntx_pop()
+         ?}
+      ?}
+   ?}
+?};
+_result
+
+
+\trigRef_before
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Formuła wykonywana w triggerze przed, który został założony metodą _d.trigRef
+::   WE: _a - STRING - akcja (póki co tylko 'del')
+::       _b - $BI_PREL.ref
+::       _c - STRING - akronim tabeli na której jest wykonywany trigger
+::       [_d] - INTEGER - 0/[1] - czy po utworzeniu keyRefa automatycznie wykonywać .keep()
+::       [_e] - INTEGER - 0/[1] - czy po utworzeniu keyRefa automatycznie wykonywać .descTodo()
+::       _f - rodzaj portu: wewnętrzny, zewnętrzny
+::       _g - symbol portu
+::       _h - rekord kluczowy, który zostanie usunięty
+::       _i - formuła na warunek logiczny
+::       _j - aktualizacja opisów zadań - tryb
+::       _k - grpkey - klucz grupujący
+::       _l - grpkey - uzupełniać pozycje klucza [0-nie, 1-tak]
+::   WY: 0 - porażka, nie udało sie usunąć keyRefa
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_action:=_a;
+
+_bi_prel:=_b;
+_tab_acr:=_c;
+
+_port_kind:=_f;
+_port:=_g;
+
+_keyref:=_h;
+
+_ff_log:=_i;
+
+_desctodo:=_j;
+
+_grpkey:=_k;
+_grpkeyOn:=_l;
+
+_result:=1;
+
+_auto_keep:=1;
+{? var_pres('_d')=type_of(0)
+|| _auto_keep:=_d
+?};
+
+_auto_desc:=1;
+{? var_pres('_e')=type_of(0)
+|| _auto_desc:=_e
+?};
+
+:: Ze STRINGa robię prawdziwą tabelę
+_table:=($_tab_acr)();
+
+:: Tworze obiekt Menadżera Procesu
+_class:={? __develop || @.Class.cProMan || @.CLASS.cProMan ?};
+_mp:=obj_new(_class);
+
+:: Ustawiam kontekst dla Menadżera Procesów
+{? _mp.setCntx(_bi_prel)>0
+|| _proenv:=exec('proenv','#b_proman');
+   _stos:=_proenv.STOS_ALL;
+   {? _stos.topBiPrel()=_mp.bi_prel
+:: Ścieżka dla instancji ze szczytu stosu kontekstu menadżera procesu
+   || {? _ff_log() & _action='del'
+      ||
+::       Uruchamiam metodę delRef Menadżera Procesów
+         {? _mp.delRef(_table.uidref(),0,_auto_desc)>0
+         || _result:=1;
+            {? _port_kind=exec('kind_internal','#b_port') | _port_kind=exec('kind_out','#b_port')
+            || {? _mp.save(_port_kind,_port,null())=1
+::             Powiodło się zapisanie portu wartością odpowiadającą rekordowi kluczowemu
+               || {? _keyref<>''
+::                Ustawienie wskazanego rekordu kluczowego
+                  || {? _mp.keyRef(_keyref)=0
+                     || _result:=0
+                     ?}
+                  ?};
+::                grpkey - usunięcie pozycji
+                  {? _grpkeyOn
+                  || _mp.grpkey(_grpkey);
+                     _mp.grpkeyDel(_table.uidref())
+                  ?}
+               || _result:=0
+               ?}
+            ?}
+         || _result:=0
+         ?}
+      ?}
+   ?}
+?};
+_result
+
+
+\get_priority
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Z rekordów kluczowych należących do BI_PRELA odczytuje pole PRIORITY i zwraca największą jego wartość
+::   WE: _a - BI_PREL.ref
+::   WY: INTEGER - wartość pola PRIORITY
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_bi_prel:=_a;
+_result:=0;
+
+_can_continue:=1;
+BI_PREL.cntx_psh(); BI_PREL.prefix();
+{? BI_PREL.seek(_bi_prel)
+|| _action:=BI_PREL.B_PREL().B_ELE().SYMBOL;
+   {? _action='ZWS_EDI_UNIW'
+   ||
+::    Czynność ZWS_EDI_UNIW nie obsługuje priorytetów a może mieć bardzo wiele key_refów
+::    co zamuli całość
+      _can_continue:=0
+   ?}
+?};
+BI_PREL.cntx_pop();
+
+{? _can_continue>0 & exec('check_ref','#bi_arch',_bi_prel)>0
+||
+:: Dla archiwalnego BI_PRELa nic nie zwracam, bo nie ma sensu
+   _can_continue:=0
+?};
+{? _can_continue>0
+||
+   B_KEYREF.cntx_psh();
+   B_KEYREF.index('BI_PREL');
+   B_KEYREF.prefix(ref_name(_bi_prel),_bi_prel);
+   {? B_KEYREF.first()
+   || {!
+      |? {? B_KEYREF.KEY_REF<>''
+         || {? var_pres('_tab')>100
+            || obj_del(_tab)
+            ?};
+            _tab:=ref_tab(B_KEYREF.KEY_REF);
+            {? type_of(_tab)>0 & var_pres('PRIORITY',_tab)=22
+            ||
+::             Ze wszystkich priotytetów wyznaczam najwyższy
+               _prior_key:=exec('FindAndGet','#table',ref_tab(B_KEYREF.KEY_REF),B_KEYREF.KEY_REF,,"PRIORITY",0);
+               _result:=exec('max','#math',_prior_key,_result)
+            ?}
+         ?};
+         B_KEYREF.next()
+      !}
+   ?};
+   B_KEYREF.cntx_pop()
+?};
+_result
+
+
+\trig_before
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.22]
+:: OPIS: Trigger przed tabeli B_KEYREF
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_msk_prel:=ref_name(B_KEYREF.BI_PREL);
+_msk_proc:=ref_name(B_KEYREF.BI_PROC);
+B_KEYREF.MSK_PREL:=_msk_prel;
+B_KEYREF.MSK_PROC:=_msk_proc;
+1
+
+
+\multikey_test
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.42]
+:: OPIS: Sprawdza czy są jakieś instancje czynności które mają więcej niż jeden B_KEYREF i je wyświetla
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+B_KEYREF.cntx_psh();
+B_KEYREF.index('BI_PREL');
+BI_PREL.cntx_psh();
+BI_PREL.index('UID');
+BI_PREL.prefix();
+_tab:=tab_tmp(3
+:: 'POLE','TYP','Nazwa w oknie',
+   ,'B_ACTION','STRING[30]','Czynność'
+   ,'B_PROC','STRING[50]','Proces'
+   ,'BI_PROC','STRING[50]','Instancja procesu'
+   ,'COUNT','REAL','Liczba keyrefów'
+);
+{? BI_PREL.first()
+|| {!
+   |?
+      B_KEYREF.prefix(ref_name(BI_PREL.ref()),BI_PREL.ref());
+      {? B_KEYREF.size()>1
+      ||
+         _action:=BI_PREL.B_PREL().B_ELE().SYMBOL;
+         BI_PREL.BI_PROC().B_PROC();
+         _proc:=exec('B_PROC','#to_string');
+         _inst:=BI_PROC.CODE;
+         _tab.prefix(_action,_proc,_inst,);
+         {? _tab.first()=0
+         || _tab.blank();
+            _tab.B_ACTION:=_action;
+            _tab.B_PROC:=_proc;
+            _tab.BI_PROC:=_inst;
+            _tab.COUNT:=B_KEYREF.size();
+            _tab.add()
+         ?}
+      ?};
+      BI_PREL.next()
+   !}
+?};
+_tab.prefix();
+exec('select','#table',_tab);
+BI_PREL.cntx_pop();
+B_KEYREF.cntx_pop();
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:13:35 0c7adf2ed577b7ba3b747def6ecfb9e626f416252dd979bbd2a33fa826eb76043abbe36453dac388008824418ac91877402836ede67d0bba6ae322d1e23ea57a672e9bda182f06488031f9601190525dc0d5ec2ced1b377a91880a893b85adc4bba83a492e3c70b53f0d383a33c5711ab304e6a2603eb797ee78f791e85e3661

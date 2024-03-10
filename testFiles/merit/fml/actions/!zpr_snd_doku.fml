@@ -1,0 +1,791 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !zpr_snd_doku.fml
+:: Utworzony: 10.11.2015
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności ZPR_SND_DOKU - Wysłanie załącznika
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła główna czynności wysłania załącznika (ZPR_SND_DOKU)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_mp:=params_get().mp;
+_action:=_mp.akcja();
+
+:: UWAGA: Czynność wysłania uruchomiona automatycznie po czynności serwisowej
+::        zostanie uruchomiona niejawnie w trybie serwisowym.
+::# properties=SEND,GRP_FIRM
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=DOKUM, type=_DOKUM, name=Wskazanie na załącznik/kontakt, required=T, keyref=T
+::# kind=WE, symbol=DOKUMP, type=_DOKUMP, name=Wskazanie na powiadomienie o kontakcie, required=N
+{? var_pres('DOKUM',_in)<>type_of(~~) & var_pres('DOKUM',_in)<>type_of(null()) || return() ?};
+{? var_pres('DOKUM',_in)=type_of(~~) || return() ?};
+
+_obj:=exec('clean','!zpr_snd_doku',_mp,_in);
+_dokum:=_obj.DOKUM;
+_can_continue:=_obj.RESULT;
+
+{? _can_continue>0 & _dokum=null()
+|| _can_continue:=0;
+   _msg:='Niezgodność wywołania czynności %1.\nParametr %2 musi mieć wartość.'@@['ZPR_SND_DOKU','DOKUM'];
+   {? _mp.isService()=0
+   || FUN.emsg(_msg)
+   ?};
+   _mp.error(_msg)
+?};
+
+{? _can_continue>0
+|| {? _action='unblock'
+   || exec('unblock','!zpr_snd_doku',_in.DOKUM,~(_mp.isAutoRun() | _mp.isService()))
+   |? _dokump:=null();
+      {? var_pres('DOKUMP',_in)=type_of(null())
+      || _dokump:=_in.DOKUMP
+      ?};
+      exec('dokum_send','!zpr_snd_doku',
+         ~(_mp.isAutoRun() | _mp.isService()) & _dokump=null(),~_mp.isService() & _dokump=null(),_in.DOKUM,
+         _in.SENDER,_in.FROM,_in.REPLYTO,_dokump,_in.TEMPLATE
+      )
+   || _mp.done()
+   ?}
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Opis dla czynności wysłania załącznika (ZPR_SND_DOKU)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+:: jest rekord kluczowy to ustawiam odpowiedniego DOKUM
+{? var_pres('[1]',_keyRefs)
+|| _desc:='Wyślij załącznik %1'@@[exec('record','#to_string',_keyRefs[1])]
+
+?};
+_desc
+
+
+\action_send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2006]
+:: OPIS: Akcja 'Wysyłanie -> Wyślij' w oknie załączników - uruchamia czynność
+::  OLD: \doku_eml/dokum.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='ZPR_SND_DOKU';
+_args.UIDREF:=DOKUM.uidref();
+_args.AKCJA:='WYŚLIJ';
+_args.PROC_START:='N';
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+
+exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'DOKUM',DOKUM.ref());
+
+exec('mp_run','#b__box',_args);
+~~
+
+
+\dokum_send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Wysłanie jednego dokumentu
+::   WE: _a - czy włączone dialogi (oprócz pytania o brakujący adres e-mail) (0/1)
+::       _b - czy włączony dialog o brakującym adresie e-mail (0/1)
+::       _c - DOKUM.ref()
+::       _d - nadawca (sender)
+::       _e - autor (from)
+::       _f - odpowiedz do (reply to)
+::       _g - DOKUMP.ref()
+::       _h - wzorzec
+::   WY: 0 / 1
+::  OLD: \dokum_send/dokum.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dialog:=_a;
+_dialog_em:=_b;
+_dokum:=_c;
+_istab:=0;
+_dokump:=null();
+{? var_pres('_g')=type_of(null())
+|| _dokump:=_g
+?};
+_template:='';
+{? var_pres('_h')=type_of('')
+|| _template:=_h
+?};
+
+:: Nadpisanie wartości przekazanych parametrami gdy dostępne są wartości zwrócone przez wtyczki
+_sender:=Plugin.run('DOKUM_F_SENDER_001',_dokum);
+{? _sender='' | _sender=~~ || _sender:=_d ?};
+_from:=Plugin.run('DOKUM_F_FROM_001',_dokum);
+{? _from='' | _from=~~ || _from:=_e ?};
+_replyto:=Plugin.run('DOKUM_F_REPLYTO_001',_dokum);
+{? _replyto='' | _replyto=~~ || _replyto:=_f ?};
+_return:=Plugin.run('DOKUM_F_RETURN_001',_dokum);
+{? _return<>'T' || _return:='N' ?};
+_bodyt:=Plugin.run('DOKUM_F_BODYT_001',_dokum);
+_bodyh:=Plugin.run('DOKUM_F_BODYH_001',_dokum);
+
+_email:='';
+_email_dw:='';
+_email_udw:='';
+_result:=0;
+
+DOKUM.cntx_psh();
+DOKUM.prefix();
+DOKUMP.cntx_psh();
+DOKUMP.prefix();
+
+_kontakt:=0;
+_continue:=0;
+
+:: załącznki
+_attach:=tab_tmp(1
+   ,'PTH','STRING[100]','Załącznik'
+   ,'BLOB','BLOBRAW','Załącznik');
+
+{? ~DOKUM.seek(_dokum)
+|| ~~
+
+|? DOKUM.TYP<>'K' & DOKUM.TYP<>'D' & _dokump<>null()
+|| ~~
+
+|? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump<>null() & ~DOKUMP.seek(_dokump)
+|| ~~
+
+|? DOKUM.TYP='K' | DOKUM.TYP='D'
+||
+   _kontakt:=1;
+   {? _dokump=null()
+   ||
+      DOKUMZ.index('DISP');
+      DOKUMZ.prefix(DOKUM.ref());
+      {? DOKUMZ.first()
+      || {!
+         |?
+            {? DOKUMZ.DOKUM
+            ||
+               _file:=fopen(DOKUMZ.DOKUM,'r',,,1);
+               {? _file.is_open()
+               ||
+                  _name:=DOKUMZ.bl_info('DOKUM','NAME');
+                  _attach.blank();
+                  {? _attach.add()
+                  ||
+                     _attach.bl_put('BLOB',_file,,,_name)
+                  ?};
+                  obj_del(_file)
+               ?}
+            ?};
+            DOKUMZ.next()
+         !}
+      ?};
+      {? DOKUM.TYP='D' & #DOKUM.DOKUM<>0
+      || _kontakt:=0
+      ?}
+   ?};
+
+   {? _kontakt
+   || _continue:=1
+   || _continue:=exec('dokum_czy_wyslac','!zpr_snd_doku',_dialog)
+   ?}
+||
+   _file:=fopen(DOKUM.DOKUM,'r',,,1);
+   {? _file.is_open()
+   ||
+      _name:=DOKUM.bl_info('DOKUM','NAME');
+      _attach.blank();
+      {? _attach.add()
+      ||
+         _attach.bl_put('BLOB',_file,,,_name)
+      ?};
+      obj_del(_file)
+   ?};
+
+   _continue:=1
+?};
+
+{? _continue
+||
+   {? ((~_kontakt | _dokump=null()) & DOKUM.ESEND='T') | (_kontakt & _dokump<>null() & DOKUMP.ESEND='T')
+   || {? _dialog
+      || FUN.info('Dokument był już wcześniej wysłany.'@)
+      ?};
+      _result:=1
+   ||
+      _continue:=0;
+:: odbiorcy
+      {? _kontakt
+      || _email:='';
+         {? _dokump<>null()
+         || _email:=DOKUMP.EMAIL
+         |? DOKUM.EM<>''
+:: DRO_TODO_AWI: pobierać z jakieś tabelki
+         || _email:=DOKUM.EM;
+            _email_dw:=DOKUM.EM_DW;
+            _email_udw:=DOKUM.EM_UDW
+         ?};
+         {? _email<>''
+         || _continue:=1
+         || {? _dialog_em
+            || FUN.info('Brak adresu e-mail.'@)
+            ?}
+         ?}
+      ||
+         _email:=Plugin.run('DOKUM_F_EMAIL_001',DOKUM.ref());
+         {? _email='' || _email:=DOKUM.EM ?};
+         _tab:=exec('email_os_kon_t','kontrahent',DOKUM.KH,'Windykacja');
+         {? _email='' & _tab.size() & DOKUM.TYP='P'
+         || {? _tab.first()
+            || _email:=_tab.EMAIL;
+               _istab:=1
+            ?}
+         ?};
+         {? _email=''
+         || {? _dialog_em
+            || {? FUN.choice('Brak adresu e-mail.'@,,'Wpisz adres e-mail'@)
+               || exec('dokum_ema','!zpr_snd_doku');
+                  _email:=DOKUM.EM
+               ?}
+            ?}
+         ?};
+         _continue:=_email<>''
+      ?};
+
+      {? _continue
+      || {? ~DOKUM.r_lock(1,1,1) | (_kontakt & _dokump<>null() & ~DOKUMP.r_lock(1,1,1))
+         || FUN.info('Pozycja zablokowana przez innego użytkownika.\nWysłanie e-mail niemożliwe.'@)
+         ||
+            {? _kontakt
+            || {? _dialog
+               || _send:=FUN.ask('Czy wysłać e-mail?'@)
+               || _send:=1
+               ?}
+
+            || {? _dialog
+               || {? ~_istab
+                  || _send:=FUN.ask('Czy wysłać załącznik na adres %1?'@[_email])
+                  || _send:=FUN.ask('Czy wysłać załącznik?'@)
+                  ?}
+               || _send:=1
+               ?}
+            ?};
+
+            {? _send
+            || _args:=exec('add_email_a','#mailbox');
+               _args.FROM:=_from;
+               _args.SENDER:=_sender;
+               _args.REPLYTO:=_replyto;
+               {? ~_istab
+               || {? _kontakt
+                  || _args.RCV:=exec('email_rcv','!zpr_snd_doku',_email,_email_dw,_email_udw)
+                  || _args.RCV:=exec('email_rcv','!zpr_snd_doku',_email,_email_dw)
+                  ?}
+               || _args.RCV:=_tab
+               ?};
+               _args.SUB:=exec('email_sub','!zpr_snd_doku');
+               {? _dokump=null()
+               || _args.BODYT:={? _bodyt='' | _bodyt=~~ || exec('email_text','!zpr_snd_doku') || _bodyt ?};
+                  _args.BODYH:={? _bodyh='' | _bodyh=~~ || exec('email_html','!zpr_snd_doku') || _bodyh ?}
+               || _args.BODYT:={? _bodyt='' | _bodyt=~~ || exec('email_text','!zpr_snd_doku',1) || _bodyt ?};
+                  _args.BODYH:={? _bodyh='' | _bodyh=~~ || exec('email_html','!zpr_snd_doku',1) || _bodyh ?}
+               ?};
+               _args.ATTACH:=_attach;
+               {? _dokump=null()
+               || _args.SOURCE:=DOKUM.uidref()
+               || _args.SOURCE:=DOKUMP.uidref()
+               ?};
+               _args.RETURN:=_return;
+               _args.TEMPLATE:=_template;
+               _result:=exec('add_email','#mailbox',_args);
+
+               {? _result
+               || {? _dokump<>null()
+                  || DOKUMP.get();
+                     DOKUMP.ESEND:='T';
+                     DOKUMP.put()
+                  || DOKUM.get();
+                     DOKUM.ESEND:='T';
+                     DOKUM.put()
+                  ?};
+                  DOKUM.r_unlock();
+                  {? _kontakt & _dokump<>null()
+                  || DOKUMP.r_unlock()
+                  ?};
+                  {? _dialog || FUN.info('Dokument został przekazany do wysyłki.'@) ?}
+               ?}
+            ?};
+            DOKUM.r_unlock();
+            {? _kontakt & _dokump<>null()
+            || DOKUMP.r_unlock()
+            ?}
+         ?}
+      ?}
+   ?}
+|| _result:=1
+?};
+
+DOKUM.cntx_pop();
+DOKUMP.cntx_pop();
+_result
+
+
+\doku_ane
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2006]
+:: OPIS: anulowanie znacznika wysyłania wiadomości e-mailem
+::  OLD: \doku_ane/dokum.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ~DOKUM.get() || return() ?};
+
+_upr:=exec('get','#params',7000,2,OPERATOR.USER)='T';
+
+{? ~_upr
+|| _w_p:=exec('chk_sent','#mailbox',DOKUM.ref());
+   {? _w_p<>''
+   || FUN.info(
+         'Załącznik tego dokumentu znajduje się w skrzynce poczty: \'%1\'.\n\nAkcja niemożliwa.'@
+         [exec('box_name','#mailbox',_w_p)]
+      );
+      return(0)
+   ?}
+?};
+
+{? DOKUM.ESEND='T'
+|| {? DOKUM.r_lock(1,1,1)
+   || {? FUN.ask('Zaznaczyć dokument jako niewysłany?'@)
+      || DOKUM.ESEND:='N';
+         DOKUM.WO:='N';
+         _pos:=DOKUM.SW*^160;
+         DOKUM.SW:={? _pos=0 || '' || (_pos-1)-DOKUM.SW ?};
+         DOKUM.put();
+         exec('del_source','#mailbox',DOKUM.uidref())
+      ?};
+      DOKUM.r_unlock()
+   || FUN.info('Pozycja zablokowana przez innego użytkownika.\nOdblokowanie znacznika niemożliwe.'@)
+   ?}
+|| FUN.info('Dokument jest oznaczony jako niewysłany.\nOdblokowanie znacznika niemożliwe.'@)
+?};
+''
+
+
+\dokum_ema
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2006]
+:: OPIS: edycja adresu e-mail w dokumentach do wysłania
+::  OLD: \dokum_ema/dokum.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ~DOKUM.get() || return() ?};
+{? DOKUM.ESEND='T'
+|| _w_p:=exec('chk_sent','#mailbox',DOKUM.ref());
+   {? _w_p<>''
+   || FUN.info('Dokument wysłano e-mailem. Akcja niemożliwa.'@);
+      return(0)
+   ?}
+?};
+
+{? DOKUM.r_lock(1,1,1)
+|| DOKUM.win_edit('EM');
+   {? DOKUM.edit("
+         {? ~exec('mail_ok','#email',DOKUM.EM)
+         || FUN.emsg('Niepoprawny adres e-mail.'@);
+            return('EM')
+         ?};
+         ~~
+      ")
+   || DOKUM.put()
+   || DOKUM.get()
+   ?};
+   DOKUM.r_unlock()
+|| FUN.info('Pozycja zablokowana przez innego użytkownika.\nEdycja adresu e-mail niemożliwa.'@)
+?};
+''
+
+
+\logi_dokum_pocz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [12.30]
+:: OPIS: Wyświetla logi serwera poczty dla danego załącznika (logi muszą być ustawione jako indywidualne)
+::  OLD: \logi_dokum_pocz/dokum.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('log4source','#mailbox',DOKUM.ref());
+~~
+
+
+\email_rcv
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2008]
+:: OPIS: adres kontrahenta z załącznika
+::       Kontekst wywołania - rekord tabeli DOKUM
+::   WE: [_a] - (DO) STRING - adres email wygenerowany z wtyczki DOKUM_F_EMAIL_001
+::       [_b] - (DW)
+::       [_c] - (UDW)
+::  OLD: \adr_cer/eml.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('') & _a<>''
+|| {? (var_pres('_b')=type_of('') & _b<>'') | (var_pres('_c')=type_of('') & _c<>'')
+   || {? var_pres('_b')<>type_of('')
+      || _b:=''
+      ?};
+      {? var_pres('_c')<>type_of('')
+      || _c:=''
+      ?};
+      exec('mail_from_lists','#email',_a,_b,_c)
+   || exec('mail_from_list','#email',_a)
+   ?}
+|| DOKUM.EM
+?}
+
+
+\email_sub
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2008]
+:: OPIS: temat powiadomienia - wysyłanie załączników
+::       Kontekst wywołania - rekord tabeli DOKUM
+::  OLD: \sub_cer/eml.fml
+::----------------------------------------------------------------------------------------------------------------------
+DOKUM.KR_OP
+
+
+\email_text
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2008]
+:: OPIS: treść powiadomienia - wysyłanie załączników
+::       Kontekst wywołania - rekord tabeli DOKUM
+::   WE: [_a] kontekst wywołania - rekord tabeli DOKUMP
+::  OLD: \text_cer/eml.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dokump_czy:=0;
+{? var_pres('_a')=type_of(0)
+|| _dokump_czy:=_a
+?};
+__BODY:=tab_tmp(1,'LP','INTEGER','Lp',
+                 'TEKST','STRING[255]','Tekst');
+__LP:=0;
+_add:="__LP+=1;__BODY.LP:=__LP;__BODY.TEKST:=_a;__BODY.add()";
+:: treść kontaktu
+_opis_czy:=1;
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump_czy
+|| {? exec('dokum_upraw','dokum',DOKUMP.USER().KOD)='B'
+   || _opis_czy:=0
+   ?}
+?};
+{? _opis_czy
+|| _txt:=DOKUM.memo_txt(0,0,'OPIS')
+|| _txt:=''
+?};
+:: Nadawca powiadomienia
+USERS.cntx_psh();
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump_czy & DOKUMP.NADAWCA().DANE<>''
+|| {? _txt<>''
+   || _txt+='\n\nNadawca: '+USERS.DANE
+   ?}
+?};
+USERS.cntx_pop();
+:: informacja z powiadomienia o kontakcie
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump_czy & DOKUMP.INFO<>''
+|| {? _txt<>''
+   || _txt:='\n\n'+_txt
+   ?};
+   _txt:=DOKUMP.INFO+_txt
+?};
+{? _txt<>''
+||
+   {? +_txt>255
+   || _lines:=exec('lines','#string',_txt,250);
+      {? var_pres('_lines')>100
+      || _lines.prefix();
+         {? _lines.first()
+         || {!
+            |? _add(_lines.LINE);
+               _lines.next()
+            !}
+         ?};
+         obj_del(_lines)
+      ?}
+   || _add(_txt)
+   ?}
+|| _add('Przesyłamy Państwu następujący dokument:')
+?};
+:: stopka użytkownika, który utworzył kontakt e-mail
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & ~_dokump_czy
+|| USERS.cntx_psh();
+   {? exec('getUser','users',DOKUM.OPER)
+   || _txt:=USERS.memo_txt(0,1,'FOOT');
+     {? _txt<>''
+     || _add('\n'+_txt)
+     ?}
+   ?};
+   USERS.cntx_pop()
+?};
+_body:=__BODY;
+obj_del(__BODY); &__LP;
+_body
+
+
+\email_html
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2008]
+:: OPIS: treść powiadomienia html - wysyłanie załączników
+::       Kontekst wywołania - rekord tabeli DOKUM
+::   WE: [_a] kontekst wywołania - rekord tabeli DOKUMP
+::  OLD: \html_cer/eml.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dokump_czy:=0;
+{? var_pres('_a')=type_of(0)
+|| _dokump_czy:=_a
+?};
+__BODY:=tab_tmp(1,'LP','INTEGER','Lp',
+                 'TEKST','STRING[255]','Tekst');
+__LP:=0;
+_add:="__LP+=1;__BODY.LP:=__LP;__BODY.TEKST:=_a;__BODY.add()";
+:: Nadawca powiadomienia
+USERS.cntx_psh();
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump_czy & DOKUMP.NADAWCA().DANE<>''
+|| _txt:=USERS.DANE;
+   _add('Nadawca: '+_txt+'<BR><BR>')
+?};
+USERS.cntx_pop();
+
+:: Kontrahent
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump_czy
+|| _txt:=DOKUM.KH().NAZ;
+   _add('Kontrahent:'+_txt+'<BR><BR>')
+?};
+
+:: informacja z powiadomienia o kontakcie
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump_czy & DOKUMP.INFO<>''
+|| _txt:=DOKUMP.INFO;
+   _add(''+_txt+'<BR><BR><BR>')
+?};
+:: treść kontaktu
+_opis_czy:=1;
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump_czy
+|| {? exec('dokum_upraw','dokum',DOKUMP.USER().KOD)='B'
+   || _opis_czy:=0
+   ?}
+?};
+{? _opis_czy
+|| _memo:=DOKUM.memo_get('r','OPIS',1);
+   {? _memo.is_open()
+   || {!
+      |? _txt:=fread(_memo);
+         {? +_txt>255
+         || _lines:=exec('lines','#string',_txt,230);
+            {? var_pres('_lines')>100
+            || _lines.prefix();
+               {? _lines.first()
+               || {!
+                  |? _add(_lines.LINE+'<BR>');
+                     _lines.next()
+                  !}
+               ?};
+               obj_del(_lines)
+            ?}
+         |? _txt='\n'
+         || _add('<h4 align=center>Przesyłamy Państwu następujący dokument:</h4>')
+         || _add(_txt+'<BR>')
+         ?};
+         _txt<>'\n'
+      !};
+      obj_del(_memo)
+   || _add('<h4 align=center>Przesyłamy Państwu następujący dokument:</h4>')
+   ?}
+?};
+:: link do kontaktu w powiadomieniu o kontakcie
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & _dokump_czy
+||
+   _add('<h3>Kontakt: %1 '[exec('record','#to_string',DOKUM.uidref())]);
+   _link_desk:=exec('link_uri','#system',exec('obj_ntab_set','#array',,'LINK',DOKUM.uidref()));
+   _link_html:=exec('link_uri','#system',exec('obj_ntab_set','#array',,'LINK',DOKUM.uidref()),XINFO.LINK_INT);
+   {? _link_html<>''
+   || _add('[[BODY_BUTTON2(');
+      _add(_link_desk);
+      _add(',Link do kontaktu (desktop),Link do kontaktu,');
+      _add(_link_html);
+      _add(',Link do kontaktu (html),Link do kontaktu)]]')
+   || _add('[[BODY_BUTTON(');
+      _add(_link_desk);
+      _add(',Link do kontaktu,Link do kontaktu)]]')
+   ?};
+   _add('</h3>')
+?};
+:: stopka użytkownika, który utworzył kontakt e-mail
+{? (DOKUM.TYP='K' | DOKUM.TYP='D') & ~_dokump_czy
+|| USERS.cntx_psh();
+   {? exec('getUser','users',DOKUM.OPER)
+   || _memo:=USERS.memo_get('r','FOOT');
+     {? _memo.is_open()
+     || _add('<BR>');
+        {!
+        |? _txt:=fread(_memo);
+           _add(_txt+'<BR>');
+           _txt<>'\n'
+        !};
+        obj_del(_memo)
+     ?}
+   ?};
+   USERS.cntx_pop()
+?};
+_body:=__BODY;
+obj_del(__BODY); &__LP;
+_body
+
+
+\unblock
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.00]
+:: OPIS: Odblokowanie znacznika wysłania załacznika
+::   WE: _a - wskazanie na załącznik (DOKUM.ref)
+::       _b - czy dostępne dialogi? 1-tak 0-nie
+::----------------------------------------------------------------------------------------------------------------------
+DOKUM.cntx_psh();
+DOKUM.prefix();
+{? DOKUM.seek(_a) & #DOKUM.DOKUM<>0
+|| {? DOKUM.ESEND<>'T'
+   || {? _b
+      || FUN.info('Załącznik nie był jeszcze wysłany.'@)
+      ?}
+   |? DOKUM.ESEND='T'
+   || {? _b=0 | FUN.ask('Czy odblokować możliwość ponownego wysyłania załącznika?'@)
+      || DOKUM.ESEND:='N';
+         DOKUM.put()
+      ?}
+   ?}
+?};
+DOKUM.cntx_pop()
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.22]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+
+_can_continue:=1;
+_obj:=obj_new('RESULT','DOKUM');
+_obj.RESULT:=0;
+_obj.DOKUM:=null();
+
+_keyRefs:=_mp.getRefs();
+
+{? obj_len(_keyRefs)>0
+||
+   {! _it:=1..obj_len(_keyRefs)
+   |! _kref:=_keyRefs[_it];
+
+      {? type_of(_kref)>0
+      ||
+         {? ref_name(_kref)=DOKUM.name()
+         || _obj.DOKUM:=exec('FindAndGet','#table',DOKUM,_kref,,,null());
+            {? _obj.DOKUM=null()
+            ||
+::             Nie znaleziono rekordu kluczowego powiązanego więc robię error
+               _can_continue:=0;
+               _msg:='Dokument nie został odnaleziony, prawdopodobnie został usunięty.'@@;
+               {? _mp.isService()=0 & _mp.CLEANER=0
+               || FUN.emsg(_msg)
+               ?};
+               _mp.error(_msg)
+            ?}
+         ?}
+      ?}
+   !}
+?};
+
+{? _can_continue>0
+||
+:: jest parametr wejściowy DOKUM
+   {? _obj.DOKUM=null() & var_pres('DOKUM',_in)=type_of(null())
+   || _obj.DOKUM:=_in.DOKUM
+   ?}
+?};
+
+{? _can_continue>0
+|| _obj.RESULT:=1
+?};
+
+_obj
+
+
+\dokum_czy_wyslac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [21.37]
+:: OPIS: sprawdzenie, czy DOKUM jest załącznikiem PDF dokumentu sprzedazy i czy wolno go wysłać
+::   WE: _a - czy włączone dialogi
+::----------------------------------------------------------------------------------------------------------------------
+_dialog:=1;
+{? var_pres('_a')=type_of(0)
+|| _dialog:=_a
+?};
+
+_czy:=1;
+
+_refx:=ref_tab(DOKUM.REFSQL);
+{? DOKUM.AUTOADD='T' & type_of(_refx)<>type_of(~~) & _refx=FAKS
+|| {? exec('FindAndGet','#table',FAKS,DOKUM.REFSQL,,"SZ",'')='S'
+   || _kh:=exec('FindAndGet','#table',FAKS,DOKUM.REFSQL,,"KH",null());
+      {? _kh<>null()
+      || _efaktura:='N';
+         KH_DOD.cntx_psh();
+         KH_DOD.index('KH_DOD');
+         KH_DOD.prefix(REF.FIRMA,_kh);
+         {? KH_DOD.first()
+         || _efaktura:=KH_DOD.EFAKTURA
+         ?};
+         KH_DOD.cntx_pop();
+         {? _efaktura='N'
+         || _p300240:=exec('get','#params',300240,2);
+            {? _p300240='N'
+            || _czy:=0;
+               {? _dialog
+               || _msg:='Kontrahent nie ma zgody na e-fakturę.'@;
+                  FUN.info(_msg)
+               ?}
+            |? _p300240='P'
+            || {? _dialog
+               || _msg:='Kontrahent nie ma zgody na e-fakturę. Czy wysłać mimo to?'@;
+                  _czy:=FUN.ask(_msg)
+               || _czy:=0
+               ?}
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+
+_czy
+
+:Sign Version 2.0 jowisz:1045 2023/11/08 13:09:01 0f91db1e379766dc911e8a465716f71060cb499538dea7fa5676e9da658fa980e6851243d2c19636997be4b25fdcb7db98718cb158f6ed05cbc6a3b18d68fca7082e0ec3c111feacd9ea3919e3f888201e8badaf8907d2839703303da57f867773ff72834ed20ad9a3602f2cb0f1bc499d4a7637ad68aaaa94930b52b8a4cb69

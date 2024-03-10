@@ -1,0 +1,1025 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: office2pdf.fml [21.37]
+:: Utworzony: 09.02.2021
+:: Autor: MicKoc
+::======================================================================================================================
+:: Zawartość: Definicja klasy konwertującej dokumenty MS Office na PDF.
+::
+:: Założenia: Konwersja odbywa się na końcówce klienta, możliwe konwersje DOC[X], XLS[X], PPT[X] na PDF za pomocą
+::    mechanizmów własnych MS OFFICE z użyciem Visual Basic Script. Użytkownik musi mieć możliwość wykonywania skryptów
+::    VBS. Na komputerze klienta musi być Windows z zainstalowanym Office.
+::
+:: Konfiguracja:
+::    miejsca - lista miejsc załączników dla obszaru PERSONEL, domyślnie 'H,H_UM,RH'
+::    path - katalog tymczasowy używany do konwersji, domyślnie tymczasowy użytkownika
+::    par_vbs - nazwa pliku z parametrami dla VBS, domyślnie 'inout.txt'
+::
+:: Uruchomienie:
+::    exec('init','office2pdf');
+::    _o2p:=obj_new(@.Class.OFCE2PDF);
+::    ...
+::
+:: Metody:
+::    select() - uruchamia interfejs graficzny
+::    add(0) - dołącza pojedynczy plik wybierany z dysku
+::    add(1) - dołącza pliki z folderu wybieranego z dysku
+::    add('c:\\user\\Documents\\plik.doc') - dołącza plik
+::    add(ZALACZ,'ZAL') - dołącza plik załącznika z bazy
+::    add(ZALACZ,'ZAL','pdf') - dołącza plik pdf załącznika z bazy - do podpisu
+::    convert() - konwertuje pliki
+::    setKpk('on|off') - ustawia metodę konwersji na krok-po-kroku 'on' lub blokowo 'off', domyślnie 'off'
+::       Dla 'on', każdy plik oddzielnie jest konwertowany, w katalogu tymczasowym jest przechowywany 1 plik office i 1
+::       plik pdf. Dla 'off' najpierw są kopiowane wszystkie pliki, potem konwertowane wszystkie pliki. W katalogu
+::       tymczasowym może być naraz wiele plików office i wiele plików pdf. Konwersja blokowa jest szybsza i ustawiona
+::       jako domyślna.
+::    zapisz() - zwraca dokument PDF do bazy, tylko dla obszaru PERSONEL
+::    sign() - podpisuje dokumenty PDF
+::    v_sign() - weryfikuje podpisy dokumentów PDF
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Deklaracja klas OFCE2PDF
+:: ~OST: INTMPDIR, INFMKDIR, INFILECHOOSER, INFCOPY, INFDIR, INCLIEXEC, INBLVIEW
+::----------------------------------------------------------------------------------------------------------------------
+_typ:='OFCE2PDF';
+{? -(1+sys_name(0))<>'w' || return(0) ?};
+{? ~(cli_ver()='jterm' | (exec('interm','#system') & exec('cli_functions','#system')))
+|| return(0)
+?};
+{? __develop
+|| _cl_name:=@.Class.get_name(_typ)
+|| _cl_name:=_typ
+?};
+{? var_pres(_cl_name,@.CLASS)<=0
+|| obj_decl(_cl_name,
+:: --POLA--
+      obj_fld('this'       ,'wskazanie na siebie'                                         ; null() ),
+      obj_fld('ver'        ,'wersja silnika'                                              ; 0 ),
+      obj_fld('ppp'        ,'plik po pliku'                                               ; 0 ),
+      obj_fld('personel'   ,'dostęp dla PERSONEL'                                         ; 0 ),
+      obj_fld('typy'       ,'obsługiwane typy plików'                                     ; '' ),
+      obj_fld('miejsca'    ,'miejsca załączników'                                         ; '' ),
+      obj_fld('pdf'        ,'typ konwersji'                                               ; 'pdf' ),
+      obj_fld('path'       ,'lokalny folder tymczasowy'                                   ; '' ),
+      obj_fld('sep'        ,'separator'                                                   ; '' ),
+      obj_fld('lastkatal'  ,'podpowiadany katalog'                                        ; '' ),
+      obj_fld('kpk'        ,'konwersja krok_po_kroku'                                     ; 0 ),
+      obj_fld('par_vbs'    ,'parametry dla skryptu'                                       ; 'inout.txt' ),
+      obj_fld('vbs'        ,'skrypt'                                                      ; 'office2pdf.vbs' ),
+      obj_fld('err_vbs'    ,'błędy vbs'                                                   ; 'office2pdf.log' ),
+      obj_fld('OBJ'        ,'definicja interfejsu'                                        ; null() ),
+      obj_fld('TAB'        ,'tabela plików'                                               ; null() ),
+      obj_fld('ICO'        ,'ikony'                                                       ; null() ),
+      obj_fld('esign'      ,'podpis elektroniczny'                                        ; null() ),
+:: --KONSTRUKTOR/DESTRUKTOR--
+      obj_meth('__init'    ,'inicjalizacja obiektu';"
+         _a.this:=_a;
+         .ver:=user(11);
+         .isPersonel();
+         .InitObj();
+         .TAB:=.OBJ.TAB;
+         .typy:='docx,doc,xlsx,xls,pptx,ppt';
+         .miejsca:='H,H_UM,RH';
+         .path:=tmp_dir();
+         {? exec('interm','#system')
+         || fmkdir('@'+.path,'interm')
+         ?};
+         .sep:=exec('sep','#file',0);
+         .ICO:=obj_new('N','K','B','O','Z','S','X');
+         .ICO.N:='xwin16.png:18';
+         .ICO.K:='xwin16.png:88';
+         .ICO.B:='xwin16.png:4';
+         .ICO.O:='xwin16.png:38';
+         .ICO.Z:='xwin16.png:79';
+         .ICO.S:='xwin16.png:42';
+         .ICO.X:='xwin16.png:15';
+         exec('MBJAR','#object');
+         exec('esign_decl','#esign');
+         .esign:=obj_new(@.CLASS.ESIGN);
+         {? .personel
+         || P.cntx_psh();
+            P.clear();
+            P.win_sel('PKD_SLO');
+            SLO_NAZ.cntx_psh();
+            SLO_NAZ.clear();
+            ZALACZ.cntx_psh();
+            ZALACZ.clear()
+         ?};
+         1
+      "),
+   obj_meth('__done'       ,'usuwanie obiektu';"
+         {? .personel & errno()=0
+         || P.cntx_pop();
+            SLO_NAZ.cntx_pop();
+            ZALACZ.cntx_pop()
+         ?}
+      "),
+:: ---------------------------------------------------------------------------------------------------------------------
+:: --METODY-- umownie publiczne, do ogólnego stosowania
+:: ---------------------------------------------------------------------------------------------------------------------
+   obj_meth('select','udostępnia interfejs';"
+         params_set('par',.);
+         .TAB.index(.OBJ.NDX.LP);
+         .TAB.prefix();
+         .TAB.fld_attr(,2);
+         .TAB.select();
+         .TAB
+      ",-1),
+
+   obj_meth('add','dołączenie z bazy załącznika';"
+         {? ~+|_b || return(null()) ?};
+         _id:=_a.uidref();
+         _nazwa:=($((2-!_a)+'.'+_b+'().NAME'))();
+         _hash:=.hash(_a,_b)+'.'+exec('split_file_name','#file',_nazwa).ext;
+         _ref:=null();
+         {? +|_hash & .isOffice(_nazwa)
+         || .TAB.cntx_psh();
+            .TAB.index(.OBJ.NDX.HASH);
+            .TAB.prefix(_hash,);
+            {? .TAB.first()
+            || .TAB.cntx_pop();
+               return(null())
+            || .TAB.index(.OBJ.NDX.LP);
+               .TAB.prefix();
+               _lp:={? .TAB.last() || .TAB.LP+1 || 1 ?};
+               .TAB.index(.OBJ.NDX.HASH);
+               .TAB.blank();
+               .TAB.LP:=_lp;
+               .TAB.O_ID:=_id;
+               .TAB.O_FLD:=_b;
+               .TAB.OFFICE:=_nazwa;
+               .TAB.R:='Z';
+               .TAB.ZN:='N';
+               .TAB.STATUS:='Nowy plik';
+               .TAB.NAZ:=.TAB.OFFICE;
+               .TAB.HASH:=_hash;
+               {? .personel
+               || .TAB.P_ID:=.pracownik(_a,_b);
+                  .TAB.TYP_ID:=.zalacznik(_a,_b)
+               ?};
+               _ref:={? .TAB.add() || .TAB.ref() || null() ?}
+            ?};
+            .TAB.cntx_pop()
+         ?};
+         _ref
+      ",type_of(SYSLOG),type_of(''),-1),
+
+   obj_meth('add','dołączenie z bazy załącznika PDF';"
+         {? ~+|_b || return(null()) ?};
+         {? _c<>'pdf' || return(null()) ?};
+         _id:=_a.uidref();
+         _nazwa:=($((2-!_a)+'.'+_b+'().NAME'))();
+         _hash:=.hash(_a,_b)+'.'+exec('split_file_name','#file',_nazwa).ext;
+         _ref:=null();
+         {? +|_hash
+         || .TAB.cntx_psh();
+            .TAB.index(.OBJ.NDX.HASH);
+            .TAB.prefix(_hash,);
+            {? .TAB.first()
+            || .TAB.cntx_pop();
+               return(null())
+            || .TAB.index(.OBJ.NDX.LP);
+               .TAB.prefix();
+               _lp:={? .TAB.last() || .TAB.LP+1 || 1 ?};
+               .TAB.index(.OBJ.NDX.HASH);
+               .TAB.blank();
+               .TAB.LP:=_lp;
+               .TAB.O_ID:=_id;
+               .TAB.O_FLD:=_b;
+               .TAB.OFFICE:=_nazwa;
+               .TAB.PDF:=_nazwa;
+               .TAB.R:='X';
+               .TAB.ZN:='X';
+               .TAB.STATUS:='Konwersja prawidłowa';
+               .TAB.NAZ:=.TAB.OFFICE;
+               .TAB.HASH:=_hash;
+               .TAB.ZAL:=($((2-!_a)+'.'+_b))();
+               .TAB.ZAL_S:=.TAB.ZAL;
+               {? .personel
+               || .TAB.P_ID:=.pracownik(_a,_b);
+                  .TAB.TYP_ID:=.zalacznik(_a,_b)
+               ?};
+               _ref:={? .TAB.add() || .TAB.ref() || null() ?}
+            ?};
+            .TAB.cntx_pop()
+         ?};
+         _ref
+      ",type_of(SYSLOG),type_of(''),type_of(''),-1),
+
+   obj_meth('add','dołączenie pliku';"
+         {? ~+|_a || return(null()) ?};
+         .TAB.cntx_psh();
+         .TAB.index(.OBJ.NDX.HASH);
+         _hash:=hash(-_a)+'.'+exec('split_file_name','#file',_a).ext;
+         .TAB.prefix(_hash,);
+         {? .TAB.first()
+         || .TAB.cntx_pop();
+            return(null())
+         || .TAB.index(.OBJ.NDX.LP);
+            .TAB.prefix();
+            _lp:={? .TAB.last() || .TAB.LP+1 || 1 ?};
+            .TAB.index(.OBJ.NDX.HASH);
+            .TAB.blank();
+            .TAB.LP:=_lp;
+            .TAB.OFFICE:={? 1+_a='@' || 1-_a || _a ?};
+            .TAB.R:='P';
+            .TAB.ZN:='N';
+            .TAB.STATUS:='Nowy plik';
+            .TAB.NAZ:=(+exec('dir_from_path','#file',_a)+1)-_a;
+            .TAB.HASH:=_hash;
+            _ref:={? .TAB.add() || .TAB.ref() || null() ?}
+         ?};
+         .TAB.cntx_pop();
+         _ref
+      ",type_of(''),-1),
+
+   obj_meth('add','dołączenie pliku/ów z dysku';"
+         _ret:=null();
+         {? exec('interm','#system')
+         || _ext:='.doc,.docx,.xls,.xlsx,.ppt,.pptx';
+            _sep_s:=exec('sep','#file',2);
+            _sep_c:=exec('sep','#file');
+            _dir:=fmk_tmp_dir(0);
+            _pth:=_dir.get_path();
+            _files:=dlg_upload(_pth,,_ext,1);
+            {? _files<>''
+            || _spltab:=spli_str(_files,'\n');
+               _size:=obj_len(_spltab);
+               {! _ii:=1.._size
+               |!
+::             sprawdzenie rozszerzenia pliku
+                  {? _ext*(_spltab[_ii]+4)
+                  || fcopy(_pth+_sep_s+_spltab[_ii],'@'+.path+_sep_c+'interm'+_sep_c+_spltab[_ii],0,0,1);
+                     _spltab[_ii]:='@'+.path+_sep_c+'interm'+_sep_c+_spltab[_ii];
+                     _ret:=.add(_spltab[_ii])
+                  || FUN.emsg('Plik %1 nie może zostać dołączony ze względu na błędne rozszerzenie.'@[_spltab[_ii]]+
+                              '\n'+'Dozwolone rozszerzenia plików: '@ +_ext)
+                  ?};
+                  _ii+=1
+               !}
+            ?}
+         ||
+            {? _a=0
+            || _plik:='';
+               _ext:= 'doc;docx';
+               _ext2:='xls;xlsx';
+               _ext3:='ppt;pptx';
+               ctr_set('!application','filechooser','reset');
+               ctr_set('!application','filechooser','addDefaultFilter','Pliki programu WORD (%1)'@ [_ext],_ext);
+               ctr_set('!application','filechooser','addFilter','Pliki programu EXCEL (%1)'@ [_ext2],_ext2);
+               ctr_set('!application','filechooser','addFilter','Pliki programu POWERPOINT (%1)'@ [_ext3],_ext3);
+               ctr_set('!application','filechooser','setMultiSelectionEnabled',0);
+               ctr_set('!application','filechooser','setFileSelectionMode','FILES_ONLY');
+               ctr_set('!application','filechooser','setCurrentDirectory',.lastkatal);
+               {? ctr_call('!application','filechooser','showOpenDialog')
+               || _plik:=ctr_call('!application','filechooser','getSelectedFile')
+               ?};
+               {? +|_plik & .isOffice(_plik)
+               || .lastkatal:=exec('dir_from_path','#file',_plik);
+                  _ret:=.add(_plik)
+               ?}
+            |? _a>0
+            || _myKatal:=MBJAR.GetDir('Katalog z plikami',.lastkatal);
+               {? +|_myKatal
+               || .lastkatal:=_myKatal;
+                  _pliki:=fdir('@'+_myKatal,1,0);
+                  {? _pliki.first()
+                  || {!
+                     |? {? +|_pliki.NAME & _pliki.TYPE='f' & .isOffice(_pliki.NAME)
+                        || _ret:=.add(_pliki.DIR+'\\\\'+_pliki.NAME)
+                        ?};
+                        _pliki.next()
+                     !}
+                  ?}
+               ?}
+            ?}
+         ?};
+         _ret
+      ",type_of(0),-1),
+
+   obj_meth('convert','Konwersja plików';"
+         .convert(0)
+      ",-1),
+
+   obj_meth('setKpk','konwersja krok po kroku';"
+         .kpk:={? _a='on' || 1 || 0 ?}
+      ",type_of(''),-1),
+
+   obj_meth('zapisz','zapisuje załącznik PDF w bazie';"
+         {? ~.personel || return(0) ?};
+         _ret:=0;
+         .TAB.cntx_psh();
+         {? .TAB.first()
+         || {!
+            |? _ret+=.zapisz(1);
+               .TAB.next()
+            !}
+         ?};
+         .TAB.cntx_pop();
+         _ret
+      ",-1),
+
+   obj_meth('sign','podpisuje dokumenty PDF';"
+         _ret:=_jest:=0;
+         .TAB.cntx_psh();
+         .TAB.index(.OBJ.NDX.ZN);
+         .TAB.prefix('O',);
+         {? .TAB.first()
+         || .esign.start();
+            {!
+            |? {? .TAB.ZAL_D=#0
+               || .esign.s_blob_add(.TAB,'ZAL','ZAL_S','ZAL_D');
+                  _jest+=1
+               ?};
+               .TAB.next()
+            !};
+            {? _jest
+            || .esign.sign(,0);
+               _ret:=.status()
+            ?};
+            .esign.stop()
+         ?};
+         .TAB.cntx_pop();
+         _ret
+      ",-1),
+
+   obj_meth('v_sign','';"
+         _ret:=_jest:=0;
+         .TAB.cntx_psh();
+         .TAB.index(.OBJ.NDX.ZN);
+         .TAB.prefix('S',);
+         {? .TAB.first()
+         || .esign.start();
+            {!
+            |? {? .TAB.ZAL_S
+               || .esign.v_blob_add(.TAB,'ZAL_S','ZAL_D');
+                  _jest+=1
+               ?};
+               .TAB.next()
+            !};
+            {? _jest
+            || .esign.verify(0);
+               _ret:=.status()
+            ?};
+            .esign.stop()
+         ?};
+         .TAB.cntx_pop();
+         _ret
+      ",-1),
+:: ---------------------------------------------------------------------------------------------------------------------
+:: --METODY-- umownie prywatne, wewnętrzne
+:: ---------------------------------------------------------------------------------------------------------------------
+   obj_meth('InitObj','powołanie objiektów';"
+         {? var_pres('OBJ',.)>100 || obj_del(.OBJ) ?};
+         .OBJ:=obj_new('TAB','WS','NDX');
+         .OBJ.TAB:=tab_tmp(2,
+            'LP','INTEGER','Lp.',
+            'OFFICE','STRING[255]','Plik Office',
+            'PDF','STRING[255]','Plik PDF lub wynik',
+            'O_ID','STRING[48]','Wskazanie na załącznik',
+            'O_FLD','STRING[8]','Pole z załącznikiem',
+            'R','STRING[1]','Rodzaj: Z-załącznik, P-plik',
+            'ZN','STRING[1]','Znak akcji: Nowy, Kasuj, Błąd, OK, Zapisany, podpiSany',
+            'NAZ','STRING[255]','Nazwa pliku',
+            'NOFFICE','STRING[255]','Nowy plik Office',
+            'HASH','STRING[45]','Hash pliku do szukania',
+            'ZAL','BLOBRAW','Załącznik',
+            'ZAL_S','BLOBRAW','Załącznik podpisany',
+            'ZAL_D','DATE','Data podpisu',
+            'STATUS','STRING[100]','Status',
+            'P_ID','STRING[48]','Pracownik',
+            'TYP_ID','STRING[48]','Typ załącznika'
+            );
+         _tab:=.OBJ.TAB;
+         .OBJ.NDX:=obj_new('LP','ZALACZ','OFFICE','HASH','ZN');
+         _ndx:=.OBJ.NDX;
+         _ndx.LP:=_tab.ndx_tmp('Lp.',,'LP',,,'OFFICE',,);
+         _ndx.ZALACZ:=_tab.ndx_tmp('Załącznik',,'O_ID',,,'O_FLD',,);
+         _ndx.OFFICE:=_tab.ndx_tmp('Plik OFFICE',,'OFFICE',,);
+         _ndx.HASH:=_tab.ndx_tmp('Hash',,'HASH',,);
+         _ndx.ZN:=_tab.ndx_tmp('Znak akcji',,'ZN',,,'LP',,);
+         .OBJ.WS:=_tab.mk_sel('Konwersja plików'@,,0);
+         _win:=.OBJ.WS;
+         _tab.win_fld(_win,,'LP',,,,,1);
+         _tab.win_fld(_win,,'OFFICE',,,40,,1);
+         _tab.win_fld(_win,,'PDF',,,40,,1);
+         _tab.win_fld(_win,,'STATUS',,,20,,1);
+         _formula:='exec(\\'konwert\\',\\'office2pdf\\',params_get().par.this,1)';
+         _txt:='Konwertuje wskazany dokument Office na PDF'@;
+         _tab.win_act(_win,0,'Formuła','&Konwertuj'@@,,_txt,$_formula,,1,1,$_formula,,'K');
+         _tab.win_btn(_win,'text=%1,panel=right,align=begin'['&Konwertuj'@@],'menu:K');
+         _formula:='
+            _tab:=params_get().par.this.TAB;
+            {? _tab.R=\\\'P\\\' & +|_tab.OFFICE
+            || cli_exec(_tab.OFFICE,\\\'open\\\',0)
+            |? _tab.R=\\\'Z\\\' & +|_tab.O_ID
+            || ($((2-!ref_tab(_tab.O_ID))+\\\'.bl_view(\\\'\\\'\\\'+_tab.O_FLD+\\\'\\\'\\\')\\\'))()
+            ?}
+         ';
+         _txt:='Otwiera dokument Office w skojarzonym programie'@;
+         _tab.win_act(_win,0,'Formuła','&Office'@@,,_txt,$_formula,,,,,,'O');
+         _tab.win_btn(_win,'text=%1,panel=right,align=begin'['&Office'@@],'menu:O');
+         _formula:='
+            _tab:=params_get().par.this.TAB;
+            {? ~\\\'OSZ\\\'*_tab.ZN
+            || FUN.info(\\\'Brak pliku\\\'@@)
+            |? _tab.ZAL_S
+            || _tab.bl_view(\\\'ZAL_S\\\',0);
+               ferase(\\\'@\\\'+tmp_dir()+\\\'\\\\\\\\\\'+_tab.ZAL_S().NAME)
+            |? _tab.ZAL
+            || _tab.bl_view(\\\'ZAL\\\',0);
+               ferase(\\\'@\\\'+tmp_dir()+\\\'\\\\\\\\\\'+_tab.ZAL().NAME)
+            ?}
+         ';
+         _txt:='Otwiera dokument PDF w skojarzonym programie'@;
+         _tab.win_act(_win,0,'Formuła','&PDF'@@,,_txt,$_formula,,,,,,'P');
+         _tab.win_btn(_win,'text=%1,panel=right,align=begin'['&PDF'@@],'menu:P');
+         _txt:='Określenie daty opatrzenia pliku podpisem elektronicznym'@;
+         _formula:=\"
+            _a:=params_get().par.this;
+            _tab:=_a.TAB;
+            {? _tab.ZAL_S & _tab.ZN='S'
+            || _esign:=_a.esign;
+               _gr:=_tab.sel_size();
+               {? ~_gr
+               || _esign.start()
+               ?};
+               _esign.v_blob_add(_tab,'ZAL_S','ZAL_D');
+               {? ~_gr
+               || _esign.verify();
+                  _a.status();
+                  _esign.stop()
+               ?}
+            ?}
+         \";
+         _formulaGB:=\"
+            {? FUN.ask(
+                  'Za chwilę nastąpi próba weryfikacji podpisu elektronicznego plików zaznaczonych załączników.\n'
+                  'Widocznym skutkiem weryfikacji jest aktualizacja daty podpisu.\n'
+                  'Czy na pewno chcesz kontynuować?'@
+               )
+            || _esign:=params_get().par.this.esign;
+               _esign.start();
+               1
+            ?}
+         \";
+         _formulaGA:=\"
+            _a:=params_get().par.this;
+            _esign:=_a.esign;
+            _esign.verify();
+            _a.status();
+            _esign.stop()
+         \";
+         _tab.win_act(_win,0,'Formuła','&Weryfikuj podpis'@@,,_txt,_formula,,,1,_formulaGB,_formulaGA,'W');
+         _tab.win_btn(_win,'text=%1,panel=right,align=begin'['&Weryfikuj podpis'@@],'menu:W');
+         _txt:='Opatrzenie dokumentu podpisem elektronicznym'@;
+         _formula:=\"
+            _a:=params_get().par.this;
+            _tab:=_a.TAB;
+            _esign:=_a.esign;
+            _gr:=_tab.sel_size();
+            _gotowy:=_tab.ZAL_D=#0 & _tab.ZN='O';
+            {? ~_gr
+            || {? ~_gotowy
+               || FUN.info(
+                     'Opatrzenie podpisem elektronicznym możliwe jest wyłącznie dla niepodpisanych plików.\n'
+                     'Plik bieżącego załącznika nie spełnia powyższych warunków.'@
+                  );
+                  return(0)
+               ?};
+               _esign.start()
+            ?};
+            {? _gotowy
+            || _esign.s_blob_add(_tab,'ZAL','ZAL_S','ZAL_D')
+            ?};
+            {? ~_gr
+            || _esign.sign();
+               _a.status();
+               _esign.stop()
+            ?}
+         \";
+         _formulaGB:=\"
+            {? FUN.ask(
+                  'Za chwilę nastąpi próba opatrzenia podpisem elektronicznym plików zaznaczonych załączników.\n'
+                  'Pod uwagę zostaną wzięte wyłącznie niepodpisane pliki.\n'
+                  'Czy na pewno chcesz kontynuować?'@
+               )
+            || _esign:=params_get().par.this.esign;
+               _esign.start();
+               1
+            ?}
+         \";
+         _formulaGA:=\"
+            _a:=params_get().par.this;
+            _esign:=_a.esign;
+            _esign.sign(,0);
+            _a.status();
+            _esign.stop()
+         \";
+         _tab.win_act(_win,0,'Formuła','Podpi&sz'@@,,_txt,_formula,,,1,_formulaGB,_formulaGA,'S');
+         _tab.win_btn(_win,'text=%1,panel=right,align=begin'['Podpi&sz'@@],'menu:S');
+         _formula:='params_get().par.this.ikona(cur_tab(1,1).ZN)';
+         _tab.win_fml(_win,,'STATUS',,'ICON_BEFORE',$_formula);
+         _formula:='
+            _a:=params_get().par.this;
+            _tab:=_a.TAB;
+            {? _a.personel
+            || {? +|_tab.P_ID=48 & P.seek(_tab.P_ID) || P.OSOBA() || P.blank(1); OSOBA.blank(1) ?};
+               {? +|_tab.TYP_ID=48 & SLO_NAZ.seek(_tab.TYP_ID) || SLO_NAZ.NAZWA || SLO_NAZ.blank(1) ?}
+            ?};
+            _gr:=\\\'\\\';
+::            Nowy, Kasuj, Błąd, OK, Zapisany
+            {? _tab.sel_size()
+            || _gr+=\\\'PRT\\\'
+            || {? _tab.ZN=\\\'Z\\\' || _gr+=\\\'WZK\\\' ?};
+               {? _tab.ZN=\\\'B\\\' || _gr+=\\\'KPRTZWS\\\' ?};
+               {? _tab.ZN=\\\'N\\\' || _gr+=\\\'WPZS\\\' ?};
+               {? _tab.ZN=\\\'O\\\' || _gr+=\\\'WK\\\' ?};
+               {? _tab.ZN=\\\'O\\\' & ~(+|_tab.P_ID & +|_tab.TYP_ID) || _gr+=\\\'Z\\\' ?};
+               {? _tab.ZN=\\\'S\\\' || _gr+=\\\'SK\\\' ?};
+               {? _tab.ZN=\\\'S\\\' & ~(+|_tab.P_ID & +|_tab.TYP_ID) || _gr+=\\\'Z\\\' ?}
+            ?};
+            _tab.actions_grayed(cur_win(1,1));
+            {? +|_gr || _tab.actions_grayed(cur_win(1,1),_gr) ?}
+         ';
+         _tab.win_act(_win,0,'Rekord',,,,$_formula);
+         {? .personel
+         || _txt:=MS.name(OSOBA,'NAZWISKO');
+            _tab.win_fld(_win,OSOBA,'NAZWISKO',,,MS.fld_len(OSOBA,'NAZWISKO'),,,_txt);
+            _txt:=MS.name(OSOBA,'PIERWSZE');
+            _tab.win_fld(_win,OSOBA,'PIERWSZE',,,MS.fld_len(OSOBA,'PIERWSZE'),,,_txt);
+            _txt:=MS.name(P,'T');
+            _tab.win_fld(_win,P,'T',,,MS.fld_len(P,'T'),,,_txt);
+            _formula:='
+               _tab:=params_get().par.this.TAB;
+               {? +|_tab.P_ID & FUN.ask(\\\'Usunąć przypisanie?\\\'@)
+               || _tab.P_ID:=\\\'\\\'
+               || {? P.select(,1) || _tab.P_ID:=P.uidref() ?}
+               ?};
+               _tab.put()
+            ';
+            _txt:='Wybór pracownika jako właściciela dokumentu PDF'@;
+            _tab.win_act(_win,0,'Formuła','P&racownik'@@,,_txt,$_formula,,,,,,'R');
+            _tab.win_btn(_win,'text=%1,panel=right,align=begin'['P&racownik'@@],'menu:R');
+            _tab.win_fld(_win,SLO_NAZ,'NAZWA',,,20,,,'Typ załącznika'@@);
+            _formula:=\"
+               _tab:=params_get().par.this.TAB;
+               {? +|_tab.TYP_ID & FUN.ask('Usunąć przypisanie?'@)
+               || _tab.TYP_ID:=''
+               || _formula:='
+                     SLO_NAZ.f_set(
+                     ''NAZWA'',
+                     ''join ZAOTM using(SLO_NAZ.reference,ZAOTM.SLO_NAZ)'',
+                     ''ZAOTM.MIEJSCE in (:_a)'',
+                     ''''''''+gsub('''+params_get().par.this.miejsca+''','','','''''','''''')+''''''''
+                     )
+                  ';
+                  _ref:=exec('wybierz_nazwy','ext_slo','ZAL',1,,$_formula).WYBOR.REF;
+                  {? +|_ref & SLO_NAZ.seek(_ref,) || _tab.TYP_ID:=SLO_NAZ.uidref() ?}
+               ?};
+               _tab.put()
+            \";
+            _txt:='Wybór typu załącznika'@;
+            _tab.win_act(_win,0,'Formuła','&Typ załącznika'@@,,_txt,_formula,,,,,,'T');
+            _tab.win_btn(_win,'text=%1,panel=right,align=begin'['&Typ załącznika'@@],'menu:T');
+            _formula:='params_get().par.this.zapisz(1)';
+            _txt:='Zapis dokumentu PDF jako załącznik dla pracownika'@;
+            _tab.win_act(_win,0,'Formuła','&Zapisz'@@,,_txt,$_formula,,,1,,,'Z');
+            _tab.win_btn(_win,'text=%1,panel=right,align=begin'['&Zapisz'@@],'menu:Z')
+         ?};
+         _tab.win_sel(_win);
+         _tab.win_edit(_tab.mk_edit(,1))
+      ",-1),
+
+   obj_meth('isOffice','Czy przekazany plik jest obsługiwany?';"
+         _test:=spli_str(_a,'.');
+         _ret:=_test[obj_len(_test)];
+         return((','+.typy+',')*(','+_ret+','))
+      ",type_of(''),-1),
+
+   obj_meth('hash','';"
+         _file:=fopen(($((2-!_a)+'.'+_b))(),'br',0,0,1);
+         {? _file.is_open()
+         || _ret:=hash(_file);
+            fclose(_file)
+         || _ret:=''
+         ?};
+         _ret
+      ",type_of(SYSLOG),type_of(''),-1),
+
+   obj_meth('blob_get','';"
+         _blob:=_a;
+         _dest:=_b;
+         _ret:=0;
+         _tab:=tab_tmp(,'BLOB','BLOBRAW','');
+         _tab.BLOB:=_blob;
+         {? _tab.add()
+         || _name:=_tab.bl_info('BLOB','NAME');
+            _ret:=_tab.bl_get('BLOB',_dest,0)
+         ?};
+         _ret
+      ",7,type_of(''),-1),
+
+   obj_meth('ext','zmiana rozszerzenia office na pdf';"
+         _co:=spli_str(.typy,',');
+         _na:=obj_new(obj_len(_co));
+         {! _licz:=1..obj_len(_co) |!
+            _na[_licz]:=.pdf
+         !};
+         _file:=exec('split_file_name','#file',_a);
+         _file.fn+'.'+gsub(_file.ext,_co,_na)
+      ",type_of(''),-1),
+
+   obj_meth('ikona','ikona statusu';"
+         ($('.ICO.'+_a))()
+      ",type_of(''),-1),
+
+   obj_meth('isPersonel','Czy uruchomiono z prawami PERSONEL?';"
+         _dom:=3+@.AreaTitle.area;
+         .personel:=
+            ',PED,PKD,PPL,'*(','+_dom+',')>0
+            |
+            (_dom='ZWS' & __develop)
+      ",-1),
+
+   obj_meth('getUidref','pobiera uidref';"
+         _tabStr:=2-!_a;
+         _loop:=tab_num();
+         _nr:=0;
+         {! |? _loop |!
+            {? tab_real(_loop) & _tabStr=tab_acr(_loop)
+            || {? var_pres('_tab')>100 || &_tab ?};
+               _tab:=($(tab_acr(_loop)))();
+               {! _licz:=1.._tab.fld_num() |!
+                  {? _tab.fld_join(_licz)=2-!_c
+                  || _c.cntx_psh();
+                     _ref:=($(tab_acr(_loop)+'.'+_tab.fld_acr(_licz)+'().uidref()'))();
+                     {? +|_ref & var_pres('_d')=type_of(\"\") & ~_d() || _ref:='' ?};
+                     _c.cntx_pop();
+                     return(_ref)
+                  ?}
+               !}
+            ?};
+            _loop-=1
+         !};''
+      ",type_of(SYSLOG),type_of(''),type_of(SYSLOG)),
+
+   obj_meth('pracownik','Pobranie pracownika z załącznika';"
+         .getUidref(_a,_b,P)
+      ",type_of(SYSLOG),type_of('')),
+
+   obj_meth('convert','Konwersja plików';"
+         _ret:=null();
+         {? _a=0
+         || exec('konwert','office2pdf',.)
+         |? _a>0
+         || exec('konwert','office2pdf',.,1)
+         ?};
+         .TAB
+      ",type_of(0),-1),
+
+   obj_meth('zalacznik','Pobranie typu załącznika';"
+         .getUidref(_a,_b,SLO_NAZ,\"SLO_NAZ.SLO_TYP().SYMBOL='ZAL'\")
+      ",type_of(SYSLOG),type_of('')),
+
+   obj_meth('zapisz','zapisuje pojedynczy załącznik PDF w bazie';"
+         _ret:=0;
+         {? .personel & +|.TAB.ZN & ('OS'*.TAB.ZN)
+         || _rp:={? +|.TAB.P_ID=48 & P.seek(.TAB.P_ID) || P.ref() || null() ?};
+            _rz:={? +|.TAB.TYP_ID=48 & SLO_NAZ.seek(.TAB.TYP_ID) || SLO_NAZ.ref() || null() ?};
+            _tmp:=($((2-!ref_tab(.TAB.O_ID))))();
+            _za:=
+               {? +|.TAB.O_ID & var_pres('NAG',_tmp)>0 & ($((2-!ref_tab(.TAB.O_ID))+'.seek(\'\''+.TAB.O_ID+'\'\')'))()
+               || ($((2-!ref_tab(.TAB.O_ID))+'.NAG'))()
+               || ''
+               ?};
+            _ro:=
+               {? +_za & _rz
+               || exec('FindInSet','#table','ZAOTM','SLO_NAZ',_rz,,\"ZAOTM.MIEJSCE\")
+               || 'P'
+               ?};
+            {? _rp & _rz & +|_ro
+            || _uchwyt:={? .TAB.ZN='O' || fopen(.TAB.ZAL,'r',0,0,1,0) || fopen(.TAB.ZAL_S,'r',0,0,1,0) ?};
+               {? _uchwyt.is_open()
+               || do();
+                  ZALACZ.prefix();
+                  {? +_za
+                  || _nazwa:=.TAB.ZAL().NAME;
+                     ZALACZ.LOK:=_nazwa;
+                     ZALACZ.DTSIGN:=.TAB.ZAL_D;
+                     {? ZALACZ.put()
+                     || ZALACZ.bl_put('ZAL',_uchwyt,0,1,_nazwa,1)
+                     ?}
+                  || ZALACZ.blank(1);
+                     ZALACZ.P:=_rp;
+                     ZALACZ.OSOBA:=ZALACZ.P().OSOBA;
+                     ZALACZ.DATA:=date();
+                     ZALACZ.TYP_ZAL:=_rz;
+                     ZALACZ.RODZAJ:=_ro;
+                     ZALACZ.NAG:=_za;
+                     ZALACZ.FIRMA:=exec('ref_firma','ustawienia');
+:: Dokumenty nie powinny być widoczne, ponieważ nie są podpisane
+                     {?  exec('lic','#b_domain','PEP')
+                     || ZALACZ.WWWE:='N';
+                        ZALACZ.WWW:='N'
+                     || ZALACZ.WWWE:='T';
+                        ZALACZ.WWW:='T'
+                     ?};
+                     ZALACZ.WWWS:='N';
+                     {? .TAB.ZN='S' || ZALACZ.DTSIGN:=.TAB.ZAL_D ?};
+                     _nazwa:=.TAB.ZAL().NAME;
+                     ZALACZ.LOK:=_nazwa;
+                     ZALACZ.DTSIGN:=.TAB.ZAL_D;
+                     _ret:=
+                        {? ZALACZ.add()
+                        || ZALACZ.bl_put('ZAL',_uchwyt,0,1,_nazwa,1)
+                        || 0
+                        ?}
+                  ?};
+                  {? _ret
+                  || .TAB.ZN:='Z';
+                     .TAB.STATUS:='Zapisano w bazie';
+                     .TAB.put()
+                  ?};
+                  end();
+                  fclose(_uchwyt);
+                  obj_del(_uchwyt);
+                  &_uchwyt
+               ?};
+               {? var_pres('_uchwyt')>0 || &_uchwyt ?}
+            ?}
+         ?};
+         _ret
+      ",type_of(0),-1),
+
+   obj_meth('status','Zwraca status weryfikacji lub podpisu';"
+         _ret:=0;
+         .esign.TAB.cntx_psh();
+         .TAB.cntx_psh();
+         .TAB.prefix();
+         {? .esign.TAB.first()
+         || {!
+            |? {? .TAB.seek(.esign.TAB.ID,)
+               || {? +|.esign.TAB.SRESTXT
+                  || .TAB.STATUS:=.esign.TAB.SRESTXT;
+                     {? .esign.TAB.SRESCODE='0'
+                     || .TAB.ZN:='S';
+                        _ret+=1
+                     ?}
+                  || .TAB.STATUS:=.esign.TAB.VRESTXT;
+                     {? .esign.TAB.VRESCODE='0'
+                     || .TAB.ZN:='S';
+                        _ret+=1
+                     ?}
+                  ?};
+                  .TAB.put()
+               ?};
+               .esign.TAB.next()
+            !}
+         ?};
+         .esign.TAB.cntx_pop();
+         .TAB.cntx_pop();
+         _ret
+      "),
+
+   obj_meth('sprzatnijPliki','Usuwa pliki z katalogu tymczasowego';"
+         _naz:='@'+.path+'\\\\'+.par_vbs;
+         {? fexists(_naz,0) || ferase(_naz,0) ?};
+         _naz:='@'+.path+'\\\\'+.err_vbs;
+         {? fexists(_naz,0) || ferase(_naz,0) ?};
+         _naz:='@'+.path+'\\\\'+.vbs;
+         {? fexists(_naz,0) || ferase(_naz,0) ?}
+      ")
+   )
+?};
+{? __develop
+|| @.Class.setclass(_typ,_cl_name)
+?};
+~~
+
+
+\konwert
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Pliki z załącznika, skrypt i plik inout.txt kopiowane do @!Tmp
+::   WE: _a [OBJ] - this
+::       _b [INTEGER] - 0 lub brak wszystkie zapisy, 1 wskazane w oknie
+::   WY:
+:: ~OST: INBLPUT,INENVGET,INFCOPY,INFERASE,INFEXISTS,INFOPEN,INSYSTEM
+::----------------------------------------------------------------------------------------------------------------------
+_par:=_a;
+_tab:=_par.TAB;
+_zOkna:=var_pres('_b')=type_of(0) & _b>0;
+_ret:=1;
+_ok:=0;
+
+:: porządki
+_par.sprzatnijPliki();
+
+:: kopia skryptu
+_ret*=fcopy(_par.vbs,'@'+_par.path+'\\'+_par.vbs,1,0,1);
+
+:: ustawienia
+_dane:='';
+_tab.cntx_psh();
+{? _zOkna
+|| {? _tab.sel_size()=0 || sel_add() ?};
+   _zaz:=_tab.sel_aget()
+|| _zaz:=_tab
+?};
+
+:: działanie krok_po_kroku
+_kpk:=_zOkna=0 & _par.kpk;
+:: formuła wspólna
+_formula:="
+   _tab:=_a;
+   _par:=_b;
+   _dane:='';
+   {? _tab.R='P' & +|_tab.OFFICE & fexists('@'+_tab.OFFICE,0)
+   || _tab.NOFFICE:=_par.path+'\\\\'+_tab.HASH;
+      _tab.ZN:={? fcopy('@'+_tab.OFFICE,'@'+_tab.NOFFICE,0,0,1) || 'K' || 'B' ?}
+   |? _tab.R='Z'
+   || {? var_pres('_tmp')>100 || &_tmp ?};
+      {? var_pres('_fld')>100 || &_fld ?};
+      _tmp:=ref_tab(_tab.O_ID);
+      _tmp.cntx_psh();
+      _tmp.clear();
+      {? _tmp.seek(_tab.O_ID)
+      || _fld:=($((2-!_tmp)+'.'+_tab.O_FLD))();
+         _tab.NOFFICE:=_par.path+'\\\\'+_tab.HASH;
+         _tab.ZN:={? _par.this.blob_get(_fld,'@'+_tab.NOFFICE) || 'K' || 'B' ?}
+      || _tab.ZN:='B';
+         _tab.STATUS:='Brak dostępu do załącznika'
+      ?};
+      _tmp.cntx_pop()
+   |? _tab.R='X'
+   || _tab.R:='Z'
+   || _tab.ZN:='B';
+      _tab.STATUS:='Brak pliku lub brak dostępu do pliku'
+   ?};
+   {? _tab.ZN='X'
+   || _tab.ZN:='O'
+   |? _tab.ZN<>'K'
+   || _tab.NOFFICE:=''
+   || _dane+=_tab.NOFFICE+'\n'
+   ?};
+   {? _tab.ZN='K' || _tab.STATUS:='Plik sopiowany prawidłowo'
+   |? _tab.ZN='B' & ~+|_tab.STATUS || _tab.STATUS:='Błąd'
+   ?};
+   _tab.put();
+   _dane
+";
+:: kopia plików, zamiast nazw hash w celu uniknięcia nadpisań
+{? ~_kpk & _zaz.first()
+|| {!
+   |? {? (_zOkna & _tab.seek(_zaz.REF,)) | ~_zOkna
+      || _dane+=_formula(_tab,_par)
+      ?};
+      _zaz.next()
+   !};
+   _dane-=1
+|| _ret*=0
+?};
+
+{? (_kpk & _zaz.first()) | ~_kpk
+|| {!
+   |? {? _kpk & ((_zOkna & _tab.seek(_zaz.REF,)) | ~_zOkna)
+      || _ret:=1;
+         _ok:=0;
+         _dane:=_formula(_tab,_par);
+         _dane-=1
+      ?};
+
+:: konwersja plików
+      {? _ret & +|_dane
+      || _uch:=fopen('@'+_par.path+'\\'+_par.par_vbs,'w',0);
+         {? _uch || fwrite(_uch,STR.maz2w95(_dane)); fclose(_uch) ?};
+         _cmd:=envget('@COMSPEC');
+         _cmd:=gsub(_cmd,'cmd.exe','wscript.exe');
+         _cmd+=' /B ';
+         _cmd+=_par.path+'\\'+_par.vbs+' ';
+         _cmd+=_par.path+'\\'+_par.par_vbs+' ';
+         _cmd+=_par.path+'\\'+_par.err_vbs;
+         on_error(2);
+         no_msg(1);
+         _ret*=system('@'+_cmd,1);
+         {? in_error()
+         || FUN.emsg('Przerwano działanie polecenia systemowego'@);
+            _ret*=0
+         ?};
+         on_error(0);
+         no_msg(0);
+         {? fexists('@'+_par.path+'\\'+_par.err_vbs,0)
+         || _uch:=fopen('@'+_par.path+'\\'+_par.err_vbs,'r',0);
+            {? _uch
+            || _info:='';
+               {! |? (_wiersz:=fread(_uch);_wiersz<>'\n') |!
+                  _info+=_wiersz+'\n'
+               !};
+               fclose(_uch);
+               FUN.error(STR.w952maz(_info))
+            ?};
+            _ret:=-1
+         ?};
+         {? _ret>=0
+         || {? var_pres('_IMP')>100 & var_pres('_IMP')<>type_of('_IMP') || &_IMP ?};
+            _IMP:=obj_new(@.CLASS.IMPORT);
+            _IMP.open('@'+_par.path+'\\'+_par.par_vbs,'|',0,1,1,'Import danych');
+            {! |? _IMP.get() |!
+               {? _tab.find_tab('first','NOFFICE',,'=',STR.w952maz(_IMP.fld(1)))
+               || _naz:=STR.w952maz(_IMP.fld(2));
+                  _tab.PDF:={? _naz*'ERR:' || '' || _naz ?};
+                  _tab.STATUS:={? _naz*'ERR:' || _naz || 'Konwersja prawidłowa' ?};
+                  _tab.ZN:={? _naz*'ERR:' || 'B' || 'O' ?};
+                  _ok_test:=_tab.ZN<>'B';
+                  {? _tab.put() & _ok_test
+                  || _ok_test:=(
+                          _tab.PDF<>''
+                        & fexists('@'+_tab.PDF)
+                        & _tab.bl_put('ZAL','@'+_tab.PDF,0,0,_par.ext(_tab.NAZ),0)
+                     );
+                     {? ~_ok_test
+                     || _tab.PDF:='<brak>';
+                        _tab.STATUS:='Błąd pobierania pliku PDF';
+                        _tab.ZN:='B';
+                        _tab.put()
+                     ?};
+                     _ok+=_ok_test
+                  ?}
+               ?}
+            !};
+            _IMP.close();
+            _tab.cntx_psh();
+            {? _tab.size() & _tab.first()
+            || _showStatuses:=0;
+               _hasError:='B';
+               {!
+               |? {? _tab.ZN=_hasError || _showStatuses+=1 ?};
+                  _tab.next()
+               !};
+               {? _showStatuses
+               || _size:=_tab.size()+1;
+                  _wlen:={? _size<9 || 9 |? _size>30 || 30 || _size ?};
+                  _ws:=_tab.mk_sel('Przebieg konwersji plików'@,,,'#office2pdf',,,_wlen,,'N','N');
+                  _tab.win_fld(_ws,,'LP',,,-3,,,'Lp.'@);
+                  _tab.win_fld(_ws,,'NAZ',,,-50,,,'Nazwa pliku'@);
+                  _tab.win_fld(_ws,,'PDF',,,-30,,,'Ścieżka do pliku'@);
+                  _tab.win_fld(_ws,,'STATUS',,,-30,,,'Status operacji'@);
+                  _tab.win_fml(_ws,,'STATUS',,'ICON_BEFORE',
+                     "_zn:=cur_tab(1,1).ZN;
+                      _icoNumber:=
+                      {? _zn='N' || 10
+                      |? _zn='B' || 3
+                      |? _zn='O' || 38
+                      |? _zn='Z' || 35
+                      |? _zn='P' || 79
+                      || 81
+                      ?};
+                      'xwin16.png:%1'[$_icoNumber]
+                     "
+                  );
+                  _act_ok:=obj_new('name','tag','conf');
+                  _act_ok.name:='OK';
+                  _act_ok.tag:='O';
+                  _act_ok.conf:='panel=bottom,align=end';
+                  _tab.win_act(_ws,,'Formuła',_act_ok.name,,,"sel_exit()",,1,,,,_act_ok.tag);
+                  _tab.win_btn(_ws,'text=%1,%2'[_act_ok.name,_act_ok.conf],'menu:%1'[_act_ok.tag]);
+                  _tab.win_sel(_ws);
+                  _tab.select()
+               ?}
+            ?};
+            _tab.cntx_pop()
+         ?}
+      ?};
+
+:: porządki
+      {? _ret & +|_dane & _ok
+      || _tab.cntx_psh();
+         {? _tab.first()
+         || {!
+            |? {? +|_tab.NOFFICE & _tab.ZN='O' & fexists('@'+_tab.NOFFICE,0)
+               || ferase('@'+_tab.NOFFICE,0)
+               ?};
+               {? +|_tab.PDF & _tab.ZN='O' & fexists('@'+_tab.PDF,0)
+               || ferase('@'+_tab.PDF,0)
+               ?};
+               _tab.next()
+            !}
+         ?};
+         _tab.cntx_pop()
+      ?};
+      _kpk & _zaz.next()
+   !}
+?};
+_par.sprzatnijPliki();
+
+_tab.cntx_pop();
+{? _zOkna || _tab.sel_adel() ?};
+0
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:38 6ebb3f9251233ff94392c965cb653edcb1924e3c975dd725322d3dde07307deaf6f66801f86a3ac004665f889ad7bd83613f8efd3a1b64d04fa3ba566a03b131fab787b7ffe78bce355c6a7a8bfb02537f81e8775dbeb975ccfb9db24624568dad8cc68dd18c922c6df0786de48e7fcb21eff73be9b6994534c3dcbe541c6857

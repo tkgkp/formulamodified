@@ -1,0 +1,387 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !kas_dok_drap.fml
+:: Utworzony: 07.03.2016
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Rejestracja raportu kasowego
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,KAS
+::# kind=WY,   symbol=RAPORT,    type=_RAPORT,  name=Raport kasowy,    required=N
+
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+exec('init','kas');
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+
+{? _mp.pathTodo()
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('RAPORT',_out)=type_of(null()) & _out.RAPORT
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego RAPORT.'@)
+   ?}
+?};
+
+:: Sprawdzenie uprawnień
+::{? params_exec('permissions_chk','lsp','!lsp_fak_drfp')=0 || return() ?};
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy nagłówka dokumentu
+::   del: usuwa rekord kluczowy nagłówka dokumentu
+:: - add: zapisuje parametr wyjściowy FAKS = wskazanie na nagłówek korekty
+::   del: zapisuje parametr wyjściowy FAKS = null
+_mp.trigRef('RAPORT',,1,,exec('kind_out','#b_port'),'RAPORT');
+
+{? _akcja='Dołącz'
+   | _mp.pathProc()
+   | _akcja='START_TODO'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+||
+   {? exec('o_rapdol','kasa_raport')=0 || return() ?};
+
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   params_set('out',_out,'mp',_mp,'akcja',_akcja);
+   exec('dolacz','!kas_dok_drap');
+
+:: Podczytanie parametrów wyjściowych
+   _outa:=_mp.load(exec('kind_out','#b_port'));
+   {? var_pres('RAPORT',_outa)<>type_of(~~) & _outa.RAPORT
+:: Dodano dokument
+   ||
+::    Ustawienie się na dodanym dokumencie w widoku obszaru
+      {? _mp.pathArea() || RAPORT.seek(_outa.RAPORT) ?}
+:: Wycofanie czynności bo nie dodano dokumentu
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Popraw'
+   | _mp.pathTodo()
+|| {? var_pres('RAPORT',_out)=type_of(null())
+:: Uruchomione w procesie
+   || RAPORT.cntx_psh();
+      RAPORT.prefix();
+      {? RAPORT.seek(_out.RAPORT)
+      ||
+         {? exec('o_rappop','kasa_raport')
+         ||
+            params_set('out',_out,'mp',_mp,'akcja',_akcja);
+            exec('popraw','!kas_dok_drap');
+
+            _mp.descTodo()
+         ?};
+         {? var_press('Popraw')=type_of(0) & Popraw
+         || RAPORT.r_unlock();
+            VAR_DEL.delete('Popraw')
+         ?}
+      ?};
+      RAPORT.cntx_pop()
+   |? _mp.pathTodo()
+:: Uruchomione zadanie z listy todo i brak _out.RAPORT wtedy zadanie wycofujemy
+   || _mp.cancel()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      {? exec('o_rappop','kasa_raport')
+      || params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('popraw','!kas_dok_drap')
+      ?};
+      {? var_press('Popraw')=type_of(0) & Popraw
+      || RAPORT.r_unlock();
+         VAR_DEL.delete('Popraw')
+      ?}
+   ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('RAPORT',_out)=type_of(null())
+:: Uruchomione w procesie
+   || _raport:=null();
+      RAPORT.cntx_psh();
+      {? _mp.pathArea()=0 || RAPORT.prefix() ?};
+      {? RAPORT.seek(_out.RAPORT)
+      ||
+         exec('usun','!kas_dok_drap');
+
+         {? ~RAPORT.seek(_out.RAPORT)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _raport:=RAPORT.ref()
+      ?};
+      RAPORT.cntx_pop();
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+      {? _mp.pathArea() || {? _raport || RAPORT.seek(_raport) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('usun','!kas_dok_drap');
+
+      _mp.done()
+   ?}
+
+|? _akcja='Zakończ_wer' & _mp.pathArea()
+|| {? exec('zakoncz','!kas_dok_drap') || _mp.done() ?}
+
+|| _mp.error('Nieobsługiwana ścieżka.'@)
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? var_pres('RAPORT',_out)=type_of(null()) & _out.RAPORT
+|| 'Zakończ rejestrację raportu kasowego: %1'@@[exec('record','#to_string',_out.RAPORT)]
+|| 'Zarejestruj raport kasowy'@@
+?}
+
+
+\dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Raport kasowy - Dołącz
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_var_raportpop:=exec('var_raportpop','!kas_dok_drap');
+_var_raportpop.PO_FIRST:=1;
+
+::    Parmater 'context' wykorzystywany w
+::    - exec('raport_zakoncz_red','!kas_dok_drap')
+::    - exec('raport_edit_finisher','!kas_dok_drap')
+::    Parametr 'var_raportpop' wykorzystywany w:
+::    - exec('raport_edit_finisher','!kas_dok_drap')
+params_set('context',params_get(),'var_raportpop',_var_raportpop);
+
+exec('win_edit','!kas_dok_drap',1);
+RAPORT.blank();
+{? RAPORT.edit("exec('o_rapchk','kasa_raport')")
+|| {? RAPORT.STATUS=exec('rap_stat','kasa_raport',0)
+   || _sel_dok:=1;
+      {? _var_raportpop.PO_FIRST=1
+      || {? RAPORT.add() || exec('o_rapdpo','kasa_raport') ?}
+      ?}
+   ?}
+?};
+exec('win_edit','!kas_dok_drap',0)
+
+
+\popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Raport kasowy - Popraw
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_var_raportpop:=exec('var_raportpop','!kas_dok_drap');
+_var_raportpop.PO_FIRST:=0;
+
+::    Parmater 'context' wykorzystywany w
+::    - exec('raport_zakoncz_red','!kas_dok_drap')
+::    - exec('raport_edit_finisher','!kas_dok_drap')
+::    Parametr 'var_raportpop' wykorzystywany w:
+::    - exec('raport_edit_finisher','!kas_dok_drap')
+params_set('context',params_get(),'var_raportpop',_var_raportpop);
+
+exec('win_edit','!kas_dok_drap',1);
+{? RAPORT.edit("exec('o_rapchk','kasa_raport')")
+|| {? RAPORT.STATUS=exec('rap_stat','kasa_raport',0) || RAPORT.put() ?}
+?};
+exec('win_edit','!kas_dok_drap',0)
+
+
+\usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Raport kasowy - Usuń
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('o_rapusu','kasa_raport')
+
+
+\zakoncz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Raport kasowy - Zakończ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask('Zakończyć rejestrację raportu kasowego?'@)
+|| exec('set_lock','kasa_raport',1)
+?}
+
+
+\raport_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Rejestracja raportu kasowego - Dołącz
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='KAS_DOK_DRAP';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+
+exec('mp_run','#b__box',_params)
+
+
+\raport_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Rejestracja raportu kasowego - Popraw
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='KAS_DOK_DRAP';
+_params.UIDREF:=RAPORT.uidref();
+_params.AKCJA:='Popraw';
+
+exec('mp_run','#b__box',_params)
+
+
+\raport_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Rejestracja raportu kasowego - Usun
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='KAS_DOK_DRAP';
+_params.UIDREF:=RAPORT.uidref();
+_params.AKCJA:='Usuń';
+
+exec('mp_run','#b__box',_params)
+
+
+\raport_zakoncz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Rejestracja raportu kasowego - Zakończ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='KAS_DOK_DRAP';
+_params.UIDREF:=RAPORT.uidref();
+_params.AKCJA:='Zakończ_wer';
+
+exec('mp_run','#b__box',_params)
+
+
+\win_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Raport kasowy - okno redakcji
+::   WE: _a - 0 bez przycisku Zakończ, 1 - pokaż przycisk Zakończ
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_win_akr:='RED';
+_win_red:=RAPORT.mk_edit('Raport kasowy'@,,'raport_kasowy');
+RAPORT.win_ewin(_win_red,,_win_akr);
+{? _a
+|| _ff:="params_exec('raport_zakoncz_red','!kas_dok_drap')";
+   exec('zakoncz','#window',RAPORT,_win_red,1,_ff,0, exec('help_red_zakoncz','#window','R'),
+   exec('text_red_zakoncz','#window','R'))
+?};
+exec('ok_esc','#window',RAPORT,_win_red,1,,,,,exec('help_red_ok','#window','Z'),exec('text_red_ok','#window'),
+   exec('help_red_esc','#window','A'));
+RAPORT.win_edit(_win_red)
+
+
+\raport_zakoncz_red
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Dokument sprzedaży - Zakończ - okno redagowania
+::   WE: params_get()   - ustawiane w exec('fak_pop','faktury_nag')
+::                      - ustawiane w exec('wystinne','faktury_nag')
+::                      - ustawiane w exec('koryguj','faktury_nag')
+::   WY: 'key:F2' - jeśli pola nagłówka dokumentu sprzedażyprawidłowo wypełnione
+::       'edit:ACRONYM' - akronim niewłaściwie wypełnionego pola nagłówka dokumentu sprzedaży
+::       '' - wartość domyślna jeśli main nie zmieni na powyższe
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().context.mp;
+
+_btnRuleResult:='';
+
+_fld:=params_exec('raport_edit_finisher','!kas_dok_drap',RAPORT.ref());
+{? _fld<>''
+|| _btnRuleResult:='edit:'+_fld
+|| {? exec('zakoncz','!kas_dok_drap')
+   || _btnRuleResult:='key:F2';
+      _mp.done()
+   ?}
+?};
+
+_btnRuleResult
+
+
+\raport_edit_finisher
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Kod wykańczający po RAPORT.edit() w różnych kontekstach
+::   WE: _a - RAPORT.ref()
+::       params_get()   - ustawiane w exec('dolacz','!kas_dok_drap')
+::                      - ustawiane w exec('popraw','!kas_dok_drap')
+::----------------------------------------------------------------------------------------------------------------------
+:: Sprawdzenie poprawności wypełnienia pól nagłówka dokumentu sprzedaży
+_fld:=exec('o_rapchk','kasa_raport');
+{? _fld<>''
+|| _fld
+|| _raport:=_a;
+   _out:=params_get().context.out;
+   _mp:=params_get().context.mp;
+   _akcja:=params_get().context.akcja;
+   _var_raportpop:=params_get().var_raportpop;
+
+   {? _akcja='Dołącz' | _akcja='START_TODO' | _mp.pathProc()
+   || {? _var_raportpop.PO_FIRST=1
+      || RAPORT.add();
+         exec('o_rapdpo','kasa_raport')
+      ?};
+      _var_raportpop.PO_FIRST:=2
+   |? _akcja='Popraw' | _mp.pathTodo()
+   || RAPORT.put();
+      1
+   ?};
+   ''
+?}
+
+
+\var_raportpop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Zmiennna var_raportpop
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+obj_new('PO_FIRST')
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 c61633ca5469c67840ee87a3701b3f2a0af58c0346669fabb3163618ce739525d09e2c2ed3f6aab6e09af8e938d34790208fcac2c7b0d7e3cb4c875cca9df48ef44daeadece3544d2ab70e82c4025c9aa667ae91490abf7ce3cd8c6b105cb5ad99c8a6685792c93585091938de1649314f50f798369c9c98c4d15353a2db6f32

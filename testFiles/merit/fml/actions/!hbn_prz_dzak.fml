@@ -1,0 +1,354 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !hbn_prz_dzak.fml
+:: Utworzony: 01.04.2015
+:: Autor: PJ
+::======================================================================================================================
+:: Zawartość: Formuły czynności HBN_PRZ_DZAK - utworzenie przelewu do dokumentu zaksięgowanego.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Utworzenie przelewu z DOK - główna formuła czynności HBN_PRZ_DZAK.
+::----------------------------------------------------------------------------------------------------------------------
+::# kind=WE,   symbol=DOK,  type=_DOK,  name=Wskazanie na dokument zaksięgowany,  required=T, keyref=T
+::# kind=WY,   symbol=PB,   type=_PB,   name=Wskazanie na przelew elektroniczny,  required=T
+::# kind=WY,   symbol=KW,   type=NUMBER,   name=Kwota przelewu,  required=N
+::# kind=WY,   symbol=WAL,  type=STRING,   name=Waluta przelewu,  required=N
+::# permissions=FJKS,HRB,HRP
+::# parses=exec('parses_dok','dok_fks')
+::# access=exec('uprawnienia','!hbn_prz_dzak')
+_par:=params_get();
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_ok:=params_exec('create','!hbn_prz_dzak',_in.DOK,_mp);
+{? _ok=-1
+|| _out.PB:=null;
+   _mp.save(,_out);
+   _mp.done()
+|? _ok
+|| _out.PB:=PB.ref();
+   _out.KW:=PB.KW;
+   _out.WAL:={? PB.WAL().KOD<>'PLN' || PB.WAL().KOD || '' ?};
+   _mp.save(,_out);
+   _mp.done()
+|| _mp.cancel()
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła na opis czynności na liście ToDo
+::----------------------------------------------------------------------------------------------------------------------
+_desc:='';
+_mp:=params_get().mp;
+_we:=_mp.load(exec('kind_in','#b_port'));
+{? var_pres('DOK',_we) & _we.DOK<>null
+|| DOK.cntx_psh();
+   {? DOK.seek(_we.DOK,ref_name(_we.DOK),1)
+   || _desc:='Utwórz przelew z dokumentu: %1'@@[DOK.NK]
+   || _desc:='Uwaga błąd - nie odnaleziono dokumentu księgowego.'@@
+   ?};
+   DOK.cntx_pop()
+|| _desc:='Uwaga błąd – nie znaleziono rekordu kluczowego ani parametru wejściowego'@@
+?};
+_desc
+
+
+\m_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Obszar roboczy Dokumenty księgowe
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='HBN_PRZ_DZAK';
+_params.AKCJA:='Przelew';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+_params.UIDREF:=DOK.uidref();
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'DOK',DOK.ref());
+_params.PROC_START:='N';
+exec('mp_run','#b__box',_params)
+
+
+\create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła generuje przelew z dokumentu
+::   WE: _a - wskazanie na dokument, _b-obiekt odpowiedzialny za obługę procesu
+::   WY: 0 - nie udało się, 1 - udało się
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=_b;
+_auto:=_mp.isAutoRun();
+_zwrot:=1;
+DOK.cntx_psh(); POZ.cntx_psh(); OP.cntx_psh(); ZAP_OP.cntx_psh(); VPOZ.cntx_psh();
+{? ~DOK.seek(_a,ref_name(_a),1)
+|| {? ~_auto
+   || FUN.info('Nie znaleziono dokumentu księgowego.'@)
+   ?};
+   _zwrot:=-1
+|| _kodr:=(2+(4-$DOK.ref())); _nrokr:=#(2+(6-$DOK.ref()));
+   ROK_F.cntx_psh(); ROK_F.index('KODG'); ROK_F.prefix(_kodr);
+   {? ROK_F.first()
+   || SSTALE.AR:=ROK_F.ref();
+      OKRO_F.cntx_psh(); OKRO_F.index('ROK'); OKRO_F.prefix(ROK_F.ref(),_nrokr);
+      {? OKRO_F.first() || SSTALE.AO:=OKRO_F.ref() ?};
+      OKRO_F.cntx_pop()
+   ?};
+   ROK_F.cntx_pop();
+   exec('F','object')
+?};
+
+:: weryfikacja uprawnień - typ przelewu
+{? _zwrot=1
+|| {? ~exec('usr_hrp','b_perm','HBN: Prosty')
+   || {? ~(var_pres('g_tot')>0 & g_tot)
+      || FUN.info('Brak uprawnień do typów przelewów krajowych i zagranicznych.'@)
+      ?};
+      _zwrot:=0
+:: weryfikacja uprawnień - jednostka księgowa
+   |? ~exec('usr_fjks','b_perm',DOK.ODD().OD)
+   || {? ~(var_pres('g_tot')>0 & g_tot)
+      || FUN.info('Brak uprawnień do jednostki księgowej %1.'@[PB.ODD().OD])
+      ?};
+      _zwrot:=0
+   ?}
+?};
+
+:: wczytanie i weryfikacja parametrów pracy i stałych systemu
+{? _zwrot=1
+|| exec('czytaj','#stalesys',,FINFO);
+   {? SSTALE.AR=null | SSTALE.AO=null
+   || {? ~(var_pres('g_tot')>0 & g_tot)
+      || FUN.info('Nieustawione parametry pracy: rok i okres.'@)
+      ?};
+      _zwrot:=0
+   |? FINFO.SLWAL=null
+   || {? ~(var_pres('g_tot')>0 & g_tot)
+      || FUN.info('Nieustawiony słownik walut systemu.'@)
+      ?};
+      _zwrot:=0
+:: dodawanie przelewu
+   || _maska:=SSTALE.AR().KOD+form(SSTALE.AO().NR,-2);
+      POZ.use('pozy'+_maska);
+      DOK.use('doku'+_maska);
+      OP.use('operac'+ROK_F.KOD);
+      ZAP_OP.use('rozzap'+ROK_F.KOD);
+      VPOZ.use('pozv'+_maska);
+      OPERATOR.USER();
+      _zwrot:=exec('ba_gen_przel','!hbn_prz_dzak')
+   ?}
+?};
+DOK.cntx_pop(); POZ.cntx_pop(); OP.cntx_pop(); ZAP_OP.cntx_pop(); VPOZ.cntx_pop();
+_zwrot
+
+
+\ba_gen_przel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PB [$12.10]
+:: OPIS: Formula wywolujaca generowanie przelewu na podstawie dokumentu VAT zwiazanego z nabyciem
+::  OLD: \ba_gen_przel/przelew2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wy:=0;
+{? exec('can_gen_przel','rozrach_przel')
+|| {? DOK.ZP='T'
+   || KH.index('SKR'); KH.prefix(2);
+      {? KH.find_key(DOK.KH)
+      || WYDRUKIN.DATA:=date();
+         _wy:=exec('wind_pb','rozrach_przel',4,0);
+         VAR_DEL.delete('v_zakr','pb_sql')
+      || FUN.info('Nie znaleziono kontrahenta %1. Przelew nie zostanie wygenerowany.'@[DOK.KH]);
+         _wy:=0
+      ?}
+   || FUN.info('Generowanie przelewu jest możliwe po wcześniejszym zaksięgowaniu dokumentu.'@);
+      _wy:=0
+   ?}
+|| FUN.info('Funkcja jest niedostępna dla wybranego dokumentu.'@);
+   _wy:=0
+?};
+_wy
+
+
+\uprawnienia
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła na uprawnienia do danych dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menadżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do danych dla czynności
+::       1 - użytkownik ma uprawnienia do danych czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+
+_result:=0;
+{? var_pres('DOK',_in) & var_pres('DOK',_in)=type_of(null()) & _in.DOK<>null()
+|| USERS.cntx_psh(); USERS.clear();
+   {? USERS.seek(_user)
+   || DOK.cntx_psh();
+      DOK.prefix();
+      {? DOK.seek(_in.DOK,form(($_in.DOK)-8))
+      || {? exec('usr_fjks','b_perm',DOK.ODD().OD,USERS.ref()) & exec('usr_hrb_any','b_perm',USERS.ref())
+            & exec('usr_hrp_any','b_perm',USERS.ref())
+         || _result:=1
+         ?}
+      ?};
+      DOK.cntx_pop()
+   ?};
+   USERS.cntx_pop()
+||
+:: nie ma dokumentu wejściowego to znaczy, że należy zwrócić pełne uprawnienia
+:: inaczej zadanie do usuniętego dokumentu nigdy nie zniknie z todo.
+   _result:=1
+?};
+_result
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WHAN [20.42]
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+DOK.cntx_psh(); POZ.cntx_psh(); OP.cntx_psh(); ZAP_OP.cntx_psh(); VPOZ.cntx_psh();PB_OP.cntx_psh();PB.cntx_psh();
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+
+{? var_pres('_b')>100
+|| _we:=_b
+|| _we:=params_get().in
+?};
+
+_can_continue:=1;
+_obj:=obj_new('RESULT','DOK');
+_obj.RESULT:=0;
+_obj.DOK:=null();
+
+_wy:=_mp.load(exec('kind_out','#b_port'));
+_keyRefs:=_mp.getRefs();
+{? obj_len(_keyRefs)>0
+|| {! _it:=1..obj_len(_keyRefs)
+   |! _kref:=_keyRefs[_it];
+      {? type_of(_kref)>0
+      || {? 4+ref_name(_kref)='doku'
+         || _obj.DOK:=exec('FindAndGet','#table',DOK,_kref,,,null());
+            {? _obj.DOK=null()
+            || _can_continue:=0;
+               _wy.PB:=null;
+               _mp.save(,_wy);
+               _mp.done()
+            |? DOK.seek(_kref,ref_name(_kref),1)
+            || _can_continue:=0;
+               _maska1:=DOK.name()+4;
+               _maska2:=(DOK.name()-2)+2;
+               POZ.use('pozy'+_maska1);
+               OP.use('operac'+_maska2);
+               ZAP_OP.use('rozzap'+_maska2);
+               VPOZ.use('pozv'+_maska1);
+               PB_OP.use('popxxxx');
+               PB.use('pbxxxx');
+               _kwota_v:=exec('kwota_gen_przel','rozrach_przel');
+               POZ.first();
+               VAR_DEL.delete('__PRZEL');
+               __PRZEL:=sql('select '+
+                          'POZ.KON as KON, POZ.ID as ID, POZ.WAL as WAL, POZ.ODD as ODD, '+
+                          'sum( case when POZ.STR=''Wn'' then -POZ.SUM else POZ.SUM end) as SUMA, '+
+                          'sum( case when POZ.STR=''Wn'' then -POZ.SUMW else POZ.SUMW end) as SUMAW, '+
+                          'POZ.SYM_ROK as SYM_ROK, POZ.TP as TP '+
+                          'from POZ '+
+                          'left join SLO using(POZ.WAL, SLO.reference) '+
+                          'where POZ.ID<>'''' and POZ.DOK='':_a'' '+
+                          'group by '+
+                          'POZ.KON, POZ.ID, POZ.WAL, POZ.ODD, POZ.SYM_ROK, POZ.TP '+
+                          'order by 1, 2, 3, 4',$DOK.ref);
+              _il:=__PRZEL.size();
+              {? _il=1
+              ||
+                  OP.index('KON_O');
+                  {? __PRZEL.WAL=''
+                  || _wal:=FINFO.NAROD
+                  || SLO.cntx_psh();
+                     SLO.prefix();
+                     {? SLO.seek(BB.sqlint(8-__PRZEL.WAL),) || _wal:=SLO.ref() || _wal:=FINFO.NAROD ?};
+                     SLO.cntx_pop()
+                 ?};
+                  OP.prefix(_wal,BB.sqlint(8-__PRZEL.ODD),__PRZEL.KON,__PRZEL.ID,__PRZEL.ID,__PRZEL.SYM_ROK);
+                  {? OP.first()
+                  ||
+                     {? var_pres('DRB',@.CLASS)<0 || exec('obj_drbt','raty') ?};
+                     {? var_pres('DRB')>0 || obj_del(DRB) ?};
+                     DRB:=obj_new(@.CLASS.DRB);
+                     {? DRB.set_tab(OP.ref())
+                     || _vtp:=DRB.get_drat(WYDRUKIN.DATA)
+                     || {? OP.TZ>WYDRUKIN.DATA || WYDRUKIN.DATA:=OP.TZ ?};
+                        _vtp:=OP.TZ
+                     ?};
+
+                     PbKw:=0;
+                     _kwota:=exec('f_pbgnt2','homebank',_vtp);
+                     {? _kwota<_kwota_v
+                     || _kwota_v:=_kwota
+                     ?};
+                     {? PbKw & _kwota_v=0
+                     ||
+                        _wy.PB:=null;
+                        _mp.save(,_wy);
+                        _mp.done()
+                     ?}
+                  ?}
+              |? _il>1
+              ||
+                 _wy.PB:=null;
+                 _mp.save(,_wy);
+                 _mp.done()
+              ?}
+            ?}
+         ?}
+      ?}
+   !}
+?};
+VAR_DEL.delete('__PRZEL','PbKw');
+DOK.cntx_pop(); POZ.cntx_pop(); OP.cntx_pop(); ZAP_OP.cntx_pop(); VPOZ.cntx_pop();PB_OP.cntx_pop();PB.cntx_pop();
+
+{? _can_continue>0
+||
+:: jest parametr wejściowy DOK
+   {? _obj.DOK=null() & var_pres('DOK',_we)=type_of(null())
+   || _obj.DOK:=_we.DOK
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? _obj.DOK=null()
+   ||
+::    Nie było key refa ani parametru wejściowego, robię error
+      _can_continue:=0;
+      _msg:='Dokument nie został przekazany do czynności.'@;
+      {? _mp.isService()=0 & _mp.CLEANER=0
+      || {? _mp.isGroup()
+         || KOMM.add(_msg,2,,1)
+         || FUN.emsg(_msg)
+         ?}
+      ?};
+      _mp.error(_msg)
+   ?}
+?};
+
+{? _can_continue>0
+|| _obj.RESULT:=1
+?};
+_obj
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:38 5e9c0f3268f1db1b9762095e27bcdcebefe1bddc2316cca0e34f4badbd38e9c45a036d728fde7a583bd806fde1c50ab1565cfcf0b2f743e50a2a2c3efdb4b146e3430f25e8fc0bf6294c818e25d1795bf628d7a90b6a86db172f9c44a9893982932a54ea39ca0f4e34a3fd0a927b7aa8733fe086725f1806cdee429503d0e6a1

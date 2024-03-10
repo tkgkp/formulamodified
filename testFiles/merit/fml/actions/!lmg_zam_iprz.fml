@@ -1,0 +1,526 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lmg_zam_iprz.fml
+:: Utworzony: 17.11.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Realizacja zamówień wewnętrznych
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,ZWMG
+::# properties=LOOP
+::# parses=exec('parses','!lmg_zam_iprz')
+::# kind=WE,   symbol=ZAM,          type=_ZK_N,       name=Zamówienie wewnętrzne,      required=N,    keyref=T
+::# kind=WE,   symbol=ZL,           type=_ZL,         name=Zlecenie,                   required=N,    keyref=T
+::# kind=WE,   symbol=ZAM_REA,      type=STRING,      name=Realizacja zamówienia,      required=N
+::# kind=WE,   symbol=TR_NZL,       type=_TR_NZL,     name=Dyspozycja w magazynie,     required=N,    keyref=T
+::# kind=WE,   symbol=GROP,         type=_GROP,       name=Grupa operacji,             required=N,    keyref=T
+::# kind=WEW,  symbol=ZK_RN,        type=_ZK_RN,      name=Realizacja zamówienia,      required=N
+::# kind=WY,   symbol=ZAM_REA,      type=STRING,      name=Realizacja zamówienia,      required=N
+::# kind=WY,   symbol=ND,           type=_ND,         name=Dokument rozchodowy,        required=N
+::# condition=Rejestracja dokumentu wydania, act_uid=LMG_MAG_DWYD,   auto=T,  formula=_a.ND<>~~ & _a.ND<>null()
+_mp:=params_get().mp;
+_in:=params_get().in;
+_out:=params_get().out;
+_context:=params_get().context;
+
+:: Ustawia uprawnienia do magazynów
+exec('usuprmag','parses');
+
+_akcja:=_mp.akcja();
+_auto:=_akcja<>'Realizuj' & _mp.isAutoRun();
+_aTTE:=(';TTE_PZL;TTE_WYK'*AreaTitle.area)>1 & cur_tab(1,1)<>ZL;
+_aTPP:=(';TPP_GOP'*AreaTitle.area)>1 & cur_tab(1,1)<>GROP;
+_aLMG:=(';LMG_ZAM'*AreaTitle.area)>1;
+_area:=_mp.pathArea() & (_aTTE | _aLMG | _aTPP);
+{? _area || _area:={? _aLMG || 1 || 2 ?} ?};
+_proc:=_mp.pathProc() | (_mp.pathArea() & ~_area);
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy nagłówka dokumentu
+::   del: usuwa rekord kluczowy nagłówka dokumentu
+:: - add: zapisuje parametr wyjściowy ZD_NAG = wskazanie na nagłówek zamówienia dostawy
+::   del: zapisuje parametr wyjściowy ZD_NAG = null
+_mp.trigRef('ZK_RN',,1,,exec('kind_internal','#b_port'),'ZK_RN');
+
+_grop:={? var_pres('GROP',_in)=type_of(null()) & _in.GROP
+       || _in.GROP
+       || null()
+       ?};
+
+_zlec:={? type_of(_context)<>type_of(~~) & var_press('ZL',_context)=type_of(null()) & _context.ZL
+       || _context.ZL
+       |? var_pres('ZL',_in)=type_of(null()) & _in.ZL
+       || _in.ZL
+       || null()
+       ?};
+
+_wggrop:=_grop<>null();
+
+{? _zlec=null() & _grop=null() & var_pres('ZAM',_in)=type_of(~~)
+|| _mp.error('Nie znaleziono zlecenia. Realizacja niemożliwa.');
+   return()
+|? _zlec=null() & _grop=null()
+ & var_pres('ZAM',_in)=type_of(null()) & _in.ZAM & ~(exec('FindAndGet','#table',ZK_N,_in.ZAM,,"name()",'')*'__')
+|| _mp.error('Zamówienie '+exec('FindAndGet','#table',ZK_N,_in.ZAM,,"ZK_N.SYM",'')+' przesłane do archiwum. '
+             'Realizacja niemożliwa.');
+   return()
+
+|? _zlec=null() & _grop=null() & exec('FindAndGet','#table',ZK_N,_in.ZAM,,"STAT_REJ='A'",0)
+||
+   FUN.info('Anulowano zamówienie %1.\nRealizacja niemożliwa.'@[exec('record','#to_string',_in.ZAM)]);
+   _mp.error('Anulowano zamówienie %1. Realizacja niemożliwa.'[exec('record','#to_string',_in.ZAM)]);
+   return()
+
+?};
+
+_rodz:='';
+{? exec('clean','!lmg_zam_iprz',_mp)=0
+|| return()
+?};
+
+{? _mp.pathProc()
+||
+:: Ścieżka uruchomienia z pulpitu. Uruchamiam odpowiedni selektor żeby wybrać co chcę realizować
+   _choice:=FUN.choice('Realizacja zostanie wystawiona do:'@,,'&Zlecenia'@,'Zamówienia &wewnętrznego'@);
+
+   {? _choice=1
+   ||
+      ZL.cntx_psh();
+      ZL.clear();
+      _join:='join ZTP left join ZL as ZLNAD using(ZL.NRNZL,ZLNAD.UNRZL)';
+      _where:=
+         'ZL.STAN=''O'' and '
+         'ZL.RODZAJ=''P''';
+      ZL.f_set('SYM',_join,_where);
+      exec('icons_slo_sl','zl_head');
+      ZL.win_sel('SLO_SL');
+      ZL.actions('SLO_SL','XY','W');
+      {? ZL.select()
+      || _in.ZL:=ZL.ref()
+      || _mp.cancel();
+         ZL.cntx_pop();
+         return()
+      ?};
+      ZL.cntx_pop()
+
+   |? _choice=2
+   || ZK_N.cntx_psh();
+      ZK_N.clear();
+      _join:='left join TYPYZAM using(ZK_N.T,TYPYZAM.REFERENCE)';
+      _where:=
+         'ZK_N.A=''A'' and '
+         'ZK_N.AKC=''T'' and '
+         'ZK_N.STAT_REJ<>''N'' and '
+         'ZK_N.STAN<>''ZRE'' and '
+         'TYPYZAM.R=''W''';
+      BPMN.DISPLAY:=1;
+      ZK_N.f_set('SYM',_join,_where);
+      ZK_N.win_sel('SLOW');
+      {? ZK_N.select()
+      || _in.ZAM:=ZK_N.ref()
+      || _mp.cancel();
+         ZK_N.cntx_pop();
+         return()
+      ?};
+      ZK_N.cntx_pop()
+   ?}
+?};
+
+_zk_rea:='';
+_zk_n_ref:=null();
+
+{? _mp.loop()=0
+:: pierwsze wywołanie
+|| ZK_N.cntx_psh(); ZL.cntx_psh();
+   {? var_pres('ZAM',_in)=type_of(~~) & 0 || exec('isMagPAL','ekioski1',_zlec,_grop) ?};
+   BEER.ZK_N().SYM;
+   {? _akcja='Realizuj' | _akcja='eKiosk' | _akcja='eKioskAkceptuj'
+      | _auto
+      | _mp.pathTodo()
+      | _mp.pathProc()
+   || {? (~_zlec & ~_grop) & ZK_N.E='2'
+      || _zk_n_ref:=ZK_N.ref();
+         _continue:=2
+      || _continue:=1;
+         {? _akcja='eKioskAkceptuj'
+         || _type:={? type_of(_context)<>type_of(~~) & var_press('MGP',_context)<>type_of(~~)
+                   || _context.MGP
+                   || 0
+                   ?};
+            {? ZK_N.T().TYPYDOK<>null()
+            || {? _type=1
+               || _wybpal:=0;
+                  __palkpl.clear();
+                  {? __palkpl.first()
+                  || {!
+                     |? _wybpal:=__palkpl.WYB;
+                        ~_wybpal & __palkpl.next()
+                     !}
+                  ?};
+                  {? _wybpal>0
+                  || {? ZK_N.MG().TYP*'DOST'
+                     || exec('dost2pal','zamsiw_rea',1);
+                        ZK_RP.index('NAGA');
+                        ZK_RP.prefix(__refrea,null);
+                        {? ZK_RP.first()
+                        || {!
+                           |? {? ZK_RP.M().RODZ='U' & ZK_RP.W='*'
+                              || ZK_RP.next()
+                              || ZK_RP.del()
+                              ?}
+                           !}
+                        ?};
+                        exec('anul_bez','zamsiw_rea',,1);
+                        exec('akt_stap','zamsiw_wspolne',BEER.ZK_N,BEER.TYP);
+                        exec('pal2dost','zamsiw_palety',2);
+                        ''
+                     ?}
+                  || {? _wybpal=0
+                     || FUN.info('Nie wybrano palet do realizacji zamówienia.\nRealizacja niemożliwa.'@)
+                     || FUN.info('W magazynie %1 brak palet do realizacji zamówienia.'
+                                 '\nRealizacja niemożliwa.'@[ZK_N.MG().SYM])
+                     ?};
+                     ZK_RP.index('NAGA');
+                     ZK_RP.prefix(__refrea,null);
+                     {? ZK_RP.first() || {! |? ZK_RP.del() !} ?};
+                     exec('anul_bez','zamsiw_rea',,1);
+                     exec('akt_stap','zamsiw_wspolne',BEER.ZK_N,BEER.TYP,1)
+                  ?}
+               ?};
+               exec('add_doki','zamsiw_rea',0,null(),null(),__refrea,,,,,,,null(),ZK_N.PROJEKTY,1);
+               exec('rec_esc','ekioski')
+            || FUN.info('Brak możliwośći rejestracji pobrań. Niezdefiniowany typ dokumentu.'@)
+            ?};
+            ~~
+         |? _akcja='eKiosk'
+         || {? exec('add_doki','zamsiw_rea',0,null(),null(),__refrea,,,,,,,null(),ZK_N.PROJEKTY,1)
+            || 1
+            ?}
+         |? (_zlec | _grop)
+               &
+            (type_of(_context)=type_of(~~)
+               |
+             var_press('ZK_N',_context)=type_of(~~)
+               |
+             (type_of(_context)<>type_of(~~) & var_press('ZAM_REA',_context)<>type_of(~~)))
+::             wydanie z limitów
+         ||
+            {? type_of(_context)<>type_of(~~)
+               & var_press('ZAM_REA',_context)<>type_of(~~) & _context.ZAM_REA<>''
+            || _zk_rea:=_context.ZAM_REA;
+               _mp.save(exec('kind_in','#b_port'),'ZAM_REA',_context.ZAM_REA);
+               _continue:=4
+            |? type_of(_context)<>type_of(~~)
+               & var_press('ND',_context)<>type_of(~~) & _context.ND
+               & var_press('WYDZ',_context)<>type_of(~~) & _context.WYDZ
+::                wskazano dokument magazynowy
+            ||
+               POM.cntx_psh();
+               exec('lim_add','magdok_prod',_in.ZL,_context.WYDZ,,_context.ND,0);
+               POM.cntx_pop()
+::                dokumenty magazynowe zostaną utworzone
+            ||
+               _err:=exec('real_dok','zamsiw_rea',2,{? ~_wggrop || _in.ZL || _in.GROP ?},,,,_area);
+               {? _err=1 || _continue:=3 |? _err=3 || _continue:=5 ?}
+            ?}
+::             realizacja zamówienia wewnetrznego
+         ||
+            _zk_n:=
+               {? type_of(_context)<>type_of(~~) & var_press('ZK_N',_context)<>type_of(~~) & _context.ZK_N
+               || _context.ZK_N
+               |? var_press('ZAM',_in)<>type_of(~~) & _in.ZAM
+               || _in.ZAM
+               || null()
+               ?};
+            _continue:=0;
+            _jest:=ZK_N.seek(_zk_n);
+            {? ~_jest || ZK_N.prefix(); _jest:=ZK_N.seek(_zk_n) ?};
+            {? ~_jest
+            || _mp.error('Nie znaleziono zamówienia.')
+            || _continue:=1;
+               BEER.ZK_N:=ZK_N.ref();
+
+               exec('realizuj','zamsiw_rea')
+            ?}
+         ?};
+
+         {? _continue & _continue<3
+         ||
+            _internal:=_mp.load(exec('kind_internal','#b_port'));
+            _continue:={? var_pres('ZK_RN',_internal)=type_of(null()) & _internal.ZK_RN || 1 || -1 ?};
+            {? _continue=1
+            || _zk_rea:=ref_name(_internal.ZK_RN)+exec('FindAndGet','#table',ZK_RN,_internal.ZK_RN,,"GRP_KEY",'')
+            ?}
+         ?}
+      ?}
+
+   || _mp.error('Nieobsługiwana ścieżka.')
+   ?};
+   ZK_N.cntx_pop(); ZL.cntx_pop()
+:: wywołanie w pętli
+|| _continue:=var_pres('ZAM_REA',_in)=type_of('') & _in.ZAM_REA<>'';
+   {? _continue
+   || _zk_rea:=_in.ZAM_REA
+   || _mp.error('Brak oczekiwanego parametru ZAM_REA.')
+   ?}
+?};
+
+{? _continue=4
+||
+:: Wydanie z limitów - z dobieranymi zleceniami
+   _msk:=_zk_rea+3;
+   _zk_rea:=_zk_rea-3;
+   _grp_key:=_zk_rea-1;
+   _oprf:={? var_press('ORD',_context)<>type_of(~~) & _context.ORD>0 || _context.ORD || 2 ?};
+   _nprf:=_oprf-1;
+   {? _grp_key<>''
+   || ND.cntx_psh();
+      DK.cntx_psh();
+      ND.use('nagdo'+_msk);
+      DK.use('dokma'+_msk);
+      {? _oprf=2
+      || DK.index('GRP_KEY');
+         DK.prefix($_oprf,_zlec,_zk_rea)
+      || DK.index('GRP_KEN');
+         DK.prefix($_oprf,$_zlec,$_zlec,_zk_rea)
+      ?};
+      {? DK.first()
+      || _nd:=DK.N;
+         DK.cntx_psh();
+         DK.prefix();
+         DK.GRP:=$_nprf;
+         do();
+         DK.put();
+         _mp.save(exec('kind_out','#b_port'),'ND',DK.N);
+         _mp.save(exec('kind_out','#b_port'),'ZAM_REA',_zk_rea);
+::       Wykluczenie pozostałych realizacji dotyczących tego samego dokumentu rozchodowego ze zgodnym zleceniem
+         DK.index('DOKMAG');
+         DK.prefix(_nd);
+         _loop:=DK.first();
+         {! |? _loop
+         |! {? {? _oprf=2 || DK.ZL=_zlec || DK.ZL().NODE=$_zlec ?} & DK.GRP<>'0'
+            || DK.GRP:=$_nprf;
+               _loop:=DK.put() & DK.next()
+            || _loop:=DK.next()
+            ?}
+         !};
+         end();
+         DK.cntx_pop();
+         {? DK.first()
+::          kontynuacja pętli
+         || _mp.loop_continue()
+         ?}
+      ?};
+      ND.cntx_pop();
+      DK.cntx_pop()
+   ?};
+   _mp.done()
+|? _continue=-1
+:: Wycofano się z wystawiania realizacji
+|| 1
+|? _continue=2
+:: Zamówienie zrealizowane wcześniej
+|| FUN.info('Zamówienie '+exec('FindAndGet','#table',ZK_N,_zk_n_ref,,"ZK_N.SYM",'')+' jest już zrealizowane.');
+   _mp.done()
+|? _continue=3
+:: Nie ma zamówień do realizacji
+|| _mp.done()
+|? _continue=5
+:: Okres do zmiany dla zamówień do realizacji
+|| _mp.cancel()
+|? _continue=1 & _zk_rea<>''
+:: Zapisanie parametru wyjściowego ND, wykluczenie kolejnej realizacji z pętli, zakończenie czynności
+|| _name_len:=+ZK_RN.name();
+   ZK_RN.cntx_psh();
+   ZK_RN.use(_name_len+_zk_rea);
+   ZK_RN.prefix();
+   _grp_key:=_name_len-_zk_rea-1;
+   _grp_key_on:=_grp_key+'1';
+   _grp_key_off:=_grp_key+'0';
+   {? _grp_key<>''
+   || ZK_RN.index('GRP_KEY');
+      ZK_RN.prefix(_grp_key_on);
+      {? ZK_RN.first()
+      || ZK_RN.cntx_psh();
+         ZK_RN.prefix();
+         ZK_RN.GRP_KEY:=_grp_key_off;
+         do();
+         ZK_RN.put();
+         _mp.save(exec('kind_out','#b_port'),'ND',exec('FindAndGet','#table',ND,ZK_RN.ND,,,null()));
+         _mp.save(exec('kind_out','#b_port'),'ZAM_REA',_zk_rea);
+::          Wykluczenie pozostałych realizacji dotyczących tego samego dokumentu rozchodowego
+         ZK_RN.index('ND');
+         ZK_RN.prefix(ZK_RN.ND);
+         _loop:=ZK_RN.first();
+         {!
+         |? _loop
+         |!
+            ZK_RN.GRP_KEY:=_grp_key_off;
+            _loop:=ZK_RN.put() & ZK_RN.next()
+         !};
+         end();
+         ZK_RN.cntx_pop();
+         {? ZK_RN.first()
+::          kontynuacja pętli
+         || _mp.loop_continue()
+         ?}
+      ?}
+   ?};
+   ZK_RN.cntx_pop();
+   _mp.done()
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+{? var_pres('ZAM',_in)<>type_of(~~) & _in.ZAM
+|| 'Zrealizuj zamówienie wewnętrzne: %1'@@[exec('record','#to_string',_in.ZAM)]
+|? var_pres('ZL',_in)<>type_of(~~) & _in.ZL
+|| 'Zrealizuj wydanie do limitów zlecenia: %1'@@[exec('record','#to_string',_in.ZL)]
+|| ''
+?}
+
+
+\zam_realizuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Dokument sprzedaży - Akceptuj
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+exec('zkn_realizuj','zamsiw_rea','LMG_ZAM_IPRZ')
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.14]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_context:=params_get().context;
+
+_zlec:={? var_pres('ZL',_in)=type_of(null()) & _in.ZL
+       || _in.ZL
+       || null()
+       ?};
+_zam:={? var_pres('ZAM',_in)=type_of(null()) & _in.ZAM
+      || _in.ZAM
+      |? type_of(_context)<>type_of(~~) & var_pres('ZK_N',_context)=type_of(null()) & _context.ZK_N
+      || _context.ZK_N
+      || null()
+      ?};
+
+{? _zam<>null() | _zlec<>null()
+||
+   _oddz:={? _zam<>null()  || 1+(ref_name(_zam)+3)
+          |? _zlec<>null() || exec('FindAndGet','#table',ZL,_zlec,,"ODDZ",'')
+          || ''
+          ?};
+   {? +_oddz
+   ||
+      __PARSES.setVal('OddzialLogProd',_oddz);
+      USERS_UP.cntx_psh();
+      USERS_UP.index('MG');
+      USERS_UP.prefix(OPERATOR.USER,'MG',_oddz);
+      {? USERS_UP.first()
+      ||
+         __PARSES.setVal('Magazyn',USERS_UP.MG)
+      ?};
+      USERS_UP.cntx_pop()
+   ?}
+?};
+1
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.22]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::   WY: 0 - nie można iść dalej
+::       1 - można iść dalej
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+
+_can_continue:=1;
+_result:=0;
+
+_keyRefs:=_mp.getRefs();
+_can_continue:=1;
+
+{? obj_len(_keyRefs)>0
+||
+   {! _it:=1..obj_len(_keyRefs)
+   |! _kref:=_keyRefs[_it];
+
+      {? type_of(_kref)>0
+      || _has_key:=1;
+         {? ref_name(_kref)=ZL.name()
+         || _zl:=exec('FindAndGet','#table',ZL,_kref,,,null());
+
+            {? _zl=null()
+            ||
+::             Nie znaleziono rekordu kluczowego powiązanego ze zleceniem, więc robię error
+               _can_continue:=0;
+               exec('zl_deleted_in_proc','zl_common',_mp)
+            |? ~_mp.isMicro() & exec('FindAndGet','#table',ZL,_zl,,"ZL.STAN",'')='Z'
+            ||
+::            Zlecenie zostało zamknięte, więc robie error
+               _can_continue:=0;
+               exec('zl_deleted_in_proc','zl_common',_mp,,0)
+            ?}
+
+         |? (5+ref_name(_kref))=(5+ZK_N.name())
+         || _zk_n:=exec('FindAndGet','#table',ZK_N,_kref,,,null());
+
+            {? _zk_n=null()
+            || _can_continue:=0;
+::             Nie znaleziono rekordu kluczowego powiązanego ze zleceniem, więc robię error
+               _msg:='Zamówienie nie zostało odnalezione, prawdopodobnie zostało usunięte.'@;
+               {? _mp.isService()=0 & _mp.CLEANER=0
+               || FUN.emsg(_msg)
+               ?};
+               _mp.error(_msg)
+            ?}
+         ?}
+      ?}
+   !}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+:Sign Version 2.0 jowisz:1045 2023/10/06 08:32:42 b0ecbdcc12d3a9034abeb75357fdb28daf3c7ea38ac93d3c3e8b0b643730fcf8a80cd64de25483a9d07935282fa329c62db246b97d549141ac22c10478b7b90e550fd183e0aee984509f6b88434b89cbdd04000ad2abdde55a7494fc1f8eeb46396c16e8426cff8dfabb83f1f9cffae0b074c94f9952699560b291ae33717922

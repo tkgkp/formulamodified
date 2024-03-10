@@ -1,0 +1,605 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !por_bnf_rprc.fml
+:: Utworzony: 20.01.2020
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Formuły czynności POR_BNF_RPRC - Rej. benefitów pracownika.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Rej. benefitów pracownika - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP
+::# permissions=F_ZATR,UD_SKL
+::
+::# access=exec('run_cond_p','pkd')
+::
+::# kind=WE, symbol=P, type=_P, name=Wskazanie na pracownika, required=T, keyref=T
+::
+::# kind=WY, symbol=BNFTP, type=_BNFTP, name=Wskazanie na benefit pracownika, required=N
+::
+_par:=params_get();
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+_akcja:=_mp.akcja();
+_context:=_par.context;
+
+_result:='';
+_done:=0;
+_uidref:=exec('ref2uid','#table',_in.P);
+
+{? _uidref=''
+|| _result:=exec('error','!por_bnf_rprc','P')
+
+|? _mp.loop()
+:: Kolejny obrót pętli - odzyskajmy klucz grupujący.
+:: Właściwie moglibyśmy odwołać się wyłącznie do _in.GRPKEY. Ale dla zgodności zastosujemy zapis standardowy.
+|| _out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+:: Nie zapisujemy parametrów wyjściowych, bo zrobimy to przy obsłudze _done=1.
+   _done:=1
+
+|| {? ~_mp.isMicro()
+::    Zabawa z obsługą pętli nie ma sensu dla mikroczynności.
+::    Ustalenie klucza grupującego.
+::    Właściwie moglibyśmy odwołać się wyłącznie do _out.GRPKEY. Ale dla zgodności zastosujemy zapis standardowy.
+   || _out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+      _mp.save(,_out)
+   ?};
+
+:: Przepychanie m.in. ikon i obsługi dla "Zakończ".
+   params_set(
+      exec('obj_ntab_set','#array',params_get()
+      )
+   );
+
+   {? _mp.pathTodo()
+::    Czynność uruchomiona z listy zadań ("zerowe" uruchomienie pętli).
+   || _ret:=exec('select','!por_bnf_rprc',_uidref);
+      {? type_of(_ret)=type_of('')
+      || _result:=_ret
+      |? _ret
+      || _done:=1
+      || _mp.keep()
+      ?}
+
+::    Obsługa akcji - wywołania wyłącznie z obszaru roboczego.  --------------------------------------------------------
+
+   |? _akcja='DOŁĄCZ'
+::    Wywołanie tylko z obszaru roboczego.
+   || _ret:=exec('bnftp_dolacz','!por_bnf_rprc',_uidref);
+      {? +_ret=48
+      || _context.BNFTP:=_ret;
+         {? ~_mp.isMicro()
+         || _mp.grpkeyAdd(_ret)
+         ?}
+      |? _ret<>''
+      || _result:=_ret
+      ?}
+
+   |? _akcja='POPRAW'
+::    Wywołanie tylko z obszaru roboczego.
+   || _ret:=exec('bnftp_popraw','!por_bnf_rprc',_uidref,_context.BNFTP);
+      {? +_ret=48
+      || _context.BNFTP:=_ret;
+         {? ~_mp.isMicro()
+         || _mp.grpkeyAdd(_ret)
+         ?}
+      |? _ret<>''
+      || _result:=_ret
+      ?}
+
+   |? _akcja='USUŃ'
+::    Wywołanie tylko z obszaru roboczego.
+   || _ret:=exec('bnftp_usun','!por_bnf_rprc',_uidref,_context.BNFTP,_mp.isGroup());
+      {? +_ret=48
+      || _context.BNFTP:=_ret;
+         {? ~_mp.isMicro()
+         || _mp.grpkeyDel(_ret)
+         ?}
+      |? _ret<>''
+      || _result:=_ret
+      ?}
+
+   |? _akcja='ZAKOŃCZ'
+   || _done:=1
+
+   |? _akcja<>''
+   || _result:='Czynność %1 nie obsługuje akcji %2.'@ [_mp.buf_act.UID,_akcja]
+
+   ?}
+?};
+
+{? _done
+|| BNFTP.cntx_psh();
+   BNFTP.prefix();
+   do();
+   _grpkey:=_mp.grpkeyGet();
+   {? _grpkey<>~~
+   || {? BNFTP.seek(_grpkey)
+      || _out.BNFTP:=BNFTP.ref();
+         _mp.save(,_out)
+      ?};
+      {? _mp.grpkeyDel()
+      || {? _mp.grpkeyGet()<>~~
+::          Jeżeli jest jeszcze choć jeden element do przetworzenia, to pętla powinna być kontynuowana.
+         || _mp.loop_continue()
+         ?}
+      ?}
+   ?};
+   _mp.done();
+   end();
+   BNFTP.cntx_pop()
+?};
+
+{? _result<>''
+:: Obsługa błędów
+|| _mp.error(_result);
+   FUN.emsg(_result)
+?};
+
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=exec('desc','pracownik',params_get().mp);
+{? _tab.ZAW_DANE='T'
+|| {? _tab.OBCY='T'
+   || 'Zarejestruj benefity: %1 %2: Paszport - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+   |? +_tab.PESEL
+   || 'Zarejestruj benefity: %1 %2: PESEL - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+   || 'Zarejestruj benefity: %1 %2: Data urodzenia - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+   ?}
+|| 'Zarejestruj benefity'@@
+?}
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Słownik komunikatów o błędach.
+::   WE: [_a] [STRING] - Kod komunikatu.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_kod:={? var_pres('_a')=type_of('') || _a || '' ?};
+
+{? _kod='P'
+|| 'Nie znaleziono pracownika.'@
+|? _kod='BNFTP_put'
+|| 'Nie znaleziono benefitu do poprawienia.'@
+|? _kod='BNFTP_del'
+|| 'Nie znaleziono benefitu do usunięcia.'@
+|? _kod='BNFTP_OWNER'
+|| 'Informacja wprowadzona w innej dziedzinie produktowej.'@+'\n'+'Usunięcie nie jest możliwe.'@
+|| 'Wystąpił nieprzewidziany błąd.'@
+?}
+
+
+\select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Obsługa czynności wywołanej z listy zadań.
+::   WE: _a [STRING] - Wskazanie (uidref) na pracownika.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+P.cntx_psh();
+P.prefix();
+{? var_pres('_a')=type_of('') & +_a=48 & P.seek(_a)
+|| params_set(params_get());
+   OSOBA.cntx_psh();
+   OSOBA.prefix();
+   P.OSOBA();
+   BNFTP.cntx_psh();
+   BNFTP.index('PBD');
+   BNFTP.prefix(P.ref());
+   BNFTP.win_sel(exec('wnd','!por_bnf_rprc'));
+   BNFTP.win_edit('RED');
+   _ret:=BNFTP.select();
+   BNFTP.cntx_pop();
+   OSOBA.cntx_pop()
+|| _ret:=exec('error','!por_bnf_rprc','P')
+?};
+P.cntx_pop();
+_ret
+
+
+\wnd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Przygotowanie grupowego okna wertowania benefitów pracownika.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_mode:='maximized';
+
+_czyZ:=exec('dest','f_zatr',P.F_ZATR,'KOD')='Z';
+_before:=
+   {? _czyZ
+   || "mb_exec('GRP_EDISP_P_INFO_Z')"
+   || "mb_exec('GRP_EDISP_P_INFO_P')"
+   ?};
+
+_wnd:=BNFTP.grp_make('Benefity pracownika'@,_before,'bnftp_weri',,,,,_mode);
+BNFTP.grp_edit(_wnd,P,{? _czyZ || 'INFO_Z' || 'INFO_P' ?},,,,,,_mode);
+BNFTP.grp_splt(_wnd,,'horizontal','bnftp');
+BNFTP.grp_sel(_wnd,,'WER',,,,,,,,,,_mode,,1);
+
+_wnd
+
+
+\_args
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Formuła zwraca argumenty wymagane do uruchomienia czynności.
+::   WE:
+::   WY: Obiekt z parametrami zgodny z exec('mp_run_a','#b__box') z uzupełnionymi wybranymi polami.
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='POR_BNF_RPRC';
+_args.UIDREF:=P.uidref();
+_args.CONTEXT:=obj_new('BNFTP');
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'P',P.ref());
+_args
+
+
+\bnftp_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Obsługa akcji "Rekord - przed" w oknach WER i VIEW tabeli BNFTP.
+::   WE: _a [NUMBER] - Rekord bieżący? [0 - nie / 1 - tak]
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ws:=cur_win(1,1);
+{? _a &_ws='WER'
+|| _par:=params_get();
+   {? obj_ntab(_par) &
+      var_pres('cfg',_par)>100 & obj_ntab(_par.cfg) &
+      var_pres('done',_par.cfg)>100 & obj_ntab(_par.cfg.done) &
+      var_pres('noempty',_par.cfg.done)=type_of('') & var_pres('empty',_par.cfg.done)=type_of('')
+   || _hid:=_par.cfg.done.noempty+':'+_par.cfg.done.empty
+   || _hid:=''
+   ?};
+   _TAB:=ref_tab(BNFTP.OWNER);
+   {? type_of(_TAB)<>type_of(~~) & _TAB=IS_WYPL
+   || IS_WYPL.cntx_psh();
+      IS_WYPL.prefix();
+      IS_DEF.cntx_psh();
+      IS_DEF.prefix();
+      _rub:={? IS_WYPL.seek(BNFTP.OWNER) || IS_WYPL.IS_DEF().R || null() ?};
+      IS_WYPL.cntx_pop();
+      IS_DEF.cntx_pop();
+      {? BNFTP.R=_rub
+      || _hid:='P'+_hid
+      ?}
+   ?};
+   _hid:={? BNFTP.OWNER='' || 'E' |? BNFTP.sel_size()=0 || 'U' || '' ?}+_hid;
+   BNFTP.actions_grayed('WER',_hid)
+?};
+
+BNFTT.cntx_psh();
+BNFTT.prefix();
+BNFTP.BNFTT();
+_d0:=date(0,0,0);
+_status:=
+   {? BNFTP.OD<BNFTT.OD
+   || '02'
+   |? BNFTT.DO<>_d0 & BNFTP.DO=_d0
+   || '01'
+   |? BNFTT.DO<>_d0 & BNFTP.DO<>_d0 & BNFTT.DO<BNFTP.DO
+   || '02'
+   || ''
+   ?};
+
+BNFTT.cntx_pop();
+
+{? _status<>''
+|| Color.fnd_kol('BNFTP#01#'+_status)
+?}
+
+
+\bnftp_act_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Obsługa akcji "Dołącz - przed" w oknach wertowania tabeli BNFTP.
+::       Formuła wykonywana w dwóch środowiskach:
+::          - po wywołaniu z listy zadań (okno wertowania tabeli BNFTP z doklejonym oknem redagowania tabeli P);
+::          - w ramach obszaru roboczego (okno wertowania tabeli BNFTP jako składowa okna grupowego).
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Przepychanie m.in. ikon i obsługi dla "Zakończ".
+params_set(_par:=params_get());
+
+{? cur_tab(0,0)=BNFTP
+:: Wywołanie z listy zadań (czynność, w postaci okna wertowania, jest już uruchomiona).
+|| _mp:=_par.mp;
+   {!
+   |? _ret:=exec('bnftp_dolacz','!por_bnf_rprc',P.uidref());
+      {? +_ret=48
+      || _mp.grpkeyAdd(_ret);
+         1
+      |? _ret<>''
+      || FUN.emsg(_ret);
+         0
+      ?}
+   !}
+
+:: Jeżeli wywołanie z obszaru, to zawsze procesowo.
+|| _args:=exec('_args','!por_bnf_rprc');
+   _args.AKCJA:='DOŁĄCZ';
+   {!
+   |? _args.CONTEXT.BNFTP:='';
+      exec('mp_run','#b__box',_args);
+      {? type_of(_args.CONTEXT.BNFTP)=type_of('') & +_args.CONTEXT.BNFTP=48
+      || _loop:=BNFTP.seek(_args.CONTEXT.BNFTP);
+         win_disp();
+         _loop
+      ?}
+   !}
+?};
+~~
+
+
+\bnftp_act_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Obsługa akcji "Popraw - przed" w oknach wertowania tabeli BNFTP.
+::       Formuła wykonywana w dwóch środowiskach:
+::          - po wywołaniu z listy zadań (okno wertowania tabeli BNFTP z doklejonym oknem redagowania tabeli P);
+::          - w ramach obszaru roboczego (okno wertowania tabeli BNFTP jako składowa okna grupowego).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Przepychanie m.in. ikon i obsługi dla "Zakończ".
+params_set(_par:=params_get());
+
+{? cur_tab(0,0)=BNFTP
+:: Wywołanie z listy zadań (czynność, w postaci okna wertowania, jest już uruchomiona).
+|| _mp:=_par.mp;
+   _ret:=exec('bnftp_popraw','!por_bnf_rprc',P.uidref(),BNFTP.uidref());
+   {? +_ret=48
+   || _mp.grpkeyAdd(_ret)
+   |? _ret<>''
+   || FUN.emsg(_ret)
+   ?}
+
+:: Jeżeli wywołanie z obszaru, to zawsze procesowo.
+|| _args:=exec('_args','!por_bnf_rprc');
+   _args.AKCJA:='POPRAW';
+   _args.CONTEXT.BNFTP:=BNFTP.uidref();
+   exec('mp_run','#b__box',_args)
+?};
+~~
+
+
+\bnftp_act_usun_bg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Obsługa akcji "Usuń - grupa przed" w oknach wertowania tabeli BNFTP.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('del_ask','#table')
+
+
+\bnftp_act_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Obsługa akcji "Usuń - przed" w oknach wertowania tabeli BNFTP.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Przepychanie m.in. ikon i obsługi dla "Zakończ".
+params_set(_par:=params_get());
+
+:: !!! Ochrona przed usunięciem dla rekordów "automatycznych"
+
+{? cur_tab(0,0)=BNFTP
+:: Wywołanie z listy zadań (czynność, w postaci okna wertowania, jest już uruchomiona).
+|| _mp:=_par.mp;
+   _ret:=exec('bnftp_usun','!por_bnf_rprc',P.uidref(),BNFTP.uidref());
+   {? +_ret=48
+   || _mp.grpkeyDel(_ret)
+   |? _ret<>''
+   || FUN.emsg(_ret)
+   ?}
+
+:: Jeżeli wywołanie z obszaru, to zawsze procesowo.
+|| _args:=exec('_args','!por_bnf_rprc');
+   _args.AKCJA:='USUŃ';
+   _args.CONTEXT.BNFTP:=BNFTP.uidref();
+   _args.GRUPA:={? BNFTP.sel_size() || 'T' || 'N' ?};
+   exec('mp_run','#b__box',_args)
+?};
+~~
+
+
+\bnftp_act_zakoncz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Obsługa akcji "Zakończ". Formuła wykonywana w dwóch środowiskach:
+::          - po wywołaniu z listy zadań (okno wertowania tabeli BNFTP z doklejonym oknem redagowania tabeli P);
+::          - w ramach obszaru roboczego (okno wertowania tabeli BNFTP jako składowa okna grupowego).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? cur_tab(0,0)=BNFTP
+:: Wywołanie z listy zadań (czynność, w postaci okna wertowania, jest już uruchomiona).
+|| sel_exit()
+
+:: Jeżeli wywołanie z obszaru, to zawsze procesowo. Dobrze jest skorzystać z maszynki obszarowej - odświeży odpowiednie
+:: okna.
+|| params_set(params_get());
+   exec('pkd_run','pkd','ZAKOŃCZ')
+?}
+
+
+\bnftp_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Właściwe dołączanie rekordu do tabeli BNFTP.
+::   WE: _a [STRING] - Wskazanie (uidref) na pracownika.
+::   WY: Komunikat o błędzie lub uidref dołączonego rekordu lub ''.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+
+P.cntx_psh();
+P.prefix();
+{? var_pres('_a')=type_of('') & +_a=48 & P.seek(_a)
+|| BNFTP.cntx_psh();
+   BNFTP.prefix();
+   BNFTP.blank();
+   BNFTP.win_edit('RED');
+:: Przepychanie m.in. ikon.
+   params_set(params_get());
+   {? BNFTP.edit("exec('bnftp_ae','!por_bnf_rprc')") & BNFTP.add()
+   || _ret:=BNFTP.uidref()
+   ?};
+   BNFTP.cntx_pop()
+|| _ret:=exec('error','!por_bnf_rprc','P')
+?};
+P.cntx_pop();
+
+_ret
+
+
+\bnftp_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Właściwe poprawianie rekordu do tabeli BNFTP.
+::   WE: _a [STRING] - Wskazanie (uidref) na pracownika.
+::       _b [STRING] - Wskazanie (uidref) na poprawiany benefit.
+::   WY: Komunikat o błędzie lub uidref poprawionego rekordu lub ''.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+
+P.cntx_psh();
+P.prefix();
+{? var_pres('_a')=type_of('') & +_a=48 & P.seek(_a)
+|| BNFTP.cntx_psh();
+   BNFTP.prefix();
+   BNFTP.win_edit('RED');
+   {? var_pres('_b')=type_of('') & +_b=48 & BNFTP.seek(_b) & BNFTP.P=P.ref()
+   || _mod:=BNFTP.OWNER='';
+      BNFTP.efld_opt('RED','editable=%1' [$_mod]);
+      BNFTP.efld_opt('RED','editable=1',,'NOMINAL');
+::    Przepychanie m.in. ikon.
+      params_set(params_get());
+      {? BNFTP.edit("exec('bnftp_ae','!por_bnf_rprc')") & BNFTP.put()
+      || _ret:=BNFTP.uidref()
+      ?};
+      BNFTP.efld_opt('RED','editable=1')
+   || _ret:=exec('error','!por_bnf_rprc','BNFTP_put')
+   ?};
+   BNFTP.cntx_pop()
+|| _ret:=exec('error','!por_bnf_rprc','P')
+?};
+P.cntx_pop();
+
+_ret
+
+
+\bnftp_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Właściwe usunięcie rekordu z tabeli BNFTP.
+::   WE:  _a [STRING]  - Wskazanie (uidref) na pracownika.
+::        _b [STRING]  - Wskazanie (uidref) na usuwany benefit.
+::       [_c] [NUMBER] - Pomijać pytanie o usunięcie [0*/1].
+::   WY: Komunikat o błędzie lub uidref usuniętego rekordu lub ''.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+
+P.cntx_psh();
+P.prefix();
+{? var_pres('_a')=type_of('') & +_a=48 & P.seek(_a)
+|| BNFTP.cntx_psh();
+   BNFTP.prefix();
+   {? var_pres('_b')=type_of('') & +_b=48 & BNFTP.seek(_b) & BNFTP.P=P.ref()
+   || {? BNFTP.OWNER<>''
+      || _ret:=exec('error','!por_bnf_rprc','BNFTP_OWNER')
+      |? (var_pres('_c')=type_of(0) & _c) | exec('del_ask','#table')
+      || {? BNFTP.del(1,1)
+         || _ret:=_b
+         ?}
+      ?}
+   || _ret:=exec('error','!por_bnf_rprc','BNFTP_del')
+   ?};
+   BNFTP.cntx_pop()
+|| _ret:=exec('error','!por_bnf_rprc','P')
+?};
+P.cntx_pop();
+
+_ret
+
+
+\bnftp_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Obsługa akcji "Rekord - po" w oknie WER tabeli BNFTP.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=exec('bnftp_chk','portal_benefity',-menu_txt()='popraw');
+_type:=type_of(_ret);
+{? (_type=type_of('') & _ret<>'') | (_type=type_of(0) & ~_ret)
+|| return(_ret)
+?};
+
+_d0:=date(0,0,0);
+BNFTP.BNFTT();
+:: Warunki sprawdzające brak poprawności dat OD i DO benefitu (w stosunku do dat definicji).
+_bod:=BNFTP.OD<BNFTT.OD | (BNFTT.DO<>_d0 & BNFTT.DO<BNFTP.OD);
+:: Błędem jest jeżeli data DO benefitu jest mniejsza niż data OD definicji. Ale oznacza to, że również data OD benefitu
+:: jest mniejsza niż data OD definicji, a taka sytuacja zostanie wykryta wyżej (tutaj możemy ją sobie darować).
+_bdo:=BNFTT.DO<>_d0 & (BNFTP.DO=_d0 | BNFTT.DO<BNFTP.DO);
+_msg:=
+   'Okres użytkowania benefitu przez pracownika [%1 - %2]\nwykracza poza okres jego dostępności [%3 - %4].'@
+   [$BNFTP.OD,$BNFTP.DO,$BNFTT.OD,$BNFTT.DO]+'\n'+
+   'Może to oznaczać brak naliczeń składnika na listach płac.'@+'\n';
+{? _bod | _bdo
+|| {? BNFTP.OWNER<>''
+   || FUN.info(
+         _msg+
+         'Zweryfikuj daty dostępności (definicja benefitu)\n'
+         'oraz daty okresu użytkowania (źródło zapisu - patrz "Szczegóły").'@
+      );
+      ''
+   |? ~FUN.ask(_msg+'Czy na pewno chcesz kontynuować?'@)
+   || {? _bod
+      || 'OD'
+      || 'DO'
+      ?}
+   || ''
+   ?}
+|| ''
+?}
+
+
+\bnftp_legenda_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Obsługa akcji "Legenda - przed" w oknach WER i VIEW tabeli BNFTP.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('legenda','color','BNFTP#01','BNFTP#WER#')
+
+
+:Sign Version 2.0 jowisz:1045 2021/09/17 15:16:59 83c57f31f5f699c4d9244f0081366589542f697c1482d0d757f209dc162ea3a85f4dba9f9eb5d5d65a2dfeae855d314570780f4fe1a53690099028f49c05a47bdf071e6c5bfdd8ee7de9618488d228c1d2abd13f186c0374cb5c1b1ad0f518de14f94d5a155b08a22ccf79b96bc2b0931218d477faeff5e8c36b1a1164dc08b6

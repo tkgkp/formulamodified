@@ -1,0 +1,999 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: fis_drukarka.fml
+:: Utworzony: 25.07.2016
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Drukarka fiskalna - clasa DRUKARKA
+::======================================================================================================================
+
+
+\mode
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2011]
+:: OPIS: tryb otwarcia portu
+::----------------------------------------------------------------------------------------------------------------------
+'d,mode=binary'
+
+
+\comment
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AJ [2008]
+:: OPIS: Opis obiektu DRUKARKA
+::----------------------------------------------------------------------------------------------------------------------
+::
+:: UWAGA: domyślna implementacja dla drukarki df-301
+::        dla stawek podatkowych:
+::        A-22%, B-12%, C-7%, D-3%, E-0%, Z-zwolniony
+::        Ewentualne zmiany symboli stawek należy wprowadzić w metodzie:
+::        get_vat
+::
+:: Pola:  TYP      - typ interfejsu: SZEREGOW lub ROWNOLEG
+::        STR      - strumień do zapisu/odczytu do/z drukarki
+::        ONLINE   - 1-port otwarty, 0-port zamknięty
+::        ESC      - kod znaku sterującego drukarką 'esc'
+::        CR       - kod znaku sterującego drukarką 'cr'
+::        BCK_SLH  - kod znaku sterującego drukarką '\'
+::        ACK      - kod znaku odpowiedzi drukarki (akceptacja)
+::        NAK      - kod znaku odpowiedzi drukarki (negacja)
+::        NRUNIKAT - unikatowy numer drukarki fiskalnej
+::
+:: Metody publiczne:
+::        get_vat  - zwraca kod stawki podatkowej, arg. _a=stawka podatkowa np.
+::                                                         '22 %'
+::        beg_par  - nagłówek paragonu, bez arg. lub _a=nazwa, _b=ulica,
+::                                                   _c=miasto
+::        line_par - linia paragonu, arg. _a=numer, _b=nazwa, _c=ilość, _d=vat,
+::                                        _e=cena brutto, _f=wartość brutto,
+::                                        _g=jedn. miary
+::        end_par  - koniec paragonu, arg. _a=wartość brutto, _b='ok' lub 'anul'
+::        p_300165 - wartość parametru 300165
+::        linefoot - dodatkowa linia w stopce po transakcji
+::        lchkfoot - sprawdza parametry dodatkowej linii w stopce paragonu _a-id pozycji, _b-treść pozycji wynik [0/1]
+::        end_foot - zakończenie stopki po transakcji
+::        beg_k_b  - nagłówek kontroli bazy, bez arg.
+::        end_k_b  - koniec kontroli bazy, bez arg.
+::        rap_ok   - raport okresowy, arg. _a=data1, _b=data2
+::        rap_dob  - raport dobowy, bez arg.
+::        rap_zmn  - raport zmianowy, arg. _a=zmiana, _b=kasjer
+::        rap_prt  - raport stanu drukarki fiskalnej, bez arg.
+::        ust_zeg  - ustawienie zegara, bez arg.
+::        get_time - pobiera z drukarki datę i czas, bez arg.
+::        zm_vat   - zmiana stawek vat, arg. _a.._d=nowe stawki
+::        get_nrdr - ustawia lub ponownie odczytuje unikatowy numer drukarki fiskalnej
+::        par_num  - odczytuje numer paragonu ostatnio wydrukowanego
+''
+
+
+\deklar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AJ [2008]
+:: OPIS: deklarowanie klasy DRUKARKA
+::       ustawienie metod wirtualnych dla domyslnej drukarki POSNET DF-301
+::       [_a] - 0/1 - dane pobieramy z bufora tabeli
+::----------------------------------------------------------------------------------------------------------------------
+_buf:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+{? var_pres('DRUKARKA',@.CLASS)>100 || return() ?};
+
+{? _buf=0
+||
+   OZ.index('OZ');
+   OZ.prefix(OPERATOR.USER().KOD,OPERATOR.USER().KOD);
+   {? ~OZ.first() || return() ?}
+?};
+ROWNOLEG:={? OZ.PORT*'L' | OZ.PORT='MDEV' & (-OZ.MDEV)*'|lpt' || 1 || 0 ?};
+SZEREGOW:={? OZ.PORT*'C' | OZ.PORT='MDEV' & (-OZ.MDEV)*'|com' || 1 || 0 ?};
+
+obj_decl('DRUKARKA',
+   obj_fld('TYP',SZEREGOW),
+   obj_fld('PROTO',''),
+   obj_fld('STR',0),
+   obj_fld('ONLINE',0),
+   obj_fld('ESC',0),
+   obj_fld('CR',0),
+   obj_fld('BCK_SLH',0),
+   obj_fld('ACK',0),
+   obj_fld('NAK',0),
+   obj_fld('LIB',0),
+   obj_fld('CRC16HTAB',0),
+   obj_fld('CRC16LTAB',0),
+   obj_fld('CRC16',0),
+   obj_fld('CHECKSUM',0),
+   obj_fld('DEV',''),
+   obj_fld('MODE',''),
+   obj_fld('FSP',''),
+   obj_fld('TOKEN',0),
+   obj_fld('LOG',0),
+   obj_fld('NRUNIKAT',''),
+   obj_fld('HTAB',0),
+   obj_fld('LTAB',0),
+
+   obj_meth('__init',"
+      _a.PROTO:='THERMAL';
+      _a.ESC:=%27;
+      _a.CR:=%13;
+      _a.BCK_SLH:=%92
+   "),
+
+   obj_virt('init',""),
+
+   obj_virt('__done',""),
+
+   obj_meth('hex2char',"
+      _byte:=0;
+      {! |? +_a |!
+         _byte*=16;
+         {? (1+_a)='0' || _n:=0
+         ||
+            _n:=#(1+_a);
+            {? _n=0 || _n:=((%(1+_a))-(%('A')))+10 ?}
+         ?};
+         _byte+=_n;
+         _a:=1-_a
+      !};
+      %_byte
+   "),
+
+   obj_meth('hex2int',"
+      _res:=0; _m:=1;
+      {! _i:=0..+_a-1 |!
+         _x:=-(_a-_i+1);
+         {? _x='0' || ~~
+         |? _v:=#_x || _res+=_v*_m
+         |? 'a'<=_x & _x<='f' || _res+=(%_x-87)*_m
+         || return(0)
+         ?};
+         _m:=_m*16
+      !};
+      _res
+   "),
+
+   obj_virt('crc16htab',""),
+   obj_virt('crc16ltab',""),
+   obj_virt('crc16',""),
+   obj_virt('checksum',""),
+   obj_virt('ramka',""),
+
+   obj_virt('get_stat',"
+      _l:=.hex2char('05');
+      fwrite(.STR,_l,1);
+      _l:=fread(.STR,1);
+      {? +_l=1 || _l
+      || FUN.info('Drukarka nie odpowiada.\nSprawdź zasilanie i połączenie.'@);
+         ''
+      ?}
+   "),
+
+   obj_virt('chk_stat',"
+      _l:=.get_stat();
+      {? +_l=1 ||
+         _status:=%_l;
+         _status:=_status%4;
+         _status:=_status%*2;
+         _status
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('chck_prt',"
+      no_msg(1);
+      .STR:=fopen(.DEV,.MODE);
+      no_msg(0);
+      {? .STR
+      ||
+         _l:=.get_stat();
+         {? +_l
+         || .ONLINE:=1
+         || fclose(.STR); .STR:=0; .ONLINE:=0;
+            FUN.info('\nDrukarka w trybie off-line.\n'@)
+         ?}
+      || FUN.info('\nDrukarka nie odpowiada.\nSprawdź zasilanie i połączenie.\n'@);
+         .ONLINE:=0
+      ?};
+      .ONLINE
+   "),
+
+   obj_virt('send',"
+      {? .STR ||
+         fwrite(.STR,_a,+_a);
+         {? .chk_stat() || 1
+         ||
+            {? .STR || fclose(.STR); .STR:=0; .ONLINE:=0 ?};
+            0
+         ?}
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('send_clo',"
+      _a:=.send(_a);
+      {? .STR || fclose(.STR); .STR:=0; .ONLINE:=0 ?};
+      _a
+   "),
+
+   obj_virt('vatget',"
+      _res:=obj_new('RES','A','B','C','D','E','F','G');
+      _res.RES:=0;
+      _info:=.get_info('23');
+      _l:=_info;
+      {? +_l
+      ||
+         _sep:='/';
+         _ii:=0;
+         _wsk:=1;
+         {!
+         |? _wsk
+         |!
+            _ii+=1;
+            _wsk:=_l*_sep;
+            {? _wsk
+            ||
+               _txt:=(_wsk-1)+_l; _l:=_wsk-_l;
+               _txt:=gsub(_txt,',','.');
+               {? _ii=2 || _res.A:={? _txt='101.00' || '' |? _txt='100.00' || 'Zwol.' || (' '+$#_txt+' %')+4 ?}
+               |? _ii=3 || _res.B:={? _txt='101.00' || '' |? _txt='100.00' || 'Zwol.' || (' '+$#_txt+' %')+4 ?}
+               |? _ii=4 || _res.C:={? _txt='101.00' || '' |? _txt='100.00' || 'Zwol.' || (' '+$#_txt+' %')+4 ?}
+               |? _ii=5 || _res.D:={? _txt='101.00' || '' |? _txt='100.00' || 'Zwol.' || (' '+$#_txt+' %')+4 ?}
+               |? _ii=6 || _res.E:={? _txt='101.00' || '' |? _txt='100.00' || 'Zwol.' || (' '+$#_txt+' %')+4 ?}
+               |? _ii=7 || _res.F:={? _txt='101.00' || '' |? _txt='100.00' || 'Zwol.' || (' '+$#_txt+' %')+4 ?}
+               |? _ii=8 || _res.G:={? _txt='101.00' || '' |? _txt='100.00' || 'Zwol.' || (' '+$#_txt+' %')+4 ?}
+               ?}
+            ?}
+         !};
+         {? _ii=17
+         ||
+::          Ps<22
+            _res.G:='Zwol.';
+            _res.RES:=1
+
+         |? _ii=18
+         ||
+            _res.RES:=1
+         ?}
+      ?};
+      _res
+   "),
+
+   obj_virt('get_vat',"
+      {? OZ.A().KOD * _a || 'A'
+      |? OZ.B().KOD * _a || 'B'
+      |? OZ.C().KOD * _a || 'C'
+      |? OZ.D().KOD * _a || 'D'
+      |? OZ.E().KOD * _a || 'E'
+      |? OZ.F().KOD * _a || 'F'
+      |? OZ.ZW().KOD * _a || 'Z'
+      || ''
+      ?}
+   "),
+
+   obj_virt('beg_par',"
+      {? .chck_prt()
+      ||
+:: sposob obliczania rabatu
+         _ok:=1;
+         _par:=exec('get','#params',800811,1);
+         {? _d='W' & (_par=1 | _par=2)
+         ||
+            _l:={? _par=1 || '1' || '0' ?}+'$r';
+            _l+=BB.c_df300(_l);
+            {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+               _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+            ?};
+            _ok:=.send(_l)
+         ?};
+         {? _ok
+         ||
+:: poczatek transakcji
+            {? _=3 ||
+               _num:=0;
+               {? +_a || _num+=1 ?};
+               {? +_b || _num+=1 ?};
+               {? +_c || _num+=1 ?};
+               _l:='0;'+$_num+'$h';
+               {? +_a || _l+=(40+_a); _l+=.CR; 'komentarz 1' ?};
+               {? +_b || _l+=(40+_b); _l+=.CR; 'komentarz 2' ?};
+               {? +_c || _l+=(40+_c); _l+=.CR; 'komentarz 3' ?}
+             ||
+               _l:='0$h'
+             ?};
+            _l+=BB.c_df300(_l);
+            {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+               _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+            ?};
+            .send(_l)
+         ?}
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('line_par',"
+      {? .ONLINE
+      ||
+         {? _>7
+         ||
+            _l:=$_a; 'FAP.POZ';
+            _l+={? _i || ';2$l' || ';1$l' ?};
+            _l+=(40+_b);  'FAP.M';
+            _l+=.CR;
+            _l+=exec('real2str','fis_drukarka',_c); 'FAP.IL';
+            _l+={? _=7 || exec('remNum','fis_drukarka',form(_g,5),' ') || '     ' ?};
+            _l+=.CR;
+            'checking T.STVAT().KOD = _d';
+            _l+=.get_vat(_d);
+            _l+='/';
+            _l+=exec('real2str','fis_drukarka',_e); 'FAP.CB';
+            _l+='/';
+            _l+=form(_f,,2,'9.'); 'FAP.WB';
+            _l+='/';
+            _l+=form(_h,,2,'9.'); 'FAKS.RAB+FAP.RAB';
+            _l+='/'
+         ||
+            _l:=$_a; 'FAP.POZ';
+            _l+='$l';
+            _l+=(40+_b);  'FAP.M';
+            _l+=.CR;
+            _l+=exec('real2str','fis_drukarka',_c); 'FAP.IL';
+            _l+={? _=7 || exec('remNum','fis_drukarka',form(_g,5),' ') || '     ' ?};
+            _l+=.CR;
+            'checking T.STVAT().KOD = _d';
+            _l+=.get_vat(_d);
+            _l+='/';
+            _l+=exec('real2str','fis_drukarka',_e); 'FAP.CB';
+            _l+='/';
+            _l+=form(_f,,2,'9.'); 'FAP.WB';
+            _l+='/'
+         ?};
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW ||
+             _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('nip_nab',"
+      {? .ONLINE
+      ||
+         _l:='1$N'+_a;
+         _l+=.CR;
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('end_par',"
+:: _a - wartość brutto
+:: _b - ok/anul - zatwierdzić koniec paragonu lub anulować paragon
+:: _c - kod kasy (1 znak) + kod kasjera (2 znaki)
+:: _d - wartość płatności
+:: _e - czy drukowane linie po logo fiskalnym
+      {? .ONLINE ||
+         {? _b='ok'
+         ||
+            {? _d
+            ||
+::             Pn - ilość dodatkowych linii umieszczanych w stopce
+               _Pn:='0';
+::             Pc - zachowanie rozkazu $y
+::             = 0 - dotychczasowe tzn. zakończenie drukowania i zakończenie trybu transakcyjnego
+::             = 1 - parametr ignorowany
+::             = 2 - wydrukowanie nagłówka nowego paragonu
+::             = 3 - nowe zachowanie (patrz dokumentacja drukarki)
+               _Pc:='3';
+::             Py - = 1 - skrócone podsumowanie, = 0 - wpp
+               _Py:='0';
+::             Pdsp - = 0 - kwota DSP dodatnia, = 1 - kwota DSP ujemna
+               _Pdsp:='0';
+::             Px - rodzaj rabatu
+::             = 0 - brak
+               _Px:='0';
+::             Pkb - blok kaucja pobrana
+::             = 0 - nie występuje
+               _Pkb:='0';
+::             Pkz - blok kaucja zwrócona
+::             = 0 - nie występuje
+               _Pkz:='0';
+::             Pns - string numer systemowy
+::             = 0 - jest ignorowany
+               _Pns:='0';
+::             Pfn - blok nazw form płatności
+::             = 0 - nie występuje
+               _Pfn:='0';
+::             Pr - kwota reszty
+::             = 0 - jest ignorowana
+               _Pr:='0';
+::             Pg - kwota wpłaty
+::             = 0 - jest ignorowana
+::             = 1 - występuje wpłata gotówki
+               _Pg:='0';
+::             Psx - pole opis rabatu
+::             = 0 - nie występuje
+::             = 1 - wystęuje
+               _Pxs:='1';
+::             łączna należność dla klienta
+               _total:=form(_a,,2,'9.');
+::             stan wyświetlacza klienta
+               _dsp:=form(_a-_d,,2,'9.');
+::             rabat kwotowy lub procentowy
+               _rabat:=form(0,,2,'9.');
+::             wpłata w gotówce
+               _wplata:=form(0,,2,'9.');
+::             reszta
+               _reszta:=form(0,,2,'9.');
+::             kaucja pobrana
+               _kaucja_pobr:=form(0,,2,'9.');
+::             kaucja zwrócona
+               _kaucja_zwr:=form(0,,2,'9.');
+::             numer kaszy
+::               _nr_kasy:='001';
+               _nr_kasy:='';
+::             kasjer
+::               _kasjer:='Kierownik';
+               _kasjer:='';
+::             nr systemowy
+               _nr_systemowy:='';
+::             opis rabatu
+               _opis_rabatu:='';
+::             zatwierdzenie transakcji z formami płatności
+               _l:=_Pn+';'+_Pc+';'+_Py+';'+_Pdsp+';'+_Px+';'+_Pkb+';'+_Pkz+';'+_Pns+';'+_Pfn+';'+_Pr+';'+_Pg+';'+_Pxs
+                  +'$y'
+                  +_nr_kasy+.CR+_kasjer+.CR
+                  +_nr_systemowy+.CR
+                  +{? _Pkb='1' || .CR || '' ?}
+                  +{? _Pkb='1' || .CR || '' ?}
+                  +{? _Pkz='1' || .CR || '' ?}
+                  +{? _Pkz='1' || .CR || '' ?}
+                  +_opis_rabatu+.CR
+                  +_total+'/'+_dsp+'/'+_rabat+'/'+_wplata+'/'
+                  +_reszta+'/'
+                  +{? _Pkb='1' || _kaucja_pobr+'/' || '' ?}
+                  +{? _Pkz='1' || _kaucja_zwr+'/' || '' ?};
+               _l+=BB.c_df300(_l);
+               {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+                  _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+               ?};
+               .send(_l);
+               {? _e=0 || .end_foot() ?}
+            ||
+::             bez drukowania form płatności
+               _l:='1;0$e'+(3+_c);
+               _l+=.CR;
+               _l+='0';
+               _l+='/';
+               '_a = FAKS.BRUTTO';
+               _l+=form(_a,,2,'9.');
+               _l+='/';
+               _l+=BB.c_df300(_l);
+               {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+                  _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+               ?};
+               .send_clo(_l)
+            ?}
+
+         |? _b='anul'
+         ||
+            _l:='0$e';
+            _l+=BB.c_df300(_l);
+            {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+               _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+            ?};
+            .send_clo(_l)
+         ?}
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('p_300165',"
+      exec('get','#params',300165)
+   "),
+
+   obj_virt('linefoot',"
+      {? .ONLINE
+      ||
+::       Psx =
+::        0 - Nr transakcji numeryczny
+::        1 - Punkty numeryczny
+::        2 - Suma punktów numeryczny
+::        3 - Nr rejestracyjny numeryczny
+::        4 - Nazwisko literowy
+::        5 - Karta literowy
+::        6 - Numer karty numeryczny
+::        7 - Ważna do numeryczny
+::        8 - Kasjer numeryczny
+::        9 - Nazw. kasjera literowy
+::       10 - Zaliczka numeryczny
+::       11 - Waluta literowy
+::       12 - Przelicznik numeryczny
+::       13 - Nr zamówienia numeryczny
+::       14 - Nr pracownika numeryczny
+::       15 - Nazw. Pracownika literowy
+::       16 - Konto przed tr. numeryczny
+::       17 - Przyznano numeryczny
+::       18 - Wykorzystano numeryczny
+::       19 - Konto po trans. numeryczny
+::       20 - Klient stały numeryczny
+::       21 - Voucher numeryczny
+::       22 - Wartość Voucher numeryczny
+::       23 - Zapłata Voucher numeryczny
+::       24 - napis predefiniowany w pamięci RAM bez parametru
+::            ( string[40] wszystkie cyfry zamieniane są na spacje,
+::            linia w przypadku jej użycia jest drukowana po raporcie dobowym)
+::       25 - linia bez słowa kluczowego (15 spacji) numeryczny
+::       26 – Ilość sprzedanych towarów numeryczny
+::       27 – Numer pracownika numeryczny
+::       28 – Numer klienta numeryczny
+::       29 – Udzielono łącznie rabatu numeryczny
+::       30 – Numer alfanumeryczny
+::       31 – Kod alfanumeryczny
+::       32 – Nazwa alfanumeryczny
+::       33 – Opis alfanumeryczny
+::       34 – Liczba alfanumeryczny
+         _Psx:=$_a;
+         _tekst:=_b;
+         _l:='20;'+_Psx+'$z'+_tekst+.CR;
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send(_l)
+      ?}
+   "),
+
+   obj_virt('sizefoot',"20"),
+
+   obj_virt('lchkfoot',"
+      _id:=_a;
+      _na:=_b;
+      _txt1:=_c;
+      _txt2:=_d;
+      {? _id<0 | 34<_id
+      ||
+         FUN.info(_txt1+'Jako pierwszy parametr należy podać liczbę całkowitą z zakresu <0..34>.'@+_txt2);
+         0
+
+      |? +_na>40
+      ||
+         FUN.info(_txt1+'Jako drugi parametr należy podać napis do 40 zanków.'@+_txt2);
+         0
+      ||
+         1
+      ?}
+   "),
+
+   obj_virt('end_foot',"
+      {? .ONLINE
+      ||
+         _l:='28;0$z';
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send_clo(_l)
+      ?}
+   "),
+
+   obj_virt('beg_k_b',"
+      {? .chck_prt() ||
+         _l:='0#b'; '<-nagłówek raportu';
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('poz_k_b',"
+      {? .ONLINE ||
+          _tryb:=exec('get','#params',300162,1);
+          {? $_tryb='' |  ('14'* $_tryb)=0 || _tryb:=1 ?};
+         _l:=$_tryb+'#b';
+         _l+=_a;  'M.FIS_KTM lub M.KTM+ +M.N';
+         _l+=.CR;
+         'checking M.VAT().KOD = _b';
+         _l+=.get_vat(_b);
+         _l+='/';
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+             _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('chk_spr',"
+      _wyn:=0;
+      _st:='';
+      {? .chck_prt()
+      ||
+         _l:='$g';
+         _l+=_a;  'M.FIS_KTM lub M.KTM+ +M.N';
+         _l+=.CR;
+         'checking M.VAT().KOD = _b';
+         _l+='A';
+         _l+='/';
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW
+         || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         fwrite(.STR,_l);
+         _buf:='';
+         _char:=0;
+         {!
+         |?
+            _char:=fread(.STR,1);
+            {? _char<>'' || _buf+=_char; _buf+2<>.ESC+.BCK_SLH ?}
+         !};
+         {? _buf*'1$G'
+         || _wyn:=#(1+(((_buf*'1$G')+2)-_buf));
+            _st:=((_buf*'/')-_buf);
+            _st:=(_st*'/'-1)+_st
+         || _wyn:=-1
+         ?};
+         fclose(.STR)
+      ||
+         _wyn:=-2
+      ?};
+      _wynf:=obj_new(2);
+      _wynf[1]:=_wyn;
+      _wynf[2]:=_st;
+      _wynf
+   "),
+
+   obj_virt('end_k_b',"
+      {? .ONLINE ||
+         _l:='2#b'; '<-zakończenie raportu';
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send_clo(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('rap_ok',"
+      {? .chck_prt() ||
+         '_a = DEFINE.DATA1, _b = DEFINE.DATA2';
+         _l:=(2-($(_a~1)));
+         {? 1+_l='0' || _l:=1-_l ?};
+         _l+=';'+$(_a~2)+';'+$(_a~3)+';';
+         _str:=(2-($(_b~1)));
+         {? 1+_str='0' || _str:=1-_str ?};
+         _l+=_str;
+         _l+=';'+$(_b~2)+';'+$(_b~3);
+         _l+=';0';
+         _l+='#o';
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+             _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send_clo(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('rap_dob',"
+      {? .chck_prt() ||
+         _d:=date;
+         _l:=(2-($(_d~1)));
+         {? (1+_l)='0' || _l:=1-_l ?};
+         _l:='1;'+_l+';'+$(_d~2)+';'+$(_d~3)+'#r';
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send_clo(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('rap_zmn',"
+      {? .chck_prt() ||
+         '_a = DEFINE.ZMIANA, _b = DEFINE.KASJER';
+         _l:='1#k'+_a+.CR+_b+.CR;
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send_clo(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('rap_prt',"
+      FUN.info('Drukarka nie obsługuje tego polecenia.'@)
+   "),
+
+   obj_virt('ust_zeg',"
+      _d:=date();
+      _t:=time();
+      {? .chck_prt() ||
+         _l:=(2-($(_d~1)));
+         {? (1+_l)='0' || _l:=1-_l ?};
+         _l+=';'+$(_d~2)+';'+$(_d~3)+';'+$(_t~1)+';'+$(_t~2)+';'+$(_t~3);
+         _l+='$c';
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || 'uzupełnienie stringu dla int.szeregowego';
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send_clo(_l)
+      ||
+         0
+      ?}
+   "),
+
+   obj_virt('zm_vat',"
+   {? _
+   || {? .chck_prt()
+      || _l:=$_+'$p';
+         {! i:=1.._ |! _l+=_[i]+'/' !};
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW || _l:=.ESC+'P'+_l+.ESC+.BCK_SLH ?};
+         .send_clo(_l)
+      || 0
+      ?}
+   || 0
+   ?}
+   "),
+
+   obj_virt('get_info',"
+      {? .chck_prt()
+      || fclose(.STR);
+         .STR:=fopen(.DEV,.MODE);
+         {? .STR
+         || _ps:={? var_pres('_a')=type_of('') || _a || '1' ?};
+            _l:='%1#s'[_ps];
+            {? .TYP=SZEREGOW || _l:=.ESC+'P'+_l+.ESC+.BCK_SLH ?};
+            fwrite(.STR,_l);
+            {!
+            |?
+               _zn:=fread(.STR,100);
+               _l+=_zn;
+               _zn<>'' & (_zn+1)<>.BCK_SLH
+            !};
+            fclose(.STR);
+::            _out:=fopen('posnet_nr_unik.txt','a',1);
+::            {? _out
+::            || fwrite(_out,_l);
+::               fclose(_out)
+::            ?};
+            _l:=5-(_l-2)
+         ?}
+      ||
+         ''
+      ?}
+   "),
+
+   obj_virt('get_time',"
+      {? .chck_prt()
+      ||
+         _l:='1#c';
+         {? .TYP=SZEREGOW || _l:=.ESC+'P'+_l+.ESC+.BCK_SLH ?};
+         fwrite(.STR,_l,+_l);
+         _l:=fread(.STR,21);
+         fclose(.STR);
+         _l:=5-(_l-2);
+         _str:='';
+         {? +_l ||
+            _num:=#(((_l*';')-1)+_l);
+            _str:='\nData: '+form(_num,-2)+'/';
+            _l:=(_l*';')-_l;
+            _num:=#(((_l*';')-1)+_l);
+            _str+=form(_num,-2)+'/';
+            _l:=(_l*';')-_l;
+            _num:=#(((_l*';')-1)+_l);
+            _str+=form(_num,-2)+'\n';
+            _l:=(_l*';')-_l;
+            _str+='\nCzas: ';
+            _num:=#(((_l*';')-1)+_l);
+            _str+=form(_num,-2)+':';
+            _l:=(_l*';')-_l;
+            _num:=#(2+_l);
+            _str+=form(_num,-2)+'\n'
+         ?};
+         _str
+      ||
+         ''
+      ?}
+   "),
+
+   obj_virt('get_nrdr',"
+      {? +.NRUNIKAT=0
+      ||
+        .par_num();
+        .NRUNIKAT
+      ||
+         .NRUNIKAT
+      ?}
+   "),
+
+   obj_virt('par_num',"
+     _info:=.get_info();
+     _l:=_info;
+     .NRUNIKAT:='';
+      {? +_l=0
+      ||
+         ''
+      ||
+         _l:=(_l+11);
+         .NRUNIKAT:=_l
+      ?};
+      _l:=_info;
+      {? +_l=0
+      ||
+         -1
+      ||
+         _str:=obj_new(20);
+         _l:=(_l*'/')-_l;
+         _len:=0;
+         {!
+         |? _l*'/'
+         |!
+            _len+=1;
+            _str[_len]:=((_l*'/')+_l)-1;
+            _l:=(_l*'/')-_l
+         !};
+         {? +_l
+         ||
+            _len+=1;
+            _str[_len]:=_l
+         ?};
+         {? _len%*2
+         ||
+            _ii:=(_len+1)/2
+         ||
+::          Ps<22
+            _ii:=_len/2-1
+         ?};
+         #_str[_ii]
+      ?}
+   "),
+
+   obj_virt('payment',"
+      {? .ONLINE
+      ||
+::       Ps = 1 - zgłoszenie formy płatności, = 2 - anulowanie formy płatności
+         _Ps:='1';
+::       Pfx - typ formy płatności
+         _Pfx:=exec('payment_typ','fis_drukarka',_a);
+::       kwota
+         _kwota:=form(_b,,2,'9.');
+::       nazwa formy płatności
+         _nazwa_form_platn:='';
+::       obsługa form płatności
+         _l:=_Ps+';'+_Pfx+'$b'+_kwota+'/'+_nazwa_form_platn+.CR;
+         _l+=BB.c_df300(_l);
+         {? .TYP=SZEREGOW
+         ||
+            _l:=.ESC+'P'+_l+.ESC+.BCK_SLH
+         ?};
+         .send(_l)
+      ?}
+   "),
+
+   obj_virt('sfsk',""),
+
+   obj_virt('arch_ind',""),
+   obj_virt('archv_ind',""),
+   obj_virt('log',"")
+
+)
+
+
+\payment_typ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.02]
+:: OPIS: typ formy płatności
+::   WE: _a - SLO.ref
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('FindAndGet','#table',SLO,$_a,,"
+   _nazwa:=exec('FindInSet','#table','ZR_SLO','SLO_NR',5,SLO.ref(),\"ZR_SLO.WAR\",,,'');
+   exec('payment_typ_name','fis_drukarka',_nazwa)
+",'4')
+
+
+\payment_typ_name
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.02]
+:: OPIS: nazwa typu formy płatności
+::   WE: _a - string - nazwa typu płatności (wartość parametru nr 5 w płatnościach)
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_re:='4';
+{? _>0
+||
+   {? type_of(_a)=type_of('')
+   ||
+      {? _a='gotówka'
+      ||
+         _re:='0'
+      |? _a='karta'
+      ||
+         _re:='1'
+      |? _a='czek'
+      ||
+         _re:='2'
+      |? _a='bon'
+      ||
+         _re:='3'
+      |? _a='kredyt'
+      ||
+         _re:='5'
+      |? _a='voucher'
+      ||
+         _re:='7'
+      |? _a='konto klienta'
+      ||
+         _re:='6'
+      ||
+         _re:='4'
+      ?}
+   ||
+      _re:='4'
+   ?}
+?};
+_re
+
+
+\real2str
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AJ [2008]
+:: OPIS: zamienia wartosc numeryczna na postac znakowa z kropka oddzielajaca postac dziesietna
+::   WE: _a - wartosc numeryczna
+::   WY: string
+::----------------------------------------------------------------------------------------------------------------------
+_wart:=$_a;
+_pos:=_wart*',';
+{? _pos
+|| _wynik:=(_pos-1)+_wart;
+   _wynik+='.';
+   _wynik+=_pos-_wart
+|| _wynik:=_wart
+?};
+_wynik
+
+
+\remNum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AJ [2008]
+:: OPIS: z podanego ciagu znakow zamienia cyfry na ciag znakow podany w drugim parametrze
+::   WE: _a - formatowany ciag znakow
+::       _b - znak (ciag znakow)
+::   WY: sformatowany string
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:='';
+{! _indx:=1..(+_a)
+|! _znak:=(_indx+_a)+1;
+   {? _znak='0' | _znak='1' | _znak='2' | _znak='3' | _znak='4' |
+      _znak='5' | _znak='6' | _znak='7' | _znak='8' | _znak='9'
+   ||
+      _znak:=_b
+   ?};
+   _wyn+=_znak
+!};
+_wyn
+
+:Sign Version 2.0 jowisz:1045 2023/11/08 11:49:14 3430f4e5883373face63f29621322a8df4af58786986dce5e8ae565f0e0a5b6efaa7ee813f9ffc803fd42215ba57a0fcdd7ac603ce565c41c5a3e7a0733a0da5adc87cf6a7862f614f700d7bfcfa38b22e6276c0e46c475b542b1f14102dfcb2ede0bd62a84fe695a4c09eb08bb7963e07816a02b04caa4d8837870bdaf16230

@@ -1,0 +1,1496 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: po_param.fml
+:: Utworzony: 11.04.2016
+:: Autor: MLAK
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi parametryzacji planu operacyjnego
+::======================================================================================================================
+
+
+\plres_select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Wyswietla okno wertowania zasobow do planowania
+::  OLD:  \plres_select/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+::tworze tabele tymczasowa RES_TREE ktora zawiera drzewo zasobow ktore moge importowac
+exec('create_res_tree','po_param');
+exec('__KAL','object');
+::tworze okienko grupowe
+_grp:=PL_RES.grp_make('Zasoby do planowania'@,"grp_disp(RES_TREE,WER_TREE)",,0,0);
+PL_RES.grp_sel(_grp,,'WER',,"grp_disp(RES_TREE,WER_TREE)",0,0,,,,,,'maximized');
+PL_RES.grp_splt(_grp,,'vertical','zasoby');
+PL_RES.grp_sel(_grp,RES_TREE,WER_TREE,,,0,0,,,,,,'maximized_with_title');
+
+::ustawiam kontekst dla tabeli PL_RES
+PL_RES.win_sel(_grp);
+PL_RES.win_edit('RED');
+PL_RES.clear();
+PL_RES.index('SYM');
+
+::support drag and drop
+exec('plres_dnd','po_param');
+
+PL_RES.select();
+
+VAR_DEL.delete('RES_TREE');
+VAR_DEL.delete('WER_TREE');
+~~
+
+
+\plres_dnd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Definiuje mechanizm d'n'd dla tabeli PL_RES
+:: OLD: \plres_dnd/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+PL_RES.dnd_sel('WER',,
+               'records.#res_tree',
+               "
+                  _tab:= dnd_info(\'dropped_records\');
+                  {? type_of(_tab) = type_of(~~) || return(0) ?};
+                  exec('plres_dnd_drop','po_param',_tab)
+               "
+               );
+~~
+
+
+\plres_dnd_drop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Obsluga upuszczenia rekordow z tabeli tymczasowej RES_TREE
+::   WE: _tab - tabela z rekordami ktore popuszczam - wynik formuly dnd_info('dropped_records')
+::  OLD: \plres_dnd_drop/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dropped:=_a;
+{? _dropped.first()
+|| {!
+   |? {? RES_TREE.seek(_dropped.REF,)
+      ||
+::galaz
+         RES_TREE.cntx_psh();
+         RES_TREE.prefix(RES_TREE.ref());
+         {? RES_TREE.first()
+         || {!
+            |?
+::funkcja dodajaca rekord
+               exec('plres_add_dnd','po_param');
+               _del:=RES_TREE.del(,1);
+               RES_TREE.size()>0
+            !};
+            RES_TREE.cntx_pop();
+            RES_TREE.del()
+::lisc
+         || RES_TREE.cntx_pop();
+::funkcja dodajaca rekord
+            exec('plres_add_dnd','po_param');
+            RES_TREE.del()
+         ?}
+      ?};
+      _dropped.next()
+   !}
+?};
+::po dodaniu rekordu odswiezam widok tabeli z mozliwymi zasobami do importu
+win_disp();
+~~
+
+
+\plres_add_dnd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Uruchamia funkcje \plres_add, pracuje w kontekscie rekordu RES_TREE
+::  OLD: \plres_add_dnd/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+::sprawdzam czy juz taki istnieje, jesli tak, to nie dodaje
+PL_RES.cntx_psh();
+PL_RES.index('REF');
+PL_RES.prefix(RES_TREE.REF);
+{? PL_RES.first()
+|| PL_RES.cntx_pop();
+   return()
+?};
+PL_RES.cntx_pop();
+::znajdowanie kalendarza
+_kal:=null();
+{? RES_TREE.KAL_REF<>''
+|| KAL_NAZW.cntx_psh();
+   KAL_NAZW.clear();
+   {? KAL_NAZW.seek(RES_TREE.KAL_REF)
+   || _kal:=KAL_NAZW.ref()
+   ?};
+   KAL_NAZW.cntx_pop()
+?};
+::dodawanie zasobu
+_ok:=exec('plres_add','po_plan', RES_TREE.TYP,
+                                 RES_TREE.REF,
+                                 RES_TREE.SYM,
+                                 RES_TREE.NAZ,
+                                 _kal,
+                                 RES_TREE.WYD);
+{? _ok=0
+|| FUN.emsg('Dodawanie zasobu do planowania się nie powiodło.'@)
+?};
+~~
+
+
+\create_res_tree
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Tworzy drzewo z zasobami do zaimportowania do tabeli PL_RES
+:: OLD: \create_res_tree/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('RES_TREE','WER_TREE');
+RES_TREE:=tab_tmp(4, 'PARENT','TREE_REF','Z',
+                     'TYP','STRING[2]','Typ',
+                     'BRANCH','STRING[1]','Czy jest gałęzią',
+                     'SYM','STRING[40]','Symbol'@,
+                     'WYD','STRING[20]','Wydział'@,
+                     'REF','STRING[16]','REF',
+                     'NAZ','STRING[50]','Nazwa'@,
+                     'KAL_NAZW','STRING[20]','Kalendarz'@,
+                     'KAL_REF','STRING[16]','Ref kalendarza'
+                 );
+
+RES_TREE.fld_attr(,2);
+
+WER_TREE:=RES_TREE.mk_sel('Dostępne zasoby możliwe do importu (za pomocą drag&drop)'@,'P',,'#res_tree',,,,1);
+RES_TREE.win_sel(WER_TREE);
+RES_TREE.win_fld(WER_TREE,,'SYM',,,30);
+RES_TREE.win_fld(WER_TREE,,'NAZ',,,30);
+::RES_TREE.win_fld(WER_TREE,,'KAL_NAZW',,,10);
+RES_TREE.win_fld(WER_TREE,,'WYD',,,10);
+
+_fml:="
+   _can_continue:=0;
+   {? cur_tab(1,1).BRANCH='T'
+   || _can_continue:=FUN.ask('Utworzyć zasoby na postawie wszystkich składowych drzewa: %1?'@[RES_TREE.SYM])
+   || _can_continue:=FUN.ask('Utworzyć zasób na postawie elementu: %1?'@[RES_TREE.SYM])
+   ?};
+   {? _can_continue>0
+   || exec('plres_create','po_param',RES_TREE.ref())
+   ?};
+   ~~
+";
+_fml_gr1:="
+   _sel:=RES_TREE.sel_aget();
+   sel_nchk();
+
+   _can_continue:=FUN.ask('Zaznaczonych elementów: %1. Utworzyć na ich podstawie zasoby planistyczne?'@[$_sel.size()]);
+
+   {? _can_continue>0
+   || exec('plres_dnd_drop','po_param',_sel)
+   ?};
+   grp_disp(PL_RES,'WER');
+   grp_disp(RES_TREE,WER_TREE);
+   0
+";
+_fml_gr2:="
+
+   ~~
+";
+
+RES_TREE.win_act(WER_TREE,,'Formuła','Utwórz zasób'@,,,_fml,,1,1,_fml_gr1,_fml_gr2,'U');
+
+RES_TREE.win_act(WER_TREE,,'Formuła','Zwiń/roz&wiń'@@,,'Zwiń/rozwiń wszystkie rekordy'@,
+   "exec('zwrw_all','#tree',RES_TREE,'PARENT')");
+RES_TREE.win_act(WER_TREE,,'Formuła','Miesiąc pracy'@,,,"exec('start_res','kal_mies',RES_TREE.TYP,RES_TREE.REF)");
+RES_TREE.win_act(WER_TREE,,'Formuła','Legenda'@@,,'Legenda'@,
+   "exec('legenda','color','#PL_RES#01')");
+RES_TREE.win_act(WER_TREE,,'Rekord',,,,"
+   {? RES_TREE.BRANCH='T'
+   || RES_TREE.actions_grayed(WER_TREE,'M')
+   || RES_TREE.actions_grayed(WER_TREE,'')
+   ?}
+");
+
+RES_TREE.win_fml(WER_TREE,,'SYM',,'ICON_BEFORE', "
+   _nr:=1;
+   {? RES_TREE.BRANCH='T'
+   || {? RES_TREE.tr_state()=0
+      || _nr:=74
+      |? RES_TREE.tr_state()=1
+      || _nr:=75
+      ?}
+   || _nr:=exec('ikona_res','po_plan',RES_TREE.TYP)
+   ?};
+   'xwin16.png:'+$_nr
+");
+exec('fill_res_tree','po_param');
+~~
+
+
+\fill_res_tree
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Dodaje do tabeli RES_TREE mozliwe do zaimportowania do planowania zasoby
+::   WE:
+::   WY:
+:: OLD: \fill_res_tree/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('RES_TREE')
+||
+:: dodaje do drzewa stanowiska produkcyjne
+   exec('tree_add_place','po_param');
+:: dodaje do drzewa gniazda produkcyjne
+   exec('tree_add_socket','po_param');
+:: dodaje do drzewa brygady robocze
+   exec('tree_add_bryg','po_param');
+:: dodaje do drzewa pracowników
+   exec('tree_add_prac','po_param');
+:: dodaje do drzewa wydzialy
+   exec('tree_add_wydz','po_param')
+?};
+RES_TREE.tr_set(0,,,0);
+RES_TREE.first();
+~~
+
+
+\tree_add_place
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Dodaje do tabeli RES_TREE stanowiska produkcyjne
+:: OLD: \tree_add_place/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+TWRKPLC.cntx_psh();
+PL_RES.cntx_psh();
+PL_RES.index('REF');
+TWRKPLC.index('KOD');
+TWRKPLC.clear();
+_added:=0;
+{? TWRKPLC.first()
+|| _parent:=exec('tree_add_branch','po_param','S');
+   {!
+   |? PL_RES.prefix($TWRKPLC.ref());
+:: dodaje tylko jesli w tabeli PL_RES nie ma takiego
+      {? PL_RES.first()=0
+      || _kal:=exec('get_kal_nazwa','po_plan',$TWRKPLC.ref(),'S');
+         _ok:=exec('tree_add','po_param',  'S',
+                                          $TWRKPLC.ref(),
+                                          _parent,
+                                          TWRKPLC.KOD,
+                                          TWRKPLC.NA,
+                                          _kal[1],
+                                          _kal[2],
+                                          TWRKPLC.WYD().KOD);
+         &_kal;
+         {? _ok
+         || _added+=1
+         ?}
+      ?};
+      TWRKPLC.next()
+   !};
+:: jesli nic nie dodalem to usuwam rodzica
+   {? _added=0
+   || RES_TREE.del()
+   ?}
+?};
+TWRKPLC.cntx_pop();
+PL_RES.cntx_pop();
+~~
+
+
+\tree_add_branch
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Dodaje do tabeli RES_TREE rekord bedacy galezia danego typu
+::   WE: _a: typ galezi
+::   WY: RES_TREE.ref() - ref dodanej galezi
+:: OLD: \tree_add_branch/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+RES_TREE.clear();
+_typ:=_a;
+_nazwa:='';
+_wyn:=null();
+{? _typ='S'
+|| _nazwa:='Stanowiska produkcyjne'
+|? _typ='G'
+|| _nazwa:='Gniazda produkcyjne'
+|? _typ='B'
+|| _nazwa:='Brygady robocze'
+|? _typ='P'
+|| _nazwa:='Pracownicy'
+|? _typ='W'
+|| _nazwa:='Wydziały'
+?};
+RES_TREE.blank();
+RES_TREE.TYP:=_typ;
+RES_TREE.BRANCH:='T';
+RES_TREE.SYM:=_nazwa;
+{? RES_TREE.add()
+|| _wyn:=RES_TREE.ref()
+?};
+_wyn
+
+
+\tree_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Dodaje rekord do tabeli RES_TREE
+::   WE: _a: RES_TREE.TYP
+::       _b: RES_TREE.REF
+::       _c: RES_TREE.PARENT
+::       _d: RES_TREE.SYM
+::       _e: RES_TREE.NAZ
+::       _f: RES_TREE.KAL_NAZW
+::       _g: RES_TREE.KAL_REF
+::       _h: RES_TREE.WYD
+::   WY: 0 / 1
+:: OLD: \tree_add/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+{? var_pres('RES_TREE')
+|| RES_TREE.clear();
+   RES_TREE.blank();
+   RES_TREE.TYP:=_a;
+   RES_TREE.REF:=_b;
+   RES_TREE.PARENT:=_c;
+   RES_TREE.SYM:=_d;
+   RES_TREE.NAZ:=_e;
+   RES_TREE.KAL_NAZW:=_f;
+   RES_TREE.KAL_REF:=_g;
+   RES_TREE.WYD:=_h;
+   _wyn:=RES_TREE.add()
+?};
+_wyn
+
+
+\tree_add_socket
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Dodaje do tabeli RES_TREE gniazda produkcyjne
+:: OLD: \tree_add_socket/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+TWRKZBR.cntx_psh();
+PL_RES.cntx_psh();
+PL_RES.index('REF');
+TWRKZBR.index('WYD');
+TWRKZBR.clear();
+_added:=0;
+{? TWRKZBR.first()
+|| _parent:=exec('tree_add_branch','po_param','G');
+   {!
+   |? PL_RES.prefix($TWRKZBR.ref());
+:: dodaje tylko jesli w tabeli PL_RES nie ma takiego
+      {? PL_RES.first()=0
+      || _kal:=exec('get_kal_nazwa','po_plan',$TWRKZBR.ref(),'G');
+         _ok:=exec('tree_add','po_param',  'G',
+                                          $TWRKZBR.ref(),
+                                          _parent,
+                                          TWRKZBR.SYMBOL,
+                                          TWRKZBR.NAZWA,
+                                          _kal[1],
+                                          _kal[2],
+                                          TWRKZBR.WYD().KOD);
+         &_kal;
+         {? _ok
+         || _added+=1
+         ?}
+      ?};
+      TWRKZBR.next()
+   !};
+:: jesli nic nie dodalem to usuwam rodzica
+   {? _added=0
+   || RES_TREE.del()
+   ?}
+?};
+TWRKZBR.cntx_pop();
+PL_RES.cntx_pop();
+~~
+
+
+\tree_add_bryg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Dodaje do tabeli RES_TREE brygady robocze
+:: OLD: \tree_add_bryg/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZLBR.cntx_psh();
+PL_RES.cntx_psh();
+PL_RES.index('REF');
+ZLBR.index('KOD');
+ZLBR.clear();
+_added:=0;
+{? ZLBR.first()
+|| _parent:=exec('tree_add_branch','po_param','B');
+   {!
+   |? PL_RES.prefix($ZLBR.ref());
+:: dodaje tylko jesli w tabeli PL_RES nie ma takiego
+      {? PL_RES.first()=0
+      || _kal:=exec('get_kal_nazwa','po_plan',$ZLBR.ref(),'B');
+         _ok:=exec('tree_add','po_param',  'B',
+                                          $ZLBR.ref(),
+                                          _parent,
+                                          ZLBR.KOD,
+                                          ZLBR.NAZ,
+                                          _kal[1],
+                                          _kal[2],
+                                          '');
+         &_kal;
+         {? _ok
+         || _added+=1
+         ?}
+      ?};
+      ZLBR.next()
+   !};
+:: jesli nic nie dodalem to usuwam rodzica
+   {? _added=0
+   || RES_TREE.del()
+   ?}
+?};
+ZLBR.cntx_pop();
+PL_RES.cntx_pop();
+~~
+
+
+\tree_add_prac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Dodaje do tabeli RES_TREE pracownikow
+:: OLD: \tree_add_prac/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+P.cntx_psh();
+exec('__F_ZATR','object');
+P.index('PRACONAZ');
+P.prefix(exec('ref_firma','ustawienia'),__F_ZATR.P);
+PX_KONT.cntx_psh();
+PX_KONT.index('P');
+PL_RES.cntx_psh();
+PL_RES.index('REF');
+_added:=0;
+{? P.first()
+|| _parent:=exec('tree_add_branch','po_param','P');
+   {!
+   |? PL_RES.prefix($P.ref());
+:: dodaje tylko jesli w tabeli PL_RES nie ma takiego
+      {? PL_RES.first()=0
+      || {? P.ZA='T'
+         || _kal:=exec('get_kal_nazwa','po_plan',$P.ref(),'P');
+            _ok:=exec('tree_add','po_param',  'P',
+                                             $P.ref(),
+                                             _parent,
+                                             P.OSOBA().NAZWISKO+' '+P.OSOBA().PIERWSZE,
+                                             P.ST().ST,
+                                             _kal[1],
+                                             _kal[2],
+                                             P.WYDZIAL().SYMBOL);
+            &_kal;
+            {? _ok
+            || _added+=1
+            ?}
+         ?}
+      ?};
+      P.next()
+   !};
+:: jesli nic nie dodalem to usuwam rodzica
+   {? _added=0
+   || RES_TREE.del()
+   ?}
+?};
+PX_KONT.cntx_pop();
+P.cntx_pop();
+PL_RES.cntx_pop();
+~~
+
+
+\tree_add_wydz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Dodaje do tabeli RES_TREE wydzialy
+:: OLD: \tree_add_wydz/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+UD_SKL.cntx_psh();
+UD_TYP.cntx_psh();
+PL_RES.cntx_psh();
+PL_RES.index('REF');
+UD_SKL.index('AKTYWNY');
+UD_TYP.index('SYMBOL');
+UD_TYP.prefix('PODZORG');
+
+_added:=0;
+{? UD_TYP.first()
+||  UD_SKL.prefix(UD_TYP.ref(),'T');
+   {? UD_SKL.first()
+   || _parent:=exec('tree_add_branch','po_param','W');
+      {!
+      |? PL_RES.prefix($UD_SKL.ref());
+:: dodaje tylko jesli w tabeli PL_RES nie ma takiego
+         {? PL_RES.first()=0
+         || _kal:=exec('get_kal_nazwa','po_plan',$UD_SKL.ref(),'W');
+            _ok:=exec('tree_add','po_param',  'W',
+                                          $UD_SKL.ref(),
+                                          _parent,
+                                          UD_SKL.SYMBOL,
+                                          UD_SKL.OPIS,
+                                          _kal[1],
+                                          _kal[2],
+                                          UD_SKL.SYMBOL);
+            &_kal;
+            {? _ok
+            || _added+=1
+            ?}
+         ?};
+         UD_SKL.next()
+      !};
+:: jesli nic nie dodalem to usuwam rodzica
+      {? _added=0
+      || RES_TREE.del()
+      ?}
+   ?}
+?};
+UD_SKL.cntx_pop();
+UD_TYP.cntx_pop();
+PL_RES.cntx_pop();
+~~
+
+
+\plres_berec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Akcja rekord przed tabeli PL_RES okienka WER i ADD
+:: OLD: \plres_berec/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\plres_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Przed usun w tabeli PL_RES
+::   WY: 0 / 1
+:: OLD: \plres_del/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+::usuwajac z tabeli PL_RES automatycznie dodaje do tabeli RES_TREE, po to aby mozna stamtad na nowo importowac
+_ok:=1;
+_link:=PL_RES.testlink(,PL_RES.count);
+{? _link.size()>0
+|| {? VAR.GRUPA='T'
+   || KOMM.add('Zasób %1 używany w innych miejscach. Usunięcie niemożliwe.'@[PL_RES.SYM],2)
+   || FUN.emsg('Zasób używany w innych miejscach. Usunięcie niemożliwe.'@)
+   ?};
+   return(0)
+?};
+{? VAR.GRUPA<>'T'
+|| _ok:=FUN.ask('Czy usunąć zasób do planowania: %1?'@[PL_RES.SYM])
+?};
+
+{? _ok>0
+|| _ok:=exec('delete4plres','px_cal')
+?};
+{? _ok>0
+||
+   {? var_pres('RES_TREE')>0
+   || {? PL_RES.REF<>''
+      || RES_TREE.cntx_psh();
+         _ndx:=RES_TREE.ndx_tmp(,,'TYP',,,'BRANCH',,);
+         RES_TREE.index(_ndx);
+::       szukam galezi, jesli nie znajde to zakladam
+         RES_TREE.prefix(PL_RES.TYP,'T');
+         {? RES_TREE.first()=0
+         || exec('tree_add_branch','po_param',PL_RES.TYP)
+         ?};
+         _kal:=exec('get_kal_nazwa','po_plan',PL_RES.REF,PL_RES.TYP);
+         exec('tree_add','po_param', PL_RES.TYP,
+                                    PL_RES.REF,
+                                    RES_TREE.ref(),
+                                    PL_RES.SYM,
+                                    PL_RES.NAZ,
+                                    _kal[1],
+                                    $PL_RES.KAL_NAZW,
+                                    PL_RES.WYD);
+         RES_TREE.ndx_drop(_ndx);
+         RES_TREE.cntx_pop()
+      ?}
+   ?};
+   _ok:=PL_RES.del();
+   win_disp()
+?};
+_ok
+
+
+\pl_res_del_gb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Grupa przed usun w tabeli PL_RES
+::   WY: 0 / 1
+:: OLD: \pl_res_del_gb/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0;
+{? FUN.ask('Zaznaczono: %1 zasobów do planowania. Czy usunąć je wszystkie?'@[$PL_RES.sel_size()])
+|| _ok:=1;
+   VAR.GRUPA:='T';
+   KOMM.init(,,'Usuwanie zasobów do planowania'@)
+?};
+_ok
+
+
+\pl_res_del_ga
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Grupa po usun w tabeli PL_RES
+:: OLD: \pl_res_del_ga/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+VAR.GRUPA:='N';
+KOMM.select();
+~~
+
+
+\plres_arec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Rekord po w tabeli PL_RES i okienku WER
+::   WY: 1 lub akronim pola od ktorego ponowic redagowanie
+::  OLD: \plres_arec/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+:: Jesli ref jest niepusty znaczy ze musze sprawdzic tylko wypelnienie pola SYM,
+:: w przeciwnym wypadku sprawdzam wszystkie pola
+{? PL_RES.REF<>''
+|| {? PL_RES.SYM=''
+   || FUN.emsg('Proszę podać symbol zasobu.'@);
+      return('SYM')
+   ?}
+|| {? PL_RES.SYM=''
+   || FUN.emsg('Proszę podać symbol zasobu.'@);
+      return('SYM')
+   ?};
+   {? PL_RES.NAZ=''
+   || FUN.emsg('Proszę podać nazwę zasobu.'@);
+      return('NAZ')
+   ?}
+?};
+''
+
+
+\plres_legenda
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Legenda w okienku WER tabeli PL_RES
+::  OLD:\plres_legenda/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('legenda','color','#PL_RES#01');
+~~
+
+
+\add_res
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Akcja. Dodaje zaznaczony zasob do widoku planu operacyjnego
+::  OLD:\add_res/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+PL_OPIS.cntx_psh();
+:: ustawiam poziom jaki bedzie mial dodawany opis.
+PL_OPIS.index('PL_OPIS');
+PL_OPIS.prefix(PL_WZOR.ref());
+_lp:=1;
+{? PL_OPIS.last()
+|| _lp:=PL_OPIS.NUMER+1
+?};
+:: sprawdzam czy taki zasob juz byl wczesniej dodany
+{? exec('res_in_opis','po_param',PL_WZOR.ref(),PL_RES.ref())=1
+|| FUN.emsg('Wybrany zasób: %1\njuż istnieje w widoku planu operacyjnego.'@[PL_RES.SYM])
+|| PL_OPIS.blank();
+   PL_OPIS.NUMER:=_lp;
+   PL_OPIS.POZIOM:=1;
+   PL_OPIS.RODZAJ:='R';
+   PL_OPIS.OPIS:=PL_RES.SYM;
+   PL_OPIS.PL_RES:=PL_RES.ref();
+   {? exec('reNrAdd','#table','PL_OPIS','NUMER')
+   || PL_OPIS.add()
+   ?};
+   exec('ren_lev','po_param');
+   sel_exit()
+?};
+PL_OPIS.cntx_pop();
+~~
+
+
+\res_in_opis
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Sprawdza czy w PL_OPIS juz znajduje sie zasob podany w argumencie
+::   WE: _a: PL_WZOR.ref()
+::       _b: PL_RES.ref()
+::   WY: 0 / 1
+::  OLD:\res_in_opis/pl_okr3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_pl_wzor:=_a;
+_pl_res:=_b;
+PL_OPIS.cntx_psh();
+PL_OPIS.index('PL_POZ');
+PL_OPIS.prefix(_pl_wzor);
+_wynik:=0;
+{? PL_OPIS.first()
+|| {!
+   |? {? PL_OPIS.PL_RES=_pl_res
+      || _wynik:=1
+      ?};
+      PL_OPIS.next()
+   !}
+?};
+PL_OPIS.cntx_pop();
+_wynik
+
+
+\ren_lev
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MLAK [2009]
+:: OPIS: Przenumerowanie pozycji.
+::  OLD:\ren_lev/pl_okr.fml
+::----------------------------------------------------------------------------------------------------------------------
+PL_OPIS.cntx_psh();
+PL_OPIS.first();
+_poz:=0;
+_rodz:='';
+{!
+|? {? _rodz<>PL_OPIS.RODZAJ
+   || PL_OPIS.POZIOM:=_poz+1;
+      PL_OPIS.put();
+      _rodz:=PL_OPIS.RODZAJ;
+      _poz:=PL_OPIS.POZIOM
+   || PL_OPIS.POZIOM:=_poz;
+      PL_OPIS.put()
+   ?};
+   PL_OPIS.next()
+!};
+PL_OPIS.cntx_pop();
+~~
+
+
+\reset_kal_ud
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Resetuje strukture KAL_UD
+::   WE: _a - KAL_UD.ref()
+::  OLD: \reset_kal_ud/pl_okr.fml
+::----------------------------------------------------------------------------------------------------------------------
+KAL_UD.cntx_psh();
+KAL_UD.clear();
+{? KAL_UD.seek(_a)
+||
+:: najpierw usuwam wszystkie KAL_UDy zasobowe
+   KAL_UD.cntx_psh();
+   KAL_UD.index('RESORWYD');
+   KAL_UD.prefix(KAL_UD.UD_SKL,'R');
+   {? KAL_UD.first()
+   || {!
+      |? KAL_UD.del();
+         KAL_UD.first()
+      !}
+   ?};
+   KAL_UD.cntx_pop();
+
+:: dodawanie KAL_UDow dla zasobow planowania (PL_RES)
+   PL_OPIS.cntx_psh();
+   PL_OPIS.index('PL_OPIS');
+   PL_OPIS.prefix(KAL_UD.PL_WZOR);
+   _res:=0;
+   {? PL_OPIS.first()
+   || {!
+      |? {? PL_OPIS.RODZAJ='R'
+         || _res:=1;
+            KAL_UD.cntx_psh();
+            KAL_NAZW.cntx_psh();
+            KAL_UD.index('PL_RES');
+            KAL_UD.prefix(KAL_UD.UD_SKL,PL_OPIS.PL_RES);
+            {? KAL_UD.first()=0
+            || KAL_UD.PL_RES:=PL_OPIS.PL_RES;
+               KAL_UD.RESORWYD:='R';
+               KAL_UD.PL_RODZ:=PL_OPIS.PL_RES().PL_RODZ;
+               KAL_UD.KAL:=PL_OPIS.PL_RES().KAL_NAZW;
+               KAL_UD.add()
+            ?};
+            KAL_UD.cntx_pop();
+            KAL_NAZW.cntx_pop()
+         ?};
+         PL_OPIS.next()
+      !}
+   ?};
+   PL_OPIS.cntx_pop()
+?};
+KAL_UD.cntx_pop();
+~~
+
+
+\icon_before
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MLAK [17.00]
+:: OPIS: Formuły na ICON_BEFORE dla okien planu operacyjnego
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+PL_RES.win_fml('WER',,'TYP',,'ICON_BEFORE',"'xwin16.png:'+$exec('ikona_res','po_plan',PL_RES.TYP)");
+~~
+
+
+\kal_ud_kal_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2011]
+:: OPIS: Przed wyswietl pola KAL_UD.KAL
+::   WY: 0 / 1
+::  OLD: \kal_ud_kal_bd/kaledit
+::----------------------------------------------------------------------------------------------------------------------
+KAL_UD.KAL().CZESC<>'T'
+
+
+\chk_pl_wzor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [18.42]
+:: OPIS: Walidacja rekordu tabeli PL_WZOR (widoki planu oper.) - wołana z poziomu okna oraz funkcji importujących
+::   WE: _a - specyfikacja testu: 1-poprawianie, 0-dołączanie
+::   WY: akronim pola / ''
+::----------------------------------------------------------------------------------------------------------------------
+_chk:=__CHK.record(PL_WZOR);
+{? _chk=''
+|| {? __CHK.index(PL_WZOR,_a)='' || '' || 'NAZWA' ?}
+|| _chk
+?}
+
+
+\pl_res_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.42]
+:: OPIS: Akcja popraw w oknie wertowania tabeli PL_RES
+::   WE:
+::   WY:
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+PL_RES.win_edit('RED');
+
+_valid:='_par_before:=\''+PL_RES.PARALLEL+'\';exec(\'pl_res_valid\',\'po_param\',_par_before)';
+
+{? PL_RES.edit($_valid)
+|| PL_RES.put()
+?};
+~~
+
+
+\pl_res_valid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.42]
+:: OPIS: Walidacja na popraw
+::   WE: _a - STRING - wartość pola PARALLEL przed poprawieniem
+::   WY: '' lub kod pola do którego powrócić
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_par_before:=_a;
+
+_result:=exec('plres_arec','po_param');
+
+{? _result=''
+|| {? _par_before<>PL_RES.PARALLEL
+   ||
+::    Równoległość zmieniła się z aktywnej na nieaktywną, trzeba sprawdzić czy są jakieś pozycje planu
+::    w planie strategicznym które powstały w opraciu o plan operacyjny. Jeżeli są to blokujemy zmianę
+::    ponieważ w planie strategicznym mogą powstać błędy
+      PX_KONT.cntx_psh();
+      PX_KONT.prefix();
+      PX_POZ.cntx_psh();
+      PX_POZ.index('OPER');
+      _mainver:=exec('get_mainversion','px_ver');
+      _px_konty:=exec('plres2pxkont','px_tie',PL_RES.ref(),_mainver);
+      {? _px_konty.first()
+      || {!
+         |? {? PX_KONT.seek(_px_konty.SQL_REF)
+            || PX_POZ.prefix('T',PX_KONT.ref());
+               {? PX_POZ.first()
+               || _msg:='Zasób posiada pozycje planu, które obciążyły również plan strategiczny. Zmiana pola \'Równoległe planowanie\' niemożliwa.'@;
+                  FUN.emsg(_msg);
+                  _result:='PARALLEL'
+               ?}
+            ?};
+            _px_konty.next() & _result=''
+         !}
+      ?};
+      PX_KONT.cntx_pop();
+      PX_POZ.cntx_pop()
+   ?}
+?};
+_result
+
+
+\pl_wzoru_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja Dołącz w oknie wertowania PL_WZORU
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+
+:: Zakładam filtr na użytkowników, do obsługi pola z użytkownikiem widoku planu
+exec('filter_upr','users','TPP_PPO_DPPL.TPP_PPO_PPPL','KOD');
+
+PL_WZORU.win_edit('RED');
+PL_WZORU.blank();
+PL_WZORU.PL_WZOR:=PL_WZOR.ref();
+{? PL_WZORU.edit("exec('pl_wzoru_valid','po_param',0)")
+|| PL_WZORU.add()
+?};
+USERS.f_clear();
+~~
+
+
+\pl_wzoru_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja Popraw w oknie wertowania PL_WZORU
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+
+:: Zakładam filtr na użytkowników, do obsługi pola z użytkownikiem widoku planu
+exec('filter_upr','users','TPP_PPO_DPPL.TPP_PPO_PPPL','KOD');
+
+PL_WZORU.win_edit('RED');
+{? PL_WZORU.edit("exec('pl_wzoru_valid','po_param',1)")
+|| PL_WZORU.put()
+?};
+USERS.f_clear();
+~~
+
+
+\pl_wzoru_valid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Walidacja okienka redagowania tabeli PL_WZORU
+::   WE: _a - specyfikacja testu: 1-poprawianie, 0-dołączanie
+::       [_b] - obj_new - obiekt z polem MSG do zapamiętania komunikatu (podczas importu z Excel)
+::   WY: STRING - pole do którego powrócić lub ''
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=~~;
+{? var_pres('_b')>100
+|| _obj:=_b
+?};
+_chk:=__CHK.record(PL_WZORU,,'USERS');
+{? _chk='' & _a=0
+|| PL_WZORU.cntx_psh();
+   PL_WZORU.index('PL_WZOR');
+   PL_WZORU.prefix(PL_WZORU.PL_WZOR,PL_WZORU.USERS);
+   {? PL_WZORU.first()
+   || _chk:='USERS';
+      _msg:='''Użytkownik: %1 jest już uprawniony do widoku planu: %2.'@[exec('record','#to_string',PL_WZORU.USERS),PL_WZOR.NAZWA];
+      {? var_pres('_obj')>100
+      || _obj.MSG:=_msg
+      || FUN.emsg(_msg)
+      ?}
+   ?};
+   PL_WZORU.cntx_pop()
+?};
+{? _chk='' & PL_WZORU.UPR='R'
+|| {? exec('chk_role','#b__box',PL_WZORU.USERS,'TPP_PPO_DPPL')=0
+   ||
+      _chk:='UPR';
+      _msg:='Uprawnienia do redakcji wymagają dla użytkownika: %1 dostępu do czynności: %2.'@[exec('record','#to_string',PL_WZORU.USERS),'TPP_PPO_DPPL'];
+      {? var_pres('_obj')>100
+      || _obj.MSG:=_msg
+      || FUN.emsg(_msg)
+      ?}
+   ?}
+?};
+_chk
+
+
+\pl_wzoru_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja w oknie - usunięcie rekordu
+::   WE: [_a] - INTEGER - 0/[1] - czy wyświetlać dialogi
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PRIVATE><AKCJA><DEL>
+::----------------------------------------------------------------------------------------------------------------------
+_dialog:=1;
+{? var_pres('_a')=type_of(0)
+|| _dialog:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=cur_tab(1,1);
+
+_group:=0;
+{? _tab.sel_size()>0
+|| _group:=1;
+   _dialog:=0
+?};
+
+:: Sprawdzam czy można usunąć
+{? _group>0
+|| _can_continue:=exec('can_delete','po_param',,2)
+|| _can_continue:=exec('can_delete','po_param',,1)
+?};
+
+
+{? _dialog>0 & _can_continue>0
+|| _can_continue:=FUN.ask('Usunąć użytkownika: %1 z widoku: %2?'@[exec('record','#to_string',PL_WZORU.USERS),PL_WZOR.NAZWA])
+?};
+{? _can_continue>0
+|| _result:=PL_WZORU.del(,1)
+?};
+_result
+
+
+\pl_wzoru_del_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja usuń grupa przed w oknie wertowania tabeli PL_WZOR
+::   WY: 0 - porazka
+::       1 - sukces
+::  TAG: <PRIVATE><AKCJA><GRUPA><DEL>
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_tab:=cur_tab(1,1);
+{? FUN.ask('Zaznaczono: %1 rekordów. Czy usunąć je wszystkie?'@[$_tab.sel_size()])
+|| _result:=1;
+   sel_nchk();
+   KOMM.init(200,,'Usuwanie użytkowników widoku planu'@,'')
+?};
+_result
+
+
+\pl_wzoru_del_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja usuń grupa po w oknie wertowania tabeli PL_WZOR
+::  TAG: <PRIVATE><AKCJA><GRUPA><DEL>
+::----------------------------------------------------------------------------------------------------------------------
+KOMM.select(,,,,,0);
+~~
+
+
+\can_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Sprawdza możliwość usunięcia rekordu PL_WZOR
+::   WE: [_a] - PL_WZOR.ref, jeśli nie podany to aktualny rekord
+::       [_b] - INTEGER - czy wyswietlac komunikaty:  0  - nie
+::                                                   [1] - wyskakujący komunikat
+::                                                    2  - w KOMM
+::   WY: 0 - nie można usunąć rekordu
+::       1 - można usuwać
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+
+_display:=1;
+{? var_pres('_b')=type_of(0)
+|| _display:=_b
+?};
+
+_result:=1;
+_can_continue:=1;
+
+
+PL_WZOR.cntx_psh();
+{? var_pres('_a')=type_of(PL_WZOR.ref())
+|| _ref:=_a;
+   _can_continue:=0;
+   PL_WZOR.clear();
+   {? PL_WZOR.seek(_ref)
+   || _can_continue:=1
+   ?}
+?};
+
+::{? _can_continue>0
+::||
+::?};
+
+PL_WZOR.cntx_pop();
+_result
+
+
+\pl_wzoru_trig_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Trigger przed putem i addem - aktualizuje pola
+::   WE:
+::   WY:
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+{? PL_WZORU.UPR='P'
+|| PL_WZORU.MOD:='N';
+   PL_WZORU.VIEW:='T'
+|? PL_WZORU.UPR='R'
+|| PL_WZORU.MOD:='T';
+   PL_WZORU.VIEW:='N'
+?};
+1
+
+
+\pl_wzor_set_active
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Aktywuje lub dezaktywuje dany widok planu
+::   WE: [_a] - PL_WZOR.ref lub aktualny rekord
+::       [_b] - STRING - [T]/N - aktywować czy dezaktywować
+::       [_c] - INTEGER - 0/[1] - czy wyświetlać dialogi
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_WZOR.ref())
+|| _ref:=_a
+|? var_pres('_a')=type_of(0)
+|| _ref:=exec('FindAndGet','#table',PL_WZOR,_a,PL_WZOR.name(),,null())
+?};
+_active:='T';
+{? var_pres('_b')=type_of('')
+|| _active:=_b
+?};
+_dialog:=1;
+{? var_pres('_c')=type_of(0)
+|| _dialog:=_c
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_WZOR.cntx_psh();
+PL_WZOR.clear();
+{? _ref<>null()
+|| {? PL_WZOR.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _can_mod:=1;
+   _what:=exec('PL_WZOR','#to_string');
+   _tab:=cur_tab(1,1);
+   _group:=0;
+   {? _tab.sel_size()>0
+   || _group:=1;
+      _dialog:=0
+   ?};
+
+   {? _dialog>0
+   ||
+      {? _active='T'
+      || _msg:='Czy aktywować widok: %1?'@[_what]
+      |? _active='N'
+      || _msg:='Czy dezaktywować widok: %1?'@[_what]
+      ?};
+      _can_mod:=FUN.ask(_msg)
+   ?};
+
+   {? _can_mod>0 & _active='T'
+   ||
+      {? PL_WZOR.AKT='T'
+      || _can_mod:=0;
+         _msg:='Widok: %1 jest już aktywny.'@[_what];
+         {? _dialog>0
+         || FUN.info(_msg)
+         |? _group>0
+         || KOMM.add(_msg,7)
+         ?}
+      ?}
+   |? _can_mod>0 & _active='N'
+   ||
+      {? PL_WZOR.AKT='N'
+      || _can_mod:=0;
+         _msg:='Widok: %1 jest już nieaktywny.'@[_what];
+         {? _dialog>0
+         || FUN.info(_msg)
+         |? _group>0
+         || KOMM.add(_msg,7)
+         ?}
+      ?}
+   ?};
+   {? _can_mod>0
+   || PL_WZOR.AKT:=_active;
+      _can_continue:=PL_WZOR.put();
+
+      {? _can_continue=0
+      || _msg:='Zmiana aktywności widoku: %1 zakończona niepowodzeniem'@[_what];
+         {? _dialog>0
+         || FUN.info(_msg)
+         |? _group>0
+         || KOMM.add(_msg,2)
+         ?}
+      ?}
+   ?}
+?};
+PL_WZOR.cntx_pop();
+
+PL_WZOR.get();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\pl_wzor_activate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja 'Aktywuj' w oknie wertowania widoków planu
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+exec('pl_wzor_set_active','po_param',,'T')
+
+
+\pl_wzor_activate_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja grupa przed 'Aktywuj' w oknie wertowania widoków planu
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_tab:=cur_tab(1,1);
+{? FUN.ask('Zaznaczonych widoków: %1. Czy aktywować je wszystkie?'@[$_tab.sel_size()])
+|| _result:=1;
+   sel_nchk();
+   KOMM.init(200,,'Aktywowanie widoków planu'@)
+?};
+_result
+
+
+\pl_wzor_activate_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja grupa po 'Aktywuj' w oknie wertowania widoków planu
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+KOMM.select()
+
+
+\pl_wzor_deactivate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja 'Dezaktywuj' w oknie wertowania widoków planu
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+exec('pl_wzor_set_active','po_param',,'N')
+
+
+\pl_wzor_deactivate_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja grupa przed 'Dezaktywuj' w oknie wertowania widoków planu
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_tab:=cur_tab(1,1);
+{? FUN.ask('Zaznaczonych widoków: %1. Czy dezaktywować je wszystkie?'@[$_tab.sel_size()])
+|| _result:=1;
+   sel_nchk();
+   KOMM.init(200,,'Dezaktywacja widoków planu'@)
+?};
+_result
+
+
+\pl_wzor_deactivate_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja grupa po 'Dezaktywuj' w oknie wertowania widoków planu
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+KOMM.select()
+
+
+\dnd_renum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Akcja renumeracji w PL_WZOR i PL_OPIS
+::   WE: _a - STRING - akronim pola z numerem
+::       _b - STRING - akronim indeksu z numerem
+::       [_c] - 1 (domyslnie - dnd), 0 (akcja w oknie)
+::       [_d] - przesuwane rekordy (jak wynik dnd_info('dropped_records') ) - interpretowane gdy _a=0
+::       [_e] - miejsce przeznaczenia (jak wynik dnd_info('dest_record') ) - interpretowane gdy _a=0
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_fld:=_a;
+_ndx:=_b;
+
+{? var_pres('_c')=type_of(0) || _dnd:=_c || _dnd:=1 ?};
+
+{? _dnd
+|| _pos:=dnd_info('src_pos_in_window')
+|| _pos:=0
+?};
+
+_tab:=cur_tab(1,1);
+
+:: co przeciagamy
+{? _dnd
+|| _records:=dnd_info('dropped_records')
+|| _records:=_d
+?};
+
+:: na co upuszczamy
+{? _dnd
+|| _dest_rec:=dnd_info('dest_record')
+|| _dest_rec:=_e
+?};
+
+_can_continue:=1;
+
+_tab.cntx_psh();
+
+{? _can_continue>0
+||
+   {? _dest_rec=null()
+   ||
+::    Obsluga upuszczania na pusty obszar okna (za wszystkimi rekordami)
+::    chcemy przeniesc cala galaz na pusty obszar
+      _tab.cntx_pop();
+      win_set('cur_row_pos='+$_pos);
+::    konczymy niepowodzeniem
+      return()
+   ||
+::    Obsluga upuszczania na konkretny rekord (czyli przejmujemy jego numer)
+      {? _tab.seek(_dest_rec)
+      || exec('zmien_lp','#dragdrop',_fld,_ndx,_records);
+         _tab.sel_del()
+      ?}
+   ?}
+?};
+_tab.cntx_pop();
+~~
+
+
+\pl_wzor_move
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [22.26]
+:: OPIS: Akcja Przesuń
+::   WE: _a - STRING - kierunek przesuwania: 'U','D','N'
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_dir:='N';
+{? var_pres('_a')=type_of('')
+|| _dir:=_a
+?};
+exec('zmien_lpa','#dragdrop','LP','LP',,,_dir);
+~~
+
+
+\pl_opis_move
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [22.26]
+:: OPIS: Akcja Przesuń
+::   WE: _a - STRING - kierunek przesuwania: 'U','D','N'
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_dir:='N';
+{? var_pres('_a')=type_of('')
+|| _dir:=_a
+?};
+exec('zmien_lpa','#dragdrop','NUMER','PL_OPIS',,,_dir);
+~~
+
+
+\has_upr4wzor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Sprawdza czy aktualny użytkownik ma uprawnienia do redagowania widoku planu
+::   WE: [_a] - PL_WZOR.ref lub bieżący rekord
+::   WY: 0 - brak uprawnień
+::       1 - są uprawnienia
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_WZOR.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_WZOR.cntx_psh();
+{? _ref<>null()
+|| PL_WZOR.prefix();
+   {? PL_WZOR.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| PL_WZORU.cntx_psh();
+   PL_WZORU.index('PL_WZOR');
+   PL_WZORU.prefix(PL_WZOR.ref(),OPERATOR.USER,'T');
+   {? PL_WZORU.first()
+   || _result:=1
+   ?};
+   PL_WZORU.cntx_pop()
+?};
+PL_WZOR.cntx_pop();
+_result
+
+
+\has_upr4plres
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Sprawdza czy aktualny użytkownik ma uprawnienia do redagowania zasobu
+::   WE: [_a] - PL_RES.ref lub bieżący rekord
+::   WY: 0 - brak uprawnień
+::       1 - są uprawnienia
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_RES.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_RES.cntx_psh();
+{? _ref<>null()
+|| PL_RES.prefix();
+   {? PL_RES.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| PL_WZORU.cntx_psh();
+   PL_OPIS.cntx_psh();
+   PL_OPIS.index('PL_RES2');
+   PL_WZORU.index('USERS');
+   PL_WZORU.prefix(OPERATOR.USER,'T');
+   {? PL_WZORU.first()
+   || {!
+      |? PL_OPIS.prefix(PL_WZORU.PL_WZOR,PL_RES.ref());
+         {? PL_OPIS.first() & PL_WZORU.MOD='T'
+         || _result:=1
+         ?};
+         PL_WZORU.next() & _result=0
+      !}
+   ?};
+   PL_WZORU.cntx_pop();
+   PL_OPIS.cntx_pop()
+?};
+PL_RES.cntx_pop();
+_result
+
+
+\plres_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [22.26]
+:: OPIS: Akcja utwórz zasób w oknie
+::   WE: _a - ref rekordu w tabeli RES_TREE
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_tab:=tab_tmp(3,
+   'POS','INTEGER','Nazwa pola 1',
+   'REF','INTEGER','Nazwa pola 2',
+   'CRC','INTEGER','Nazwa pola 2'
+);
+
+_tab.blank();
+_tab.REF:=#_ref;
+_tab.add();
+exec('plres_dnd_drop','po_param',_tab);
+grp_disp(PL_RES,'WER');
+grp_disp(RES_TREE,WER_TREE);
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:35 0c96d509969a7d6ade65171664b2088b9df5272f49c11a98d1be522a3deaa809e71acea38ebcf9c55291556917fa1efc4c46ad03efdc1a3170a0540056af5509e665ea9d72ddbbafd4c2db71a384fbbffeabd76324f7566ba7e0f8073c118e1f35bf43ad5f43b5843c35a3053e1aee41c1f4170398df44229aa6528d63e315d4

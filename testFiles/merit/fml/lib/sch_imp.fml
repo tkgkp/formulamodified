@@ -1,0 +1,5234 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku: sch_imp.fml
+:: Utworzony: 27.01.2015
+:: Autor: TMR
+::======================================================================================================================
+:: Zawartosc: Formuly do obslugi importu etapow schematu obiegu
+::======================================================================================================================
+
+
+\oImp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.50]
+:: OPIS: Tworzy obiekt wykorzystywany podczas importu wnioskow
+::   WY: obiekt pomocniczy
+::----------------------------------------------------------------------------------------------------------------------
+::UWAGA: _fld, i _mth to formulki pomocnicze, zeby wygodniej tworzyc tablice i komentowac poszczegolne jej elementy
+_fld:="8+form(_a)";
+_mth:="8+form(_a)";
+
+::tworze tablice nazwana do przechowywania zmiennych
+_imp:=obj_new(
+                _fld('firma'     ,'obiekt przechowujacy wskazanie na firmę')
+               ,_fld('rok_f'     ,'obiekt przechowujacy wskazanie na rok bilansowy')
+               ,_fld('odd'       ,'obiekt przechowujacy wskazanie na jednostkę księgową')
+               ,_fld('typ_ob'    ,'obiekt przechowujacy wskazanie na typ obiegu')
+               ,_fld('nazwa'     ,'obiekt przechowujacy nazwę importowanego wniosku')
+               ,_fld('KOMM'      ,'obiekt przechowujacy komunikaty')
+               ,_fld('force'     ,'czy nadpisywać dane podczas importu')
+               ,_fld('showKom'   ,'czy pokazywać komunikaty')
+
+               ,_mth('fml_rok'   ,'formuła po wybraniu roku bilansowego')
+               ,_mth('fml_odd'   ,'formuła po wybraniu jednostki księgowej')
+               ,_mth('fml_wn'    ,'formuła po wybraniu wniosku do importu')
+               ,_mth('import'    ,'formuła do importu wniosku')
+             );
+::usuwamy zbedne zmienne
+&_mth; &_fld;
+
+:: inicjuje zmienne
+_imp.firma:=REF.FIRMA;
+_imp.rok_f:=null();
+_imp.odd:=null();
+_imp.typ_ob:=null();
+_imp.nazwa:='';
+_imp.force:=0;
+_imp.showKom:=0;
+
+:: deklaracje obiektow dla komunikatow
+exec('JCQ_decl','#message');
+_imp.KOMM:=obj_new(@.CLASS.JCQ);
+_imp.KOMM.init(255);
+
+_imp.fml_rok:="null()";
+_imp.fml_odd:="null()";
+_imp.fml_wn:="($cur_tab().FML)()";
+
+_imp.import:="
+   _wniosek:={? var_pres('_a')>100 || _a || return(0) ?};
+
+:: powrót w przypadku zerwanej transakcji
+   {? do_state()=2 || return(0) ?};
+
+   _section:=.KOMM.sect_beg('Błędy podczas importu wniosku: '+oImp.nazwa,,,1);
+
+:: poczatkowy rozmiar tablicy komunikatow
+   _komSize:=.KOMM.get_size();
+
+:: zalozenie transakcji
+   _mydo:=do_state()=0;
+   {? _mydo || do() ?};
+
+::  zapisanie wniosku do bazy danych
+   _wniosek.force:=.force;
+   _wniosek.KOMM:=.KOMM;
+   _wniosek.save();
+
+   _ok:=do_state()=1;
+   {? _mydo || end() ?};
+
+::sprawdz czy sa bledy w sekcji
+   .KOMM.sect_end();
+   {? _komSize=.KOMM.get_size() || .KOMM.del(_section) ?};
+
+:: pokaz okno z komunikatami
+   {? .showKom || .KOMM.select() ?};
+
+   _ok
+";
+
+_imp
+
+
+\sch_form_exists
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.14]
+:: OPIS: Sprawdza czy istnieje rekord w tabeli SCH_FORM - Formuły do obsługi schematów obiegu informacji
+::   WE: _a  [STRING]    - typ formuły
+::       _b  [STRING]    - skrócona nazwa formuły
+::      [_c] [REFERENCE] - wskazanie na firmę (domyślnie REF.FIRMA)
+::   WY: null/ref
+::----------------------------------------------------------------------------------------------------------------------
+_result:=null();
+   _typ:={? var_pres('_a')=type_of('')     || _a || return(_result) ?};
+ _skrot:={? var_pres('_b')=type_of('')     || _b || return(_result) ?};
+ _firma:={? var_pres('_c')=type_of(null()) || _c || REF.FIRMA       ?};
+
+SCH_FORM.cntx_psh();
+SCH_FORM.index('UNIK');
+SCH_FORM.prefix(_firma,_typ,_skrot,);
+{? SCH_FORM.first()
+|| _result:=SCH_FORM.ref()
+?};
+SCH_FORM.cntx_pop();
+_result
+
+
+\sch_form_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.14]
+:: OPIS: Dodaje rekord w tabeli SCH_FORM - Formuły do obsługi schematów obiegu informacji
+::   WE: _a  [STRING]    - typ formuły
+::       _b  [STRING]    - znacznik czy formuła systemowa [T/N]
+::       _c  [STRING]    - skrócona nazwa formuły
+::       _d  [STRING]    - nazwa formuły
+::       _e  [STRING]    - treść formuły
+::      [_f] [REFERENCE] - wskazanie na firmę (domyślnie REF.FIRMA)
+::   WY: -1/0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=-1;
+   _typ:={? var_pres('_a')=type_of('')     || _a || return(_result) ?};
+_system:={? var_pres('_b')=type_of('')     || _b || return(_result) ?};
+ _skrot:={? var_pres('_c')=type_of('')     || _c || return(_result) ?};
+ _nazwa:={? var_pres('_d')=type_of('')     || _d || return(_result) ?};
+ _tresc:={? var_pres('_e')=type_of('')     || _e || return(_result) ?};
+ _firma:={? var_pres('_f')=type_of(null()) || _f || REF.FIRMA       ?};
+_result:=0;
+
+SCH_FORM.cntx_psh();
+SCH_FORM.index('UNIK');
+SCH_FORM.prefix();
+SCH_FORM.TYP:=_typ;
+SCH_FORM.SKROT:=_skrot;
+SCH_FORM.NAZWA:=_nazwa;
+SCH_FORM.SYSTEM:=_system;
+SCH_FORM.TRESC:=_tresc;
+SCH_FORM.FIRMA:=_firma;
+_result:=SCH_FORM.add(1);
+SCH_FORM.cntx_pop();
+_result
+
+
+\imp_sch_form
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.14]
+:: OPIS: Importuje potrzebne formuły do obsługi wniosków kadrowych
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: ogólna formuła na walidację wniosku kadrowego
+_typ:='E';
+_system:='N';
+_skrot:='walid_wn_kadry';
+_nazwa:='Walidacja pól wniosku';
+_tresc:=''+"exec('walid','form_ob')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: ogólna formuła na akceptację wniosku kadrowego
+_typ:='E';
+_system:='N';
+_skrot:='akcept_wn_kadry';
+_nazwa:='Akceptacja i przeniesienie danych do aplikacji';
+_tresc:=''+"exec('akcept','form_ob')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: formuła na wyszukanie przełożonego
+_typ:='E';
+_system:='N';
+_skrot:='przełożony';
+_nazwa:='Wyszukanie przełożonego';
+_tresc:=''+"exec('przelozony','form_ob')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: formuła zmiany statusu wniosku urlopowego na 'Do weryfikacji'
+_typ:='E';
+_system:='T';
+_skrot:='portal_nwu_verify';
+_nazwa:='HR Portal: Wniosek urlopowy do weryfikacji';
+_tresc:=''+"exec('nwu_verify','portal_nieobecnosci')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: formuła zmiany statusu wniosku urlopowego na 'Zaakceptowany'
+_typ:='E';
+_system:='T';
+_skrot:='portal_nwu_accept';
+_nazwa:='HR Portal: Wniosek urlopowy zaakceptowany';
+_tresc:=''+"exec('nwu_accept','portal_nieobecnosci')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: formuła zmiany statusu wniosku urlopowego na 'Odrzucony'
+_typ:='E';
+_system:='T';
+_skrot:='portal_nwu_reject';
+_nazwa:='HR Portal: Wniosek urlopowy odrzucony';
+_tresc:=''+"exec('nwu_reject','portal_nieobecnosci')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: formuła na wyszukanie pracownika
+_typ:='E';
+_system:='N';
+_skrot:='pracownik';
+_nazwa:='Wyszukanie pracownika';
+_tresc:=''+"exec('pracownik','form_ob')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: formuła na zapamiętanie osoby akceptującej
+_typ:='E';
+_system:='T';
+_skrot:='osoba_akcept_save';
+_nazwa:='Osoba akceptująca etap';
+_tresc:=''+"exec('osoba_akcept_save','form_ob')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: formuła na akceptację wniosku o pracę zdalną stałą przez Dział Kadr (z możliwością edycji),
+_typ:='E';
+_system:='T';
+_skrot:='wpzds_kadry_akc_mod';
+_nazwa:='WPZDS - akceptacja Dział Kadr z modyfikacją';
+_tresc:=''+"exec('akcept','form_ob','KADRY_MOD')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+:: formuła na walidację wniosku o pracę zdalną stałą przez Dział Kadr (z możliwością edycji),
+_typ:='E';
+_system:='T';
+_skrot:='wpzds_kadry_wal_mod';
+_nazwa:='WPZDS - walidacja Dział Kadr z modyfikacją';
+_tresc:=''+"exec('walid','form_ob','KADRY_MOD')";
+{? ~exec('sch_form_exists','sch_imp',_typ,_skrot)
+|| exec('sch_form_add','sch_imp',_typ,_system,_skrot,_nazwa,_tresc)
+?};
+~~
+
+
+\imp_wn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.50]
+:: OPIS: Funkcja do importu wnioskow w obiegu
+::   WE: [_a] - [STRING] - nazwa typu do zaimportowania
+::       [_b] - [NUMBER] - czy wymusić nadpisanie wniosku
+::       [_c] - [NUMBER] - czy wyświetlać komunikaty
+::----------------------------------------------------------------------------------------------------------------------
+_nazwa:={? var_pres('_a')=type_of('') || _a || '' ?};
+_force:={? var_pres('_b')=type_of(0)  || _b || 0  ?};
+  _msg:={? var_pres('_c')=type_of(0)  || _c || 1  ?};
+
+_result:=0;
+:: zawsze dodajemy formuły potrzebne do obsługi wniosków
+exec('imp_sch_form','sch_imp');
+
+:: utworzenie obiektu oImp
+{? var_pres('oImp')>100 || obj_del(oImp) ?};
+oImp:=exec('oImp','sch_imp');
+
+{? _force>0 | _msg & FUN.ask('Czy nadpisać istniejące definicje wniosków podczas importu?'@)
+|| oImp.force:=1
+?};
+
+:: import typu
+oImp.typ_ob:=exec('add','typ_ob','Obieg wniosków',oImp.KOMM);
+
+{? oImp.KOMM.get_size()
+|| oImp.KOMM.select();
+:: sa błędy wiec kończymy
+   FUN.emsg('Ze względu na zaistniałe błędy import zostanie przerwany.'@)
+||
+   {? _nazwa=exec('nazwa_rachunek','obiegi')
+   || _result:=exec('wn_rachunek','sch_imp')
+   |? _nazwa=exec('nazwa_woz','obiegi')
+   || _result:=exec('wn_woz','sch_imp')
+   |? _nazwa=exec('nazwa_wozda','obiegi')
+   || _result:=exec('wn_wozda','sch_imp')
+   |? _nazwa=exec('nazwa_dwwp','obiegi')
+   || _result:=exec('wn_dwwp','sch_imp')
+   |? _nazwa=exec('nazwa_dwwd','obiegi')
+   || _result:=exec('wn_dwwd','sch_imp')
+   |? _nazwa=exec('nazwa_drwd','obiegi')
+   || _result:=exec('wn_drwd','sch_imp')
+   |? _nazwa=exec('nazwa_wou','obiegi')
+   || _result:=exec('wn_wou','sch_imp')
+   |? _nazwa=exec('nazwa_opif','obiegi')
+   || _result:=exec('wn_opif','sch_imp')
+   |? _nazwa=exec('nazwa_nadg_w','obiegi')
+   || _result:=exec('wn_nadg_w','sch_imp')
+   |? _nazwa=exec('nazwa_nadg_p','obiegi')
+   || _result:=exec('wn_nadg_p','sch_imp')
+   |? _nazwa=exec('nazwa_odb_w','obiegi')
+   || _result:=exec('wn_odb_w','sch_imp')
+   |? _nazwa=exec('nazwa_odb_p','obiegi')
+   || _result:=exec('wn_odb_p','sch_imp')
+   |? _nazwa=exec('nazwa_czw','obiegi')
+   || _result:=exec('wn_czw','sch_imp')
+   |? _nazwa=exec('nazwa_dowu25','obiegi')
+   || _result:=exec('wn_dowu25','sch_imp')
+   |? _nazwa=exec('nazwa_ppsf','obiegi')
+   || _result:=exec('wn_ppsf','sch_imp')
+   |? _nazwa=exec('nazwa_ppsp','obiegi')
+   || _result:=exec('wn_ppsp','sch_imp')
+   |? _nazwa=exec('nazwa_oopz','obiegi')
+   || _result:=exec('wn_oopz','sch_imp')
+   |? _nazwa=exec('nazwa_wpzds','obiegi')
+   || _result:=exec('wn_wpzds','sch_imp')
+   |? _nazwa=exec('nazwa_wpzdo','obiegi')
+   || _result:=exec('wn_wpzdo','sch_imp')
+::    nie określono wniosku do importu - wybieramy wnioski, które bedziemy importować
+   |? _msg
+   || exec('sel_wn','sch_imp');
+      _result:=1
+   ?}
+?};
+_result
+
+
+\sel_wn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.50]
+:: OPIS: Funkcja do importu wnioskow
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp(,'NAZWA'  ,'STRING[50]'  ,'Nazwa wniosku'@,
+               'TYP'    ,'STRING[50]'  ,'Formuła do importu'@,
+               'IMPORT' ,'STRING[1]'   ,'Zaimportowany?'@,
+               'FML'    ,'STRING[255]' ,'Formuła do importu'@
+             );
+
+_wer:=_tab.mk_sel('Wnioski do importu'@,'P',0,'20150128askmnxi');
+_tab.win_fld(_wer,,'NAZWA');
+_tab.win_fld(_wer,,'IMPORT',,,,,,,,,2,,"'T'","'N'");
+
+_tab.win_act(_wer,,'Formuła','Import'@,,,oImp.fml_wn,,1,1);
+_tab.win_act(_wer,,'Kolejność');
+
+:: wniosek o zmiane rachunku bankowego
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_rachunek','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_rachunek','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: wniosek o zmiane danych adresowych
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_wozda','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_wozda','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: wniosek o zatrudnienie
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_woz','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_woz','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: ---- PPK ----
+:: Deklaracja wysokości wpłaty podstawowej DWWP
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_dwwp','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_dwwp','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: Deklaracja wysokości wpłaty dodatkowej DWWD
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_dwwd','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_dwwd','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: Deklaracja rezygnacji z wpłaty dodatkowej DRWD (DWWD - 0%)
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_drwd','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_drwd','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: Wniosek o uczestnictwo
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_wou','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_wou','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: Oświadczenie o prowadzeniu PPK w innych instytucjach
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_opif','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_opif','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: ---- Grafiki ----
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_nadg_w','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_nadg_w','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_nadg_p','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_nadg_p','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_odb_w','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_odb_w','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_odb_p','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_odb_p','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_czw','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_czw','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: Praca poza siedzibą firmy
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_ppsf','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_ppsf','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: Polecenie pracy poza siedzibą firmy
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_ppsp','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_ppsp','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: ---- Praca zdalna (PZD) ----
+:: Oświadczenie o pracy zdalnej
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_oopz','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_oopz','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: Wniosek o pracę zdalną stałą
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_wpzds','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_wpzds','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+:: Wniosek o pracę zdalną okazjonalną
+_tab.blank(1);
+_tab.NAZWA:=exec('nazwa_wpzdo','obiegi');
+_etypy:=exec('exist','etypy',oImp.typ_ob,_tab.NAZWA);
+_tab.IMPORT:={? _etypy=null() || 'N' || 'T' ?};
+_tab.FML:=''+"{? exec('wn_wpzdo','sch_imp') || cur_tab().IMPORT:='T'; cur_tab().put() ?}";
+_tab.add();
+
+_tab.win_sel(_wer);
+_tab.select();
+~~
+
+
+\oWniosek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.50]
+:: OPIS: Funkcja zwraca obiekt do definicji pol wniosku
+::   WY: obiekt _wniosek
+::----------------------------------------------------------------------------------------------------------------------
+::UWAGA: _fld, i _mth to formulki pomocnicze, zeby wygodniej tworzyc tablice i komentowac poszczegolne jej elementy
+_fld:="8+form(_a)";
+_mth:="8+form(_a)";
+
+::tworze tablice nazwana do przechowywania zmiennych
+_wniosek:=obj_new(
+                _fld('pola'     ,'tabela przechowujaca definicje pol wniosku - tabela ETYP_ATR oraz TAT')
+               ,_fld('etyp_atr' ,'przechowuje bufor tabeli ETYP_ATR')
+               ,_fld('etypy'    ,'przechowuje wskazanie na rekord tabeli ETYPY')
+               ,_fld('force'    ,'czy nadpisywać istniejącą definicję wniosku')
+               ,_fld('KOMM'     ,'obiekt komunikatów')
+
+               ,_mth('add'      ,'metoda dodająca definicję pola do tabeli pól')
+               ,_mth('blank'    ,'metoda na blank dla tabeli pol')
+               ,_mth('setField' ,'metoda ustawia wartość wskazanej kolumny tabeli pól')
+               ,_mth('save'     ,'metoda zapisuje wartosci z tabeli definicji pól do bazy danych')
+             );
+::usuwamy zbedne zmienne
+&_mth; &_fld;
+
+_wniosek.pola:=tab_tmp(1,'KOL'      ,'INTEGER'     ,'Kolejność - wypełniana automatycznie'
+                        ,'DEF_KIND' ,'STRING[1]'   ,'Sposób nadawania wartości początkowej'
+                        ,'DEFAULT'  ,'STRING[80]'  ,'Wartość domyślna'
+                        ,'DEF_FORM' ,'STRING[100]' ,'Formuła na wartość początkową'
+                        ,'WYMAG'    ,'STRING[1]'   ,'Czy wymagane'
+                        ,'SLOPOLE'  ,'STRING[1]'   ,'Pole słownika'
+                        ,'TSLO'     ,'STRING[100]' ,'Formuła słownik tymczasowy'
+                        ,'SLO_CHG'  ,'INTEGER'     ,'Znacznik, czy formuła na słownik zależy od innych danych'
+                        ,'EDIT'     ,'STRING[1]'   ,'Blokada edycji'
+                        ,'CZY_ZERO' ,'STRING[1]'   ,'Czy zero jest wartością pustą czy dopuszczalną'
+                        ,'OPIS'     ,'STRING[255]' ,'Nagłówek sekcji atrybutów'
+                        ,'AE'       ,'STRING[100]' ,'Formuła po edycji'
+::                       pola tabeli TAT
+                        ,'TAT_NAME' ,'STRING[20]'  ,'Nazwa atrybutu'
+                        ,'TAT_TYP'  ,'STRING[1]'   ,'Typ atrybutu'
+                        ,'TAT_OPIS' ,'STRING[80]'  ,'Opis atrybutu'
+                        ,'UD_SCH'   ,'STRING[16]'  ,'Element struktury'
+                        ,'TAT_PREC' ,'INTEGER'     ,'Liczba miejsc po przecinku'
+                        ,'TAT_TSEP' ,'STRING[1]'   ,'Czy separator tysięcy'
+                      );
+
+_wniosek.etyp_atr:=exec('obj_new','#buf','ETYP_ATR');
+_wniosek.etypy:=null();
+_wniosek.force:=0;
+_wniosek.KOMM:=~~;
+
+_wniosek.blank:="
+   .pola.blank(1);
+   .pola.KOL:=.pola.size()+1
+";
+
+_wniosek.add:=".pola.add()";
+
+_wniosek.setField:="
+   _akronim:={? var_pres('_a')=type_of('') || _a || return(0) ?};
+   _value:=_b;
+
+   _fml:='.pola.'+_akronim+':=_a';
+   ($_fml)(_value)
+";
+
+_wniosek.save:="
+
+   {? .etypy<>null()
+   ||
+::    usuniecie dodatkowych atrybutow
+      _deleted:=1;
+      {? .force
+      || _deleted:=exec('delete4etypy','etyp_atr',.etypy)
+      ?};
+      {? _deleted=0
+      || undo();
+         .KOMM.add('Nie udało się usunąć dodatkowych atrybutów dla wniosku: '+oImp.nazwa,3,,1)
+      ?};
+
+::    dodanie dodatkowych atrybutow
+      PROGRESS.set(.pola.size(),'Import wniosku: '+oImp.nazwa);
+      {? .pola.first()
+      || {!
+         |? {? +|.pola.UD_SCH
+            || UD_SCH.cntx_psh();
+               UD_SCH.clear();
+               _ud_sch:={? UD_SCH.seek(BIT.sqlint(.pola.UD_SCH),) || UD_SCH.ref() || null() ?};
+               UD_SCH.cntx_pop()
+            || _ud_sch:=null()
+            ?};
+            _buffer:=exec('obj_new','#buf','TAT');
+            _buffer.NA:=.pola.TAT_NAME;
+            _buffer.TYP:=.pola.TAT_TYP;
+            _buffer.OPIS:=.pola.TAT_OPIS;
+            _buffer.UD_SCH:=_ud_sch;
+            _buffer.PREC:=.pola.TAT_PREC;
+            _buffer.TSEP:=.pola.TAT_TSEP;
+            {? var_pres('W_PORTAL',_buffer)>=0 || _buffer.W_PORTAL:='N' ?};
+            _tat:=exec('add','tat',_buffer,.force);
+            obj_del(_buffer);
+            {? _tat=null()
+            || undo()
+            || .etyp_atr.bl_table();
+               .etyp_atr.ETYPY:=.etypy;
+               .etyp_atr.TAT:=_tat;
+               .etyp_atr.KOL:=.pola.KOL;
+               .etyp_atr.DEF_KIND:=.pola.DEF_KIND;
+               .etyp_atr.DEFAULT:=.pola.DEFAULT;
+               .etyp_atr.DEF_FORM:=.pola.DEF_FORM;
+               .etyp_atr.WYMAG:=.pola.WYMAG;
+               .etyp_atr.SLOPOLE:=.pola.SLOPOLE;
+               .etyp_atr.TSLO:=.pola.TSLO;
+               .etyp_atr.SLO_CHG:=.pola.SLO_CHG;
+               .etyp_atr.EDIT:=.pola.EDIT;
+               .etyp_atr.CZY_ZERO:=.pola.CZY_ZERO;
+               .etyp_atr.OPIS:=.pola.OPIS;
+               .etyp_atr.AE:=.pola.AE;
+               {? exec('add','etyp_atr',.etyp_atr,.KOMM,.force)=null() || undo() ?}
+            ?};
+            PROGRESS.next();
+            .pola.next()
+         !}
+      ?};
+      PROGRESS.close()
+   ?}
+";
+
+_wniosek
+
+
+\renameETYPY
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.22]
+:: OPIS: Przenazywa istniejący typ wniosku w obiegu skracając jego nazwę do 50 znaków i dodając do niej uidref()
+::   WE: _a [REFERENCE] - wskazanie na typ obiegu
+::       _b [STRING]    - nazwa wniosku
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=-1;
+_typobieg:={? var_pres('_a')=type_of(null) || _a || return(_result) ?};
+   _nazwa:={? var_pres('_b')=type_of('')   || _b || return(_result) ?};
+_result:=1;
+
+ETYPY.cntx_psh();
+ETYPY.index('UNIK');
+ETYPY.prefix(_typobieg,_nazwa,_nazwa);
+{? ETYPY.first()
+|| _nn:=50+((30+ETYPY.NAZWA)+(20+ETYPY.uidref()));
+   ETYPY.NAZWA:=_nn;
+   ETYPY.cntx_psh();
+   ETYPY.prefix();
+   _result:=ETYPY.put(1);
+   ETYPY.cntx_pop()
+?};
+ETYPY.cntx_pop();
+_result
+
+
+\header_string
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.50]
+:: OPIS: Funkcja zwraca napis wykorzystywany do pozycjonowania naglowka
+::----------------------------------------------------------------------------------------------------------------------
+'- - - - - - - - - - - -'
+
+
+\wn_rach_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.42]
+:: OPIS: Formuła tabelę z rubrykami, które mają być obsługiwane we wniosku.
+::       Liczba obsługiwanych rachunków określa liczbę dostępnych sekcji we wniosku o zmianę rachunku bankowego.
+::   WE:
+::   WY: tabela z rubrykami do rachunków - domyślnie wszystkie rubryki z klasą B (do przelewów)
+::----------------------------------------------------------------------------------------------------------------------
+:: można wybrać jedną z proponowanych opcji
+:: UWAGA!!!
+:: po zmianie tej formuły (przez warstwę 'm' - sch_imp.m.fml) należy zaimportować ponownie wniosek o zmianę rachunku
+:: uruchamiając w Administracja->Formuła poniższą linie
+:: exec('imp_wn','sch_imp',exec('nazwa_rachunek','obiegi'),1,0)
+
+:: pokaż wszystkie rachunki (domyślnie 3)
+sql(''+"select RN,RT, REFERENCE as REF from R where RK='B'")
+
+:: pokaż dwa rachunku
+::sql(''+"select RN,RT, REFERENCE as REF from R where RK='B' and (RN=994 or RN=995)")
+
+:: pokaż tylko jeden rachunek
+::sql(''+"select RN,RT, REFERENCE as REF from R where RK='B' and (RN=994)")
+
+
+\wn_rach_det
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.42]
+:: OPIS: Formuła określa czy mają być pokazywane pola do określenia procentu / kwoty dla rachunku
+::   WE:
+::   WY: 0 /1
+::----------------------------------------------------------------------------------------------------------------------
+:: Domyślnie dla jednego rachunku nie pokazujemy pól z możliwością określenia Kwoty / Procentu.
+:: Jeżeli istnieje konieczność pokazania pól z tymi informacjami należy zmodyfikować poniższą formułę
+:: tak aby zwracała wartość 1
+exec('wn_rach_tab','sch_imp').size()>1
+
+
+\wn_rachunek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.50]
+:: OPIS: Importuje wniosek o zmiane rachunku bankowego
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_rachunek','obiegi');
+_wniosek:=exec('wn_rachunek_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_rachunek_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.50]
+:: OPIS: Tworzy strukture wniosku o zmiane rachunku bankowego
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Zmiana rachunku bankowego"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_rach_det:=exec('wn_rach_det','sch_imp');
+
+:: dane dotychczasowe
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 1');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Dane dotychczasowe');
+_wniosek.add();
+
+_lp:=0;
+_tRach:=exec('wn_rach_tab','sch_imp');
+
+{? _tRach.first()
+|| {!
+   |? _nr_rach:=$_tRach.RN;
+
+      _wniosek.blank();
+      _wniosek.setField('TAT_NAME'  ,'HEAD_RACH_'+_nr_rach);
+      _wniosek.setField('TAT_TYP'   ,'O');
+      _wniosek.setField('TAT_OPIS'  ,'');
+      _wniosek.setField('DEF_KIND'  ,'W');
+      _wniosek.setField('DEF_FORM'  ,'');
+      _wniosek.setField('WYMAG'     ,'N');
+      _wniosek.setField('SLOPOLE'   ,'K');
+      _wniosek.setField('TSLO'      ,'');
+      _wniosek.setField('EDIT'      ,'T');
+      _wniosek.setField('CZY_ZERO'  ,'D');
+      _wniosek.setField('OPIS'      ,_tRach.RT);
+      _wniosek.add();
+
+      _wniosek.blank();
+      _wniosek.setField('TAT_NAME'  ,'NR_RACH_'+_nr_rach);
+      _wniosek.setField('TAT_TYP'   ,'T');
+      _wniosek.setField('TAT_OPIS'  ,'Numer rachunku');
+      _wniosek.setField('DEF_KIND'  ,'F');
+      _wniosek.setField('DEF_FORM'  ,''+"exec('rachunek','form_ob','"+_nr_rach+"','nr')");
+      _wniosek.setField('WYMAG'     ,'N');
+      _wniosek.setField('SLOPOLE'   ,'K');
+      _wniosek.setField('TSLO'      ,'');
+      _wniosek.setField('EDIT'      ,'T');
+      _wniosek.setField('CZY_ZERO'  ,'D');
+      _wniosek.setField('OPIS'      ,'');
+      _wniosek.add();
+
+      {? _rach_det
+      || _wniosek.blank();
+         _wniosek.setField('TAT_NAME'  ,'RODZ_RACH_'+_nr_rach);
+         _wniosek.setField('TAT_TYP'   ,'X');
+         _wniosek.setField('TAT_OPIS'  ,'Kwota / %');
+         _wniosek.setField('DEF_KIND'  ,'F');
+         _wniosek.setField('DEF_FORM'  ,''+"exec('rachunek','form_ob','"+_nr_rach+"','rodzaj')");
+         _wniosek.setField('WYMAG'     ,'N');
+         _wniosek.setField('SLOPOLE'   ,'T');
+         _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','RODZ_RACH')");
+         _wniosek.setField('EDIT'      ,'T');
+         _wniosek.setField('CZY_ZERO'  ,'D');
+         _wniosek.setField('OPIS'      ,'');
+         _wniosek.setField('AE'        ,'');
+         _wniosek.add();
+
+         _wniosek.blank();
+         _wniosek.setField('TAT_NAME'  ,'KWOTA_RACH_'+_nr_rach);
+         _wniosek.setField('TAT_TYP'   ,'T');
+         _wniosek.setField('TAT_OPIS'  ,'Wartość');
+         _wniosek.setField('DEF_KIND'  ,'F');
+         _wniosek.setField('DEF_FORM'  ,''+"exec('rachunek','form_ob','"+_nr_rach+"','kwota')");
+         _wniosek.setField('WYMAG'     ,'N');
+         _wniosek.setField('SLOPOLE'   ,'K');
+         _wniosek.setField('TSLO'      ,'');
+         _wniosek.setField('EDIT'      ,'T');
+         _wniosek.setField('CZY_ZERO'  ,'D');
+         _wniosek.setField('OPIS'      ,'');
+         _wniosek.add()
+      ?};
+      _tRach.next()
+   !}
+?};
+
+:: dane aktualne
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD0');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 0');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD2');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 2');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+
+                              {? _rach_det
+                              || ' Dane aktualne (należy zaktualizować pola, które uległy zmianie)'
+                              || ' Dane aktualne'
+                              ?});
+_wniosek.add();
+
+{? _tRach.first()
+|| {!
+   |? _nr_rach:=$_tRach.RN;
+
+      _wniosek.blank();
+      _wniosek.setField('TAT_NAME'  ,'HEAD_N_RACH_'+_nr_rach);
+      _wniosek.setField('TAT_TYP'   ,'O');
+      _wniosek.setField('TAT_OPIS'  ,'');
+      _wniosek.setField('DEF_KIND'  ,'W');
+      _wniosek.setField('DEF_FORM'  ,'');
+      _wniosek.setField('WYMAG'     ,'N');
+      _wniosek.setField('SLOPOLE'   ,'K');
+      _wniosek.setField('TSLO'      ,'');
+      _wniosek.setField('EDIT'      ,'N');
+      _wniosek.setField('CZY_ZERO'  ,'D');
+      _wniosek.setField('OPIS'      ,_tRach.RT);
+      _wniosek.add();
+
+      _wniosek.blank();
+      _wniosek.setField('TAT_NAME'  ,'N_NR_RACH_'+_nr_rach);
+      _wniosek.setField('TAT_TYP'   ,'T');
+      _wniosek.setField('TAT_OPIS'  ,'Numer rachunku');
+      _wniosek.setField('DEF_KIND'  ,'F');
+      {? _rach_det
+      || _wniosek.setField('DEF_FORM'  ,''+"exec('rachunek','form_ob','"+_nr_rach+"','nr')")
+      || _wniosek.setField('DEF_FORM'  ,'')
+      ?};
+      _wniosek.setField('WYMAG'     ,'N');
+      _wniosek.setField('SLOPOLE'   ,'K');
+      _wniosek.setField('TSLO'      ,'');
+      _wniosek.setField('EDIT'      ,'N');
+      _wniosek.setField('CZY_ZERO'  ,'D');
+      _wniosek.setField('OPIS'      ,'');
+      _wniosek.add();
+
+      {? _rach_det
+      || _wniosek.blank();
+         _wniosek.setField('TAT_NAME'  ,'N_RODZ_RACH_'+_nr_rach);
+         _wniosek.setField('TAT_TYP'   ,'X');
+         _wniosek.setField('TAT_OPIS'  ,'Kwota / %');
+         _wniosek.setField('DEF_KIND'  ,'F');
+         _wniosek.setField('DEF_FORM'  ,''+"exec('rachunek','form_ob','"+_nr_rach+"','rodzaj')");
+         _wniosek.setField('WYMAG'     ,'N');
+         _wniosek.setField('SLOPOLE'   ,'T');
+         _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','RODZ_RACH')");
+         _wniosek.setField('EDIT'      ,'N');
+         _wniosek.setField('CZY_ZERO'  ,'D');
+         _wniosek.setField('OPIS'      ,'');
+         _wniosek.setField('AE'        ,'');
+         _wniosek.add();
+
+         _wniosek.blank();
+         _wniosek.setField('TAT_NAME'  ,'N_KWOTA_RACH_'+_nr_rach);
+         _wniosek.setField('TAT_TYP'   ,'T');
+         _wniosek.setField('TAT_OPIS'  ,'Wartość');
+         _wniosek.setField('DEF_KIND'  ,'F');
+         _wniosek.setField('DEF_FORM'  ,''+"exec('rachunek','form_ob','"+_nr_rach+"','kwota')");
+         _wniosek.setField('WYMAG'     ,'N');
+         _wniosek.setField('SLOPOLE'   ,'K');
+         _wniosek.setField('TSLO'      ,'');
+         _wniosek.setField('EDIT'      ,'N');
+         _wniosek.setField('CZY_ZERO'  ,'D');
+         _wniosek.setField('OPIS'      ,'');
+         _wniosek.add()
+      ?};
+      _tRach.next()
+   !}
+?};
+
+_wniosek
+
+
+\wn_wozda
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [mk] Michal Kocot[12.50]
+:: OPIS: Importuje wniosek o zmiane danych adresowych
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_wozda','obiegi');
+_wniosek:=exec('wn_wozda_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_wozda_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [mk] Michal Kocot [12.50]
+:: OPIS: Tworzy strukture wniosku o zmiane danych adresowych
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 1');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Nowy adres');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'TYP_ADRESU');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Typ adresu');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','TYP_ADRESU','C')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TYP_ADRESU')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA_OD');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data obowiązywania danych od');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA_DO');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data obowiązywania danych do');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'KRAJ');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Kraj');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','KRAJE','Polska')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','KRAJE')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WOJEWODZ');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Województwo');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','WOJEWODZ')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'POWIAT');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Powiat');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'GMINA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Gmina');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'GMGUS');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Kod gminy wg GUS');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'KOD');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Kod pocztowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'POCZTA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Urząd pocztowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'MIASTO');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Miejscowość');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'ULICA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Ulica');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DOM');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr domu/posesji');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'LOKAL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr mieszkania/lokalu');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'TEL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Telefon');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'EMAIL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Adres poczty elektronicznej');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek
+
+
+\wn_woz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [mk] Michal Kocot[12.50]
+:: OPIS: Importuje wniosek o zatrudnienie
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_woz','obiegi');
+_wniosek:=exec('wn_woz_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_woz_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [mk] Michal Kocot [12.50]
+:: OPIS: Tworzy strukture wniosku o zatrudnienie
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD0');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 0');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Dane osobowe'@);
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 1');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Dane identyfikacyjne'@);
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PESEL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'PESEL');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'PESEL')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PASZPORT');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr paszportu');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'PESEL')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'INFO1');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Informacja o danych'@);
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PIERWSZE');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Imię');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'PIERWSZE')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'NAZWISKO');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nazwisko');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PLEC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Płeć');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','PLEC')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'UR_DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data urodzenia');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'UR_DATA')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'NIP');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'NIP');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'US');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Urząd Skarbowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','OS_US')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'OBCY');
+_wniosek.setField('TAT_TYP'   ,'B');
+_wniosek.setField('TAT_OPIS'  ,'Czy obcokrajowiec ?');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'OBCY')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'OBYWATEL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Obywatelstwo');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('osoba_obywatel_bl','osoba')");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DOWOD');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr dowodu osobistego');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD2');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 2');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Dane adresowe');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'INFO2');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Informacja o danych');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'TYP_ADRESU');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Typ adresu');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','TYP_ADRESU','C')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TYP_ADRESU')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_umzle','obiegi'),'TYP_ADRESU')");
+_wniosek.add();
+
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'KRAJ');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Kraj');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','KRAJE','Polska')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','KRAJE')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WOJEWODZ');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Województwo');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','WOJEWODZ')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'POWIAT');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Powiat');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'GMINA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Gmina');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'GMGUS');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Kod gminy wg GUS');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'KOD');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Kod pocztowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'POCZTA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Urząd pocztowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'MIASTO');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Miejscowość');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'ULICA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Ulica');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DOM');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr domu/posesji');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'LOKAL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr mieszkania/lokalu');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'TEL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Telefon');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'EMAIL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Adres poczty elektronicznej');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD3');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 3');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Umowa o pracę');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'UMOWA');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Istniejące umowy z pracownikiem (tylko podgląd)');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','UMOWA')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Podgląd listy istniejących umów z pracownikiem');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD4');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 4');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Warunki umowy');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'NUMER');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Numer umowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PODPIS');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data zawarcia umowy');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'PODPIS')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'RU');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Rodzaj umowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','UMPRAC')");
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PRZEDST');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Przedstawiciel pracodawcy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'MIEJSCE');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Miejsce pracy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'TXT1T');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Inne warunki');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'TXT')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'TXT2T');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'TXT')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'TXT3T');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'TXT')");
+_wniosek.add();
+
+{? exec('upgrade2226_nru01','wnioski_urlopowe')
+|| _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'CZY_PRZ_USPR');
+   _wniosek.setField('TAT_TYP'   ,'B');
+   _wniosek.setField('TAT_OPIS'  ,'Czy umowa przedłużona o nieobecności usprawiedliwione?');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'CZY_PRZ_USPR')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'CZY_ZAM_ZAW');
+   _wniosek.setField('TAT_TYP'   ,'B');
+   _wniosek.setField('TAT_OPIS'  ,'Czy zamiar zawarcia umowy na czas określony?');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'CZY_ZAM_ZAW')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ZAM_OKR');
+   _wniosek.setField('TAT_TYP'   ,'T');
+   _wniosek.setField('TAT_OPIS'  ,'Planowany okres umowy na czas określony');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'CZY_ZAM_ZAW')");
+   _wniosek.add()
+?};
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'CZY_NADG');
+_wniosek.setField('TAT_TYP'   ,'B');
+_wniosek.setField('TAT_OPIS'  ,'Czy dopełnienie do nadgodzin?');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'DOP_NADG')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DOP_NADG');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Dopełnienie do nadgodzin');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,0);
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'DOP_NADG')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DOP_ST');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Dopełnienie średniotygodniowe');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,0);
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD5');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 5');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Zatrudnienie');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'OD');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Od dnia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'OD')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DO');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Do dnia');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'DO')");
+_wniosek.add();
+
+_sch_str:=exec('szukaj_ud_sch','schemat','PODZORG','STRORG');
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WYDZIAL');
+_wniosek.setField('TAT_TYP'   ,'U');
+_wniosek.setField('TAT_OPIS'  ,'Jednostka organizacyjna');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('UD_SCH'    ,$_sch_str);
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'WYDZIAL')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'ST');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Stanowisko');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','STANOWISKA')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'STANOWISKO')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'POZWORG');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Pozycja w organizacji');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','POZWORG')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'CP');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Charakter pracy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','CP')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WYL');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Licznik wymiaru zatrudnienia');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEFAULT'   ,'1');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,0);
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'WYL')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WYM');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Mianownik wymiaru zatrudnienia');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEFAULT'   ,'1');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,0);
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_woz','obiegi'),'WYM')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WY');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Wymiar zatrudnienia');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEFAULT'   ,'1');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,3);
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'S1');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Płaca zasadnicza lub Stawka godzinowa');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,2);
+_wniosek.setField('TAT_TSEP'  ,'N');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'S2');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Dodatek funkcyjny lub brygadzistowski');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,2);
+_wniosek.setField('TAT_TSEP'  ,'N');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'S3');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Dodatek');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,2);
+_wniosek.setField('TAT_TSEP'  ,'N');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek
+
+:: - - - - - - - - - - - - - - - - -  - - - - - Wnioski w obiegu dla PPK - - - - - - - - - - - - - - - - - - - - - - - -
+\wn_dwwp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Importuje wniosek/deklarację wysokości wpłaty podstawowej
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_dwwp','obiegi');
+_wniosek:=exec('wn_dwwp_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_dwwp_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Tworzy strukture wniosek/deklaracji wysokości wpłaty podstawowej
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Deklaracja wysokości wpłaty podstawowej"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data złożenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_dwwp','obiegi'),'DATA')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD0');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 0');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Deklaracja będzie obowiązywała od następnego miesiąca po dacie złożenia wniosku.');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA_ZM');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data zmiany');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('fdinm','form_ob',date())");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_drwd','obiegi'),'DATA')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PWP');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Procent wpłaty podstawowej');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"0.5");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,2);
+_wniosek.setField('TAT_TSEP'  ,'N');
+_wniosek.add();
+
+_wniosek
+
+
+\wn_dwwd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Importuje wniosek/deklarację wysokości wpłaty dodatkowej
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_dwwd','obiegi');
+_wniosek:=exec('wn_dwwd_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_dwwd_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Tworzy strukture wniosek/deklaracji wysokości wpłaty dodatkowej
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Deklaracja wysokości wpłaty dodatkowej"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data złożenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_dwwd','obiegi'),'DATA')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD0');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 0');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Deklaracja będzie obowiązywała od następnego miesiąca po dacie złożenia wniosku.');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA_ZM');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data zmiany');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('fdinm','form_ob',date())");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_dwwd','obiegi'),'DATA_ZM')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PWD');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Procent wpłaty dodatkowej');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"0");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,2);
+_wniosek.setField('TAT_TSEP'  ,'N');
+_wniosek.add();
+
+_wniosek
+
+
+\wn_drwd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Importuje wniosek/deklarację rezygnacji z wpłaty dodatkowej
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_drwd','obiegi');
+_wniosek:=exec('wn_drwd_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_drwd_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Tworzy strukture wniosek/deklaracji rezygnacji z wpłaty dodatkowej
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Deklaracja rezygnacji z wpłaty dodatkowej"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data złożenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_drwd','obiegi'),'DATA')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD0');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 0');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Deklaracja będzie obowiązywała od następnego miesiąca po dacie złożenia wniosku.');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA_ZM');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data zmiany');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('fdinm','form_ob',date())");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_drwd','obiegi'),'DATA')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 1');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Przesłanie deklaracji będzie oznaczało zaprzestanie odprowadzania '+
+                               'wpłaty dodatkowej przez uczestnika.');
+_wniosek.add();
+
+_wniosek
+
+
+\wn_wou
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Importuje wniosek/deklarację o uczestnictwo
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosel
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_wou','obiegi');
+_wniosek:=exec('wn_wou_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_wou_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Tworzy strukture wniosek/deklaracji o uczestnictwo
+::   WY: obiekt z definicja wniosml
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Wniosek o uczestnictwo"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data złożenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Deklaruję chęć oszczędzania w pracowniczym planie kapitałowym (PPK) na podstawie '+
+                               'art. 15 pkt. 2 ustawy z 4 października 2018 r. o pracowniczych planach kapitałowych '+
+                               'Dz.U. 2018 poz. 2215.');
+_wniosek.add();
+
+_wniosek
+
+
+\wn_opif_lsec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.42]
+:: OPIS: Formuła określa liczbę dostępnych sekcji instytucji finansowych
+::   WE:
+::   WY: liczba sekcji z instytucjami finansowymi
+::----------------------------------------------------------------------------------------------------------------------
+_lsec:=Plugin.run('OBE_LICZ_SEC',exec('nazwa_opif','obiegi'));
+{? type_of(_lsec)=type_of(0) & _lsec>0
+|| _lsec
+|| 5
+?}
+
+
+\wn_opif
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Importuje wniosek/deklarację o podpisanych umowach o prowadzenie w innych Instytucjach Finansowych
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniofml
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_opif','obiegi');
+_wniosek:=exec('wn_opif_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_opif_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Tworzy strukture wniosek/deklaracji o podpisanych umowach o prowadzenie w innych Instytucjach Finansowych
+::   WY: obiekt z definicja wni.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Deklaracja o podpisanych umowach o prowadzenie w innych Instytucjach Finansowych"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data złożenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Oświadczam, że mam zawarte umowy o prowadzenie PPK w moim imieniu '+
+                               'w następujących instytucjach finansowych:');
+_wniosek.add();
+
+:: pola przeznaczone na wskazanie Instytucji Finansowych
+{! _ind:=1..exec('wn_opif_lsec','sch_imp')
+|?
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'SEPARATOR'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'O');
+   _wniosek.setField('TAT_OPIS'  ,'');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'Instytucja finansowa '+$_ind);
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'PPKIF'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'X');
+   _wniosek.setField('TAT_OPIS'  ,'Nazwa');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'T');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','PPK_IF')");
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+"");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'PPK_NR_RACH'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'T');
+   _wniosek.setField('TAT_OPIS'  ,'Numer rachunku uczestnika');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add()
+!};
+
+_wniosek
+
+
+\wn_nadg_lsec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.42]
+:: OPIS: Formuła określa liczbę dostępnych sekcji dni do wprowadzenia nadgodzin
+::   WE:
+::   WY: liczba sekcji z nadgodzinami
+::----------------------------------------------------------------------------------------------------------------------
+_lsec:=Plugin.run('OBE_LICZ_SEC',exec('nazwa_nadg_w','obiegi'));
+{? type_of(_lsec)=type_of(0) & _lsec>0
+|| _lsec
+|| 5
+?}
+
+
+\wn_nadg_w
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.42]
+:: OPIS: Importuje wniosek o pracę w godzinach nadliczbowych (wniosek składany przez pracownika)
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]  - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_nadg_w','obiegi');
+_wniosek:=exec('wn_nadg_def','sch_imp','W');
+oImp.import(_wniosek)
+
+
+\wn_nadg_p
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.42]
+:: OPIS: Importuje wniosek o pracę w godzinach nadliczbowych (wniosek składany przez pracodawcę)
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]  - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_nadg_p','obiegi');
+_wniosek:=exec('wn_nadg_def','sch_imp','P');
+oImp.import(_wniosek)
+
+
+\wn_nadg_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.42]
+:: OPIS: Tworzy strukture wnioseku o pracę w godzinach nadliczbowych
+::   WE: _a [STRING] - typ wniosku ('W'-pracownik, 'P'-pracodawca)
+::   WY: obiekt z definicja wni.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+_typ:={? var_pres('_a')=type_of('') || _a || return(_wniosek) ?};
+
+_fml_ustaw:={? _typ='W'
+            || "exec('ustaw','form_ob',exec('nazwa_nadg_w','obiegi')"
+            |? _typ='P'
+            ||"exec('ustaw','form_ob',exec('nazwa_nadg_p','obiegi')"
+            || ""
+            ?};
+
+:: dodanie typu dokumentu w obiegu "Wniosek o pracę w godzinach nadliczbowych"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Dane pracownika');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'ET_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Współpracownik');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ET_PRAC','"+_typ+"')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ET_PRAC','"+_typ+"')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'ET_PRAC','"+_typ+"')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'SEPARATOR');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Łączna liczba wnioskowanych nadgodzin');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'GODZ_RAZEM');
+_wniosek.setField('TAT_TYP'   ,'C');
+_wniosek.setField('TAT_OPIS'  ,'Godziny razem');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+:: pola redagowalne dla wniosku
+{! _ind:=1..exec('wn_nadg_lsec','sch_imp')
+|!
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'SEPARATOR'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'O');
+   _wniosek.setField('TAT_OPIS'  ,'');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'Dzień '+$_ind);
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'DATA_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'D');
+   _wniosek.setField('TAT_OPIS'  ,'Data');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"date(0,0,0)");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'DATA_"+$_ind+"')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'TYP_DNIA_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'T');
+   _wniosek.setField('TAT_OPIS'  ,'Typ dnia');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'PRZED_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'X');
+   _wniosek.setField('TAT_OPIS'  ,'Wystąpienie nadgodzin');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','PRZED_"+$_ind+"')");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'T');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','PRZED','"+$_ind+"')");
+   _wniosek.setField('SLO_CHG'   , 1);
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'GODZ')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'GODZ_OD_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'C');
+   _wniosek.setField('TAT_OPIS'  ,'Liczba nadgodzin / Godzina od');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'GODZ')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'GODZ_DO_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'C');
+   _wniosek.setField('TAT_OPIS'  ,'Godzina do');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'GODZ')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'CZAS_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'C');
+   _wniosek.setField('TAT_OPIS'  ,'Czas');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.add();
+
+   {? _typ='P'
+   || _wniosek.blank();
+      _wniosek.setField('TAT_NAME'  ,'KK_'+$_ind);
+      _wniosek.setField('TAT_TYP'   ,'X');
+      _wniosek.setField('TAT_OPIS'  ,'Konto kosztów');
+      _wniosek.setField('DEF_KIND'  ,'F');
+      _wniosek.setField('DEF_FORM'  ,'');
+      _wniosek.setField('WYMAG'     ,'N');
+      _wniosek.setField('SLOPOLE'   ,'T');
+      _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','KK')");
+      _wniosek.setField('SLO_CHG'   , 1);
+      _wniosek.setField('EDIT'      ,'N');
+      _wniosek.setField('CZY_ZERO'  ,'D');
+      _wniosek.setField('OPIS'      ,'');
+      _wniosek.setField('AE'        ,'');
+      _wniosek.add()
+   ?};
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'OPIS_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'T');
+   _wniosek.setField('TAT_OPIS'  ,'Uzasadnienie');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.add()
+!};
+
+_wniosek
+
+
+\wn_odb_lsec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Formuła określa liczbę dostępnych sekcji dni do wprowadzenia odbiorów
+::   WE:
+::   WY: liczba sekcji z odbiorami
+::----------------------------------------------------------------------------------------------------------------------
+_lsec:=Plugin.run('OBE_LICZ_SEC',exec('nazwa_odb_w','obiegi'),1);
+{? type_of(_lsec)=type_of(0) & _lsec>0
+|| _lsec
+|| 1
+?}
+
+
+\wn_odb_nadg_lsec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Formuła określa liczbę dostępnych sekcji dni do wprowadzenia nadgodzin
+::   WE:
+::   WY: liczba sekcji z nadgodzinami
+::----------------------------------------------------------------------------------------------------------------------
+_lsec:=Plugin.run('OBE_LICZ_SEC',exec('nazwa_odb_w','obiegi'),2);
+{? type_of(_lsec)=type_of(0) & _lsec>0
+|| _lsec
+|| 5
+?}
+
+
+\wn_odb_w
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Importuje wniosek o odbiór nadgodzin (wniosek składany przez pracownika)
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]  - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_odb_w','obiegi');
+_wniosek:=exec('wn_odb_def','sch_imp','W');
+oImp.import(_wniosek)
+
+
+\wn_odb_p
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Importuje wniosek o odbiór nadgodzin (wniosek składany na wniosek firmy)
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]  - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_odb_p','obiegi');
+_wniosek:=exec('wn_odb_def','sch_imp','P');
+oImp.import(_wniosek)
+
+
+\wn_odb_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Tworzy strukture wniosku o odbiór nadgodzin
+::   WE: _a [STRING] - typ wniosku ('W'- pracownik, 'P'- firma)
+::   WY: obiekt z definicja wni.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+_typ:={? var_pres('_a')=type_of('') || _a || return(_wniosek) ?};
+
+_fml_ustaw:={? _typ='W'
+            || "exec('ustaw','form_ob',exec('nazwa_odb_w','obiegi')"
+            |? _typ='P'
+            ||"exec('ustaw','form_ob',exec('nazwa_odb_p','obiegi')"
+            || ""
+            ?};
+
+:: dodanie typu dokumentu w obiegu "Wniosek o odbiór nadgodzin"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Dane pracownika');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'ET_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Współpracownik');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ET_PRAC','"+_typ+"')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ET_PRAC','"+_typ+"')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'ET_PRAC','"+_typ+"')");
+_wniosek.add();
+
+:: pola redagowalne dla wniosku
+_lsec:=exec('wn_odb_lsec','sch_imp');
+{! _ind:=1.._lsec
+|! _wymag:={? _ind=1 || 'T' || 'N' ?};
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_SEPARATOR_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'O');
+   _wniosek.setField('TAT_OPIS'  ,'');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'Odbiór nadgodzin');
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_TYP_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'X');
+   _wniosek.setField('TAT_OPIS'  ,'Typ odbioru');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'T');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ODB_TYP','"+_typ+"')");
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'ODB_TYP_"+$_ind+"')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_DATA_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'D');
+   _wniosek.setField('TAT_OPIS'  ,'Data odbioru');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"date(0,0,0)");
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'ODB_DATA_"+$_ind+"')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_GODZ_PLAN_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'C');
+   _wniosek.setField('TAT_OPIS'  ,'Czas pracy w dniu odbioru');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_PK_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'X');
+   _wniosek.setField('TAT_OPIS'  ,'Odbiór godzin');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ODB_PK')");
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'T');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ODB_PK')");
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'Odbiór godzin');
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_SEPARATOR_NADG_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'O');
+   _wniosek.setField('TAT_OPIS'  ,'Odbierane godziny');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'Odbierane godziny');
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_A_OKR_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'X');
+   _wniosek.setField('TAT_OPIS'  ,'Okres rozliczeniowy nadgodzin');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ODB_A_OKR_"+$_ind+"')");
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'T');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ODB_A_OKR_"+$_ind+"')");
+   _wniosek.setField('SLO_CHG'   , 1);
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'ODB_A_OKR_"+$_ind+"')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_ROK_MSC_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'X');
+   _wniosek.setField('TAT_OPIS'  ,'Miesiąc nadgodzin');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ODB_ROK_MSC_"+$_ind+"')");
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'T');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ODB_ROK_MSC_"+$_ind+"')");
+   _wniosek.setField('SLO_CHG'   , 1);
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'ODB_ROK_MSC_"+$_ind+"')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_WYB_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'X');
+   _wniosek.setField('TAT_OPIS'  ,'Wybór nadgodzin');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ODB_WYB')");
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'T');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ODB_WYB')");
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_GODZ_WNIO_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'C');
+   _wniosek.setField('TAT_OPIS'  ,'Godziny wnioskowane');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'ODB_NADG_"+$_ind+"')");
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'ODB_GODZ_ODEB_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'C');
+   _wniosek.setField('TAT_OPIS'  ,'Godziny do odbioru');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.add();
+
+   {! _ind_nadg:=1..exec('wn_odb_nadg_lsec','sch_imp')
+   |! _wniosek.blank();
+      _wniosek.setField('TAT_NAME'  ,'ODB_NADG_%1_%2'[$_ind,$_ind_nadg]);
+      _wniosek.setField('TAT_TYP'   ,'X');
+      _wniosek.setField('TAT_OPIS'  ,'Nadgodziny');
+      _wniosek.setField('DEF_KIND'  ,'F');
+      _wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ODB_NADG_"+$_ind+'_'+$_ind_nadg+"')");
+      _wniosek.setField('WYMAG'     ,'N');
+      _wniosek.setField('SLOPOLE'   ,'T');
+      _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ODB_NADG_"+$_ind+'_'+$_ind_nadg+"')");
+      _wniosek.setField('SLO_CHG'   , 1);
+      _wniosek.setField('EDIT'      ,'N');
+      _wniosek.setField('CZY_ZERO'  ,'D');
+      _wniosek.setField('OPIS'      ,'');
+      _wniosek.setField('AE'        ,''+_fml_ustaw+",'ODB_NADG_"+$_ind+"')");
+      _wniosek.add();
+
+      _wniosek.blank();
+      _wniosek.setField('TAT_NAME'  ,'ODB_NADG_LON_%1_%2'[$_ind,$_ind_nadg]);
+      _wniosek.setField('TAT_TYP'   ,'C');
+      _wniosek.setField('TAT_OPIS'  ,'Liczba odebranych nadgodzin');
+      _wniosek.setField('DEF_KIND'  ,'F');
+      _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+      _wniosek.setField('WYMAG'     ,'N');
+      _wniosek.setField('SLOPOLE'   ,'K');
+      _wniosek.setField('TSLO'      ,'');
+      _wniosek.setField('EDIT'      ,'T');
+      _wniosek.setField('CZY_ZERO'  ,'D');
+      _wniosek.setField('OPIS'      ,'');
+      _wniosek.add();
+
+      _wniosek.blank();
+      _wniosek.setField('TAT_NAME'  ,'ODB_NADG_GODZ_%1_%2'[$_ind,$_ind_nadg]);
+      _wniosek.setField('TAT_TYP'   ,'C');
+      _wniosek.setField('TAT_OPIS'  ,'Liczba godzin do odbioru');
+      _wniosek.setField('DEF_KIND'  ,'F');
+      _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+      _wniosek.setField('WYMAG'     ,'N');
+      _wniosek.setField('SLOPOLE'   ,'K');
+      _wniosek.setField('TSLO'      ,'');
+      _wniosek.setField('EDIT'      ,'T');
+      _wniosek.setField('CZY_ZERO'  ,'D');
+      _wniosek.setField('OPIS'      ,'');
+      _wniosek.add()
+   !}
+
+!};
+
+_wniosek
+
+
+\wn_czw_lsec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Formuła określa liczbę dostępnych sekcji dni do wprowadzenia czasu wolnego (wyjść prywatnych)
+::   WE:
+::   WY: liczba sekcji z czasem wolnym (wyjściami prywatnymi) [1-176]
+::----------------------------------------------------------------------------------------------------------------------
+_lsec:=Plugin.run('OBE_LICZ_SEC',exec('nazwa_czw','obiegi'));
+{? type_of(_lsec)=type_of(0) & _lsec>0
+|| _lsec
+|| 1
+?}
+
+
+\wn_czw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Importuje wniosek o czas wolny (wniosek o wyjście prywatne)
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]  - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_czw','obiegi');
+_wniosek:=exec('wn_czw_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_czw_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.14]
+:: OPIS: Tworzy strukture wniosku o czas wolny
+::   WE:
+::   WY: obiekt z definicja wni.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+_fml_ustaw:="exec('ustaw','form_ob',exec('nazwa_czw','obiegi')";
+
+:: dodanie typu dokumentu w obiegu "Wniosek o odbiór nadgodzin"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Dane pracownika');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'ET_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Współpracownik');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ET_PRAC','W')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ET_PRAC','W')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'ET_PRAC','W')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'CZW_SEPARATOR_NAG');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Czas wolny (wyjście prywatne)');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'CZW_DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date(0,0,0)");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'CZW_GODZ_OD');
+_wniosek.setField('TAT_TYP'   ,'C');
+_wniosek.setField('TAT_OPIS'  ,'Od godziny');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'GODZ')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'CZW_GODZ_DO');
+_wniosek.setField('TAT_TYP'   ,'C');
+_wniosek.setField('TAT_OPIS'  ,'Do godziny');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'GODZ')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'CZW_CZAS');
+_wniosek.setField('TAT_TYP'   ,'C');
+_wniosek.setField('TAT_OPIS'  ,'Liczba godzin');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+:: pola redagowalne dla wniosku
+_lsec:=exec('wn_czw_lsec','sch_imp');
+
+{! _ind:=1.._lsec
+|! _wymag:={? _ind>1 || 'N' || 'T' ?};
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'CZW_SEPARATOR_ODP_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'O');
+   _wniosek.setField('TAT_OPIS'  ,'');
+   _wniosek.setField('DEF_KIND'  ,_wymag);
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'Odpracowanie (szczegóły)');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'CZW_ODP_DATA_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'D');
+   _wniosek.setField('TAT_OPIS'  ,'Data odpracowania');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"date(0,0,0)");
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'CZW_ODP_GODZ_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'C');
+   _wniosek.setField('TAT_OPIS'  ,'Liczba godzin');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+   _wniosek.setField('WYMAG'     ,_wymag);
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'L_GODZ')");
+   _wniosek.add()
+
+!};
+
+_wniosek
+
+
+\wn_dowu25
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.14]
+:: OPIS: Importuje deklarację opłacania wpłat uczestnika art. 25
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_dowu25','obiegi');
+_wniosek:=exec('wn_dowu25_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_dowu25_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.14]
+:: OPIS: Tworzy strukture deklaracji opłacania wpłat uczestnika art. 25
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Deklaracja opłacania wpłat uczestnika art. 25"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data złożenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_dowu25','obiegi'),'DATA')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD0');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 0');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Deklaracja będzie obowiązywała od wprowadzonej daty.');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'DATA_ZM');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data zmiany');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw','form_ob',exec('nazwa_dowu25','obiegi'),'DATA_ZM')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'Nagłówek 1');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Przesłanie deklaracji spowoduje, że od danej daty wysokość składek odprowadzanych na '+
+                               'PPK będzie odpowiadać wysokości sprzed okresu blokady wynikającej z art. 25 ust. 4.');
+_wniosek.add();
+
+_wniosek
+
+
+
+\wn_ppsf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [21.37]
+:: OPIS: Importuje wniosek o pracę poza siedzibą firmy
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]  - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_ppsf','obiegi');
+_wniosek:=exec('wn_ppsf_def','sch_imp','W');
+oImp.import(_wniosek)
+
+
+\wn_ppsp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [21.37]
+:: OPIS: Importuje wniosek o polecenie pracy poza siedzibą firmy
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]  - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_ppsp','obiegi');
+_wniosek:=exec('wn_ppsf_def','sch_imp','P');
+oImp.import(_wniosek)
+
+
+\wn_ppsf_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [21.37]
+:: OPIS: Tworzy strukture wniosku o pracę poza siedzibą firmy
+::   WE: _a [STRING] - typ wniosku ('W'-wniosek[pracownik], 'P'-polecenie[przełożony])
+::   WY: obiekt z definicja wni.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+_typ:={? var_pres('_a')=type_of('') || _a || return(_wniosek) ?};
+
+_fml_ustaw:={? _typ='W'
+            || "exec('ustaw','form_ob',exec('nazwa_ppsf','obiegi')"
+            |? _typ='P'
+            || "exec('ustaw','form_ob',exec('nazwa_ppsp','obiegi')"
+            || ""
+            ?};
+_kk:={? _typ='W' || 'PPSF' || '' ?};
+
+:: dodanie typu dokumentu w obiegu "Wniosek o pracę poza siedzibą firmy"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Dane pracownika');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'ET_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Współpracownik');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','ET_PRAC','"+_typ+"','"+_kk+"')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ET_PRAC','"+_typ+"')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'ET_PRAC','"+_typ+"')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_SEPARATOR_NAG');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'Praca poza siedzibą firmy');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_TYP');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Typ pracy');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form','form_ob','PPSF_TYP')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','PPSFT')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'PPSF_TYP')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_PARTDAY');
+_wniosek.setField('TAT_TYP'   ,'B');
+_wniosek.setField('TAT_OPIS'  ,'Na część dnia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'PPSF_PARTDAY')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_OD');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Od dnia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'PPSF_OD')");
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_DO');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Do dnia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'PPSF_DO')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_DK');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Dni kalendarzowe');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"1");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,0);
+_wniosek.setField('TAT_TSEP'  ,'N');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_DR');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_OPIS'  ,'Dni robocze');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"1");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('TAT_PREC'  ,0);
+_wniosek.setField('TAT_TSEP'  ,'N');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_G');
+_wniosek.setField('TAT_TYP'   ,'C');
+_wniosek.setField('TAT_OPIS'  ,'Godziny robocze');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"time(0,0,0)");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'PPSF_G')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_KK');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Konto kosztów');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','KK')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,{? _typ='P' || 'N' || 'T' ?});
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+_fml_ustaw+",'PPSF_KK')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_KOMENT');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Komentarz');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,''+_fml_ustaw+",'PPSF_KOMENT')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_OSW');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Oświadczenie');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_OSW1');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'PPSF_OSW2');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.add();
+
+{? _typ='W'
+|| _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'PPSF_AKC');
+   _wniosek.setField('TAT_TYP'   ,'B');
+   _wniosek.setField('TAT_OPIS'  ,'Akceptuję powyższe oświadczenie');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,''+_fml_ustaw+",'PPSF_AKC')");
+   _wniosek.add()
+?};
+
+_wniosek
+
+
+:: Praca zdalna (PZD) - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+\wn_oopz_lsec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [19.42]
+:: OPIS: Formuła określa liczbę dostępnych sekcji oświadczenia
+::   WE:
+::   WY: liczba sekcji
+::----------------------------------------------------------------------------------------------------------------------
+exec('ppsf_no_wx_size','ppsf')
+
+
+\wn_oopz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Importuje wniosek/oświadczenie o pracy zdalnej
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_oopz','obiegi');
+_wniosek:=exec('wn_oopz_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_oopz_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Tworzy strukturę oświadczenia o pracy zdalnej
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Oświadczanie o pracy zdalnej"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'OOPZ_HEAD1');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Oświadczenie o pracy zdalnej');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'OOPZ_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Pracownik');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form_pzd','form_ob','PRAC')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','PRAC')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'OOPZ_DATA');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Data oświadczenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'OOPZ_TYP');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Typ oświadczenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','OOPZ_TYP')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_oopz','obiegi'),'OOPZ_TYP')");
+_wniosek.add();
+
+:: pola przeznaczone na treści oświadczeń
+{! _ind:=1..exec('wn_oopz_lsec','sch_imp')
+|!
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'OOPZ_SEP_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'O');
+   _wniosek.setField('TAT_OPIS'  ,'');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'Oświadczenie '+$_ind);
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'OOPZ_TRESC_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'T');
+   _wniosek.setField('TAT_OPIS'  ,'Treść');
+   _wniosek.setField('DEF_KIND'  ,'W');
+   _wniosek.setField('DEF_FORM'  ,'');
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'OOPZ_WYM_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'B');
+   _wniosek.setField('TAT_OPIS'  ,'Wymagana akceptacja?');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,'');
+   _wniosek.setField('EDIT'      ,'T');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add();
+
+   _wniosek.blank();
+   _wniosek.setField('TAT_NAME'  ,'OOPZ_AKC_'+$_ind);
+   _wniosek.setField('TAT_TYP'   ,'B');
+   _wniosek.setField('TAT_OPIS'  ,'Akceptuję powyższe oświadczenie');
+   _wniosek.setField('DEF_KIND'  ,'F');
+   _wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+   _wniosek.setField('WYMAG'     ,'N');
+   _wniosek.setField('SLOPOLE'   ,'K');
+   _wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+   _wniosek.setField('EDIT'      ,'N');
+   _wniosek.setField('CZY_ZERO'  ,'D');
+   _wniosek.setField('OPIS'      ,'');
+   _wniosek.setField('AE'        ,'');
+   _wniosek.add()
+!};
+
+_wniosek
+
+
+\wn_wpzds
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Importuje wniosek o pracę zdalną stałą
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_wpzds','obiegi');
+_wniosek:=exec('wn_wpzds_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_wpzds_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Tworzy strukturę wniosku o pracę zdalną stałą
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "Wniosek o pracę zdalną stałą"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_HEAD_MAIN');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Wniosek o pracę zdalną stałą');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Pracownik');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form_pzd','form_ob','PRAC')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','PRAC')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_PRAC')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_DATA_OD');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Obowiązuje od');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_DATA_OD')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_DATA_DO');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Obowiązuje do');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_DATA_DO')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_TYP_PRACY');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Typ pracy');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','WPZDS_TYP_PRACY')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_TYP_PRACY')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_ROZKLAD');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Rozkład pracy');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','WPZDS_ROZKLAD')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_ROZKLAD')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_OSWIADCZENIE');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Oświadczenie');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form_pzd','form_ob','WPZDS_OSWIADCZENIE')");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_OSWIADCZ_AKC');
+_wniosek.setField('TAT_TYP'   ,'B');
+_wniosek.setField('TAT_OPIS'  ,'Akceptuję powyższe oświadczenie');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+:: sekcja z adresami
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_HEAD_ADR');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Adres pracy zdalnej');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_ADRES_SEL');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','WPZDS_ADRES_SEL')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+:: sekcja z adresami
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_HEAD_ADR_NEW');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Nowy adres pracy zdalnej');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_TYP_ADRESU');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Typ adresu');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','WPZDS_PPSF_TA')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_ADRES_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Pobierz adres');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ADRES_PRAC')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_ADRES_PRAC')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_KRAJ');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Kraj');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','KRAJE')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_WOJEWODZ');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Województwo');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','WOJEWODZ')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_POWIAT');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Powiat');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_GMINA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Gmina');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_KOD');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Kod pocztowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_POCZTA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Urząd pocztowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_MIASTO');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Miejscowość');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_ULICA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Ulica');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_DOM');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr domu/posesji');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_LOKAL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr mieszkania/lokalu');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+:: sekcja dla działu kadr
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_HEAD3');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Wypełnia dział kadr');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_ORGAN');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Osoba / organ');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_ORGAN')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_SP_ROZL');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Sposób rozliczenia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','WPZDS_SP_ROZL')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_SP_ROZL')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDS_DRUKUJ_UM');
+_wniosek.setField('TAT_TYP'   ,'B');
+_wniosek.setField('TAT_OPIS'  ,'Drukuj na umowie');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDS_DRUKUJ_UM')");
+_wniosek.add();
+
+_wniosek
+
+
+\wn_wpzdo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Importuje wniosek o pracę zdalną okazjonalną
+::   WE: [_a] - [INTEGER] - czy pokazywac komunikaty
+::       [_b] - [OBJECT]   - obiekt komunikatow
+::   WY: 0/1 - czy poprawnie zaimportowano wniosek
+::----------------------------------------------------------------------------------------------------------------------
+:: powrot w przypadku zerwanej transakcji
+{? do_state()=2 || return(0) ?};
+
+oImp.nazwa:=exec('nazwa_wpzdo','obiegi');
+_wniosek:=exec('wn_wpzdo_def','sch_imp');
+oImp.import(_wniosek)
+
+
+\wn_wpzdo_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Tworzy strukturę wniosku o pracę zdalną okazjonalną
+::   WY: obiekt z definicja wniosku
+::----------------------------------------------------------------------------------------------------------------------
+_wniosek:=exec('oWniosek','sch_imp');
+
+:: dodanie typu dokumentu w obiegu "wniosek o pracę zdalną okazjonalną"
+_buffer:=exec('buffer','etypy');
+_buffer.bl_table();
+_buffer.NAZWA:=oImp.nazwa;
+_buffer.TYPOBIEG:=oImp.typ_ob;
+:: nie zmieniamy aktywności jeżeli wniosek istnieje
+_aktywny:='T';
+{? exec('exist','etypy',oImp.typ_ob,oImp.nazwa) & ~exec('aktywny','etypy',oImp.typ_ob,oImp.nazwa)
+|| _aktywny:='N'
+?};
+_buffer.AKTYWNY:=_aktywny;
+_buffer.AUT_ID:='T';
+_buffer.ATR_G1R:=1;
+_buffer.ATR_ONE:=1;
+_buffer.CZY_DOPE:='N';
+_buffer.CZY_PRAC:=0;
+_buffer.DEKR:='N';
+_buffer.ED_ID:='N';
+_buffer.ED_PODZ:='N';
+_buffer.ED_TEMAT:='N';
+_buffer.FAKT_DEL:=1;
+_buffer.OBIEGKON:=1;
+_buffer.ZAP_REAL:='N';
+_buffer.IDINHEAD:=1;
+_buffer.W_PORTAL:='N';
+
+_wniosek.etypy:=exec('add','etypy',_buffer,oImp.KOMM,oImp.force);
+
+:: dodajemy kolejne definicje pól
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_HEAD_MAIN');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Wniosek o pracę zdalną okazjonalną');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Pracownik');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form_pzd','form_ob','PRAC')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','PRAC')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzdo','obiegi'),'WPZDO_PRAC')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_TYP_PRACY');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Typ pracy');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','WPZDO_TYP_PRACY')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzdo','obiegi'),'WPZDO_TYP_PRACY')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_PARTDAY');
+_wniosek.setField('TAT_TYP'   ,'B');
+_wniosek.setField('TAT_OPIS'  ,'Na część dnia');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_DATA_OD');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Obowiązuje od');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzdo','obiegi'),'WPZDO_DATA_OD')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_DATA_DO');
+_wniosek.setField('TAT_TYP'   ,'D');
+_wniosek.setField('TAT_OPIS'  ,'Obowiązuje do');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"date()");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzdo','obiegi'),'WPZDO_DATA_DO')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_DK');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_PREC'  ,0);
+_wniosek.setField('TAT_OPIS'  ,'Dni kalendarzowe');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_DR');
+_wniosek.setField('TAT_TYP'   ,'L');
+_wniosek.setField('TAT_PREC'  ,0);
+_wniosek.setField('TAT_OPIS'  ,'Dni robocze');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_GR');
+_wniosek.setField('TAT_TYP'   ,'C');
+_wniosek.setField('TAT_OPIS'  ,'Godziny robocze');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_OSWIADCZENIE');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Oświadczenie');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('def_form_pzd','form_ob','WPZDO_OSWIADCZENIE')");
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'T');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_OSWIADCZ_AKC');
+_wniosek.setField('TAT_TYP'   ,'B');
+_wniosek.setField('TAT_OPIS'  ,'Akceptuję powyższe oświadczenie');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,''+"exec('get_war_false','obiegi')");
+_wniosek.setField('WYMAG'     ,'T');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','TAK_NIE')");
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_KOMENTARZ');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Komentarz');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+:: sekcja z adresami
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_HEAD_ADR');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Adres pracy zdalnej');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_ADRES_SEL');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','WPZDO_ADRES_SEL')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+:: sekcja z adresami
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_HEAD_ADR_NEW');
+_wniosek.setField('TAT_TYP'   ,'O');
+_wniosek.setField('TAT_OPIS'  ,'');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,exec('header_string','sch_imp')+' Nowy adres pracy zdalnej');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_TYP_ADRESU');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Typ adresu');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik_pzd','form_ob','WPZDO_PPSF_TA')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_ADRES_PRAC');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Pobierz adres');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','ADRES_PRAC')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,''+"exec('ustaw_pzd','form_ob',exec('nazwa_wpzds','obiegi'),'WPZDO_ADRES_PRAC')");
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_KRAJ');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Kraj');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','KRAJE')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_WOJEWODZ');
+_wniosek.setField('TAT_TYP'   ,'X');
+_wniosek.setField('TAT_OPIS'  ,'Województwo');
+_wniosek.setField('DEF_KIND'  ,'F');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'T');
+_wniosek.setField('TSLO'      ,''+"exec('slownik','form_ob','WOJEWODZ')");
+_wniosek.setField('SLO_CHG'   , 1);
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_POWIAT');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Powiat');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_GMINA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Gmina');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_KOD');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Kod pocztowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_POCZTA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Urząd pocztowy');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_MIASTO');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Miejscowość');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_ULICA');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Ulica');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_DOM');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr domu/posesji');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek.blank();
+_wniosek.setField('TAT_NAME'  ,'WPZDO_LOKAL');
+_wniosek.setField('TAT_TYP'   ,'T');
+_wniosek.setField('TAT_OPIS'  ,'Nr mieszkania/lokalu');
+_wniosek.setField('DEF_KIND'  ,'W');
+_wniosek.setField('DEF_FORM'  ,'');
+_wniosek.setField('WYMAG'     ,'N');
+_wniosek.setField('SLOPOLE'   ,'K');
+_wniosek.setField('TSLO'      ,'');
+_wniosek.setField('EDIT'      ,'N');
+_wniosek.setField('CZY_ZERO'  ,'D');
+_wniosek.setField('OPIS'      ,'');
+_wniosek.setField('AE'        ,'');
+_wniosek.add();
+
+_wniosek
+
+:Sign Version 2.0 jowisz:1045 2023/07/21 13:25:28 238997f33cbac277f7d3c5096014f96d59e42d81c8d7914cd77a481622ab0dc0cda8f8d8363f16775408f41cf4ce95223cc8bd8adf57489cdb4fe9d5f3b3a9346284b53e503a05f76671aa1b7ceca9b52962c930f405090286b3d543142d669f0f2a3242386aaf72d455a78ad04cb58cee8acd8afae3374280b2f8ae5a67fdb5

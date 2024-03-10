@@ -1,0 +1,267 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_wyk_dkop.fml
+:: Utworzony: 17.05.2016
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Obsługa dokumentu magazynowego wydania - przyjęcia z koopereacji
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LMG
+::# parses=exec('parses','zl_koop')
+::# access=exec('sprUprMag','%todo')
+::# kind=WE, symbol=TYPYDOK, type=_TYPYDOK, name=Typ dokumentu magazynowego,    required=N, fml_val="exec('typydok','!tte_wyk_dkop')", fml_exp="exec('typydok_export','magdok_nag',_a)"
+::# kind=WE, symbol=ZL,      type=_ZL,      name=Zlecenie,                      required=N, keyref=T
+::# kind=WE, symbol=KH,      type=_KH,      name=Kontrahent,                    required=N
+::# kind=WY, symbol=ND,      type=_ND,      name=Dokument magazynowy,           required=N
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+_context:=params_get().context;
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_proces:=_mp.pathProc();
+_autoakc:=exec('autoAkc','#b__box',_mp,600080,'LMG_MAG_EAMG');
+_group:=_mp.isGroup();
+
+_clean_result:=params_exec('clean','!tte_wyk_dkop',_mp,_in);
+{? ~_clean_result.RESULT
+|| return()
+?};
+
+{? _proces
+:: Sprawdzenie parametrów pracy dla czynności startowej
+|| {? ST.AR=0 | ST.ODDZ_KOD='' | ST.MAG=null() || FUN.info('Ustaw parametry pracy.'@); return() ?};
+   {? ST.MAG().KOOP='N' || FUN.info('W parametrach pracy należy ustawić magazyn kooperacyjny.'@); return() ?}
+?};
+
+_zl_ref:={? var_pres('ZL',_in)=type_of(~~) || null() || _in.ZL ?};
+_kh_ref:=
+   {? var_pres('_context')>100 & var_pres('KH',_context)=type_of(null()) & _context.KH<>null()
+   || _context.KH
+   |? var_pres('KH',_in)=type_of(null())
+   || _in.KH
+   || null()
+   ?};
+:: Walidacja zlecenia
+{? _zl_ref
+|| {? exec('FindAndGet','#table',ZL,_zl_ref,,"STAN",'')='Z'
+   || FUN.info('Zlecenie zamknięte ― czynność zostaje zakończona.'@);
+      _mp.done();
+      return()
+   ?}
+?};
+
+{? _mp.pathTodo()
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('ND',_out)=type_of(null()) & _out.ND
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego ND.')
+   ?}
+?};
+
+:: Sprawdzenie uprawnień
+{? params_exec('permissions_chk','lmg')=0 || return() ?};
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy nagłówka dokumentu
+::   del: usuwa rekord kluczowy nagłówka dokumentu
+:: - add: zapisuje parametr wyjściowy ND = wskazanie na nagłówek dokumentu
+::   del: zapisuje parametr wyjściowy ND = null
+_mp.trigRef('ND',,1,,exec('kind_out','#b_port'),'ND');
+
+{? var_pres('ND',_out)=type_of(null()) & _out.ND & exec('FindAndGet','#table',ND,_out.ND,,"ND.STAT_REJ",'')<>'N'
+|| exec('gen_dk_wyk','zl_koop',_out.ND);
+   _mp.done()
+
+|? _akcja='Dołącz'
+   | _proces
+   | _akcja='START_TODO'
+   | _akcja='WYSTAW'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+|| _typydok_t:=
+      {? var_pres('TYPYDOK',_in)=type_of(~~)
+      || {? _akcja='Dołącz'
+         || BEER.TYPYDOK().T
+         || ''
+         ?}
+      |? var_pres('TYPYDOK',_in)=type_of(null())
+      || exec('FindAndGet','#table',TYPYDOK,_in.TYPYDOK,,"TYPYDOK.T")
+      || ''
+      ?};
+
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   params_set('out',_out,'mp',_mp,'akcja',_akcja,'context',_context);
+   exec('n_add','magdok_nag',0,_typydok_t,_zl_ref,,_kh_ref);
+
+:: Podczytanie parametrów wyjściowych
+   _outa:=_mp.load(exec('kind_out','#b_port'));
+   {? var_pres('ND',_outa)<>type_of(~~) & _outa.ND
+:: Dodano dokument
+   || {? var_pres('_context')<>type_of(~~) & var_pres('ND',_context)<>type_of(~~) || _context.ND:=_outa.ND ?};
+::    Ustawienie się na dodanym dokumencie w widoku obszaru
+      {? _mp.pathArea() || ND.seek(_outa.ND) ?}
+:: Wycofanie czynności bo nie dodano dokumentu
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Zakończ_wer' & _mp.pathArea()
+|| _arg:=
+      {? var_pres('_context')<>type_of(~~) & var_pres('AKC_DOK',_context)=type_of(obj_new('a'))
+      || _context.AKC_DOK
+      || exec('akc_dok_a','magdok_nag')
+      ?};
+   _arg.SERVICE:=_mp.isService();
+   {? var_pres('GROUP',_arg)
+   || _arg.GROUP:=_group
+   ?};
+   {? exec('nd_zakoncz','magdok_nag',0,_arg,_autoakc)
+   || exec('gen_dk_wyk','zl_koop',ND.ref());
+      _mp.done()
+   ?}
+
+|? _akcja='Popraw'
+   | _mp.pathTodo()
+||
+   _arg:=
+      {? var_pres('_context')<>type_of(~~) & var_pres('POPRAW',_context)=type_of(obj_new('a'))
+      || _context.POPRAW
+      || exec('nag_edit_a','magdok_nag')
+      ?};
+   {? var_pres('ND',_out)=type_of(null())
+:: Uruchomione w procesie
+   || ND.cntx_psh();
+      TYPYDOK.cntx_psh();
+      ND.prefix();
+      TYPYDOK.prefix();
+      {? ND.seek(_out.ND) & TYPYDOK.seek(ND.TYP)
+      || exec('nd_win_edit_set','magdok_nag');
+         params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('nag_edit','magdok_nag',_arg);
+
+         _mp.descTodo()
+      ?};
+      ND.cntx_pop();
+      TYPYDOK.cntx_pop()
+   |? _mp.pathTodo()
+:: Uruchomione zadanie z listy todo i brak _out.ND wtedy zadanie wycofujemy
+   || _mp.cancel()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      exec('nag_edit','magdok_nag',_arg)
+
+   ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('ND',_out)=type_of(null())
+:: Uruchomione w procesie
+   || _nd:=null();
+      ND.cntx_psh();
+      ND.prefix();
+      {? ND.seek(_out.ND)
+      ||
+         exec('n_usun','magdok_nag');
+
+         {? ~ND.seek(_out.ND)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _nd:=ND.ref()
+      ?};
+      ND.cntx_pop();
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+      {? _mp.pathArea() || {? _nd || ND.seek(_nd) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('n_usun','magdok_nag');
+
+      _mp.done()
+   ?}
+
+|| _mp.error('Nieobsługiwana ścieżka.')
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+_nd:={? var_pres('ND',_out)
+     || _out.ND
+     || null()
+     ?};
+
+_zl:={? var_pres('ZL',_in)
+     || _in.ZL
+     || null()
+     ?};
+
+{? _nd
+|| 'Zakończ rejestrację w magazynie %1 dokumentu przyjęcia z kooperacji: %2'@@
+   [exec('FindAndGet','#table',ND,_nd,,"ND.MAG().SYM",''),exec('record','#to_string',_nd)]
+|? _zl
+|| 'Zarejestruj dokument przyjęcia z kooperacji dla zlecenia: %1'@@
+   [exec('record','#to_string',_zl)]
+|| 'Zarejestruj dokument przyjęcia z kooperacji'@@
+?}
+
+
+\typydok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła na wartość parametru TYPYDOK
+::   WY: TYPYDOK.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_prod:=exec('tte_lic','tte');
+exec('typ_dok','lmg','"TYPYDOK".P=\'N\' and "TYPYDOK".KOOP=\'T\''
+  +' and "TYPYDOK".DK<>\'W\''
+  +' and not ("TYPYDOK".T in (\'INW-\',\'PRC-\',\'KR-\'))',,,0,0,,,,,-1)
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.22]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+params_exec('zl_clean','zl_common',_mp,_in,'ERROR')
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:41 713d565f2e0a2df216d0a313d72cad7e654e4cab9efedd80e911ca6070ee4dec05ca85c42d95aa26a1c69c880962bb455c5b7d6006eee8d03e98068eb02fb9e3b3e8d0e4da6475cdd416a52ed08464c604016c8225d9fd50077d57857692e31e990a91eebda0049cd7f9935ceecb5d2b996e8ad0d61258def161b3cb6be9ed8a

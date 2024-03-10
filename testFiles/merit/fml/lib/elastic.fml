@@ -1,0 +1,1156 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: elastic.fml
+:: Utworzony: 16.04.2019
+:: Autor: trocek
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Obsługa ElasticSearch
+:: uzywanie:   exec('search','elastic','treść_wyszukiwana');
+:: zwraca wyniki z elastica (json string)
+::======================================================================================================================
+\elastic
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [23.25]
+:: OPIS: Inicjacja
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('ES','#object')
+
+
+\check
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+var_pres('Elastic')>0
+
+
+\get_user_terms
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: zwraca uprawnienia aktualnego użytkownika do predefiniowanych obszarów danych
+::       !!! Tutaj należy dodać wszystkie obsługiwane obszary danych !!!
+::       !!! nazwy pól dot. obszarów danych / roboczych muszą być GLOBALNIE UNIKALNE !!!
+::   WY: obiekt _terms
+::----------------------------------------------------------------------------------------------------------------------
+: pobieram wartość parametru 188 od którego zależy czy honorujemy sprawdzanie uprawnień po UD_SKL czy nie
+REF.FIRMA:=exec('firma_ref','#firma',app_info('app_ident'));
+PARAMS.cntx_psh();
+PARAMS.index('UNIQ');
+:czy parametr został indywidualnie określony dla firmy w której kontekście zalogowany jest i wyszukuje użytkownik
+PARAMS.prefix(188,REF.FIRMA);
+{? PARAMS.first()
+|| _par:=PARAMS.TRESC
+||
+: jeśli nie to wyszukujemy parametr dla całego systemu i pobieramy jego wartość (domyślnie 'N')
+   PARAMS.prefix(188);
+   {? PARAMS.first()
+   || _par:=PARAMS.TRESC
+   ?}
+?};
+PARAMS.cntx_pop();
+
+:: badanie czy parametr 188 jest ustawiony na tak i czy sprawdzać uprawnienia do danych
+_upr:=sql('
+   select
+      *
+   from
+      B_PERM join B_PERM_U
+   where
+      (B_PERM.NAME=\'UD_SKL\' or B_PERM.NAME=\'F_ZATR\') and B_PERM_U.USER=\':_a\''
+,$OPERATOR.USER);
+_udskl:='UDSK_';
+_f_zatr:='FZAT_';
+_giodo:='GDO_';
+{? _par='T'
+|| _udskl:='UDSK';
+   _f_zatr:='FZAT';
+   _giodo:='GDO'
+?};
+
+:tutaj są nazwy obszarów danych które występują jako pola w indeksach
+_terms:=obj_new('ODDZ','MG','STS','STZ',_f_zatr,_udskl, 'ODD','OBSZ','CZYN','STAN',_giodo,'DOKU');
+:tutaj są funkcje zwracające wartość pola (dla podanego ref)
+_values:=obj_new('ODDZ','MG','STS','STZ',_f_zatr,_udskl,'ODD','OBSZ','CZYN','STAN',_giodo,'DOKU');
+
+_values.DOKU:="'test'";
+
+_values.ODD:="
+   ODD.cntx_psh();
+   ODD.seek(_a);
+   _res:=ODD.OD;
+   ODD.cntx_pop();
+   _res
+";
+
+_values.ODDZ:="
+   ODDZ.cntx_psh();
+   ODDZ.seek(_a);
+   _res:=ODDZ.KOD;
+   ODDZ.cntx_pop();
+   _res
+";
+_values.MG:="
+   MG.cntx_psh();
+   MG.seek(_a);
+   _res:=MG.SYM;
+   MG.cntx_pop();
+   _res
+";
+
+_values.STS:="
+   STS.cntx_psh();
+   STS.seek(_a);
+   _res:=STS.KOD;
+   STS.cntx_pop();
+   _res
+";
+
+_values.STZ:="
+   STS.cntx_psh();
+   STS.seek(_a);
+   _res:=STS.KOD;
+   STS.cntx_pop();
+   _res
+";
+
+_names:=obj_ntab_names(_terms);
+_idx:=obj_len(_names);
+:msg('get_user_terms');
+:debug;
+{? Elastic.USER='' || Elastic.USER:=$OPERATOR.USER ?};
+{! _cnt:=1 .. _idx
+|!
+   {? exec('acr_no','#table',USERS_UP, _names[_cnt])>-1
+   ||
+      _sql:='select distinct U.%1 WART from USERS_UP U where U.AKR=''%1'' and U.USERS=''%2'''[_names[_cnt], Elastic.USER];
+      _tab:=sql(_sql);
+      _pozycje:='';
+      {? _tab.first() & _tab.size()>0
+      ||
+         {! |?
+            _pozycje+=($('_a.%1(''%2'')'[_names[_cnt],_tab.WART]))(_values)+',';
+            _tab.next
+         !}
+      ?};
+      ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms);
+      obj_del(_tab)
+   ||
+:: obsługa pól które nie należą do USERS_UP
+      {? _names[_cnt]='FZAT'
+      || _pozycje:={? _par='T' & _upr.size() || exec('get_fzatr','pkd',OPERATOR.USER) || 'Brak,' ?};
+         ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms)
+      ?};
+      {? _names[_cnt]='ODD'
+      || _pozycje:=exec('get_odd','pkd',OPERATOR.USER);
+         ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms)
+      ?};
+      {? _names[_cnt]='UDSK'
+      || _pozycje:={? _par='T' & _upr.size() || exec('get_udskl','pkd',OPERATOR.USER) || 'Brak,' ?};
+         ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms)
+      ?};
+::obszary robocze
+      {? _names[_cnt]='OBSZ'
+      ||
+         _pozycje:=Elastic.OBSZARY;
+         ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms)
+      ?};
+: czynności (personel)
+      {? _names[_cnt]='CZYN'
+      || _pozycje:=exec('get_zwsdos_perm','pkd',OPERATOR.USER);
+         ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms)
+      ?};
+: stanowiska
+      {? _names[_cnt]='STAN'
+      ||
+         _sql:='select STS, STZ from USERS_UP where (STS<>'''' or STZ<>'''') and USERS=''%1'''[Elastic.USER];
+         _tab:=sql(_sql);
+         _pozycje:=',';
+         STS.cntx_psh();
+         STS.prefix();
+         {? _tab.first()
+         ||
+             {! |?
+                {? (_tab.STS<>'') ||  _ref:=_tab.STS || _ref:=_tab.STZ ?};
+                STS.seek(_ref);
+                _pozycje:=_pozycje + STS.KOD + ',';
+               _tab.next()
+             !}
+         ?};
+         ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms);
+         STS.cntx_pop()
+      ?};
+: giodo (osoby niezatrudnione lub zwolnione)
+      {? _names[_cnt]='GDO'
+      || USERS.cntx_psh();
+         USERS.prefix();
+         {? USERS.seek(OPERATOR.USER)
+         || _user:=USERS.KOD+' ('+USERS.DANE+'),'
+         || _user:=''
+         ?};
+         USERS.cntx_pop();
+         _pozycje:=_user+'EMPTY,';
+         ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms)
+      ?};
+: uprawnienia do załączników
+      {? _names[_cnt]='DOKU'
+      ||
+:         debug;
+         _pozycje:='brak,'+OPERATOR.USER().KOD+',';
+         B_USRROL.cntx_psh();
+         B_USRROL.index('USER');
+         B_USRROL.prefix(REF.FIRMA,USERS.ref());
+         {? B_USRROL.first()
+         ||
+            {! |?
+:: role mają przedrostek R_ aby odróżnić od użytkowników
+               _pozycje+='R_'+B_USRROL.B_ROLE().NAME+',';
+               B_USRROL.next()
+            !}
+         ?};
+         B_USRROL.cntx_pop();
+         ($('_a.%1:=''%2'''[_names[_cnt],_pozycje]))(_terms)
+      ?}
+   ?}
+!};
+:msg('get_user_terms');
+:debug;
+_terms
+
+
+\get_uprdokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+:: OPIS: przetwarza sysmemo z uprawnieniami do rekordu w dokum
+::   WE: _a - ref do dokum
+::   WY: [STRING] lista użytkowników i ról posiadających uprawnienia do rekordu
+::----------------------------------------------------------------------------------------------------------------------
+DOKUM.cntx_psh();
+DOKUM.seek(_a);
+_t_upraw:=exec('dokum_upraw_tab','dokum',DOKUM.memo_txt(,1,'UPRAW'));
+{? _t_upraw.size()=0
+||
+   _result:='brak'
+||
+   _result:='';
+   {! |?
+:: role mają przedrostek R_ aby odróżnić od użytkowników
+      _result+={? _t_upraw.RODZ='R' || 'R_' || '' ?} + _t_upraw.NAZ + ',';
+     _t_upraw.next()
+   !}
+?};
+DOKUM.cntx_pop();
+_result
+
+
+\enable
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [12.10]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_es.enable()
+
+
+:: testy
+
+
+\test_indexes
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_T:=_es.index_info();
+exec('select','#table',_es.INDEXES)
+
+
+\test_info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_result:=_es.info();
+_result
+
+
+\test_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_es.index_delete('/log')
+
+
+\test_query
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_query:='';
+::lista indeksow pobierana z definicji synchro
+_sql:='select distinct LOWER(SYNC_DEF.ACR_TAB) INDEKS || ''s'' from SYNC_DEF
+         join SYNC_PD using(SYNC_PD.REFERENCE,SYNC_DEF.SYNC_PD)
+         where SYNC_DEF.AKT=''T'' and SYNC_PD.SYM=''%1'''['OLAP'];
+_tab:=sql(_sql);
+{? _tab.first()
+||
+   {! |?
+      _query+='{"index":"%1"}\n'[_tab.INDEKS];
+      _fields:=get_fields(_tab.INDEKS);
+      _terms:=get_terms(_tab.INDEKS);
+      _query+='{"query":{"bool":{"must":[ {"simple_query_string": { "fields": %1 },'[_fields];
+      _query+='"query": "$query$","default_operator": "and"}},  %1  }},"size":%2}\n'[_terms,$10];
+      _tab.next()
+   !};
+   _query
+?}
+
+
+\test_terms
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: zwraca uprawnienia do wyszukiwania wg obszarów danych (magazynów, stanowisk ...)
+::   WE: _a - indeks po którym będzie wyszukiwanie
+::   WY: string json
+::----------------------------------------------------------------------------------------------------------------------
+_terms:=exec('get_user_terms','elastic');
+_len:=obj_len(_terms);
+_names:=obj_ntab_names(_terms);
+_result:='';
+_flag:=0;
+_sql:='select  D.ACR_FLD from SYNC_DEF D
+         join SYNC_PD S using(S.REFERENCE,D.SYNC_PD)
+         where D.AKT=''T'' and D.ACR_TAB=''%2'' and S.SYM=''%1'' order by D.ACR_FLD'['OLAP', _a];
+_tab:=sql(_sql);
+_tab.index(_tab.ndx_tmp('',,'ACR_FLD',,,'ACR_FLD',,));
+{! _idx:=1 .. _len |!
+   _termname:=_names[_idx];
+::sprawdzenie czy warunek potrzebny w podanym indeksie
+   {? _tab.find_key(_termname) & _tab.ACR_FLD=_termname
+   ||
+      _termvalues:=spli_str(_terms[_idx],',');
+      _valuesstr:='';
+      {! _x:=1 .. obj_len(_termvalues)-1 |! _valuesstr+={? _x>1 || ', ' || '' ?} + '\"%1\"'[_termvalues[_x]] !};
+      _term:='{ \"terms\": { \"%1.%2\": [%3]} }'[_a, _termname, _valuesstr];
+      _result+={? _flag || ', ' || '' ?} +  _term;
+      _flag:=1;
+      &_termvalues
+   ?}
+!};
+{? _flag || _result:='['+_result+']' ?};
+_result
+
+
+\get_terms
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE: _a - nazwa tabeli
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+
+_terms:=obj_new(2);
+_terms[1]:=obj_new('terms');
+_terms[2]:=obj_new('terms');
+_terms[1].terms:=obj_new('FAP_ODDZ');
+_terms[1].terms[1]:=obj_new(2);
+_terms[1].terms[1][1]:='c';
+_terms[1].terms[1][2]:='d';
+_terms[2].terms:=obj_new('FAP_FIRMA');
+_terms[2].terms[1]:=obj_new(1);
+_terms[2].terms[1][1]:='firma0001';
+gsub(json_obj(_terms),'_','.')
+
+
+\get_fields
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=obj_new('fields');
+_obj.fields:=obj_new(2);
+_obj.fields[1]:='M.KTM';
+_obj.fields[2]:='M.N';
+gsub(json_obj(_obj),'_','.')
+
+
+\test_eks_all
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+KH.prefix;
+KH.first;
+{! |?
+   KH.U:=$rand(100);
+   KH.put;
+   KH.next
+!};
+
+M.prefix;
+M.first;
+{! |?
+   M.OPIST:=$rand(100);
+   M.put;
+   M.next
+!};
+
+FAP.use('fakpoc17');
+FAKS.use('faktuc17');
+FAP.prefix();
+FAP.first;
+{! |?
+   FAP.U:=$rand(100);
+   FAP.put();
+   FAP.next
+!}
+
+
+\test
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+FAKS.cntx_psh(); FAKS.use('faktu'+(FAP.name+3)); _wyn:=''; {? FAP.FAKS().KH_ODB<>null ||  _wyn:=FAP.FAKS().KH_ODB().NAZ ?}; FAKS.cntx_pop; _wyn
+
+
+\test_lnktyt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+FAKS.cntx_psh(); FAKS.use('faktu'+(FAP.name+3)); _wyn:=FAP.FAKS().SYM; FAKS.cntx_pop; _wyn
+
+
+\test_getfield
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+M.fld_read(N)
+
+
+\test_syncfield
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+SYNC_PD.cntx_pop;
+SYNC_DEF.cntx_pop;
+SYNC_PD.index('SYM');
+SYNC_PD.prefix('OLAP');
+SYNC_DEF.index('PD');
+SYNC_DEF.prefix(SYNC_PD.ref);
+SYNC_PD.cntx_psh;
+SYNC_DEF.cntx_psh
+
+
+\test_indexlist_synchro
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_sql:='select distinct LOWER(SYNC_DEF.ACR_TAB) || ''s'' from SYNC_DEF
+         join SYNC_PD using(SYNC_PD.REFERENCE,SYNC_DEF.SYNC_PD)
+         where SYNC_DEF.AKT=''T'' and SYNC_PD.SYM=''%1'''[_a];
+_tab:=sql(_sql);
+exec('select','#table',_tab)
+
+
+\table_fields
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: zwraca liste pól dla podanej tabeli i definicji wymiany
+::   WE: _a - nazwa synchro
+::       _b - akronim tabeli
+::   WY: [ARRAY] pola tabeli z SYNC_DEF
+::----------------------------------------------------------------------------------------------------------------------
+_sql:='select   SYNC_DEF.ACR_FLD from SYNC_DEF
+         join SYNC_PD using(SYNC_PD.REFERENCE,SYNC_DEF.SYNC_PD)
+         where SYNC_DEF.AKT=''T'' and SYNC_PD.SYM=''%1'' and SYNC_DEF.ACR_TAB=''%2'''[_a,_b];
+_tab:=sql(_sql);
+_cnt:=_tab.size();
+:: _tab.fld_num(_tab);
+_fieldlist:=obj_new(_cnt);
+_tab.first();
+_idx:=1;
+{! |?
+    {? (_tab.ACR_FLD * '.')=0
+    || _fieldlist[_idx]:=_b + '.' + _tab.ACR_FLD
+    || _fieldlist[_idx]:=_tab.ACR_FLD
+    ?};
+    _idx+=1;
+   _tab.next()
+!};
+_fieldlist
+
+
+\search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: wyszukuje ciąg znaków w es
+::   WE: _a - wyszukiwany ciąg znaków
+::   WY: json string
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+{? _es.ESERROR
+||
+   choice('Brak połączenia z serwerem Elasticsearch'@,'Błąd'@,'ERROR');
+   return('')
+?};
+
+_ob:=json_parse(_a);
+
+
+{? _ob.npage *'|'>0
+||
+   _arr:=spli_str(_ob.npage,'|');
+   _query:=_arr[1];
+   _idx:=#_arr[2];
+   _from:=#_arr[3];
+   {? _idx=0
+   ||
+     _es.QUERY:='';
+     _es.search(gsub(_ob.query,'____','| '),_from)
+   ||
+      _es.get_resultpart(_idx+1)
+   ?}
+||
+   _es.QUERY:='';
+   _es.search(_a)
+?}
+
+
+\load
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: ładowanie danych do es z kasowaniem
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_es.SEL_TAB:='';
+{? _es.AKTYWNY='N' || return('ERROR: NIEAKTYWNY (509)') ?};
+{? _es.ESERROR
+|| FUN.error('Brak połączenia z serwerem Elasticsearch'@);
+   return('ERROR: brak połączenia z serwerem')
+?};
+_isloading:=0;
+{? ~_isloading
+||
+::inicjalizacja indexow (wyłączenie sprawdzania formatu daty)
+   _es.init_indexes();
+::kasowanie znacznikow w SYNCNIDP
+   _es.clear_syncidp();
+::usunięcie danych z elastica
+::   _es.clear();
+::usunięcie zapisów w SYNC (gdyby zaplątały się jakieś DEL)
+   {? _es.KASUJ || exec('clear_sync_elastic','elastic') ?};
+   _isloading:=1
+?};
+{? _ || _res:=_es.synchro_load(_a,1,_es.TRACE) || _res:=_es.synchro_load(,1,_es.TRACE) ?};
+{? _res='OK'
+||
+   _isloading:=0
+::TODO: zapisac znacznik
+?};
+_res
+
+
+\load_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: ładowanie danych do es z jednej tabeli
+::   WE: _a - akronim tabeli do załadowania
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+{? _es.ESERROR
+||
+   choice('Brak połączenia z serwerem Elasticsearch'@,'Błąd'@,'ERROR');
+   return('')
+?};
+_es.SEL_TAB:=_a;
+{? _ || _res:=_es.synchro_load(_a,1) || _res:=_es.synchro_load(,1) ?};
+{? _res='OK'
+||
+   _isloading:=0
+::TODO: zapisac znacznik
+?};
+_res
+
+
+\setdiskwatermark
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+:: OPIS: ustawienia parametrów elastica - funkcja aktualnie nie jest używana
+::    _a - low
+::    _b - high
+::    _c - flood
+::    _d - '%' lub 'gb'
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_query:='_cluster/settings';
+_flood:=_c;
+_high:=_b;
+_low:=_a;
+_params:='{\"persistent\" : { \"cluster.routing.allocation.disk.watermark.low\" : \"' + $_low
+                                     + _d + '\", \"cluster.routing.allocation.disk.watermark.high\" : \"' + $_high
+                                     + _d +'\", \"cluster.routing.allocation.disk.watermark.flood_stage\" : "'+$_flood + _d+'\" }}';
+_es.call('PUT',_query,_params)
+
+
+\setwatermarkgui
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+:: OPIS: GUI do ustawienia rezerwacji przestrzeni dyskowej dla ES
+::----------------------------------------------------------------------------------------------------------------------
+_tb:=tab_tmp(1,'LOW','INTEGER','Low',
+               'HIGH','INTEGER','High',
+               'FLOOD','INTEGER','Flood',
+               'M','STRING[10]','M');
+_es:=exec('elastic','elastic');
+_result:=_es.call('GET','_cluster/settings','');
+{? _result<>200
+||
+   FUN.error('Błąd komunikacji z ElasticSearch: %1'@[$_result]);
+   return('')
+?};
+_jman:=exec('json_man', '__jsonm', _es.RESULT[1]);
+_alloc:='persistent.cluster.routing.allocation.disk.watermark';
+{? _jman.isPath(_alloc+'.low')=1
+||
+   _value:=_jman.getValue(_alloc+'.low');
+   {? _value*'%'>0 || _kill:=1 || _kill:=2 ?};
+      _tb.LOW:=#(_value-_kill);
+   _tb.HIGH:=#(_jman.getValue(_alloc+'.high')-_kill);
+   _tb.FLOOD:=#(_jman.getValue(_alloc+'.flood_stage')-_kill);
+   _tb.M:=_value+_kill
+||
+   _tb.LOW:=80;
+   _tb.HIGH:=85;
+   _tb.FLOOD:=90;
+   _tb.M:='%'
+?};
+_tb.add();
+_ed:=_tb.mk_edit('Rezerwacja dysku',0,,,,'normal','wrapped');
+_tb.win_efld(_ed,_tb,'LOW',,,10,,0,'low',);
+_tb.win_efld(_ed,_tb,'HIGH',,,10,,0,'high',);
+_tb.win_efld(_ed,_tb,'FLOOD',,,10,,0,'flood',);
+_tb.win_efld(_ed,_tb,'M',,,10,,0,'% / gb',);
+_tb.win_ebtn(_ed,'text=%1,display=1,edit=1,panel=bottom,align=end'['&Anuluj'@],"'key:Esc'");
+_tb.win_ebtn(_ed,'text=%1,display=1,edit=1,panel=bottom,align=end'['&Zapisz'@],"'key:F2'");
+_validate:="
+  _tb:=cur_tab();
+  _val:=_tb.LOW>=1 & _tb.LOW<=99 & _tb.HIGH>=1 & _tb.HIGH<=99 & _tb.FLOOD>=1 & _tb.FLOOD<=99;
+  {? _tb.M='gb'
+  ||
+     _val:=_val & _tb.LOW>=_tb.HIGH & _tb.HIGH>=_tb.FLOOD
+  |? _tb.M='%'
+  ||
+:dla % podaje sie max.% zajetego dysku dla poziomu
+     _val:=_val & _tb.LOW<=_tb.HIGH & _tb.HIGH<=_tb.FLOOD
+  ||
+     _val:=0
+  ?};
+  {? _val
+  ||
+    ''
+  ||
+     FUN.error('Nieprawidłowe wartości.\nDla gb podaje się ilość wolnego miejsca na dysku,\ndla % należy podać maksymalną wartość zajętego dysku');
+    'LOW'
+  ?}
+";
+_tb.win_edit(_ed);
+_res:=_tb.edit(_validate);
+{? _res
+||
+   _wyn:=exec('setdiskwatermark','elastic',_tb.LOW,_tb.HIGH,_tb.FLOOD,_tb.M);
+   {? _wyn<>200 || FUN.error('Błąd komunikacji: %1'@[$_wyn]) ?}
+?}
+
+
+\reset
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [20.14]
+:: OPIS: usuwa wszystkie indeksy z ES
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+{? _es.ESERROR
+||
+   choice('Brak połączenia z serwerem Elasticsearch'@,'Błąd'@,'ERROR');
+   return('')
+?};
+{? FUN.ask('Usunąć wszystkie dane z ElasticSearch?')
+||
+   _es.reset()
+?}
+
+
+\test_list_fields
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS:
+::   WE: _a - akronim tabeli
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tmptab:=tab_tmp(1,'ACR','STRING[20]','ACR', 'NAZ','STRING[40]','NAZWA');
+_cnt:=($('%1.fld_num()'[_a]))();
+{! _idx:=1 .. _cnt |!
+   _tmptab.ACR:=($('%2.fld_acr(%1)'[$_idx,_a]))();
+   _tmptab.NAZ:=($('%2.fld_name(%1)'[$_idx,_a]))();
+   _tmptab.add
+!};
+_tmptab
+
+
+
+\labels
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: zwraca przyjazne nazwy pól w formacie json
+::   WE: _a - akronim tabeli dołączonej
+::       _b - tabela tymczasowa
+::       _c - nazwa tabeli dołączanej z ACR_FLD nadrzędnej
+::       _d - sciezka  do tabeli nadrzednej np. KH.OSOBA
+::----------------------------------------------------------------------------------------------------------------------
+{? var_press('_b')<0
+||
+   _b:=tab_tmp(1,'ACR_TAB','STRING[80]','ACR_TAB', 'ACR_FLD','STRING[80]','ACR_FLD', 'LABEL','STRING[40]','LABEL');
+   _root:=1;
+   _c:=''
+||
+   _root:=0
+?};
+{? var_press('_d')<0 || _d:='' ?};
+_sql:='select ACR_TAB, ACR_FLD, REF_TAB, LABEL from SYNC_DEF
+         join SYNC_PD
+         where SYNC_PD.SYM=''ELASTIC'' and SYNC_DEF.AKT=''T'' and substr(SYNC_DEF.ACR_FLD,1,4)<>''LNK.'' ';
+{? ~_root || _sql+=' and ACR_TAB=\'%1\''[_a] ?};
+_tmptab:=sql(_sql);
+{? ~_tmptab.first() || return() ?};
+{! |?
+   {? _tmptab.REF_TAB<>''
+   || exec('labels','elastic',_tmptab.REF_TAB, _b, _tmptab.ACR_FLD, {? _d<>'' || _d+'.'+_tmptab.ACR_TAB || _tmptab.ACR_TAB ?})
+   || _b.ACR_TAB:={? _d<>'' || _d+'.'+_c || {? _c='' || _tmptab.ACR_TAB || _c ?} ?};
+      _b.ACR_FLD:=_tmptab.ACR_FLD;
+      _fldidx:=exec('acr_no','#table', ($(_tmptab.ACR_TAB))(), _tmptab.ACR_FLD);
+      {? _tmptab.LABEL<>''
+         ||  _b.LABEL:=_tmptab.LABEL
+         ||
+             {? _fldidx>0
+             ||
+                _b.LABEL:=($('%1.fld_name(%2)'[_tmptab.ACR_TAB, $_fldidx]))()
+             ||
+                _b.LABEL:=_tmptab.ACR_FLD
+             ?}
+      ?};
+      _b.add()
+   ?};
+   _tmptab.next()
+!};
+{? _root
+||
+   _arr:=obj_new(_b.size());
+   _idx:=1;
+   _b.first();
+   {! |?
+      _map:=obj_new('field','label');
+      _map.field:=_b.ACR_TAB+'.'+_b.ACR_FLD;
+      _map.label:=_b.LABEL;
+      _arr[_idx]:=_map;
+      &_map;
+      _idx+=1;
+      _b.next()
+   !};
+   _arr
+?}
+
+
+\colors
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: zwraca kolory do wyświetlania kategorii wyników
+::   WY: tablica (table,color)
+::----------------------------------------------------------------------------------------------------------------------
+exec(,'_bit');
+{? var_press('BIT')<0 || BIT:=obj_new(@.CLASS.BIT) ?};
+_sql:='select distinct SYNC_DEF.ACR_TAB, SYNC_DEF.LBL_KOL
+         from SYNC_DEF
+         join SYNC_PD
+         where SYNC_PD.SYM=\'ELASTIC\' and SYNC_DEF.LBL_KOL<>\'\'';
+_tab:=sql(_sql);
+_idx:=1;
+{? _tab.first() & _tab.size()>0
+||
+   _arr:=obj_new(_tab.size());
+   {! |?
+        _obj:=obj_new('table','color');
+        _obj.color:=exec('dec2hex','#color',_tab.LBL_KOL);
+        _obj.table:=(-_tab.ACR_TAB)+'s';
+        _arr[_idx]:=_obj;
+        &_obj;
+        _idx+=1;
+      _tab.next()
+   !}
+?};
+{? var_press('_arr')>0 || _arr || ~~ ?}
+
+
+\get_firmarec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: zwraca rekord z firmy dla app_ident
+::   WE: _a - (opcjonalny) symbol firmy
+::   WY: tabela
+::----------------------------------------------------------------------------------------------------------------------
+{? var_press('__Firma')>0 || _sym:=__Firma; _fld:='SYMBOL' || _sym:=app_info('app_ident'); _fld:='APP_IDEN' ?};
+{? var_press('_a')>-1 & _a<>'' || _sym:=_a; _fld:='SYMBOL' ?};
+{? var_press('__firmatab')>0
+||
+    __firmatab
+||
+   _sql:='select * from FIRMA where %2=''%1'''[_sym,_fld];
+   __firmatab:=sql(_sql);
+   __firmatab
+?}
+
+
+\get_firmasym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: zwraca symbol firmy
+::   WY: string
+::----------------------------------------------------------------------------------------------------------------------
+_tb:=exec('get_firmarec','elastic');
+{? _tb.first() || return(_tb.SYMBOL) || '001' ?}
+
+
+\get_firmaopis
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [19.42]
+:: OPIS: zwraca opis firmy
+::   WY: string
+::----------------------------------------------------------------------------------------------------------------------
+_tb:=exec('get_firmarec','elastic');
+{? _tb.first() || return(_tb.OPIS) || '001' ?}
+
+
+\test_get_terms
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [12.10]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   _duble:='';
+   _terms:=exec('get_user_terms','elastic');
+   _len:=obj_len(_terms);
+   _names:=obj_ntab_names(_terms);
+   _result:='';
+   _flag:=0;
+   _tab:=.TBFLDS;
+   _tab.index(_tab.ndx_tmp('',,'ACR_FLD',,,'ACR_FLD',,));
+   {! _idx:=1 .. _len |!
+      _termname:='UPR.'+_names[_idx];
+::sprawdzenie czy warunek potrzebny w podanym indeksie
+      _find:=_tab.find_key(_termname);
+      {!
+      |? (_find & _tab.ACR_FLD=_termname)
+      |!
+         {? type_of(_terms[_idx])=2
+         ||
+               _reftab:=_tab.REF_TAB;
+               _acrtab:=_tab.ACR_TAB;
+               _termvalues:=spli_str(_terms[_idx],',');
+               _valuesstr:='';
+               {! _x:=1 .. obj_len(_termvalues)-1 |! _valuesstr+={? _x>1 || ', ' || '' ?} + '\"%1\"'[_termvalues[_x]] !};
+               _termfname:={? _reftab<>'' || _reftab+'.'+_termname || _termname ?};
+               {? _duble*_termfname=0
+               ||
+                  _duble+=_termfname+',';
+                  _term:='{ \"terms\": { \"%1.keyword\": [%2]} }'[_termfname, _valuesstr];
+                  _result+={? _flag || ', ' || '' ?} +  _term;
+                  _flag:=1
+               ?};
+               &_termvalues
+         ?};
+         _find:=_tab.next()
+      !}
+   !};
+   _symbol:=exec('get_firmasym','elastic');
+   _term:='{ \"terms\": { \"metadane.firma_symbol\": [\"%1\"]} }'[_symbol];
+   _result+={? _flag || ', ' || '' ?} + _term;
+   {? _flag || _result:='['+_result+']' ?};
+   _result
+
+
+\parse_httpheader
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [20.14]
+:: OPIS: przetwarza nagłówek wyniku requesta
+::   WE: _a - header
+::       _b - nazwa parametru do odczytu wartosci
+::   WY: wartosc parametru
+::----------------------------------------------------------------------------------------------------------------------
+_arr:=spli_str(_a,%13);
+_max:=obj_len(_arr);
+{! _idx:=1 .. _max |!
+  {? _arr[_idx]*_b>0
+  ||
+     _val:=spli_str(_arr[_idx],':');
+     return(_val[2])
+  ?}
+!};
+''
+
+
+\http_statusok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [20.14]
+:: OPIS: sprawdza status requesta
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_a*'200 OK'>0
+
+
+\clear_sync_all
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [20.14]
+:: OPIS: usuwa wszystkie dane z synchro
+::----------------------------------------------------------------------------------------------------------------------
+_maski:=SYNC.names();
+
+{? _maski.first()
+||
+   {! |?
+      {? SYNC.use(_maski.NAME) ||
+         SYNC.erase()
+      ?};
+      _maski.next()
+   !}
+?}
+
+
+\clear_sync_elastic
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [20.14]
+:: OPIS: usuwa zapisy 'ELASTIC' z synchro
+::----------------------------------------------------------------------------------------------------------------------
+SYNC.index('PDSYM');
+SYNC.prefix('ELASTIC');
+{? SYNC.first()
+||
+   {! |?
+      SYNC.del()
+   !}
+?}
+
+
+\admin
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+::  MOD: MicKoc 15.03.2023
+:: OPIS: Menu administratora
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_tab:=_es.index_info(1);
+_okno:=_tab.mk_sel('Administrator ES'@,,1);
+
+_tab.win_act(_okno,,'Szukaj');
+_tab.win_act(_okno,0,'Formuła','Pełny reset'@,,,"exec('reset','elastic'); Elastic.index_info(1)",,1,1,,);
+_tab.win_act(_okno,0,'Formuła','Kasowanie zawartości synchro'@,,,"exec('clear_selected','elastic'); ''",,1,1,,);
+_tab.win_act(_okno,0,'Formuła','Odblokowanie zapisu'@,,,"exec('enable','elastic');''",,1,1,,);
+_tab.win_act(_okno,0,'Formuła','Ustawienie rezerwacji dysku'@,,,"exec('setwatermarkgui','elastic');''",,1,1,,);
+_fb:="
+   {? cur_tab.size()>0 & FUN.ask('Usunąć indeks: %1 ?'[cur_tab().INDEX])
+   || Elastic.index_delete('%1'[cur_tab().INDEX]);
+      Elastic.index_info(1)
+   ?}; ''
+";
+_tab.win_act(_okno,0,'Formuła','usuń Zaznaczony indeks'@,,,_fb,,1,1,,);
+_tab.win_act(_okno,0,'Formuła','poDgląd danych w Elastic'@,,,"exec('show_data','elastic',cur_tab().INDEX); ''",,1,1,,);
+_tab.win_act(_okno,0,'Formuła','odśWież tabelę'@,,,"Elastic.index_info(1); ''; ''",,1,1,,);
+_tab.win_act(_okno,1,'Formuła','odśWież tabelę'@,,,"Elastic.index_info(1); ''; ''",,1,,,);
+_tab.win_act(_okno,0,'Formuła','zAsilanie wg lat'@,,,"{? Elastic.editRok() || Elastic.runRok(); Elastic.clearRok() ?}");
+_tab.win_act(_okno,1,'Formuła','zAsilanie wg lat'@,,,"{? Elastic.editRok() || Elastic.runRok(); Elastic.clearRok() ?}");
+
+_btn:=_tab.win_btn(_okno,'text=%1,panel=right'['Pełny reset'@],'menu:P');
+_tab.btn_opt(_btn,'tooltip=%1'['Usuwa wszystkie dane z ElasticSearch.'@]);
+_btn:=_tab.win_btn(_okno,'text=%1,panel=right'['Kasowanie zawartości synchro'@],'menu:K');
+_tab.btn_opt(_btn,'tooltip=%1'['Usuwa wszystkie dane z Synchro przegtowane dla ElasticSearch'@]);
+_btn:=_tab.win_btn(_okno,'text=%1,panel=right'['Odblokowanie zapisu'@],'menu:O');
+_tab.btn_opt(_btn,'tooltip=%1'['Gdy nastąpiło zapełnienie dysku powyżej poziomów rezerwacji.'@]);
+_btn:=_tab.win_btn(_okno,'text=%1,panel=right'['Ustawienie rezerwacji dysku'@],'menu:U');
+_tab.btn_opt(_btn,'tooltip=%1'['Ustawia parametry związane z zajętościa dysku'@]);
+_btn:=_tab.win_btn(_okno,'text=%1,panel=right'['Usuń zaznaczony indeks'@],'menu:Z');
+_tab.btn_opt(_btn,'tooltip=%1'['Usuwa zaznaczony indeks z ElasticSearch.'@]);
+_btn:=_tab.win_btn(_okno,'text=%1,panel=right'['Podgląd danych w Elastic'@],'menu:D');
+_tab.btn_opt(_btn,'tooltip=%1'['Wyświetla 10 pierwszych rekordów z wybranego indeksu.'@]);
+_btn:=_tab.win_btn(_okno,'text=%1,panel=right'['Odśwież tabelę'@],'menu:W');
+_tab.btn_opt(_btn,'tooltip=%1'['Pobiera ponownie informację o danych z ElasticSearch'@]);
+_btn:=_tab.win_btn(_okno,'text=%1,panel=right'['zAsilenie wg lat'@],'menu:A');
+_tab.btn_opt(_btn,'tooltip=%1'['Zasilenie danymi ElasticSearch w zakresie lat'@]);
+_tab.win_sel(_okno);
+_tab.select();
+''
+
+
+\show_data
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+:: OPIS: podgląd zawartości indeksu elastic
+::   WE: _a - indeks elastic
+::----------------------------------------------------------------------------------------------------------------------
+_query:=_a+'/_search';
+_params:='{
+  "query": {
+    "match_all": {}
+  }, "size":10
+}';
+_status:=Elastic.call('GET',_query,_params);
+{? _status=200 ||
+   _resfile:=fopen('!es_result.es','ur',1,,1);
+   _wynik:=exec('json_man', '__jsonm', _resfile);
+   _wynik.view('hits.hits[1]._source')
+?}
+
+
+\clear_selected
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+:: OPIS: czyści zawartość synchro dla wybranych tabel
+::----------------------------------------------------------------------------------------------------------------------
+_es:=exec('elastic','elastic');
+_form:="Elastic.clear_syncidptab(_a)";
+exec('select_tab','elastic',_form);
+''
+
+
+\select_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+:: OPIS: Lista tabel z SYNC_DEF
+::   WE: _a - formuła do wykonania dla wybranych rekordów
+::----------------------------------------------------------------------------------------------------------------------
+exec('elastic','elastic');
+_sql:='select distinct SYNC_DEF.ACR_TAB from SYNC_DEF join SYNC_PD where SYNC_DEF.ACR_TAB<>'''' and  SYNC_PD.SYM=''%1'''[Elastic.SYNCHRO];
+_tab:=sql(_sql);
+_tab.ndx_tmp(,,'ACR_TAB',,);
+_okno:=_tab.mk_sel('Wybierz...'@,,0,,,,,0,'U',,,,,);
+_tab.win_fld(_okno,_tab,'ACR_TAB',,,20,,,'Akronim tabeli',,,,,,,,);
+_tab.win_sel(_okno);
+_tab.win_act(_okno,,'Szukaj');
+_tab.win_act(_okno,,'Kolejność');
+{? var_press('__tbSel')>0 || &__tbSel ?};
+__tbSel:=tab_tmp(,'ACR_TAB','STRING[8]','ACR_TAB');
+_tab.win_act(_okno,0,'Formuła','Wybierz'@@,,,"__tbSel.ACR_TAB:=cur_tab().ACR_TAB; __tbSel.add; sel_exit();1",,1,1,,);
+_wyn:=_tab.select(0,,,,,);
+{? _wyn
+||
+   {? type_of(__tbSel)=118 & __tbSel.first()
+   ||
+      {! |?
+         ($(_a)(__tbSel.ACR_TAB));
+         __tbSel.next()
+      !}
+   ?}
+?};
+&__tbSel
+
+
+\log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [20.14]
+:: OPIS: logowanie do tabeli Elastic.LOGTAB
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+Elastic.LOGTAB.blank();
+Elastic.LOGTAB.CZAS:=$time();
+Elastic.LOGTAB.TYP:='DEBUG';
+Elastic.LOGTAB.LOG:=_a;
+Elastic.LOGTAB.add()
+
+
+\log_save
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [12.10]
+:: OPIS: zapis logu do pliku
+::   WE: _a - nazwa pliku
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? Elastic.LOGTAB.first()
+||
+    _log:=fopen(_a,'bw',1,,1);
+   {!
+   |?
+       fwrite(_log,Elastic.LOGTAB.LOG + '\n');
+      Elastic.LOGTAB.next()
+   !}
+?}
+
+
+\get_blobsize
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+:: OPIS: rozmiar wyświetlanego bloba w
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::exec('get','#parametr',515)
+_es:=exec('elastic','elastic');
+_es.BLOBSIZE
+
+
+\save_params
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: trocek [21.14]
+:: OPIS:
+::   WE:
+::   WY:
+:: ~OST: INFOPEN
+::----------------------------------------------------------------------------------------------------------------------
+file:=fopen('@es_params.json','w',1,1,1);
+json_obj(_a,file,1);
+file.fclose;
+&file
+
+
+
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:38 231637c391c29458f609f4b4994ad8e398efd6a4f5abf4b465811e7afd7b89e11a2c1d940d223eea13af8224dde9ada1a79defe83a800536833eb68f56fc4855851cb24051676f21d8df6bb330c810592b4236fdbd7ef6fe70308ebfc8b6484fbd5387904d71ca135bf62b1195a35504ab7aab3fd944dd16b43187578d4f38df

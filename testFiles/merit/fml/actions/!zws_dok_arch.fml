@@ -1,0 +1,892 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !zws_dok_arch.fml
+:: Utworzony: 03.03.2021
+:: Autor: AWI
+:: Systemy:
+::======================================================================================================================
+:: Zawartość:
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.14]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=SERVICE
+::# kind=WE,   symbol=DOKUM,     type=_DOKUM,   name=Archiwizowany (przywracany) dokument,                          required=N, keyref=T
+::# kind=WE,   symbol=DO,        type=DATE,     name=Data do której archiwizujemy kontakty (od której przywracamy), required=N
+::# kind=WE,   symbol=KH,        type=_KH,      name=Kontrahent którego dokumenty archiwizujemy (przywracamy),      required=N
+::# kind=WY,   symbol=RESULT,    type=BLOB,     name=Wynik archiwizacji (przywracania),                             required=N
+
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+_akcja:=_mp.akcja();
+
+{? var_pres('DOKUM',_in)<>type_of(null()) || _in.DOKUM:=null() ?};
+{? var_pres('DO',_in)<>type_of(date()) || _in.DO:=date(0,0,0) ?};
+{? var_pres('KH',_in)<>type_of(null()) || _in.KH:=null() ?};
+
+_auto:=_mp.isAutoRun() | _mp.isService();
+
+_Result:=tab_tmp(
+   ,'DOKUM','STRING[16]','$DOKUM.ref()'
+   ,'DBMASK','STRING[8]','DOKUM.name()'
+   ,'RESULT','STRING[10]','OK/NOK Wynik'
+   ,'DESC','STRING[100]','Opis');
+
+_przywr:=(_akcja='Przywróć');
+
+{? var_pres('_context')>100 & var_pres('SEL',_context)>100
+||
+   _Sel:=_context.SEL
+
+|? _in.DO<>date(0,0,0) | _in.KH<>null()
+||
+   params_set('in',_in,'bi_prel',_mp.bi_prel,'akcja',_akcja);
+   _Sel:=exec('sel','!zws_dok_arch')
+||
+   _Sel:=DOKUM.sel_aget();
+   DOKUM.sel_adel()
+?};
+{? ~_Sel.first() & _in.DOKUM
+|| _Sel.REF:=#_in.DOKUM;
+   {? _przywr
+   || _Sel.DBMASK:=DOKUM.name()
+   || _Sel.DBMASK:='dokum'
+   ?};
+   _Sel.add()
+?};
+
+_info:=_in.DOKUM<>null();
+{? ~_Sel.first()        || _mp.done(); return()
+|? _info & _Sel.next()  || _info:=2
+?};
+
+DOKUM.trig_off('*','*');
+DOKUM.cntx_psh();
+DOKUM.use('dokum');
+DOKUM.cntx_psh();
+DOKUM.prefix();
+_loop:=_Sel.first();
+{!
+|? _loop
+|!
+   {? _przywr
+   || DOKUM.use(_Sel.DBMASK)
+   ?};
+   {? DOKUM.seek(_Sel.REF,)
+   ||
+      _Result.DOKUM:=$DOKUM.ref();
+      _Result.DBMASK:=DOKUM.name();
+      _Result.RESULT:='NOK';
+      _Result.DESC:='';
+      {? _przywr
+      || _Result.RESULT:='OK'
+      || _res:=exec('can_dokum_arch','!zws_dok_arch',_mp.bi_prel,_info);
+         _Result.RESULT:=_res.RESULT;
+         _Result.DESC:=_res.DESC;
+         obj_del(_res)
+      ?};
+      {? _Result.RESULT='OK'
+      ||
+         {? _przywr
+         || _res:=exec('dokum_przywr','!zws_dok_arch')
+         || _res:=exec('dokum_arch','!zws_dok_arch')
+         ?};
+         _Result.RESULT:=_res.RESULT;
+         _Result.DESC:=_res.DESC;
+         obj_del(_res)
+      ?};
+      {? _Result.RESULT='OK' | _Result.DESC<>'' || _Result.add() ?}
+   ||
+      _Result.DOKUM:=$_Sel.REF;
+      _Result.DBMASK:=DOKUM.name();
+      _Result.RESULT:='NOK';
+      _Result.DESC:='Nie znaleziono dokumentu';
+      _Result.add()
+   ?};
+   _loop:=_Sel.next()
+!};
+DOKUM.cntx_pop();
+DOKUM.cntx_pop();
+DOKUM.trig_on('*','*');
+
+_result:=tab_tmp(,'BLOB','BLOBRAW',);
+_result.add();
+_file:=fopen(_result.BLOB,'w',,,1);
+{? _file.is_open()
+||
+   {? _Result.json_records(_file,'DOKUM',,'DBMASK',,'RESULT',,'DESC',)
+   ||
+      {? _result.bl_put('BLOB',_file,,,'result.json')
+      ||
+         _mp.bl_add('RESULT',exec('kind_out','#b_port'),_result.BLOB);
+         _mp.save(,_out)
+      ?}
+   ?}
+?};
+_mp.done()
+
+
+\can_dokum_arch
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.14]
+:: OPIS: Czy można archiwizować dokument DOKUM?
+::   WE: _a - BI_PREL.ref()
+::       _b - 0/1/2 komunikaty
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_bi_prel:=_a;
+_info:=_b;
+_result:=obj_new('RESULT','DESC');
+_result.RESULT:='NOK';
+_result.DESC:='';
+{? DOKUM.BL='T'
+||
+   {? exec('archive_ready','zbl_dok')
+   ||
+      _result.RESULT:='OK'
+   ||
+      _result.DESC:='Nie można archiwizować dokumentu Businesslink o statusie: %1.'[DOKUM.BL_STAT]
+   ?}
+
+|? DOKUM.DLA_KH=1 & (DOKUM.TYP='D' | DOKUM.TYP='K')
+||
+   _result.RESULT:='OK'
+||
+   _name:=ref_name(DOKUM.REFSQL);
+   {? _name=''
+   ||
+      ~~
+
+   |? 'faktu|nagdo|zknag|zdnag'*(5+_name)
+         |
+      'oferty'=_name
+         |
+      'doku'*(4+_name)
+   ||
+      _result.RESULT:='OK'
+   ?}
+?};
+{? _result.RESULT='OK'
+||
+   _keyref:=exec('FindAndGet','#table',DOKUM,DOKUM.ref(),,"uidref()",'');
+   {? _keyref=''
+   ||
+      _result.RESULT:='NOK'
+   ||
+      B_KEYREF.cntx_psh();
+      B_KEYREF.index('KEYREF');
+      B_KEYREF.prefix(_keyref,);
+      _loop:=B_KEYREF.first();
+      {!
+      |? _loop
+      |!
+         {? B_KEYREF.BI_PREL<>_bi_prel
+         ||
+            _result.RESULT:='NOK';
+            _result.DESC:='Dokument jest wykorzystany w rozpoczętych procesach.'
+         ?};
+         _loop:=_result.RESULT='OK' & B_KEYREF.next()
+      !};
+      B_KEYREF.cntx_pop()
+   ?}
+?};
+{? _result.RESULT='NOK' & _result.DESC<>''
+||
+   {? _info=1 || FUN.info(_result.DESC)
+   |? _info=2 || exec('add_kom','#message',DOKUM.KR_OP,6,_result.DESC)
+   ?}
+?};
+_result
+
+
+\dokum_arch
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.14]
+:: OPIS: Archiwizacja dokumentu DOKUM
+::   WE: _a - tabela wynikowa
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('RESULT','DESC');
+_result.RESULT:='NOK';
+_result.DESC:='';
+
+_maska:=('00'+$({? 'doku'<>(4+ref_name(DOKUM.REFSQL)) || DOKUM.DATAKONT || {? DOKUM.DATA=date(0,0,0) || DOKUM.DATAKONT || DOKUM.DATA ?} ?}~1))+2;
+_dokum_oid:=DOKUM.ONEID;
+_dokum_old:=DOKUM.ref();
+_dokum_new:=null();
+_dokum_ouid:=DOKUM.uidref();
+_dokum_nuid:='';
+_par_arch:=obj_new(
+   'DOKUM_OID','DOKUM_OLD','DOKUM_OUID',
+   'DOKUM_NEW','DOKUM_NUID',
+   'SRC_TAB','SRC_NAME','SRC_IND',
+   'DST_TAB','DST_NAME','DOKUMAKR','DOKUMAID');
+_continue:=1;
+
+{? ~DOKUM.r_lock(1,1,1)
+||
+   _result.DESC:='Dokument zablokowany przez innego użytkownika';
+   _continue:=0
+?};
+::
+do();
+:: DOKUM
+{? _continue>0
+||
+   DOKUM.cntx_psh();
+   DOKUM.memo_get(,'OPIS');
+   DOKUM.memo_get(,'UPRAW');
+   DOKUM.use((DOKUM.name()-2)+_maska);
+   DOKUM.cntx_psh();
+   DOKUM.prefix();
+   DOKUM.add();
+   DOKUM.memo_put(,'OPIS');
+   DOKUM.memo_put(,'UPRAW');
+   _dokum_new:=DOKUM.ref();
+   _dokum_nuid:=DOKUM.uidref();
+   DOKUM.cntx_pop();
+   DOKUM.cntx_pop();
+   {? _dokum_new=null()
+   ||
+      _result.DESC:='Nie powiodło się dodanie dokumentu w archiwum';
+      _continue:=0
+   ||
+      _par_arch.DOKUM_OID:=_dokum_oid;
+      _par_arch.DOKUM_OLD:=_dokum_old;
+      _par_arch.DOKUM_OUID:=_dokum_ouid;
+      _par_arch.DOKUM_NEW:=_dokum_new;
+      _par_arch.DOKUM_NUID:=_dokum_nuid
+   ?}
+?};
+:: DOKUMZ.BC
+{? exec('upgrade2325_blbc1','zbl') & _continue>0
+|| {? DOKUM.name()='dokum'
+   || DOKUMZ.cntx_psh();
+      DOKUMZ.index('BC');
+      DOKUMZ.prefix(_dokum_old);
+      {? DOKUMZ.first()
+      || {!
+         |? {? DOKUMZ.BC='T'
+            || _ref:=DOKUMZ.ref();
+               _next:=DOKUMZ.next();
+               DOKUMZ.cntx_psh();
+               DOKUMZ.prefix();
+               DOKUMZ.seek(_ref);
+               DOKUMZ.BC:='N';
+               DOKUMZ.STATBC:='';
+               DOKUMZ.FILEBC:=null();
+               _continue:=DOKUMZ.add(1);
+               DOKUMZ.seek(_ref);
+               {? _continue
+               || DOKUMZ.DOK:=null();
+                  DOKUMZ.ARCH:='T';
+                  _continue:=DOKUMZ.put(1)
+               ?};
+               DOKUMZ.cntx_pop();
+               _next & _continue
+            || DOKUMZ.next()
+            ?}
+         !}
+      ?};
+      DOKUMZ.cntx_pop()
+   ?}
+?};
+:: DOKTYP
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKTYP;
+   _par_arch.SRC_NAME:='doktyp';
+   _par_arch.SRC_IND:='DOKDC';
+   _par_arch.DST_TAB:=DOKTYP;
+   _par_arch.DST_NAME:=(DOKTYP.name()-2)+_maska;
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: DOKUMP
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKUMP;
+   _par_arch.SRC_NAME:='dokump';
+   _par_arch.SRC_IND:='DISP';
+   _par_arch.DST_TAB:=DOKUMPA;
+   _par_arch.DST_NAME:=(DOKUMPA.name()-2)+_maska;
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: DOKUMPT
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKUMPT;
+   _par_arch.SRC_NAME:='dokumpt';
+   _par_arch.SRC_IND:='DISP';
+   _par_arch.DST_TAB:=DOKUMPTA;
+   _par_arch.DST_NAME:=(DOKUMPTA.name()-2)+_maska;
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: DOKUMZ
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKUMZ;
+   _par_arch.SRC_NAME:='dokumz';
+   _par_arch.SRC_IND:='DISP';
+   _par_arch.DST_TAB:=DOKUMZA;
+   _par_arch.DST_NAME:=(DOKUMZA.name()-2)+_maska;
+   _par_arch.DOKUMAKR:='DOK';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: EDOK_ATR
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=EDOK_ATR;
+   _par_arch.SRC_NAME:='';
+   _par_arch.SRC_IND:='DOKUM';
+   _par_arch.DST_TAB:=null();
+   _par_arch.DST_NAME:='';
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('update_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB)
+?};
+:: KN_POZ
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=KN_POZ;
+   _par_arch.SRC_NAME:='';
+   _par_arch.SRC_IND:='DOKUM';
+   _par_arch.DST_TAB:=null();
+   _par_arch.DST_NAME:='';
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('update_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB)
+?};
+:: DOKUMLOG
+{? _continue>0
+||
+   _par_arch.DOKUM_OLD:=_dokum_ouid;
+   _par_arch.DOKUM_NEW:=_dokum_nuid;
+   _par_arch.SRC_TAB:=DOKUMLOG;
+   _par_arch.SRC_NAME:=DOKUMLOG.name();
+   _par_arch.SRC_IND:='DOKUM';
+   _par_arch.DST_TAB:=DOKUMLOG;
+   _par_arch.DST_NAME:=(DOKUMLOG.name()-2)+_maska;
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKUM;
+   _par_arch.SRC_NAME:='';
+   _par_arch.SRC_IND:='DG_UID';
+   _par_arch.DST_TAB:=null();
+   _par_arch.DST_NAME:='';
+   _par_arch.DOKUMAKR:='';
+   _par_arch.DOKUMAID:='DG_UID';
+   _continue:=exec('update_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB)
+?};
+:: procesowość - porty
+{? _continue>0 || _continue:=exec('uidref_update','#b__box',_dokum_ouid,_dokum_nuid) ?};
+:: DOKUM
+{? _continue>0
+||
+   {? DOKUM.count() | DOKUM.del(1,1)=0
+   ||
+      _result.RESULT:='Usunięcie dokumentu nie powiodło się';
+      _continue:=0
+   ?}
+?};
+::
+{? _continue<=0 || undo() ?};
+_continue:=end();
+{? _continue>0
+||
+   _result.RESULT:='OK';
+   _result.DESC:=''
+||
+   DOKUM.r_unlock()
+?};
+_result
+
+
+\move_rek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.14]
+:: OPIS: Przenosi rekordy powiązane z _dokum_old z tabeli _Src_tab do tabeli _Dst_tab i wiąże z _dokum_new
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par_arch:=_a;
+_dokum_old:=_par_arch.DOKUM_OLD;
+_dokum_new:=_par_arch.DOKUM_NEW;
+_Src_tab:=_par_arch.SRC_TAB;
+_src_name:=_par_arch.SRC_NAME;
+_src_ind:=_par_arch.SRC_IND;
+_Dst_tab:=_par_arch.DST_TAB;
+_dst_name:=_par_arch.DST_NAME;
+_dokumakr:=_par_arch.DOKUMAKR;
+
+_Src_tab.cntx_psh();
+_Src_tab.use(_src_name);
+_Src_tab.cntx_psh();
+_Src_tab.index(_src_ind);
+_Src_tab.prefix(_dokum_old);
+_loop:=_Src_tab.first();
+{!
+|? _loop
+|!
+   _memo:=tab_tmp(1,'ACR','STRING[8]','','LP','INTEGER','');
+   _len:=obj_len(_Src_tab);
+   _mem:=obj_new(_len);
+   _Src_tab.get();
+   {? _Src_tab=DOKUMLOG || _Src_tab.memo_get() ?};
+   _Dst_tab.cntx_psh();
+   _Dst_tab.use(_dst_name);
+   _Dst_tab.cntx_psh();
+   _Dst_tab.prefix();
+   {! _ii:=1 .. _len
+   |!
+      {? _ii<=obj_len(_Dst_tab) & var_pres(_Dst_tab.fld_acr(_ii),_Dst_tab)<>36
+      || _Dst_tab[_ii]:=_Src_tab[_ii]
+      |? _ii<=obj_len(_Dst_tab)
+      ||
+::       sys_memo
+         _mem[_ii]:=_Src_tab.memo_get('r',_Dst_tab.fld_acr(_ii),1);
+         _memo.blank();
+         _memo.ACR:=_Dst_tab.fld_acr(_ii);
+         _memo.LP:=_ii;
+         _memo.add(1)
+      ?}
+   !};
+   ($('%1.%2'[!_Dst_tab,_dokumakr]))():=_dokum_new;
+   _Dst_tab.add();
+   _memo.clear();
+   {? _memo.first()
+   || {!
+      |? {? _mem[_memo.LP].is_open
+         || _Dst_tab.memo_put(_mem[_memo.LP],_memo.ACR)
+         ?};
+         _memo.next()
+      !}
+   ?};
+   _Dst_tab.cntx_pop();
+   _Dst_tab.cntx_pop();
+   obj_del(_memo);
+   obj_del(_mem);
+   _loop:=_Src_tab.del()
+!};
+_Src_tab.cntx_pop();
+_Src_tab.cntx_pop();
+1
+
+
+\update_rek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.14]
+:: OPIS: Przenosi rekordy powiązane z _dokum_old z tabeli _Src_tab do tabeli _Dst_tab i wiąże z _dokum_new
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par_arch:=_a;
+_dokum_oid:=_par_arch.DOKUM_OID;
+_dokum_old:=_par_arch.DOKUM_OLD;
+_dokum_new:=_par_arch.DOKUM_NEW;
+_dokum_ouid:=_par_arch.DOKUM_OUID;
+_dokum_nuid:=_par_arch.DOKUM_NUID;
+_Src_tab:=_par_arch.SRC_TAB;
+_src_ind:=_par_arch.SRC_IND;
+_dokumakr:=_par_arch.DOKUMAKR;
+_dokumaid:=_par_arch.DOKUMAID;
+
+_Src_tab.cntx_psh();
+_Names:=_Src_tab.names();
+_loop:=_Names.first();
+{!
+|? _loop
+|!
+
+   _Src_tab.use(_Names.NAME);
+   _Src_tab.cntx_psh();
+   _Src_tab.index(_src_ind);
+   {? _dokumaid=''
+   || _Src_tab.prefix(_dokum_old,_dokum_oid,)
+   || _Src_tab.prefix(_dokum_ouid,)
+   ?};
+   _loop:=_Src_tab.first();
+   {!
+   |? _loop
+   |!
+      _Src_tab.cntx_psh();
+      _Src_tab.prefix();
+      {? _dokumaid=''
+      || ($('%1.%2'[!_Src_tab,_dokumakr]))():=_dokum_new
+      || ($('%1.%2'[!_Src_tab,_dokumaid]))():=_dokum_nuid
+      ?};
+      _Src_tab.put();
+      _Src_tab.cntx_pop();
+      _loop:=_Src_tab.first()
+   !};
+   _Src_tab.cntx_pop();
+   _loop:=_Names.next()
+!};
+_Src_tab.cntx_pop();
+1
+
+
+\sel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Selekcja dokumentów do archiwizacji
+::   WE:
+::   WY: tablica dokumentów do archiwizacji
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_do:=_in.DO;
+_kh:=_in.KH;
+_bi_prel:=params_get().bi_prel;
+_akcja:=params_get().akcja;
+
+_przywr:=(_akcja='Przywróć');
+
+DOKUM.cntx_psh();
+DOKUM.use('dokum');
+DOKUM.cntx_psh();
+DOKUM.sel_del();
+
+_Sel:=tab_tmp(1,'REF','INTEGER','numer rekordu w bieżacej masce',
+                'CRC','INTEGER','suma kontrolna',
+                'DBMASK','STRING[8]','bieżaca maska');
+
+_dnames:=DOKUM.names();
+
+{? _dnames.first()
+
+|| {!
+
+   |? _dname:=_dnames.NAME;
+      _czy:=0;
+      {? _dname='dokum'
+      || {? ~_przywr
+         || _czy:=1
+         ?}
+      |? _przywr
+      || {? _do=date(0,0,0)
+         || _czy:=1
+         || _rk:=_do~1;
+            {? #(_dname+2)>=_rk-2000
+            || _czy:=1
+            ?}
+         ?}
+      ?};
+
+      {? _czy
+
+      || DOKUM.use(_dname);
+         DOKUM.index('FDK');
+         DOKUM.prefix(REF.FIRMA);
+
+         {? _przywr
+         || _loop:=DOKUM.last()
+         || _loop:=DOKUM.first()
+         ?};
+         _loop:=_loop & (_do<>date(0,0,0) | _kh<>null());
+         {!
+         |? _loop
+         |!
+            _loop:=
+            {? {? 'doku'<>(4+ref_name(DOKUM.REFSQL)) || DOKUM.DATAKONT=date(0,0,0) || {? DOKUM.DATA=date(0,0,0) || DOKUM.DATAKONT || DOKUM.DATA ?}=date(0,0,0) ?}
+            ||
+               {? _przywr
+               || DOKUM.prev()
+               || DOKUM.next()
+               ?}
+
+            |? _do<>date(0,0,0) & {? 'doku'<>(4+ref_name(DOKUM.REFSQL)) || DOKUM.DATAKONT>_do || {? DOKUM.DATA=date(0,0,0) || DOKUM.DATAKONT || DOKUM.DATA ?}>_do ?} & ~_przywr
+            ||
+               0
+
+            |? _do<>date(0,0,0) & {? 'doku'<>(4+ref_name(DOKUM.REFSQL)) || DOKUM.DATAKONT<_do || {? DOKUM.DATA=date(0,0,0) || DOKUM.DATAKONT || DOKUM.DATA ?}<_do ?} & _przywr
+            ||
+               0
+
+            |? _kh & _kh<>exec('kh','!zws_dok_arch',DOKUM.KH,DOKUM.REFSQL)
+            ||
+               {? _przywr
+               || DOKUM.prev()
+               || DOKUM.next()
+               ?}
+            ||
+               {? _przywr | exec('can_dokum_arch','!zws_dok_arch',_bi_prel,0).RESULT='OK'
+               || _Sel.REF:=#DOKUM.ref();
+                  _Sel.DBMASK:=DOKUM.name();
+                  _Sel.add()
+               ?};
+               {? _przywr
+               || DOKUM.prev()
+               || DOKUM.next()
+               ?}
+            ?}
+         !}
+      ?};
+      _dnames.next()
+   !}
+?};
+DOKUM.cntx_pop();
+DOKUM.cntx_pop();
+_Sel
+
+
+\kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Wyznacza kontrahenta dla DOKUM
+::   WE: _a - KH.ref lub null
+::       _b - ref sql dokumentu
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_kh:=_a;
+_refsql:=_b;
+_name:=ref_name(_refsql);
+
+{? _kh
+||
+   _kh
+
+|? _name=''
+||
+   null()
+
+|? 'faktu|nagdo|zknag|zdnag'*(5+_name)
+         |
+   'oferty'=_name
+||
+   exec('FindAndGet','#table',ref_tab(_refsql),_refsql,,"KH",null())
+||
+   null()
+?}
+
+
+\dokum_przywr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [21.37]
+:: OPIS: Przywrócenie z archiwum dokumentu DOKUM
+::   WE: _a - tabela wynikowa
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('RESULT','DESC');
+_result.RESULT:='NOK';
+_result.DESC:='';
+
+_maska:=(DOKUM.name())+2;
+_dokum_oid:=DOKUM.ONEID;
+_dokum_old:=DOKUM.ref();
+_dokum_new:=null();
+_dokum_ouid:=DOKUM.uidref();
+_dokum_nuid:='';
+_par_arch:=obj_new(
+   'DOKUM_OID','DOKUM_OLD','DOKUM_OUID',
+   'DOKUM_NEW','DOKUM_NUID',
+   'SRC_TAB','SRC_NAME','SRC_IND',
+   'DST_TAB','DST_NAME','DOKUMAKR','DOKUMAID');
+_continue:=1;
+
+{? ~DOKUM.r_lock(1,1,1)
+||
+   _result.DESC:='Dokument zablokowany przez innego użytkownika';
+   _continue:=0
+?};
+::
+do();
+:: DOKUM
+{? _continue>0
+||
+   DOKUM.cntx_psh();
+   DOKUM.memo_get(,'OPIS');
+   DOKUM.memo_get(,'UPRAW');
+::   DOKUM.use((DOKUM.name()-2)+_maska);
+   DOKUM.use('dokum');
+   DOKUM.cntx_psh();
+   DOKUM.prefix();
+   DOKUM.add();
+   DOKUM.memo_put(,'OPIS');
+   DOKUM.memo_put(,'UPRAW');
+   _dokum_new:=DOKUM.ref();
+   _dokum_nuid:=DOKUM.uidref();
+   DOKUM.cntx_pop();
+   DOKUM.cntx_pop();
+   {? _dokum_new=null()
+   ||
+      _result.DESC:='Nie powiodło się przywrócenie dokumentu z archiwum';
+      _continue:=0
+   ||
+      _par_arch.DOKUM_OID:=_dokum_oid;
+      _par_arch.DOKUM_OLD:=_dokum_old;
+      _par_arch.DOKUM_OUID:=_dokum_ouid;
+      _par_arch.DOKUM_NEW:=_dokum_new;
+      _par_arch.DOKUM_NUID:=_dokum_nuid
+   ?}
+?};
+:: DOKTYP
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKTYP;
+   _par_arch.SRC_NAME:=(DOKTYP.name()-2)+_maska;
+   _par_arch.SRC_IND:='DOKDC';
+   _par_arch.DST_TAB:=DOKTYP;
+   _par_arch.DST_NAME:='doktyp';
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: DOKUMP
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKUMPA;
+   _par_arch.SRC_NAME:=(DOKUMPA.name()-2)+_maska;
+   _par_arch.SRC_IND:='DISP';
+   _par_arch.DST_TAB:=DOKUMP;
+   _par_arch.DST_NAME:='dokump';
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: DOKUMPT
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKUMPTA;
+   _par_arch.SRC_NAME:=(DOKUMPTA.name()-2)+_maska;
+   _par_arch.SRC_IND:='DISP';
+   _par_arch.DST_TAB:=DOKUMPT;
+   _par_arch.DST_NAME:='dokumpt';
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: DOKUMZ
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKUMZA;
+   _par_arch.SRC_NAME:=(DOKUMZA.name()-2)+_maska;
+   _par_arch.SRC_IND:='DISP';
+   _par_arch.DST_TAB:=DOKUMZ;
+   _par_arch.DST_NAME:='dokumz';
+   _par_arch.DOKUMAKR:='DOK';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: EDOK_ATR
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=EDOK_ATR;
+   _par_arch.SRC_NAME:='';
+   _par_arch.SRC_IND:='DOKUM';
+   _par_arch.DST_TAB:=null();
+   _par_arch.DST_NAME:='';
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('update_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB)
+?};
+:: KN_POZ
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=KN_POZ;
+   _par_arch.SRC_NAME:='';
+   _par_arch.SRC_IND:='DOKUM';
+   _par_arch.DST_TAB:=null();
+   _par_arch.DST_NAME:='';
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('update_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB)
+?};
+:: DOKUMLOG
+{? _continue>0
+||
+   _par_arch.DOKUM_OLD:=_dokum_ouid;
+   _par_arch.DOKUM_NEW:=_dokum_nuid;
+   _par_arch.SRC_TAB:=DOKUMLOG;
+   _par_arch.SRC_NAME:=DOKUMLOG.name();
+   _par_arch.SRC_IND:='DOKUM';
+   _par_arch.DST_TAB:=DOKUMLOG;
+   _par_arch.DST_NAME:='dolog';
+   _par_arch.DOKUMAKR:='DOKUM';
+   _par_arch.DOKUMAID:='';
+   _continue:=exec('move_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB);
+   obj_del(_par_arch.DST_TAB)
+?};
+:: DOKUM
+{? _continue>0
+||
+   _par_arch.SRC_TAB:=DOKUM;
+   _par_arch.SRC_NAME:='';
+   _par_arch.SRC_IND:='DG_UID';
+   _par_arch.DST_TAB:=null();
+   _par_arch.DST_NAME:='';
+   _par_arch.DOKUMAKR:='';
+   _par_arch.DOKUMAID:='DG_UID';
+   _continue:=exec('update_rek','!zws_dok_arch',_par_arch);
+   obj_del(_par_arch.SRC_TAB)
+?};
+:: procesowość - porty
+{? _continue>0 || _continue:=exec('uidref_update','#b__box',_dokum_ouid,_dokum_nuid) ?};
+:: DOKUM
+{? _continue>0
+||
+   {? DOKUM.count() | DOKUM.del(1,1)=0
+   ||
+      _result.RESULT:='Usunięcie dokumentu nie powiodło się';
+      _continue:=0
+   ?}
+?};
+::
+{? _continue<=0 || undo() ?};
+_continue:=end();
+{? _continue>0
+||
+   _result.RESULT:='OK';
+   _result.DESC:=''
+||
+   DOKUM.r_unlock()
+?};
+_result
+
+:Sign Version 2.0 jowisz:1045 2023/09/27 10:38:05 21c7cbd19d5eb7a65f2fa52d467dfca465159804f8bd711bfe14ae9216275598333c1133b9488caa76705f04c131eb70df32d220fcef2420cb1add43ed4bd642f630db197cb04727c2afab829b8691d8faef54fc4617bf4cfa7d6a8d3926de4cd161f0639f6f0dd0a3875c1e9a0111e333d1c8e9bc18bcfe97f843abe522f2fc

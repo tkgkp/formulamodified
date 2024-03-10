@@ -1,0 +1,825 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lsp_fak_dzlf.fml
+:: Utworzony: 24.04.2017
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Rejestracja zleceń fakturowania
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LSP
+::# kind=WY,   symbol=FAKZ,   type=_FAKZ, name=Zlecenie fakturowania,   required=N
+
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+_dialog:={? _mp.isService() || 0 || 1 ?};
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_area_lsp_fak:=_mp.pathArea('LSP_FAK') | _mp.pathArea('LSS_POS')
+   | {? cur_kwin()='s_sel' | cur_kwin()='s_dict' || cur_tab(1,1)=FAKS ?};
+_area:=_area_lsp_fak;
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | _mp.pathArea() & (~_area & _dialog);
+
+{? _todo
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('FAKZ',_out)=type_of(null()) & _out.FAKZ
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego FAKZ.'@)
+   ?}
+?};
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy nagłówka dokumentu
+::   del: usuwa rekord kluczowy nagłówka dokumentu
+:: - add: zapisuje parametr wyjściowy FAKZ = wskazanie na nagłówek korekty
+::   del: zapisuje parametr wyjściowy FAKZ = null
+{? _akcja='Dołącz'
+   | _proc
+   | _akcja='START_TODO'
+|| _mp.trigRef('FAKZ',,1,,exec('kind_out','#b_port'),'FAKZ')
+?};
+
+{? _akcja='Dołącz'
+   | _proc
+   | _akcja='START_TODO'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+||
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   params_set('out',_out,'mp',_mp,'akcja',_akcja);
+   exec('fakz_dol','!lsp_fak_dzlf',_dialog);
+
+:: Podczytanie parametrów wyjściowych
+   _outa:=_mp.load(exec('kind_out','#b_port'));
+   {? var_pres('FAKZ',_outa)<>type_of(~~) & _outa.FAKZ
+:: Dodano zlecenie fakturowania
+   || _mp.done();
+::    Ustawienie się na dodanym zleceniu fakturowania w widoku obszaru
+      params_exec('fakz_seek','!lsp_fak_dzlf',_area_lsp_fak,_outa.FAKZ)
+:: Wycofanie czynności bo nie dodano dokumentu
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Popraw'
+   | _todo
+|| {? var_pres('FAKZ',_out)=type_of(null())
+:: Uruchomione w procesie
+   || FAKZ.cntx_psh();
+      FAKZ.prefix();
+      {? ~_dialog | FAKZ.seek(_out.FAKZ)
+      ||
+         params_set('out',_out,'mp',_mp,'akcja',_akcja,'context',_context);
+         exec('fakz_pop','!lsp_fak_dzlf',_dialog);
+
+         _mp.descTodo()
+      ?};
+      FAKZ.cntx_pop()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      params_set('out',_out,'mp',_mp,'akcja',_akcja,'context',_context);
+      exec('fakz_pop','!lsp_fak_dzlf',_dialog)
+
+   ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('FAKZ',_out)=type_of(null())
+:: Uruchomione w procesie
+   || _fakz:=null();
+      FAKZ.cntx_psh();
+      {? ~_area_lsp_fak || FAKZ.prefix() ?};
+      {? FAKZ.seek(_out.FAKZ)
+      ||
+         exec('fakz_usu','!lsp_fak_dzlf',1,_dialog);
+
+         {? ~_dialog | ~FAKZ.seek(_out.FAKZ)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _fakz:=FAKZ.ref()
+      ?};
+      FAKZ.cntx_pop();
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+      {? _area_lsp_fak || {? _fakz || FAKZ.seek(_fakz) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('fakz_usu','!lsp_fak_dzlf',1,_dialog);
+
+      _mp.done()
+   ?}
+
+|| _mp.error('Nieobsługiwana ścieżka.'@)
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? var_pres('FAKZ',_out)=type_of(null()) & _out.FAKZ
+|| 'Zakończ rejestrację zlecenia fakturowania: %1'@@[exec('record','#to_string',_out.FAKZ)]
+|| 'Zarejestruj zlecenie fakturowania'@@
+?}
+
+
+\fakz_win_edit_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Ustawia okno redakcji tabeli FAKZ, wymagane pola, okna słowników
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_win_red:=exec('fakz_win_edit','faktury_wspolne');
+exec('ok_esc','#window',FAKZ,_win_red,1,,,,,exec('help_red_ok','#window','Z'),exec('text_red_ok','#window'),
+exec('help_red_esc','#window','A'));
+FAKZ.win_edit(_win_red);
+exec('fakz_set_efld_opt','!lsp_fak_dzlf');
+:: Ustawienia słowników
+KH.win_dict('WER_ROZ');
+KH.actions('WER_ROZ','R');
+KH_ODB.win_dict('WER');
+OSOBA.win_dict('WER1');
+OSOBA.actions('WER1','W');
+M.win_dict('SEL'); ZAKR.MATU:='A'; POMOC.RODZ:='';
+M.actions('SEL','W')
+
+
+\fakz_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Sprawdza wypełnienie rekordu tabeli FAKZ
+::   WE:
+::   WY: ''-prawidłowo wypełniony lub akronim nieprawidłowo wypełnionego pola
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=
+   {? FAKZ.KOREKTA='T'
+   || __CHK.record(FAKZ,,'FIRMA','ODDZ','KH','DW','SYM_KOR')
+   |? FAKZ.ZAL='N'
+   || __CHK.record(FAKZ,,'FIRMA','ODDZ','KH','DW','IL')
+   || __CHK.record(FAKZ,,'FIRMA','ODDZ','KH','DW','WB')
+   ?};
+_wyn
+
+
+\fakz_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenia fakturowania - Dołącz
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LSP_FAK_DZLF';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+
+exec('mp_run','#b__box',_params)
+
+
+\fakz_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenia fakturowania - Popraw
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LSP_FAK_DZLF';
+_params.AKCJA:='Popraw';
+_params.UIDREF:=FAKZ.uidref();
+
+exec('mp_run','#b__box',_params)
+
+
+\fakz_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenia fakturowania - Usuń
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LSP_FAK_DZLF';
+_params.AKCJA:='Usuń';
+_params.UIDREF:=FAKZ.uidref();
+
+exec('mp_run','#b__box',_params)
+
+
+\fakz_wycofaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenie fakturowania - Wycofaj - wycofanie akceptacji zlecenia fakturowania
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? _r_lock:=exec('r_lock_one','#table',FAKZ,FAKZ.ref())
+||
+   {? FAKZ.STAT_REJ<>'T'
+   || FUN.info('Nie zaakceptowano zlecenia fakturowania.'@)
+   |? exec('FindInSet','#table','FAKZ2FAP','FAKZ',FAKZ.uidref())
+   || FUN.info('Zafakturowano zlecenie fakturowania.'@
+         +'\nNależy usunąć dokument przed wycofaniem'
+            '\nakceptacji zlecenia fakturowania.'@)
+   |? FUN.ask('Wycofać akceptację zlecenia fakturowania?'@)
+   || FAKZ.STAT_REJ:='Z';
+      FAKZ.put()
+   ?};
+   exec('r_unlock_one','#table',FAKZ,FAKZ.ref(),_r_lock)
+
+||
+   exec('who_rlock_fakz','faktury_wspolne')
+?}
+
+
+\fakz_dol
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Dodanie zlecenia fakturowania
+::   WE: [_a] - INTEGER - 0/[1] - czy pokazywać dialogi wymagające interakcji użytkownika
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+FAKZ.cntx_psh();
+_dialog:={? var_pres('_a')=type_of(1) || _a || 1 ?};
+{? _dialog || FAKZ.blank() || _wsenv:=exec('wsenv','#mwapi') ?};
+{? ~FAKZ.AR || FAKZ.AR:=date()~1 ?};
+{? ~FAKZ.AM || FAKZ.AM:=date()~2 ?};
+
+:: Okno redakcji
+{? _dialog
+|| exec('fakz_win_edit_set','!lsp_fak_dzlf');
+   FAKZ.memo_set('','UWAGI');
+   FAKZ.memo_set('','FAKSO');
+   FAKZ.prefix();
+   {? FAKZ.add()
+   ||
+      {? _r_lock:=exec('r_lock_one','#table',FAKZ,FAKZ.ref())
+      ||
+         _fakz:=FAKZ.ref();
+         _data:=10+FAKZ.IDADD;
+         _czas:=8+(11-FAKZ.IDADD);
+         FAKZ.D_ADD:=date(#(4+_data),#(2+(5-_data)),#(_data+2));
+         FAKZ.T_ADD:=time(#(2+_czas),#(2+(3-_czas)),#(_czas+2));
+         FAKZ.STAT_REJ:='Z';
+         BEER.KH:=null();
+         {? FAKZ.edit("exec('fakz_chk','!lsp_fak_dzlf')")
+         || {? FAKZ.put()
+            || FAKZ.memo_put(,'UWAGI');
+               FAKZ.memo_put(,'FAKSO')
+            ?}
+         || FAKZ.del()
+         ?};
+         exec('r_unlock_one','#table',FAKZ,_fakz,_r_lock)
+
+      |? _dialog
+      ||
+         exec('who_rlock_fakz','faktury_wspolne')
+      ?}
+
+   ?}
+|| {? FAKZ.memo_txt(,,'UWAGI')='' || FAKZ.memo_set('','UWAGI') ?};
+   {? FAKZ.memo_txt(,,'FAKSO')='' || FAKZ.memo_set('','FAKSO') ?};
+   FAKZ.prefix();
+   {? FAKZ.add()
+   || _data:=10+FAKZ.IDADD;
+      _czas:=8+(11-FAKZ.IDADD);
+      FAKZ.D_ADD:=date(#(4+_data),#(2+(5-_data)),#(_data+2));
+      FAKZ.T_ADD:=time(#(2+_czas),#(2+(3-_czas)),#(_czas+2));
+      FAKZ.STAT_REJ:='Z';
+      _res:=exec('fakz_chk','!lsp_fak_dzlf');
+      {? _res=''
+      || _wsenv.IDADD:=FAKZ.IDADD;
+         {? FAKZ.put()
+         || FAKZ.memo_put(,'UWAGI');
+            FAKZ.memo_put(,'FAKSO')
+         ?}
+      || FAKZ.del();
+         _wsenv.add_error('Błąd wypełnienia pola: %1.'@[_res])
+      ?}
+   ?}
+?};
+FAKZ.cntx_pop()
+
+
+\fakz_pop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Poprawa zlecenia fakturowania
+::   WE: [_a] - INTEGER - 0/[1] - czy pokazywać dialogi wymagające interakcji użytkownika
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_dialog:={? var_pres('_a')=type_of(1) || _a || 1 ?};
+
+{? _r_lock:=exec('r_lock_one','#table',FAKZ,FAKZ.ref())
+||
+   {? _dialog
+   || exec('fakz_win_edit_set','!lsp_fak_dzlf');
+      FAKZ.memo_get(,'UWAGI');
+      FAKZ.memo_get(,'FAKSO');
+      {? FAKZ.edit("exec('fakz_chk','!lsp_fak_dzlf')")
+      ||
+         FAKZ.cntx_psh();
+         FAKZ.prefix();
+         {? FAKZ.put()
+         || FAKZ.memo_put(,'UWAGI');
+            FAKZ.memo_put(,'FAKSO')
+         ?};
+         FAKZ.cntx_pop()
+      ?}
+   || _wsenv:=exec('wsenv','#mwapi');
+      params_get().context.buffer.set();
+      {? (_res:=exec('fakz_chk','!lsp_fak_dzlf'))=''
+      || {? FAKZ.put()
+         || FAKZ.memo_put(,'UWAGI');
+            FAKZ.memo_put(,'FAKSO')
+         ?}
+      || _wsenv.add_error(_res)
+      ?}
+   ?};
+   exec('r_unlock_one','#table',FAKZ,FAKZ.ref(),_r_lock)
+
+|? _dialog
+||
+   exec('who_rlock_fakz','faktury_wspolne')
+?}
+
+
+\fakz_usu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Usunięcie zlecenia fakturowania
+::   WE: _a -  INTEGER - 0/[1] - komunikaty wymagające interakcji (1 - tak, 0 - nie)
+::      [_b] - INTEGER - 0/[1] - czy pokazywać informacje w FUN (1) czy w envie web serwisu (0).
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_dialog:={? var_pres('_b')=type_of(1) || _b || 1 ?};
+{? ~_dialog || _wsenv:=exec('wsenv','#mwapi') ?};
+
+_fakz:=FAKZ.ref();
+{? _r_lock:=exec('r_lock_one','#table',FAKZ,_fakz)
+||
+   {? _a=0 | ~_dialog | FUN.ask('Usunąć zlecenie fakturowania?'@)
+   ||
+      {? FAKZ.del(1,1)
+      || {? ~_dialog || _wsenv.add_info('Usunięto zlecenie fakturowania'@) ?}
+      || {? ~_dialog || _wsenv.add_err('Nie powiodło się usunięcie zlecenie fakturowania'@) ?}
+      ?}
+   ?};
+   exec('r_unlock_one','#table',FAKZ,_fakz,_r_lock)
+
+|? _a & _dialog
+||
+   exec('who_rlock_fakz','faktury_wspolne')
+?}
+
+
+\fakz_seek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Ustawia się na dokumencie _b jeśli aktywny obszar _a
+::   WE: _a - obszar roboczy [0/1]
+::       _b - FAKZ.ref
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_area:=_a;
+_ref:=_b;
+_mp:=params_get().mp;
+
+_f_active:=FAKZ.f_active();
+{? _area & (_f_active=0 | ~FAKZ.f_seek(_ref)) & FAKZ.seek(_ref) || {? _f_active || FAKZ.f_add() ?} ?}
+
+
+\fakz_kh_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Przed redakcją FAKZ.KH
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+FAKZ.PROJEKTY=null()
+
+
+\fakz_kh_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Po redakcji FAKZ.KH
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+BEER.KH:=fld();
+{? BEER.KH<>FAKZ.KH_ODB().KH
+|| FAKZ.KH_ODB:=null()
+?};
+1
+
+
+\fakz_kh_odb_pa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Wzorzec FAKZ.KH_ODB
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+BEER.KH:=FAKZ.KH;
+exec('kh_odb_f_set','kontrahent');
+''
+
+
+\fakz_kh_odb_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Przed redakcją FAKZ.KH_ODB
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+BEER.KH<>null()
+
+
+\fakz_rek_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Rekord przed tabeli FAKZ
+::   WE: _a - 1-ostatni rekord w ramach odświeżenia, 0-wpp
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? _a
+||
+   _sel_size:=FAKZ.sel_size();
+::   _actions_grayed:=
+::      {? FAKZ.STAT_REJ='T' || 'UPA' || 'N(W)' ?};
+   {? FAKZ.STAT_REJ='T'
+   || _actions_grayed:='UPA';
+      {? FAKZ.CZY_FAK='T'
+      || _actions_grayed+='N(O)'
+      ?}
+   || _actions_grayed:='N(WUO)'
+   ?};
+   FAKZ.actions_grayed(cur_win(1,1),_actions_grayed);
+   exec('fakz_win_edit_set','!lsp_fak_dzlf')
+?};
+params_set(params_get());
+params_exec('rekprzed','color','FAKZ#01')
+
+
+\fakz_legenda
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenia fakturowania - Legenda
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('legenda','color','FAKZ#01')
+
+
+\fakz_il_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Po redakcji FAKZ.IL
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('itsPositive','#field',1)
+|| _dokl:={? FAKZ.M || FAKZ.M().DOKL || ST.DOKL ?};
+   fld(fld()$_dokl);
+   exec('fakz_war','faktury_wspolne');
+   1
+?}
+
+
+\fakz_cena_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Po redkacji ceny
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('itsPositive','#field',0)
+|| _dokl:={? FAKZ.M || FAKZ.M().DOKL_S || ST.DOKL_S ?};
+   fld(fld()$_dokl);
+   exec('fakz_war','faktury_wspolne');
+   1
+?}
+
+
+\fakz_cn_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Po redakcji FAKZ.CN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? FAKZ.CB=0 & FAKZ.M
+||
+   _vat:=exec('m_vat','material',FAKZ.M,FAKZ.KH,,FAKZ.DF~1,FAKZ.DF~2);
+   _vat:=exec('FindAndGet','#table',SLO,_vat,,"(#(2+@.SLO.KOD))/100",0);
+   FAKZ.CB:=((1+_vat)*FAKZ.CN)$FAKZ.M().DOKL_S
+?};
+exec('fakz_cena_ae','!lsp_fak_dzlf')
+
+
+\fakz_cb_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Po redkacji FAKZ.CB
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? FAKZ.CN=0 & FAKZ.M
+||
+   _vat:=exec('m_vat','material',FAKZ.M,FAKZ.KH,,FAKZ.DF~1,FAKZ.DF~2);
+   _vat:=exec('FindAndGet','#table',SLO,_vat,,"(#(2+@.SLO.KOD))/100",0);
+   FAKZ.CN:=((1-_vat)*FAKZ.CN)$FAKZ.M().DOKL_S
+?};
+exec('fakz_cena_ae','!lsp_fak_dzlf')
+
+
+\fakz_dolacz_pozostaly
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenia fakturowania - Fakturuj - Dokument pozostały
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('faks_dolacz','!lsp_fak_dzlf','LSP_FAK_DRFP')
+
+
+\fakz_dolacz_zaliczkowy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenie fakturowania - Fakturuj - Dokument zaliczkowy
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('faks_dolacz','!lsp_fak_dzlf','LSP_FAK_DRZA')
+
+
+\fakz_dolacz_gen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenie fakturowania - Fakturuj - Dokument z rezerwacją
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('faks_dolacz','!lsp_fak_dzlf','LSP_FAK_DGDM')
+
+
+\faks_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Dodanie faktury na podstawie zlecenia fakturowania
+::   WE: _a - UID czynności
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('czy_z_ok','okresy',{? BEER.SZ='S' || -2 || -3 ?})
+||
+   _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:=_a;
+   _params.AKCJA:='Dołącz';
+   _params.PROC_START:='T';
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZLF','TAK');
+   _params.CONTEXT:=obj_new('FAKZ');
+   _params.CONTEXT.FAKZ:=FAKZ.ref();
+
+   exec('mp_run','#b__box',_params)
+?};
+{? FAKS.f_active()>0 || FAKS.f_rfresh() ?};
+::exec('lsp_fak_filtr','lsp')
+~~
+
+
+\fakz_wybierz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Zlecenia fakturowania - Wybierz
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('TAB',params_get().fakz)=type_of(FIRMA) || obj_del(params_get().fakz.TAB) ?};
+_Tab:=params_get().fakz.TAB:=FAKZ.sel_aget();
+{? exec('zlf_chk','!lsp_fak_dzlf',_Tab)
+||
+   sel_exit();
+   FAKZ.sel_adel()
+||
+   FUN.info(
+      'Wybrane zlecenia fakturowania nie są zgodne w zakresie'
+      '\nkontrahenta, odbiorcy, daty fakturowania'
+      '\nlub są niezaakceptowane'
+      '\nlub zostały zafakturowane'
+      '\nlub wybrano więcej niż jedno zlecenie typu zaliczka.'@
+   )
+?};
+0
+
+
+\zlf_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Analiza zleceń do fakturowania
+::   WE: _a - Tabela ze zleceniami
+::   WY: 0 - zlecenia nie spełnianią kryterium fakturowania, 1 - można fakturować zlecenia
+::----------------------------------------------------------------------------------------------------------------------
+_Tab:=_a;
+_wyn:=1;
+{? ~_Tab.first()
+:: dodanie bieżacego zlecenia fakturowania
+||
+   {? FAKZ.get() & FAKZ.STAT_REJ='T' & FAKZ.CZY_FAK='N'
+   ||
+      _Tab.REF:=#FAKZ.ref();
+      _Tab.add()
+   ||
+      _wyn:=0
+   ?}
+:: analiza zaznaczonych zleceń fakturowania
+||
+   FAKZ.cntx_psh();
+   FAKZ.prefix();
+   _kh:=~~;
+   _kh_odb:=~~;
+   _df:=~~;
+   _zal:=0;
+   _loop:=_Tab.first();
+   {!
+   |? _loop
+   |!
+      {? FAKZ.seek(_Tab.REF,)
+      || {? _kh=~~
+         || _kh:=FAKZ.KH;
+            _kh_odb:=FAKZ.KH_ODB;
+            _df:=FAKZ.DF
+         ?};
+         _zal+=FAKZ.ZAL='T';
+         _wyn:=
+            _kh=FAKZ.KH
+            & _kh_odb=FAKZ.KH_ODB
+            & _df=FAKZ.DF
+            & FAKZ.STAT_REJ='T' & FAKZ.CZY_FAK='N'
+            & _zal<2
+      ?};
+      _loop:=_wyn & _Tab.next()
+   !};
+   FAKZ.cntx_pop()
+?};
+_wyn
+
+
+\fakz_szukaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Szukaj przed tabeli FAKZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('fakz_win_edit_set','!lsp_fak_dzlf');
+PROJEKTY.win_dict('WER');
+FAKZ.win_patt('SZUK');
+exec('projekty_f_set','projekty',FAKZ);
+1
+
+
+\fakz_fld_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Przed redakcja pól tabeli FAKZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_akr:=cur_afld();
+{? FAKZ.KOREKTA='T' & (';WN;WB;'*_akr)>1
+|| 1
+|? (';IL;CN;WN;CB;'*_akr)>1
+|| FAKZ.ZAL='N'
+|? _akr='WB'
+|| FAKZ.ZAL='T'
+|| 1
+?}
+
+
+\fakz_fld_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Po redakcji pól tabeli FAKZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_akr:=cur_afld();
+{? _akr='ZAL'
+|| {? FAKZ.ZAL='T'
+   || FAKZ.M:=null;
+      FAKZ.IL:=0;
+      FAKZ.CN:=0;
+      FAKZ.WN:=0;
+      FAKZ.CB:=0
+   || FAKZ.WB:=0
+   ?};
+   exec('fakz_set_efld_opt','!lsp_fak_dzlf');
+   1
+|? FAKZ.KOREKTA='N' & _akr='WB'
+|| {? exec('itsPositive','#field',1)
+   || fld(fld()$2);
+      1
+   ?}
+|| 1
+?}
+
+
+\fakz_set_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Opcje pól tabeli FAKZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_win_red:=FAKZ.win_edit('?');
+_e1:='enable=1';
+_e0:='enable=0';
+_m1:='mark=1';
+_m0:='mark=0';
+{? FAKZ.KOREKTA='T'
+|| FAKZ.efld_opt(_win_red,_e1,,'SYM_KOR');
+   FAKZ.efld_opt(_win_red,_e0,,'ZAL');
+   FAKZ.efld_opt(_win_red,_e0,,'CN');
+   FAKZ.efld_opt(_win_red,_e0,,'CB');
+   FAKZ.efld_opt(_win_red,_e0,,'M');
+   FAKZ.efld_opt(_win_red,_e0,,'IL');
+   FAKZ.efld_opt(_win_red,_e0,,'DA_ZAL');
+   FAKZ.efld_opt(_win_red,_m1,,'SYM_KOR');
+   FAKZ.efld_opt(_win_red,_m1,,'WN');
+   FAKZ.efld_opt(_win_red,_m1,,'WB');
+   FAKZ.efld_opt(_win_red,_m0,,'IL')
+|| FAKZ.efld_opt(_win_red,_e0,,'SYM_KOR');
+   {? FAKZ.ZAL='N' & FAKZ.KOREKTA='N' || FAKZ.efld_opt(_win_red,_e1,,'ZAL') ?};
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _e1 || _e0 ?},,'KOREKTA');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _e1 || _e0 ?},,'CN');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _e1 || _e0 ?},,'CB');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N'|| _e1 || _e0 ?},,'M');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _e1 || _e0 ?},,'IL');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _e1 || _e0 ?},,'WN');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _e0 || _e1 ?},,'DA_ZAL');
+   FAKZ.efld_opt(_win_red,_m0,,'SYM_KOR');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _m0 || _m1 ?},,'WN');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _m0 || _m1 ?},,'WB');
+   FAKZ.efld_opt(_win_red,{? FAKZ.ZAL='N' || _m1 || _m0 ?},,'IL')
+?};
+~~
+
+
+\po_korekta
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Po wyborze pola korekta
+::----------------------------------------------------------------------------------------------------------------------
+{? FAKZ.KOREKTA='T' ||
+   FAKZ.M:=null
+?};
+exec('fakz_set_efld_opt','!lsp_fak_dzlf');
+~~
+
+
+\fakz_dolacz_korekta
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Zlecenia fakturowania - Fakturuj - Dokument korygujący
+::----------------------------------------------------------------------------------------------------------------------
+exec('faks_dolacz','!lsp_fak_dzlf','LSP_FAK_DKOR')
+
+
+\fakz_wal_pr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [20.14]
+:: OPIS: Przed redagowaniem FAKZ.WAL
+::----------------------------------------------------------------------------------------------------------------------
+exec('jakiwal','eurusd','SLWAL','walut',1,,,1)
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:41 aef13b659338ce2196d4e97df363935f8814a21eed8a2c9e0b2699a399a7b29ab254095d2eb9b94203b29f0b0a18e1459f1482d7e4a998896852f94ea4c4a0e7bf7c1df148d77bda67513524d8b99792882136a6453640987aa56e50b1e6a8385d671b35b3da1a08d166d04b2c31e0034d395a193cd2651c3fb0457398bcf09f

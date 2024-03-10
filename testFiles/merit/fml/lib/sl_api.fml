@@ -1,0 +1,1061 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: sl_api.fml
+:: Utworzony: 26.08.2020
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły wspomagające obsługę SL_API wspólne dla różnych zastosowań: Portal, Businesslink, ...
+::======================================================================================================================
+
+
+\decl_sl_api
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Definiuje obiekt przechowujący elementy współpracy z SL_API i powołuje jego instancję:
+::       - cisteczko sesji (globalnie dla sesji klienta)
+::       - token autoryzacyjny OAuth2 (globalnie dla sesji MACROserwera i dzierżawcy)
+::       - dane dostępowe do konta ABS (dla konsultanta - w ramach sesji klienta)
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('SLAPICLASS',@.CLASS)<0
+|| obj_decl('SLAPICLASS',
+      obj_fld('COOKIE',''),
+      obj_fld('TOKENS',~~),
+      obj_fld('TOKEN',''),
+      obj_fld('NOTIFY_TOKEN',''),
+      obj_fld('REALM',~~),
+      obj_fld('ACCESS_DATA',~~),
+      obj_fld('BASE_ID',''),
+      obj_meth('__init',"
+::       Tokeny - tymczasowa tabela globalna na serwerze (identyfikator zmieniać w przypadku zmian w definicji tabeli)
+         .TOKENS:=obj_new('TAB','NDX');
+         _ident_prefix:='global_oauth02';
+         {? SYSLOG.lock(1,,1)
+         || _st_list:=st_list(_ident_prefix,0);
+            {? _st_list.first()
+            || .TOKENS.TAB:=st_open(_st_list.IDENT);
+               .TOKENS.NDX:=.TOKENS.TAB.ndx_tmp(,,'TENANT',,)
+            || .TOKENS.TAB:=st_create(1
+                  ,'TENANT','STRING[50]','Dzierżawca/sesja'@
+                  ,'TOKEN','SYS_MEMO','Token'@
+                  ,'EXPIRES','REAL','Wygaśnie'@
+                  ,'STATUS','INTEGER','Wynik ostatniego odpytania'@
+                  ,'DELAY','REAL','Kolejne odpytanie najwcześniej'@
+               );
+               .TOKENS.TAB.st_id_make(,_ident_prefix,-1);
+               .TOKENS.NDX:=.TOKENS.TAB.index('?')
+            ?};
+            SYSLOG.unlock()
+         || .TOKENS.TAB:=st_create(1
+               ,'TENANT','STRING[50]','Dzierżawca/sesja'@
+               ,'TOKEN','SYS_MEMO','Token'@
+               ,'EXPIRES','REAL','Wygaśnie'@
+               ,'STATUS','INTEGER','Wynik ostatniego odpytania'@
+               ,'DELAY','REAL','Kolejne odpytanie najwcześniej'@
+            );
+            .TOKENS.TAB.st_id_make(,_ident_prefix,-1);
+            .TOKENS.NDX:=.TOKENS.TAB.index('?')
+         ?};
+::       Zakresy zastosowań - tymczasowa tabela lokalna
+         .REALM:=obj_new('TAB','NDX');
+         .REALM.TAB:=tab_tmp(1
+            ,'REALM','STRING[30]','Zakres zastosowania'@
+            ,'LOGIN','STRING[255]','Formuła ustalająca login'@
+            ,'PASSWORD','STRING[255]','Formuła ustalająca hasło'@
+            ,'URL','STRING[255]','Formuła ustalająca URL autoryzacyjny'@
+            ,'SCOPE','STRING[255]','Formuła ustalająca zakres autoryzacji'@
+         );
+         .REALM.NDX:=.REALM.TAB.index('?');
+::       Dane dostępowe - lokalne
+         .ACCESS_DATA:=obj_new('LOGIN','PASSWORD','EXPIRES','ESCAPE');
+         .ACCESS_DATA.LOGIN:='';
+         .ACCESS_DATA.PASSWORD:='';
+         .ACCESS_DATA.EXPIRES:=exec('create','#tm_stamp');
+         .ACCESS_DATA.ESCAPE:=0
+      "),
+
+      obj_meth('add_realm',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Dodaje zakres zastosowania
+::   WE: _a - nazwa zakresu zastosowania, np. 'Portal', 'Businesslink'
+::       _b - treść formuły zwracającej login
+::       _c - treść formuły zwracającej hasło
+::       _d - treść formuły zwracającej Url autoryzacyjny
+::       _e - treść formuły zwracającej zakres autoryzacji, np. USERAPI
+::----------------------------------------------------------------------------------------------------------------------
+         _tab:=.REALM.TAB;
+         _tab.REALM:=_a;
+         _tab.LOGIN:=_b;
+         _tab.PASSWORD:=_c;
+         _tab.URL:=_d;
+         _tab.SCOPE:=_e;
+         _tab.add()
+      ",type_of(''),type_of(''),type_of(''),type_of(''),type_of(''),-1),
+
+      obj_meth('save_cookie',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Zapamiętuje ciasteczko wyłuskane z nagłówków odpowiedzi
+::----------------------------------------------------------------------------------------------------------------------
+         _inet_response:=_a;
+         {? var_pres('Headers',_inet_response)>100
+         || _headers:=_inet_response.Headers;
+            _h1:=obj_len(_headers);
+            {! _ii:=1.._h1
+            |! _h2:=obj_len(_headers[_ii]);
+               {! _jj:=1.._h2
+               |! {? (11+_headers[_ii][_jj])='Set-Cookie:'
+                  || _cookie:=(12-_headers[_ii][_jj]);
+                     {? (12+_cookie)='SL_SessionId'
+                     || .COOKIE:=_cookie
+                     ?}
+                  ?}
+               !}
+            !}
+         ?};
+         ~~
+      ",type_of(obj_new(1)),-1),
+
+      obj_meth('cookie',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Pobiera zapamiętane ciasteczko
+::----------------------------------------------------------------------------------------------------------------------
+         .COOKIE
+      ",-1),
+
+      obj_meth('token',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Pobiera zapamiętany token/informacje o tokenie
+::   WE: _a - zakres zastosowania, np. 'Portal', 'Businesslink'
+::       _b - dzierżawca/sesja
+::       [_c] - rodzaj zwracanej wartości [TOKEN]/EXPIRES/STATUS/DELAY
+::----------------------------------------------------------------------------------------------------------------------
+         _realm:=_a;
+         _tenant:=_b;
+         {? var_pres('_c')=type_of('')
+         || _kind:=_c
+         || _kind:='TOKEN'
+         ?};
+         _token:='';
+         _expires:=utc_get();
+         _status:=0;
+         _delay:=utc_get();
+         _delay_if_error:=exec('delay_if_error','sl_api');
+         .TOKENS.TAB.prefix(_tenant,);
+         {? .TOKENS.TAB.first()
+         || _status:=.TOKENS.TAB.STATUS;
+            _delay:=.TOKENS.TAB.DELAY;
+            {? .TOKENS.TAB.EXPIRES>=utc_get()
+            || _token:=.TOKENS.TAB.memo_txt(,1,'TOKEN');
+               _expires:=.TOKENS.TAB.EXPIRES
+            ?}
+         ?};
+         {? _token='' & _delay<=utc_get()
+         || .REALM.TAB.index(.REALM.NDX);
+            .REALM.TAB.prefix(_realm,);
+            {? .REALM.TAB.first()
+            || _res_token:=exec('oauth_token','sl_api'
+                  ,($.REALM.TAB.LOGIN)()
+                  ,($.REALM.TAB.PASSWORD)()
+                  ,($.REALM.TAB.URL)()
+                  ,($.REALM.TAB.SCOPE)()
+               );
+               _obj:=json_parse(_res_token.TOKEN);
+               {? .TOKENS.TAB.first()
+               || .TOKENS.TAB.EXPIRES:=utc_get(date(),time())+_obj.expires_in-5*60;
+                  .TOKENS.TAB.memo_set(_obj.access_token,'TOKEN');
+                  .TOKENS.TAB.STATUS:=_res_token.STATUS;
+                  .TOKENS.TAB.DELAY:={? _res_token.STATUS=200 || utc_get() || utc_get()+_delay_if_error ?};
+                  {? .TOKENS.TAB.put()
+                  || _status:=.TOKENS.TAB.STATUS;
+                     _delay:=.TOKENS.TAB.DELAY;
+                     {? .TOKENS.TAB.memo_put(,'TOKEN')
+                     || _token:=_obj.access_token;
+                        _expires:=.TOKENS.TAB.EXPIRES
+                     ?}
+                  ?}
+               || .TOKENS.TAB.TENANT:=_tenant;
+                  .TOKENS.TAB.EXPIRES:=utc_get(date(),time())+_obj.expires_in-5*60;
+                  .TOKENS.TAB.memo_set(_obj.access_token,'TOKEN');
+                  .TOKENS.TAB.STATUS:=_res_token.STATUS;
+                  .TOKENS.TAB.DELAY:={? _res_token.STATUS=200 || utc_get() || utc_get()+_delay_if_error ?};
+                  {? .TOKENS.TAB.add()
+                  || _status:=.TOKENS.TAB.STATUS;
+                     _delay:=.TOKENS.TAB.DELAY;
+                     {? .TOKENS.TAB.memo_put(,'TOKEN')
+                     || _token:=_obj.access_token;
+                        _expires:=.TOKENS.TAB.EXPIRES
+                     ?}
+                  ?}
+               ?}
+            ?}
+         ?};
+         {? _kind='EXPIRES'
+         || _expires
+         |? _kind='STATUS'
+         || _status
+         |? _kind='DELAY'
+         || _delay
+         || _token
+         ?}
+      ",type_of(''),type_of(''),type_of(''),-1),
+
+      obj_meth('token',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Pobiera zapamiętany token
+::   WE: _a - zakres zastosowania, np. 'Portal', 'Businesslink'
+::       _b - dzierżawca
+::----------------------------------------------------------------------------------------------------------------------
+         .token(_a,_b,'TOKEN')
+      ",type_of(''),type_of(''),-1),
+
+      obj_meth('abs_login',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Zwraca login ABS
+::       Jeżeli dane logowania są "przeterminowane" to wymusza ponowne wpisanie
+::----------------------------------------------------------------------------------------------------------------------
+         {? .ACCESS_DATA.EXPIRES<exec('create','#tm_stamp')
+         || {? .abs_edit()
+            || .ACCESS_DATA.EXPIRES:=exec('create','#tm_stamp')+60
+            || .ACCESS_DATA.LOGIN:='';
+               .ACCESS_DATA.ESCAPE:=1
+            ?}
+         ?};
+         .ACCESS_DATA.LOGIN
+      ",-1),
+
+      obj_meth('abs_password',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Zwraca hasło ABS
+::       Jeżeli dane logowania są "przeterminowane" to wymusza ponowne wpisanie
+::----------------------------------------------------------------------------------------------------------------------
+         {? .ACCESS_DATA.EXPIRES<exec('create','#tm_stamp')
+         || {? .ACCESS_DATA.ESCAPE
+            || .ACCESS_DATA.PASSWORD:='';
+               .ACCESS_DATA.ESCAPE:=0
+            |? .abs_edit()
+            || .ACCESS_DATA.EXPIRES:=exec('create','#tm_stamp')+60
+            || .ACCESS_DATA.PASSWORD:=''
+            ?}
+         ?};
+         .ACCESS_DATA.PASSWORD
+      ",-1),
+
+      obj_meth('abs_edit',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Redagowanie login/password ABS
+::----------------------------------------------------------------------------------------------------------------------
+         _tab:=tab_tmp(,'LOGIN','STRING[100]','Użytkownik'@,'PASSWORD','STRING[100]','Hasło'@);
+         _red:=_tab.mk_edit('Dane autoryzacyjne ABS'@,,'absauth');
+         _tab.win_efld(_red,,'LOGIN',,,60);
+         _tab.win_efld(_red,,'PASSWORD',,,60,,,,,,'password');
+         _tab.efld_opt(_red,'mark=1',,'LOGIN');
+         _tab.efld_opt(_red,'mark=1',,'PASSWORD');
+         exec('ok_esc','#window',_tab,_red);
+         _tab.win_edit(_red);
+         _tab.LOGIN:=.ACCESS_DATA.LOGIN;
+         _tab.PASSWORD:=.ACCESS_DATA.PASSWORD;
+         _valid:=\"
+            __CHK.record(cur_tab(1,1),,'LOGIN','PASSWORD')
+         \";
+         {? _tab.edit(_valid)
+         || .ACCESS_DATA.LOGIN:=_tab.LOGIN;
+            .ACCESS_DATA.PASSWORD:=_tab.PASSWORD;
+            1
+         || 0
+         ?}
+      ",-1),
+
+      obj_meth('set_notify_token',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Ustawnienie (zapamiętanie) tokena notyfikacyjnego
+::----------------------------------------------------------------------------------------------------------------------
+         .NOTIFY_TOKEN:=_a
+      ",type_of(''),-1),
+
+      obj_meth('notify_token',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Pobranie tokena notyfikacyjnego
+::----------------------------------------------------------------------------------------------------------------------
+         .NOTIFY_TOKEN
+      ",-1),
+
+      obj_meth('base_id',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Zastępnik systemowego base_id()
+::----------------------------------------------------------------------------------------------------------------------
+         {? .BASE_ID='' || .BASE_ID:=base_id() ?};
+         .BASE_ID
+      ",-1),
+
+      obj_meth('base_id',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Zastępnik systemowego base_id()
+::   WE: _a - [0]/1 - wymuszenie podczytania aktualnej wartości, 2 - zwraca identyfikator zapamiętany w bazie
+::----------------------------------------------------------------------------------------------------------------------
+         {? _a=2
+         || exec('czytaj','#stalesys',,XINFO,'BASE_ID');
+            XINFO.BASE_ID
+         || {? _a=1 || .BASE_ID:=base_id() ?};
+            .base_id()
+         ?}
+      ",type_of(0),-1),
+
+      obj_meth('save_base_id',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Zapisuje bieżący base_id()
+::----------------------------------------------------------------------------------------------------------------------
+         XINFO.BASE_ID:=.base_id();
+         exec('zapisz','#stalesys',1,XINFO,'BASE_ID')
+      ",-1),
+
+      obj_meth('verify_base_id',"
+::----------------------------------------------------------------------------------------------------------------------
+:: OPIS: Weryfikuje zapisany base_id()
+::   WY: 1 - zgodność
+::       -1 - identyfikator nie został jeszcze zapamiętany
+::       0 - brak zgodności
+::----------------------------------------------------------------------------------------------------------------------
+         exec('czytaj','#stalesys',,XINFO,'BASE_ID');
+         {? XINFO.BASE_ID=''
+         || -1
+         || .base_id()=XINFO.BASE_ID
+         ?}
+      ",-1),
+   );
+   ~~
+?}
+
+
+\is_verbose
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Czy włączone jest logowanie systemowe podczas komunikacji z serwisem OAuth
+::----------------------------------------------------------------------------------------------------------------------
+1
+
+
+\oauth_token
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Zwraca JSON z tokenem dla aktywnej konfiguracji (albo JSON z pustym tokenem w przypadku błędu)
+::   WE: _a - login
+::       _b - password
+::       _c - URL autoryzacyjny
+::       _d - scope
+::   WY: obj_new('RESULT','TOKEN') RESULT:0,200,403... TOKEN:JSON/''
+::----------------------------------------------------------------------------------------------------------------------
+_user:=_a;
+_pass:=_b;
+_url:=_c;
+_scope:=_d;
+
+_result:=obj_new('STATUS','TOKEN');
+_result.STATUS:=0;
+_result.TOKEN:='{"access_token":"","expires_in":0}';
+
+{? _url=''
+|| return(_result)
+?};
+
+_inet:=inet_get(_url);
+{? type_of(_inet)>100
+||
+   _inet.set_authentication(_user,_pass);
+   _inet.append_header('Content-Type: application/x-www-form-urlencoded');
+
+   {? exec('is_verbose','sl_api') || _inet.set_verbose('oauth.log') ?};
+
+:: url_encode dodane pro-forma, jakby w przyszłosci hasło zawierało znaki do zakodowania
+   _request:='grant_type=%1'[_inet.url_encode('client_credentials')];
+   _request+='&scope=%1'[_inet.url_encode(_scope)];
+
+   _utc_start:=utc_get();
+   _result.STATUS:=_inet.http_post(,_request);
+   _utc_stop:=utc_get();
+
+   {? _result.STATUS=200 || _result.TOKEN:=_inet.get_data() ?};
+
+:: Zapis do rejestru zdarzeń - wykonywany obligatoryjnie
+   _mwac_log_ref:=exec('mwac_log','zui',
+      'OAUTH',
+      _inet.get_url(),
+      'POST',
+      _inet.get_status(),
+      _utc_start,
+      _utc_stop,
+      _request,
+      _inet.get_data(),
+      _inet.get_header(1),
+      _inet.get_header(0)
+   );
+   exec('mwac_log_app','zui',
+      _mwac_log_ref,
+      '|OAUTH|%1'[_user],
+      'Id sesji: %1\nUżytkownik: %2'[SYSLOG.ses_id(),_user]
+   );
+   {? _result.STATUS<>200
+   || _delay:=utc_get()+exec('delay_if_error','sl_api');
+      exec('mwac_log_app','zui',
+         _mwac_log_ref,
+         '',
+         'Błąd %1\nKolejne odpytanie usługi OAuth: %2 %3'[$_result.STATUS,$utc_date(_delay),utc_time(_delay)$3],
+         0
+      )
+   ?}
+?};
+
+_result
+
+
+\get_token
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Pobiera i wyświetla token (w kontekście wybranego zastosowania i dzierżawcy)
+::   WE: _a - zakres zastosowania
+::       _b - identyfikator do uzyskania tokena (dzierżawca/sesja)
+::----------------------------------------------------------------------------------------------------------------------
+_realm:=_a;
+_token_id:=_b;
+
+_token:=SL_api.token(_realm,_token_id);
+{? _token=''
+|| _delay:=SL_api.token(_realm,_token_id,'DELAY');
+   _choice:=FUN.choice(
+      'Pusty token.\n'
+      'Należy sprawdzić parametryzację systemu.\n\n'
+      'Zakres zastosowania: %1\n'
+      'Ostatni status: %2\n'
+      'Kolejne odpytanie usługi OAuth: %3 %4'@
+      [_realm,$SL_api.token(_realm,_token_id,'STATUS'),$utc_date(_delay),utc_time(_delay)$3],,
+      'Inne sesje'@,,,,'OK'@
+   );
+   {? _choice=1
+   || SL_api.TOKENS.TAB.prefix();
+      exec('select','#table',SL_api.TOKENS.TAB)
+   ?}
+|| _expires:=SL_api.token(_realm,_token_id,'EXPIRES');
+   _choice:=FUN.choice('Obsługa tokena OAuth:'@,,'Token'@,'Termin &ważności'@,'Nagłówek'@,'Dane'@);
+   {? _choice=1
+   || exec('edit_memo','#edit',_token,'Token'@,,,10,,,0)
+   |? _choice=2
+   || FUN.info('Token wygasa: %1 %2'@[$utc_date(_expires),utc_time(_expires)$3])
+   |? _choice=3
+   || _header:=gsub(base64('decode',spli_str(_token,'.')[1]),',',',\n');
+      exec('edit_memo','#edit',_header,'Nagłówek tokenu'@,,,10,,,0)
+   |? _choice=4
+   || _data:=gsub(base64('decode',spli_str(_token,'.')[2]),',',',\n');
+      exec('edit_memo','#edit',_data,'Dane tokenu'@,,,10,,,0)
+   ?}
+?};
+''
+
+
+::======================================================================================================================
+:: Obsługa metod API wewnętrznych
+::======================================================================================================================
+
+
+\login
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: login
+::  OLD: \login_internal/businesslink3.fml
+::----------------------------------------------------------------------------------------------------------------------
+SL_api.abs_login()
+
+
+\password
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: hasło
+::  OLD: \password_internal/businesslink3.fml
+::----------------------------------------------------------------------------------------------------------------------
+SL_api.abs_password()
+
+
+\oauth_url
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Url autoryzacji
+::  OLD: \oauth_url_internal/businesslink3.fml
+::----------------------------------------------------------------------------------------------------------------------
+'https://oauth2.assecobs.pl/api/oauth2/token'
+
+
+\oauth_scope
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Zasięg autoryzacji
+::  OLD: \oauth_scope_internal/businesslink3.fml
+::----------------------------------------------------------------------------------------------------------------------
+'USERAPI'
+
+
+\parse_result
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Wynik formuł parsujących
+::----------------------------------------------------------------------------------------------------------------------
+_res:=obj_new('STATUS','MESSAGE','DETAILS');
+_res.STATUS:=0; _res.MESSAGE:=''; _res.DETAILS:=~~;
+_res
+
+
+\client_adds
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Dodatkowe akcje wykonywane na definicji klienta API
+::   WY: 1-ok, 0-coś się nie powiodło
+::----------------------------------------------------------------------------------------------------------------------
+_env:=params_get().env;
+_client:=_env.Client;
+
+:: Do autoryzacji używany jest token OAuth2
+_token:=SL_api.token('Internal',SYSLOG.ses_id());
+_result:=_client.setAuthenticationOAuth(_token);
+
+{? _result=1
+||
+:: Podmiana bazowego URL
+   _api_url:=_env.Param.URL;
+   _api_uri:=spli_str(_api_url,'?')[1];
+   _result:=_client.setBaseUrl(_api_uri)
+?};
+
+{? _result=1
+||
+:: Nagłówek z ciasteczkiem sesji
+   _cookie:=SL_api.cookie();
+   {? _cookie<>'' || _client.addHeaders('Cookie: %1'[_cookie]) ?};
+
+:: Nagłówek, o ile dodatkowo potrzebny w kontekście wywoływanej metody
+::   {? _env.MethodName='SL_TENANT_MODIFY'
+::   || _client.addHeaders('tenantIdentifier: %1'[_env.Param.TENANT])
+::   ?};
+   ~~
+?};
+_result
+
+
+\method_adds
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Dodatkowe akcje wykonywane na definicji metody API
+::   WY: 1-ok, 0-coś się nie powiodło
+::  OLD: \method_adds_internal/businesslink3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_env:=params_get().env;
+_method:=_env.Method;
+
+:: Podmiana bazowego DBC
+_api_url:=_env.Param.URL;
+_api_dbc:=spli_str(spli_str(_api_url,'?')[2],'=')[2];
+_method.resetParams('call');
+_result:=(_method.addParams('DBC',_api_dbc,'call'))>0;
+
+_result
+
+
+\inet_adds
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Dodatkowe akcje wykonywane na obiekcie INET
+::----------------------------------------------------------------------------------------------------------------------
+_env:=params_get().env;
+
+_result:=1;
+
+:: Wyłączenie kontroli certyfikatu SSL
+_env.Method.Inet.Object.set_opt('SSL_VERIFYPEER', 0);
+
+_result
+
+
+\args
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Uniwersalna metoda przygotowująca argumenty wywołania - przekazuje wywołanie do przenazwanej formuły 'args'
+::----------------------------------------------------------------------------------------------------------------------
+_method:=params_get().env.MethodName;
+
+params_exec('%1_args'[_method],'sl_api')
+
+
+\parse
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Uniwersalna metoda parsująca - zawiera główną obsługę błędów, przekazuje wywołanie
+::       do przenazwanej formuły 'parse' podając za parametr wewnętrzną część response w postaci obiektu JMAN
+::----------------------------------------------------------------------------------------------------------------------
+_env:=params_get().env;
+_res:=_env.Param.RESULT;
+_display:=_env.Param.DISPLAY;
+_method:=_env.MethodName;
+
+:: Przy parsowaniu zapamiętywane jest ciasteczko sesji (Set-Cookie: SL_SessionId...)
+SL_api.save_cookie(_env.InetResponse);
+
+:: zmienna _data zawiera zawsze plik w unikodzie do odczytu
+_data:=exec('datafile','sync_mwa',_env.InetResponse.Data);
+
+_content_type:=_env.InetResponse.ContentType;
+{? _content_type=''
+|| _txt:=exec('bin2txt','#file',_data);
+   _res.MESSAGE:='Błędna odpowiedź:'@+'\n'+_txt
+|? _content_type='text/html'
+|| _txt:=exec('bin2txt','#file',_data);
+   _res.MESSAGE:='Błędna odpowiedź:'@+'\n'+_txt
+|? _content_type='text/plain'
+|| _txt:=exec('bin2txt','#file',_data);
+   _res.MESSAGE:='Błędna odpowiedź:'@+'\n'+_txt
+||
+::   _jman:=exec('json_man','__jsonm',_data);
+   _jman:=exec('json_man','__jsonm',_data,'silent');
+::   Testowe wyświetlenie wyniku - tylko jak jest wyłączona opcja 'silent'
+   _jman.view();
+   {? _jman.Valid=0
+   || _txt:=exec('bin2txt','#file',_data);
+      _res.MESSAGE:='JSON odpowiedzi o nieprawidłowej strukturze:'@+'\n'+_txt
+   || {? _jman.isPath('nbf')
+      || _res.MESSAGE:=_jman.getValue('nbf')
+      |? _jman.isPath('message')
+      || _res.MESSAGE:=_jman.getValue('message')
+      |? 3+_method='SL_'
+      || {? _jman.getValue('%1_Response.%1_Result.Status'[_method])=1
+         || {? _jman.isPath('%1_Response.%1_Result.%2_OUT'[_method,3-_method])
+            || _jman_out:=_jman.new(_jman.getJSON('%1_Response.%1_Result.%2_OUT'[_method,3-_method]));
+               params_exec('%1_parse'[_method],'sl_api',_jman_out)
+            || _res.STATUS:=1
+            ?}
+         || _res.MESSAGE:='%1: %2'
+               [  $_jman.getValue('%1_Response.%1_Result.ErrorCode'[_method]),
+                  _jman.getValue('%1_Response.%1_Result.ErrorMessage'[_method])
+               ]
+         ?}
+      || _res.MESSAGE:='Nieobsłużona metoda: %1.'@[_method]
+      ?}
+   ?}
+?};
+
+:: Uzupełnienie statusu i opisu biznesowego w rejestrze zdarzeń
+_env.logApp('R:%1|'[$_res.STATUS],_res.MESSAGE);
+
+_res
+
+
+\TenantAdd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Dodanie kontrahenta (dzierżawcy) do usługi (funkcja wewnętrzna)
+::  OLD: \TenantAdd/businesslink3.fml
+::   WE: _a - przeznaczenie danych
+::       _b - URL środowiska
+::       _c - NIP kontrahenta
+::       _d - krótka nazwa kontrahenta
+::       _e - pełna nazwa kontrahenta
+::       _f - e-mail administratora ABS
+::       _g - imię administratora ABS
+::       _h - nazwisko administratora ABS
+::       _i - język domyślny administratora ABS
+::       _j - e-mail administratora klienta
+::       _k - imię administratora klienta
+::       _l - nazwisko administratora klienta
+::       _m - język domyślny administratora klienta
+::       [_n] - czy wyświetlać informacje [0]/1
+::----------------------------------------------------------------------------------------------------------------------
+_pd:=_a;
+
+_result:=exec('parse_result','sl_api');
+_args:=obj_new(
+   'RESULT','URL',
+   'NIP','SHORTNAME','LONGNAME',
+   'MAIL','FNAME','SNAME','LANG',
+   'CMAIL','CFNAME','CSNAME','CLANG',
+   'DISPLAY'
+);
+_args.RESULT:=_result;
+_args.URL:=_b;
+_args.NIP:=_c;
+_args.SHORTNAME:=_d;
+_args.LONGNAME:=_e;
+_args.MAIL:=_f;
+_args.FNAME:=_g;
+_args.SNAME:=_h;
+_args.LANG:=_i;
+_args.CMAIL:=_j;
+_args.CFNAME:=_k;
+_args.CSNAME:=_l;
+_args.CLANG:=_m;
+
+_args.DISPLAY:={? var_pres('_n')=type_of(0) || _n || 0 ?};
+
+KOMM.init(,,'TenantAdd');
+
+_log_level:=-1;
+
+exec('run_mwac','sync_mwa',_pd,'SL_TENANT_ADD',0,_log_level,_args);
+
+::{? _args.DISPLAY || KOMM.select() ?};
+{? _args.DISPLAY & _args.RESULT.STATUS<>1 & _args.RESULT.MESSAGE<>'' || FUN.info(_args.RESULT.MESSAGE) ?};
+
+_result
+
+
+\SL_TENANT_ADD_args
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Generuje JSONa zakładającego dzierżawcę (funkcja wewnętrzna)
+::       (dla metody POST SL_TENANT_ADD)
+::  OLD: \TenantAdd_args/businesslink3.fml
+::   WE: params_get().env.Param
+::   WY: JSON [STRING]
+::----------------------------------------------------------------------------------------------------------------------
+_param:=params_get().env.Param;
+_nip:=_param.NIP;
+_shortname:=_param.SHORTNAME;
+_longname:=_param.LONGNAME;
+_mail:=_param.MAIL;
+_firstname:=_param.FNAME;
+_surname:=_param.SNAME;
+_language:=_param.LANG;
+_cmail:=_param.CMAIL;
+_cfirstname:=_param.CFNAME;
+_csurname:=_param.CSNAME;
+_clanguage:=_param.CLANG;
+
+:: do manipulacji elementem głównym
+_jman:=exec('json_man','__jsonm','{}');
+
+::{
+::    "SL_TENANT_ADD_IN": {
+::        "TENANT_ADD": {
+::            "TIN": <string>,
+::            "shortName": <string>,
+::            "longName": <string>,
+::            "adminFirstname": <string>,
+::            "adminSurname": <string>,
+::            "adminMail": <string>,
+::            "adminDefaultLanguage": <string>,
+::            "remoteSystemName": <string>,
+::            "remoteSystemIdent": <string>,
+::            "remoteSystemLicense": <string>
+::        }
+::    }
+::}
+
+_jman.setObject(_path:=_jman.addChildElement('','SL_TENANT_ADD_IN'),'{}');
+   _jman.setObject(_path:=_jman.addChildElement(_path,'TENANT_ADD'),'{}');
+      _jman.setValue(_jman.addChildElement(_path,'TIN'),_nip);
+      _jman.setValue(_jman.addChildElement(_path,'shortName'),_shortname);
+      _jman.setValue(_jman.addChildElement(_path,'longName'),_longname);
+      _jman.setValue(_jman.addChildElement(_path,'adminFirstname'),_firstname);
+      _jman.setValue(_jman.addChildElement(_path,'adminSurname'),_surname);
+      _jman.setValue(_jman.addChildElement(_path,'adminMail'),_mail);
+      _jman.setValue(_jman.addChildElement(_path,'adminDefaultLanguage'),_language);
+      _jman.setValue(_jman.addChildElement(_path,'customerFirstname'),_cfirstname);
+      _jman.setValue(_jman.addChildElement(_path,'customerSurname'),_csurname);
+      _jman.setValue(_jman.addChildElement(_path,'customerMail'),_cmail);
+      _jman.setValue(_jman.addChildElement(_path,'customerDefaultLanguage'),_clanguage);
+      _jman.setValue(_jman.addChildElement(_path,'remoteSystemName'),exec('remote_system_name','sl_api'));
+::      _jman.setValue(_jman.addChildElement(_path,'remoteSystemIdent'),~~);
+      _jman.setValue(_jman.addChildElement(_path,'remoteSystemLicense'),
+         user(7)+{? exec('runtime_dro','#system') || '_'+exec('base_id','#system') || '' ?}
+      );
+
+:: do testów
+::_jman.view();
+
+_jman.getJSON()
+
+
+\SL_TENANT_ADD_parse
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Parsowanie wyniku odpowiedzi po dodaniu kontrahenta
+::       (dla metody POST SL_TENANT_ADD)
+::  OLD: \TenantAdd_parse/businesslink3.fml
+::   WE: _a - obiekt JMAN reprezentujący zawartość TENANT_ADD_OUT
+::----------------------------------------------------------------------------------------------------------------------
+_jman:=_a;
+
+_res:=params_get().env.Param.RESULT;
+_display:=params_get().env.Param.DISPLAY;
+
+_res.DETAILS:=obj_new('TENANT_ID','CFG_FILE');
+
+::{
+::    "SL_TENANT_ADD_Result": {
+::        "Status": <int>,
+::        "ErrorCode": <int>,
+::        "ErrorMessage": <string>,
+::        "TENANT_ADD_OUT": {
+::            "tenantIdentifier": <string>,
+::            "configFile": <base64Binary>
+::        }
+::    }
+::}
+
+_res.DETAILS.TENANT_ID:=_jman.getValue('tenantIdentifier');
+_res.DETAILS.CFG_FILE:=fopen(null(),'bw',,,1);
+_res.STATUS:=_jman.getValue('configFile',_res.DETAILS.CFG_FILE,'decode');
+
+_res
+
+
+\TenantModify
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14_05]
+:: OPIS: Modyfikacja kontrahenta (dzierżawcy) do usługi (funkcja wewnętrzna)
+::   WE: _a - przeznaczenie danych
+::       _b - URL środowiska
+::       _c - identyfikator tenanta
+::       [_d] - NIP kontrahenta
+::       [_e] - krótka nazwa kontrahenta
+::       [_f] - pełna nazwa kontrahenta
+::       [_g] - status dzierżawcy (Active, Suspensed, Disabled)
+::       [_h] - czy wyświetlać informacje [0]/1
+::----------------------------------------------------------------------------------------------------------------------
+_pd:=_a;
+
+_result:=exec('parse_result','sl_api');
+_args:=obj_new(
+   'RESULT','URL','TENANT',
+   'NIP','SHORTNAME','LONGNAME','STATE',
+   'DISPLAY'
+);
+_args.RESULT:=_result;
+_args.URL:=_b;
+_args.TENANT:=_c;
+_args.NIP:={? var_pres('_d')=type_of('') || _d || ~~ ?};
+_args.SHORTNAME:={? var_pres('_e')=type_of('') || _e || ~~ ?};
+_args.LONGNAME:={? var_pres('_f')=type_of('') || _f || ~~ ?};
+_args.STATE:={? var_pres('_g')=type_of('') || _g || ~~ ?};
+
+_args.DISPLAY:={? var_pres('_h')=type_of(0) || _h || 0 ?};
+
+KOMM.init(,,'TenantModify');
+
+_log_level:=-1;
+
+exec('run_mwac','sync_mwa',_pd,'SL_TENANT_MODIFY',0,_log_level,_args);
+
+::{? _args.DISPLAY || KOMM.select() ?};
+{? _args.DISPLAY & _args.RESULT.STATUS<>1 & _args.RESULT.MESSAGE<>'' || FUN.info(_args.RESULT.MESSAGE) ?};
+
+_result
+
+
+\SL_TENANT_MODIFY_args
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14_05]
+:: OPIS: Generuje JSONa modyfikującego dzierżawcę (funkcja wewnętrzna)
+::       (dla metody POST SL_TENANT_MODIFY)
+::   WE: params_get().env.Param
+::   WY: JSON [STRING]
+::----------------------------------------------------------------------------------------------------------------------
+_param:=params_get().env.Param;
+_tenantidentifier:=_param.TENANT;
+::_nip:=_param.NIP;
+::_shortname:=_param.SHORTNAME;
+::_longname:=_param.LONGNAME;
+_state:=_param.STATE;
+
+_logo:=~~;
+::_logo:='abe';
+
+:: do manipulacji elementem głównym
+_jman:=exec('json_man','__jsonm','{}');
+
+::{
+::    "SL_TENANT_MODIFY_IN": {
+::        "TENANT_MODIFY": {
+::            "tenantIdentifier": <string>,
+::            "TIN": <string>,
+::            "shortName": <string>,
+::            "longName": <string>,
+::            "logoABS": <string>,
+::            "remoteSystemName": <string>,
+::            "remoteSystemIdent": <string>,
+::            "remoteSystemLicense": <string>,
+::            "tenantState": <string>,
+::            "isActive": <unsignedByte>
+::        }
+::    }
+::}
+
+_jman.setObject(_path:=_jman.addChildElement('','SL_TENANT_MODIFY_IN'),'{}');
+   _jman.setObject(_path:=_jman.addChildElement(_path,'TENANT_MODIFY'),'{}');
+      _jman.setValue(_jman.addChildElement(_path,'tenantIdentifier'),_tenantidentifier);
+::      _jman.setValue(_jman.addChildElement(_path,'TIN'),_nip);
+::      _jman.setValue(_jman.addChildElement(_path,'shortName'),_shortname);
+::      _jman.setValue(_jman.addChildElement(_path,'longName'),_longname);
+::      _jman.setValue(_jman.addChildElement(_path,'logoABS'),_logo);
+::      _jman.setValue(_jman.addChildElement(_path,'remoteSystemName'),exec('remote_system_name','sl_api'));
+::      _jman.setValue(_jman.addChildElement(_path,'remoteSystemIdent'),~~);
+::      _jman.setValue(_jman.addChildElement(_path,'remoteSystemLicense'),user(7));
+      _jman.setValue(_jman.addChildElement(_path,'tenantState'),_state);
+::      _jman.setValue(_jman.addChildElement(_path,'isActive'),_is_active);
+
+:: do testów
+::_jman.view();
+
+_jman.getJSON()
+
+
+\TenantFind
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14_05]
+:: OPIS: Znalezienie kontrahenta (dzierżawcy) w usłudze (funkcja wewnętrzna)
+::   WE: _a - przeznaczenie danych
+::       _b - URL środowiska
+::       _c - NIP kontrahenta
+::       [_d] - czy wyświetlać informacje [0]/1
+::----------------------------------------------------------------------------------------------------------------------
+_pd:=_a;
+
+_result:=exec('parse_result','sl_api');
+_args:=obj_new(
+   'RESULT','URL',
+   'NIP',
+   'DISPLAY'
+);
+_args.RESULT:=_result;
+_args.URL:=_b;
+_args.NIP:=_c;
+
+_args.DISPLAY:={? var_pres('_d')=type_of(0) || _d || 0 ?};
+
+KOMM.init(,,'TenantFind');
+
+_log_level:=-1;
+
+exec('run_mwac','sync_mwa',_pd,'SL_TENANT_FIND',0,_log_level,_args);
+
+::{? _args.DISPLAY || KOMM.select() ?};
+{? _args.DISPLAY & _args.RESULT.STATUS<>1 & _args.RESULT.MESSAGE<>''
+|| FUN.info(_args.RESULT.MESSAGE)
+|? _args.DISPLAY & _args.RESULT.STATUS=1 & var_pres('DETAILS',_result)=0
+|| FUN.info('Nie znaleziono niezintegrowanego dzierżawcy dla NIP: %1.'@[_args.NIP])
+?};
+
+_result
+
+
+\SL_TENANT_FIND_args
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14_05]
+:: OPIS: Generuje JSONa wyszukującego dzierżawcę (funkcja wewnętrzna)
+::       (dla metody POST SL_TENANT_FIND)
+::   WE: params_get().env.Param
+::   WY: JSON [STRING]
+::----------------------------------------------------------------------------------------------------------------------
+_param:=params_get().env.Param;
+_nip:=_param.NIP;
+
+:: do manipulacji elementem głównym
+_jman:=exec('json_man','__jsonm','{}');
+
+::{
+::    "SL_TENANT_FIND_IN": {
+::        "TENANT_FIND": {
+::            "TIN": <string>,
+::            "remoteSystemName": <string>,
+::            "remoteSystemIdent": <string>
+::        }
+::    }
+::}
+
+_jman.setObject(_path:=_jman.addChildElement('','SL_TENANT_FIND_IN'),'{}');
+   _jman.setObject(_path:=_jman.addChildElement(_path,'TENANT_FIND'),'{}');
+      _jman.setValue(_jman.addChildElement(_path,'TIN'),_nip);
+      _jman.setValue(_jman.addChildElement(_path,'remoteSystemName'),{? _nip='' || exec('remote_system_name','sl_api') || '' ?});
+::      _jman.setValue(_jman.addChildElement(_path,'remoteSystemIdent'),{? _nip='' || exec('base_id','#system') || '' ?});
+
+:: do testów
+::_jman.view();
+
+_jman.getJSON()
+
+
+\SL_TENANT_FIND_parse
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14_05]
+:: OPIS: Parsowanie wyniku odpowiedzi po dodaniu kontrahenta
+::       (dla metody POST SL_TENANT_FIND)
+::   WE: _a - obiekt JMAN reprezentujący zawartość TENANT_FIND_OUT
+::----------------------------------------------------------------------------------------------------------------------
+_jman:=_a;
+
+_res:=params_get().env.Param.RESULT;
+_display:=params_get().env.Param.DISPLAY;
+
+_res.DETAILS:=obj_new('TENANT_ID','CFG_FILE');
+
+::{
+::    "SL_TENANT_FIND_Result": {
+::        "Status": <int>,
+::        "ErrorCode": <int>,
+::        "ErrorMessage": <string>,
+::        "TENANT_FIND_OUT": {
+::            "tenantIdentifier": <string>,
+::            "configFile": <base64Binary>
+::        }
+::    }
+::}
+
+_res.DETAILS.TENANT_ID:=_jman.getValue('tenantIdentifier');
+_res.DETAILS.CFG_FILE:=fopen(null(),'bw',,,1);
+_res.STATUS:=_jman.getValue('configFile',_res.DETAILS.CFG_FILE,'decode');
+
+_res
+
+
+\remote_system_name
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26]
+:: OPIS: Nazwa systemu zdalnego
+::----------------------------------------------------------------------------------------------------------------------
+'ABS.Macrologic'
+
+
+\xinfo_base_id_repair
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Naprawa zmiennej XINFO.BASE_ID
+::----------------------------------------------------------------------------------------------------------------------
+:: Symbol parametru
+_symbol:='XINFO.BASE_ID';
+
+KST_DEF.cntx_psh(); KST_WAR.cntx_psh();
+
+_lrec:=_lmod:=0;
+
+KST_DEF.index('SYMBOL');
+KST_DEF.prefix(_symbol,);
+{? KST_DEF.first()
+|| KST_WAR.index('FIRMA');
+   KST_WAR.prefix(KST_DEF.ref());
+   {? KST_WAR.first()
+   || {!
+      |? _lrec+=1;
+         {? 1+KST_WAR.WARTOSC<>'\''
+         || KST_WAR.WARTOSC:='\'%1\''[KST_WAR.WARTOSC];
+            {? KST_WAR.put() || _lmod+=1 ?}
+         ?};
+         KST_WAR.next()
+      !}
+   ?}
+?};
+
+KST_DEF.cntx_pop(); KST_WAR.cntx_pop();
+'Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'[$_lrec,$_lmod]
+
+
+\delay_if_error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [RR.xx]
+:: OPIS: Liczba sekund odczekania na kolejne wywołanie żądania w przypadku błędu
+::----------------------------------------------------------------------------------------------------------------------
+5*60
+
+:Sign Version 2.0 jowisz:1045 2024/01/03 12:47:47 32a9adc86281bd1bf7b8e9da31da982e54746a83628e694e4c094575c4b8a51d3d1bdddd854522e2d404661a6dd4a9efa86a619fc820f52a0e05fed3986048bdcf0fb4bccacc5d96337b73af93cd8e58ef7d75574a9926b99f12214ff3ed2052fefed07b28d417ddcbf611f5a1aa2e314392b1ca57227a380cb66901dbdacbfc

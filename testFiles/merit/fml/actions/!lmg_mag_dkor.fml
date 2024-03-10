@@ -1,0 +1,245 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lmg_mag_dkor.fml
+:: Utworzony: 10.05.2017
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Rejestracja korekt magzynowych
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.28]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LMG
+::# properties=LOOP,SERVICE
+::# parses=exec('parses','!lmg_mag_dkor')
+::# kind=WE,   symbol=PRDK,      type=STRING,   name=Dostawa pierwotna,       required=N,    keyref=N
+::# kind=WE,   symbol=CENA,      type=NUMBER,   name=Cena po korekcie,        required=N,    keyref=N
+::# kind=WE,   symbol=DATA,      type=DATE,     name=Data korekty,            required=N,    keyref=N
+::# kind=WE,   symbol=GRP_KEY,   type=STRING,   name=Klucz grupujący,         required=N,    keyref=N
+::# kind=WE,   symbol=FAP,       type=STRING,   name=Pozycja korekty zakupu,  required=N,    keyref=N
+::# kind=WY,   symbol=ND,        type=_ND,      name=Dokument magazynowy,     required=N,    keyref=N
+::# kind=WY,   symbol=GRP_KEY,   type=STRING,   name=Klucz grupujący,         required=N,    keyref=N
+
+_mp:=params_get().mp;
+_in:=params_get().in;
+_out:=params_get().out;
+
+_loop:=_mp.loop();
+_akcja:=_mp.akcja();
+
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo();
+
+_prdk:={? var_pres('PRDK',_in)=type_of('') & _in.PRDK<>''              || _in.PRDK || '' ?};
+_cena:={? var_pres('CENA',_in)=type_of(0) & _in.CENA<>0                || _in.CENA || 0 ?};
+_data:={? var_pres('DATA',_in)=type_of(date()) & _in.DATA<>date(0,0,0) || _in.DATA || date(0,0,0) ?};
+
+_fap:={? var_pres('FAP',_in)=type_of('') & _in.FAP<>'' || _in.FAP || '' ?};
+
+_ggrpkey:=_mp.ggrpkey(_in.GGRPKEY,_out.GGRPKEY);
+
+_service:=_mp.isService();
+_auto:=_prdk<>'' & _cena<>0 & _data<>date(0,0,0) & (_mp.isAutoRun() | _service);
+
+_rodz:='';
+_continue:=1;
+_refnd:='';
+
+{? (_proc | _todo) & _loop=0 & ~_auto & _prdk=''
+|| _akcja:=exec('korekty','magdok_korekty',1);
+   _refnd:=6-_akcja;
+   _akcja:=6+_akcja
+?};
+
+::exec('log','#b_proman','lmg_mag_dkor: '+_ggrpkey,'clear');
+::exec('log','#b_proman','_akcja='+_akcja);
+::exec('log','#b_proman','_loop='+$_loop);
+::exec('log','#b_proman','_prdk='+_prdk);
+
+{? _akcja='Anuluj'
+|| FUN.info('Rezygnacja z wystawienia korekt magazynowych.'@);
+   _mp.cancel()
+|? _akcja='Dołącz' | _loop | _prdk<>''
+||
+   _continue:=0;
+   _gen_dok:='';
+   _cancel:=0;
+
+   {? _loop=0
+:: pierwsze wywołanie
+   || _status:=obj_new('O');
+      _status.O:='';
+      _ok:=exec('korbdok','magdok_korekty',0,tm_stamp()+'1',_auto,_prdk,_cena,_data,_refnd,_fap,_status);
+      {? _ok<>''
+      || _continue:=1;
+         _gen_dok:=_ok
+      || _continue:=-1
+      ?}
+:: wywołanie w pętli
+   || _continue:=var_pres('GRP_KEY',_in)=type_of('') & _in.GRP_KEY<>'';
+      {? _continue || _gen_dok:=_in.GRP_KEY || _cancel:=1 ?}
+   ?};
+::exec('log','#b_proman','_gendok='+_gen_dok);
+::exec('log','#b_proman','_continue='+$_continue);
+   {? _continue=-1
+:: Wycofano się z wystawiania dokumentów
+:: lub wystąpił problem jeśli czynność przetwarzana w serwisie
+   ||
+      {? _status.O<>''
+      ||
+::         exec('log','#b_proman','_status.O='+_status.O);
+         _mp.error(_status.O)
+      || _mp.cancel()
+      ?};
+      1
+
+   |? _continue=1 & _gen_dok<>''
+:: Zapisanie parametru wyjściowego ND, wykluczenie kolejnej realizacji z pętli, zakończenie czynności
+   || _aktmsk:=ND.name()+3;
+      _byl:=0;
+      _grp_key:=_gen_dok-1;
+      _grp_key_on:=_grp_key+'1';
+      _grp_key_off:=_grp_key+'0';
+      ODDZ.cntx_psh();
+      ND.cntx_psh();
+      ODDZ.index('KOD');
+      ODDZ.prefix();
+      {? ODDZ.first()
+      || {!
+         |? _newmsk:=ODDZ.KOD+form(ST.AR-2000,,0,'99');
+            ND.use('nagdo'+_newmsk);
+            ND.prefix();
+            {? _grp_key<>''
+            || ND.index('GRP_KEYP');
+               ND.prefix(_grp_key_on);
+               {? ND.first()
+               || _byl:=1;
+                  ND.cntx_psh();
+                  ND.prefix();
+                  ND.GRP_KEY:=_grp_key_off;
+                  do();
+                  ND.put();
+                  _mp.save(exec('kind_out','#b_port'),'ND',ND.ref());
+                  _mp.save(exec('kind_out','#b_port'),'GRP_KEY',_gen_dok);
+                  end();
+                  ND.cntx_pop();
+                  {? ND.first()
+                  ||
+::                   kontynuacja pętli
+                     _mp.loop_continue()
+                  ?}
+               ?}
+            ?};
+            ~_byl & ODDZ.next()
+         !}
+      ?};
+      ND.cntx_pop();
+      ODDZ.cntx_pop();
+      _mp.done()
+   |? ~_cancel
+   || _mp.error('Brak oczekiwanego parametru GRP_KEY.')
+   ?}
+|? _akcja='Usuń'
+|| exec('dkkordel','magdok_korekty');
+   _mp.done()
+?}
+
+::exec('log','#b_proman',,'write')
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.28]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+'Zarejestruj korektę magazynową'@@
+
+
+\dokmag_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.28]
+:: OPIS: Dołączenie korekty dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+exec('mag_psh','open_tab');
+{? HELP.OBSZAR
+|| sel_exit()
+|| _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LMG_MAG_DKOR';
+   _params.AKCJA:='Dołącz';
+   _params.PROC_START:='T';
+
+   exec('mp_run','#b__box',_params)
+?};
+exec('mag_pop','open_tab');
+ND.hdr_sel('');
+~~
+
+
+\dokmag_usunkor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.28]
+:: OPIS: Usunięcie korekty dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LMG_MAG_DKOR';
+_params.AKCJA:='Usuń';
+_params.PROC_START:='N';
+
+exec('mp_run','#b__box',_params);
+ND.hdr_sel('');
+~~
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.42]
+:: OPIS: Formuła ustala PARSES dla ND
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+_result:=1;
+
+{? var_pres('DATA',_in)=type_of(date()) & _in.DATA<>date(0,0,0)
+   & var_pres('PRDK',_in)=type_of('') & _in.PRDK<>''
+||
+   _result:=0;
+   _nd:=exec('FindAndGet','#table',DK,_in.PRDK,,"N",null());
+   _oddz:=exec('FindAndGet','#table',ND,_nd,,"ODDZ",'');
+   _mag:=exec('FindAndGet','#table',ND,_nd,,"MAG",null());
+   {? _oddz<>'' & _mag
+   ||
+      __PARSES.setVal('OddzialLogProd',_oddz);
+      __PARSES.setVal('Magazyn',_mag);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LMG';
+      _args.AR:=_in.DATA~1;
+      _args.AM:=_in.DATA~2;
+      __PARSES.setVal('OkresRok',_args);
+      _result:=1
+   ?}
+?};
+
+_result
+
+:Sign Version 2.0 jowisz:1048 2020/10/16 15:19:13 467f481cda218dff0d9d9be9836fb29b4974b482dbc796f2e5d1fcc9a5760da58ec8c3383bef4552873fa12be3cd7331287918e8a0c3c09d9ca22f881f06e242e00f1eea0018fbc3c22034451ff38717ce3876ed7117ad6e2be2df0caad7e24990c39c478a8de20a0bde7cefc57d4f2693c41911d544b63885d78ab19de06f57

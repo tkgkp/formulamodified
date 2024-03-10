@@ -1,0 +1,656 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_ezk_oros.fml
+:: Utworzony: 17.03.2022
+:: Autor: DG
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PKD_EZK_OROS - Rejestracja oświadczeń zwolnionego przychodu.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [22.26]
+:: OPIS: Rejestracja oświadczeń zwolnionego przychodu - główna formuła czynności.
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+~~
+
+
+\os_zwpod_ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [12.51]
+:: OPIS: Formuła sprawdzająca poprawność wiersza w tabeli ze zwolnieniami od podatku dla osób w wieku do 26 roku życia.
+::   WE: [_a] [STRING] - Znacznik operacji (D-dołącz/P-popraw, domyślnie 'P')
+::   WY:
+::  OLD: \os_zwp_ar/kali.fml
+::  OLD: \os_zwpod_ar/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_action:={? var_pres('_a')=type_of('') || _a || 'P' ?};
+OS_ZWSLO.cntx_psh();
+_roczne:=(OS_ZWPOD.OS_ZWSLO().ROCZNE='T');
+_kod:=OS_ZWSLO.KOD;
+OS_ZWSLO.cntx_pop();
+_result:=__CHK.record2(OS_ZWPOD,'OS_ZWSLO',,{? _roczne || 'ROK' || '' ?},,{? _roczne || 'ROK_Z' || '' ?},,
+                       'D_ZO',,'D_OB',);
+_d_ob:=_d0:=date(0,0,0);
+
+{? _result=''
+|| _ref:={? _action='P' || OS_ZWPOD.ref || null ?};
+   {? _roczne
+   || _d_ob:=date(OS_ZWPOD.ROK,1,1);
+      {? OS_ZWPOD.ROK>OS_ZWPOD.ROK_Z
+      || FUN.emsg('Wartość w polu "Rok zakończenia" nie może być mniejsza niż wartość w polu "Rok rozpoczęcia".'@);
+         _result:='ROK_Z'
+      |? OS_ZWPOD.REZYGN<>'T' & OS_ZWPOD.D_OB~1>OS_ZWPOD.ROK
+      || FUN.emsg('Data w polu "Data stosowania" nie może być późniejsza od daty %1.'@[date(OS_ZWPOD.ROK,12,0)$1]);
+         _result:='D_OB'
+      |? OS_ZWPOD.D_OB<_d_ob
+      || FUN.emsg('Data w polu "Data stosowania" nie może być wcześniejsza od daty %1.'@[_d_ob$1]);
+         _result:='D_OB'
+      |? _kod='ZWPODP' & (OS_ZWPOD.ROK_Z-OS_ZWPOD.ROK>3) &
+         ~FUN.ask('Zwolnienie przychodów z opodatkowania dla osób powracających z zagranicy powinno obowiązywać '+
+               'przez 4 kolejno po sobie następujące lata podatkowe.\nCzy kontynuować?'@)
+      || _result:='ROK_Z'
+      ?}
+   ?};
+   {? _result=''
+   || {? OS_ZWPOD.D_ZO>OS_ZWPOD.D_OB
+      || FUN.emsg('Data w polu "Data stosowania" nie może być wcześniejsza od daty w polu "Data złożenia".'@);
+         _result:='D_OB'
+      |? _kod='ZWPOD' & OS_ZWPOD.D_OB>exec('os_zwpod_d_ow_bl','!pkd_ezk_oros') &
+         ~FUN.ask('Wiek osoby nie uprawnia do skorzystania ze zwolnienie przychodów z opodatkowania '+
+                  'dla młodych pracowników.\nCzy kontynuować?'@)
+      || _result:='D_OB'
+::    Kontrola okresów, końcowy warunek
+      |? OS_ZWPOD.AKTYWNY='T' & OS_ZWPOD.REZYGN='N' & exec('os_zwpod','overlap',_action) &
+         ~FUN.ask('W podanym okresie obowiązywania jest już wprowadzone inne aktywne oświadczenie.\n'
+                  'Czy kontynuować?'@)
+      || _result:='D_OB'
+      ?}
+   ?};
+::       Kontrola wycofania w stosunku do wycofywanego:
+   {? _result='' & OS_ZWPOD.REZYGN='T'
+   || _dZoOjca:=_dObOjca:=_d0;
+      OS_ZWPOD.cntx_psh();
+      {? OS_ZWPOD.seek(OS_ZWPOD.DOK_WYC,,1)
+      || _dZoOjca:=OS_ZWPOD.D_ZO;
+         _dObOjca:=OS_ZWPOD.D_OB
+      ?};
+      OS_ZWPOD.cntx_pop();
+      {? OS_ZWPOD.D_ZO<=_dZoOjca
+      || FUN.emsg('Data złożenia wycofania nie może być mniejsza od daty złożenia wycofywanego dokumentu.'@);
+         _result:='D_ZO'
+      |? OS_ZWPOD.D_OB<=_dObOjca
+      || FUN.emsg('Data stosowania wycofania nie może być mniejsza od daty stosowania wycofywanego dokumentu.'@);
+         _result:='D_OB'
+      ?}
+   ?}
+?};
+
+_result
+
+
+\os_zwpod_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Formuła odpowiedzialna za dynamiczne ustawianie właściwości pól tabeli OS_ZWPOD.
+::       Formuła wywoływana jest w dwóch kontekstach pracy:
+::          - Po redagowaniu konkretnego pola, które determinuje właściwości wyświetlania innych pól.
+::          - Przed wyświetleniem okna redagowania (przed właściwymi akcjami Dołącz, Popraw, Wyświetl), ustawia
+::            właściwości wszystkich pól (wymagających tego).
+::       Kontekst pracy jest określany na podstawie argumentu wywołania.
+::   WE:  _a  [STRING] - Kontekst pracy:
+::             '1' - Obsługa jednego pola [domyślnie].
+::             '*' - Obsługa wszystkich pól.
+::       [_b] [TABLE]  - Uchwyt tabeli, w oknie redagowania której znajdują sie pola. Jeżeli _a='1', parametr jest
+::             opcjonalny - zostanie przyjęta bieżąca tabela.
+::       [_c] [STRING] - Akronim okna, w którym mają być ustawione właściwości pól. Jeżeli _a='1', parametr jest
+::             opcjonalny - zostanie przyjęte bieżące okno.
+::       [_d] [STRING] - Akronim pola, którego wartość determinuje właściwości wyświetlania innych pól. Parametr ma
+::             znaczenie wyłącznie dla _a='1'. [Domyślnie: bieżące pole].
+::   WY: 0 - Błąd argumentów wywołania.
+::       1 - Argumenty poprawne (właściwości ustawione).
+::  OLD: \os_zwpod_efld_opt/!pkd_dos_prus.fml
+::  OLD: \os_zwpod_efld_opt/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tryb:={? var_pres('_a')=type_of('') & (_a='1' | _a='*') || _a || '1' ?};
+{? var_pres('_b')=type_of(OS_ZWPOD)
+|| _TAB:=_b
+|? _tryb='1'
+|| _TAB:=cur_tab(1,1)
+|| return(0)
+?};
+{? var_pres('_c')=type_of('')
+|| _we:=_c
+|? _tryb='1'
+|| _we:=cur_win(1,1)
+|| return(0)
+?};
+{? var_pres('_d')=type_of('')
+|| _fld:=_d
+|? _tryb='1'
+|| _fld:=cur_afld()
+|| _fld:=''
+?};
+
+_set:=exec('efld_opt','#window',,_we);
+
+{? _fld='' | _fld='OS_ZWSLO'
+|| OS_ZWSLO.cntx_psh();
+   _val:=OS_ZWPOD.OS_ZWSLO().ROCZNE='T';
+   OS_ZWSLO.cntx_pop();
+   _set(_TAB,_we,,'enable=%1'[$_val],_TAB,'ROK');
+   _set(_TAB,_we,,'enable=%1'[$_val],_TAB,'ROK_Z')
+?};
+
+{? _fld=''
+|| _val:=OS_ZWPOD.REZYGN='N';
+   _set(_TAB,_we,,'editable=%1'[$_val],_TAB,'ROK');
+   _set(_TAB,_we,,'editable=%1'[$_val],_TAB,'ROK_Z');
+   _set(_TAB,_we,,'editable=%1'[$_val],_TAB,'OS_ZWSLO');
+   _set(_TAB,_we,,'editable=%1'[$_val],_TAB,'AKTYWNY');
+   _set(_TAB,_we,,'editable=grayed',_TAB,'REZYGN');
+   _set(_TAB,_we,,'editable=grayed',_TAB,'WYCOFANY');
+   _set(_TAB,_we,,'editable=grayed',EDIT_VAR,'RP')
+?};
+
+_ret:=1;
+_ret
+
+
+\os_zwpod_bfd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [12.51]
+:: OPIS: Formuła przed dołączeniem wiersza tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zwp_bd/kali.fml
+::  OLD: \os_zwpod_bfd/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+OS_ZWPOD.blank();
+OS_ZWPOD.win_edit('RED');
+OS_ZWSLO.win_sel('SLO');
+OS_ZWSLO.fld_fml('TYP','BLANK',"'O'");
+exec('os_zwpod_efld_opt','!pkd_ezk_oros','*',OS_ZWPOD,OS_ZWPOD.win_edit('?'));
+{? OS_ZWPOD.edit("exec('os_zwpod_ar','!pkd_ezk_oros','D')")
+|| {? ~OS_ZWPOD.add(1)
+   || FUN.emsg('Nie można dodać nowego zapisu.'@)
+   || {? OS_ZWPOD.D_OB>=date(2023,1,1)
+      || exec('grupy_przychodow','rodzaje_platnikow','OS_ZWPOD',1)
+      ?};
+      win_set('cur_row_pos=-1')
+   ?}
+?};
+OS_ZWSLO.fld_fml('TYP','BLANK',"*")
+
+
+\os_zwpod_bfp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła na popraw wiersza tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zwp_bp/kali.fml
+::  OLD: \os_zwpod_bfp/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+OS_ZWPOD.win_edit('RED');
+OS_ZWSLO.win_sel('SLO');
+{? OS_ZWPOD.WYCOFANY='T'
+|| FUN.info('Dokument posiada powiązane wycofanie, zostanie wyświetlony do podglądu.'@);
+   OS_ZWPOD.display();
+   return(0)
+?};
+OS_ZWSLO.fld_fml('TYP','BLANK',"'O'");
+exec('os_zwpod_efld_opt','!pkd_ezk_oros','*',OS_ZWPOD,OS_ZWPOD.win_edit('?'));
+{? OS_ZWPOD.edit("exec('os_zwpod_ar','!pkd_ezk_oros','P')")
+|| {? ~OS_ZWPOD.put(1)
+   || FUN.emsg('Nie można zmodyfikować zapisu.'@)
+   || win_set('cur_row_pos=-1')
+   ?}
+?};
+OS_ZWSLO.fld_fml('TYP','BLANK',"*")
+
+
+\os_zwpod_bfu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła dla akcji Usuń - przed z tabeli OS_ZWPOD
+::   WE:
+::   WY:
+::  OLD: \os_zwp_bu/kali.fml
+::  OLD: \os_zwpod_bfu/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? OS_ZWPOD.WYCOFANY='T'
+|| FUN.info('Dokument posiada powiązane wycofanie. Usunięcie niemożliwe.'@);
+   return(0)
+|? OS_ZWPOD.REZYGN='T'
+|| _refOjca:=OS_ZWPOD.DOK_WYC;
+   {? FUN.ask('Czy usunąć bieżący wiersz?'@) & OS_ZWPOD.del()
+   || OS_ZWPOD.cntx_psh();
+      {? OS_ZWPOD.seek(_refOjca,,1)
+      || OS_ZWPOD.WYCOFANY:='N';
+         OS_ZWPOD.put()
+      ?};
+      OS_ZWPOD.cntx_pop()
+   ?}
+|? OS_ZWPOD.REZYGN<>'T' & exec('os_zwpod_has_os_zwpoz','!pkd_ezk_oros')
+|| {? FUN.ask('%1\n%2'
+         ['Wybrane oświadczenie zostało już wykorzystane do rozliczenia zwolnionego przychodu z opodatkowania.'@,
+          'Czy na pewno usunąć?'@])
+   || OS_ZWPOD.del()
+   ?}
+|| {? exec('del_ask','#table')
+   || OS_ZWPOD.del()
+   ?}
+?}
+
+
+\os_zwpod_delb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [19.42]
+:: OPIS: Wyzwalacz "Usuń - przed" dla tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zwpod_delb/!pkd_dos_prus.fml
+::  OLD: \os_zwpod_delb/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('del_ndx','#table',ZALACZ,'NAG',OS_ZWPOD.uidref()) & exec('del_ndx','#table',OS_GRPRZ,'OS_ZWPOD',OS_ZWPOD.ref())
+
+
+\os_zwpod_bfz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [19.22]
+:: OPIS: Załączniki do oświadczenia o zwolnieniu przychodu od podatku
+::   WE:
+::   WY:
+::  OLD: \os_zwpod_bfz/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('show_zalacz','zalacz','OSOBA','OS_ZWPOD',exec('chk_role','#b__box',OPERATOR.USER,'PKD_EZK_OROS'))
+
+
+\os_zwpod_bfw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła Okienko przed dla tabeli OS_ZWPOD, OS_ZWZAL.
+::   WE:
+::   WY:
+::  OLD: \os_zw_bw/kali.fml
+::  OLD: \os_zw_bfw/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+win_set('cur_row_pos=-1')
+
+
+\os_zwpod_d_ow_bl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [12.51]
+:: OPIS: Wartość dla pola D_OW z tabeli OS_ZWPOD - data osiągnięcia wieku 26 lat.
+::   WE:
+::   WY: Data osiągnięcia wieku 26 lat.
+::  OLD: \os_zp_d_ow_bl/kali.fml
+::  OLD: \os_zwpod_d_ow_bl/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_yr:={? OS_ZWPOD.ROK>0 || OS_ZWPOD.ROK || date()~1+1 ?};
+exec('czytaj','#stalesys',date(_yr,12,0),KST,'ZWPODW');
+_mc:=OSOBA.UR_DATA~2;
+_dn:=OSOBA.UR_DATA~3;
+_dt:=date((OSOBA.UR_DATA~1)+KST.ZWPODW,_mc,{? _mc=2 & _dn=29 || 0 || _dn ?});
+
+{? OS_ZWPOD.OS_ZWSLO=null()
+|| date(0,0,0)
+|| {? OS_ZWPOD.OS_ZWSLO().KOD='ZWPOD'
+   || _dt
+   || date(0,0,0)
+   ?}
+?}
+
+
+\os_zwpod_przych_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [12.51]
+:: OPIS: Formuła przed redakcją pola PRZYCHOD z tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zp_pr_be/kali.fml
+::  OLD: \os_zwpod_przych_be/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+OS_ZWPOD.REZYGN='N'
+
+
+\os_zwpod_rok_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [12.51]
+:: OPIS: Formuła po redakcji pola ROK w tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zp_ro_ae/kali.fml
+::  OLD: \os_zwpod_rok_ae/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+OS_ZWSLO.cntx_psh();
+_result:=OS_ZWPOD.OS_ZWSLO().ROCZNE='T';
+OS_ZWSLO.cntx_pop();
+
+_result
+
+
+\os_zwpod_d_zo_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [12.51]
+:: OPIS: Formuła po redakcji pola D_ZO w tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zp_zo_ae/kali.fml
+::  OLD: \os_zwpod_d_zo_ae/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+OS_ZWPOD.D_OB:=OS_ZWPOD.D_ZO;
+OS_ZWSLO.cntx_psh();
+{? OS_ZWPOD.OS_ZWSLO().ROCZNE='T' & OS_ZWPOD.D_ZO~1<OS_ZWPOD.ROK
+|| OS_ZWPOD.D_OB:=date(OS_ZWPOD.ROK,1,1)
+?};
+OS_ZWSLO.cntx_pop();
+1
+
+
+\os_zwpod_os_zwslo_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Po redagowaniu pola OS_ZWSLO tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zwpod_slo_ae/kali.fml
+::  OLD: \os_zwpod_os_zwslo_ae/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('os_zwpod_efld_opt','!pkd_ezk_oros');
+OS_ZWSLO.cntx_psh();
+{? OS_ZWPOD.OS_ZWSLO().ROCZNE<>'T'
+|| OS_ZWPOD.ROK:=OS_ZWPOD.ROK_Z:=0
+|? OS_ZWPOD.ROK_Z=0 & OS_ZWPOD.ROK=0
+|| OS_ZWPOD.ROK:=date()~1;
+   OS_ZWPOD.ROK_Z:=OS_ZWPOD.ROK+{? OS_ZWSLO.KOD='ZWPODP' || 3 || 0 ?}
+?};
+OS_ZWSLO.cntx_pop();
+1
+
+
+\os_zwpod_aktywny_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła przed redakcją pola AKTYWNY z tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zp_ak_be/kali.fml
+::  OLD: \os_zwpod_aktywny_be/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_ret
+
+
+\os_zwpod_aktywny_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła po redakcji pola AKTYWNY z tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zwpod_aktywny_ae/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('os_zwpod_efld_opt','!pkd_ezk_oros')
+
+
+\os_zwpod_rezygn_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła przed redakcją pola REZYGN z tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zp_re_be/kali.fml
+::  OLD: \os_zwpod_rezygn_be/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_ret
+
+
+\os_zwpod_rezygn_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [12.51]
+:: OPIS: Formuła po redakcji pola REZYGN z tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zp_re_ae/kali.fml
+::  OLD: \os_zwpod_rezygn_ae/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('os_zwpod_efld_opt','!pkd_ezk_oros');
+1
+
+
+\os_zwpod_rok_z_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła przed redakcją pola ROK_Z z tabeli OS_ZWPOD.
+::   WE:
+::   WY:
+::  OLD: \os_zp_rz_be/kali.fml
+::  OLD: \os_zwpod_rok_z_be/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_ret
+
+
+\os_zwpod_has_os_zwpoz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Sprawdza, czy informacje z tabeli OS_ZWPOD zostały wykorzystane do rozliczenia w OS_ZWPOZ.
+::   WE:
+::   WY:
+::  OLD: \zwpod_has_zwpoz/kali.fml
+::  OLD: \os_zwpod_has_os_zwpoz/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+OS_ZWPOZ.cntx_psh();
+OS_ZWPOZ.index('OS_RWRM');
+OS_ZWPOZ.prefix(exec('ref_firma','ustawienia'),OS_ZWPOD.OSOBA,OS_ZWPOD.OS_ZWSLO,'N');
+_rok:={? OS_ZWPOD.ROK || OS_ZWPOD.ROK || OS_ZWPOD.D_OB~1 ?};
+{? OS_ZWPOZ.find_ge(_rok)
+|| {!
+   |? _dtPoz:=date(OS_ZWPOZ.ROK,OS_ZWPOZ.MC,1);
+      {? _dtPoz>=OS_ZWPOD.D_OB & (OS_ZWPOD.ROK_Z=0 | OS_ZWPOZ.ROK<=OS_ZWPOD.ROK_Z)
+      || _result:=1
+      ?};
+      ~_result & OS_ZWPOZ.next() & (OS_ZWPOD.ROK_Z=0 | OS_ZWPOZ.ROK<=OS_ZWPOD.ROK_Z)
+   !}
+?};
+OS_ZWPOZ.cntx_pop();
+
+_result
+
+
+\os_zwpod_control
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła do kontroli zmian pól w OS_ZWPOD
+::   WE:
+::   WY: _result - czy coś się zmieniło w polach (1/0)
+::  OLD: \os_zwp_control/kali.fml
+::  OLD: \os_zwpod_control/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_ref:=OS_ZWPOD.ref();
+_slo:=OS_ZWPOD.OS_ZWSLO;
+_rok:=OS_ZWPOD.ROK;
+_rok_z:=OS_ZWPOD.ROK_Z;
+_d_zo:=OS_ZWPOD.D_ZO;
+_rezygn:=OS_ZWPOD.REZYGN;
+_d_ob:=OS_ZWPOD.D_OB;
+_d_ow:=OS_ZWPOD.D_OW;
+OS_ZWPOD.cntx_psh();
+OS_ZWPOD.prefix();
+{? OS_ZWPOD.seek(_ref)
+|| {? _slo<>OS_ZWPOD.OS_ZWSLO | _rok<>OS_ZWPOD.ROK | _rok_z<>OS_ZWPOD.ROK_Z | _d_zo<>OS_ZWPOD.D_ZO |
+      _rezygn<>OS_ZWPOD.REZYGN | _d_ob<>OS_ZWPOD.D_OB | _d_ow<>OS_ZWPOD.D_OW
+   || {? exec('os_zwpod_has_os_zwpoz','!pkd_ezk_oros')
+      || _result:=1
+      ?}
+   ?}
+?};
+OS_ZWPOD.cntx_pop();
+_result
+
+
+\os_zwpod_typ_overlap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [12.51]
+:: OPIS: Sprawdzenie czy nie pokrywaja sie zwolnienia podatkowe wg roku rozpoczęcia i zakończenia
+::   WE: [_a] [STRING] - Znacznik operacji (D-dołącz / P-popraw, domyślnie 'P')
+::       [_b] [STRING] - Znacznik czy rezygnacja (T/N, domyślnie 'N')
+::   WY:
+::  OLD: \os_zwpod_typ_overlap/!pkd_dos_prus.fml
+::----------------------------------------------------------------------------------------------------------------------
+_action:={? var_pres('_a')=type_of('') || _a || 'P' ?};
+_rod:=OS_ZWPOD.ROK;
+_rdo:=OS_ZWPOD.ROK_Z;
+_ref:=OS_ZWPOD.ref();
+_chk:=0;
+OS_ZWPOD.cntx_psh();
+OS_ZWPOD.index('TYP');
+OS_ZWPOD.prefix(exec('ref_firma','ustawienia'),OS_ZWPOD.OSOBA,OS_ZWPOD.OS_ZWSLO);
+{? OS_ZWPOD.first()
+|| {!
+   |? {? _action='D' | OS_ZWPOD.ref()<>_ref
+      || _chk+=_rod<=OS_ZWPOD.ROK_Z & _rdo>=OS_ZWPOD.ROK
+      ?};
+      OS_ZWPOD.next() & ~_chk
+   !}
+?};
+OS_ZWPOD.cntx_pop();
+_chk
+
+
+\os_zwpod_bw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Przed akcją "Wyświetl" tabeli OS_ZWPOD
+::   WE:
+::   WY:
+::  OLD: \os_zwpod_bw/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('os_zwpod_efld_opt','!pkd_ezk_oros','*',OS_ZWPOD,OS_ZWPOD.win_edit('?'));
+OS_ZWPOD.display()
+
+
+\os_zwpod_bgrprz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Przed akcją "rodzaje płaTników" tabeli OS_ZWPOD
+::   WE:
+::   WY:
+::  OLD: \os_zwpod_bgrprz/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+_redakcja:=exec('chk_role','#b__box',OPERATOR.USER,'PKD_EZK_OROS');
+exec('grupy_przychodow','rodzaje_platnikow','OS_ZWPOD',,_redakcja)
+
+
+\os_zwpod_wycofaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Przed akcją "wYcofaj" tabeli OS_ZWPOD
+::   WE:
+::   WY:
+::  OLD: \os_zwpod_wycofaj/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+_err:='';
+{? OS_ZWPOD.WYCOFANY='T'
+|| _err:='Dokument został już wycofany.'@
+|? OS_ZWPOD.REZYGN='T'
+|| _err:='Nie można wycofać wycofania.'@
+|? OS_ZWPOD.AKTYWNY='N'
+|| _err:='Nie można wycofać nieaktywnego dokumentu.'@
+?};
+{? +_err
+|| FUN.info(_err);
+   return(0)
+?};
+_refOjca:=OS_ZWPOD.ref();
+OS_ZWPOD.DOK_WYC:=#_refOjca;
+OS_ZWPOD.REZYGN:='T';
+_dzis:=date();
+{? OS_ZWPOD.D_ZO>=_dzis
+|| OS_ZWPOD.D_ZO+=1
+|| OS_ZWPOD.D_ZO:=_dzis
+?};
+{? OS_ZWPOD.D_OB>=_dzis
+|| OS_ZWPOD.D_OB+=1
+|| OS_ZWPOD.D_OB:=_dzis
+?};
+OS_ZWPOD.win_edit('RED');
+exec('os_zwpod_efld_opt','!pkd_ezk_oros','*',OS_ZWPOD,OS_ZWPOD.win_edit('?'));
+{? OS_ZWPOD.edit("exec('os_zwpod_ar','!pkd_ezk_oros','D')")
+|| {? ~OS_ZWPOD.add(1)
+   || FUN.emsg('Nie można dodać nowego zapisu.'@)
+   || OS_ZWPOD.cntx_psh();
+      {? OS_ZWPOD.seek(_refOjca,,1)
+      || OS_ZWPOD.WYCOFANY:='T';
+         OS_ZWPOD.put()
+      ?};
+      OS_ZWPOD.cntx_pop();
+      win_set('cur_row_pos=-1')
+   ?}
+?}
+
+
+\os_zwpod_dokument
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Przed akcją "dokumEnt powiązany" tabeli OS_ZWPOD
+::   WE:
+::   WY:
+::  OLD: \os_zwpod_dokument/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+_err:='';
+{? OS_ZWPOD.REZYGN='N' & OS_ZWPOD.WYCOFANY='N'
+|| _err:='Brak dokumentu wycofanego lub wycofującego.'@
+?};
+{? +_err
+|| FUN.info(_err);
+   return(0)
+?};
+OS_ZWPOD.cntx_psh();
+{? OS_ZWPOD.REZYGN='T'
+|| {? OS_ZWPOD.seek(OS_ZWPOD.DOK_WYC,,1)
+   || OS_ZWPOD.hdr_edit(' - dokument wycofany'@);
+      exec('os_zwpod_efld_opt','!pkd_ezk_oros','*',OS_ZWPOD,OS_ZWPOD.win_edit('?'));
+      OS_ZWPOD.display()
+   || _err:='Brak dokumentu wycofanego.'@
+   ?}
+|? OS_ZWPOD.WYCOFANY='T'
+|| OS_ZWPOD.index('DOK_WYC');
+   OS_ZWPOD.prefix(exec('ref_firma','ustawienia'),#OS_ZWPOD.ref());
+   {? OS_ZWPOD.first()
+   || OS_ZWPOD.hdr_edit(' - dokument wycofujący'@);
+      exec('os_zwpod_efld_opt','!pkd_ezk_oros','*',OS_ZWPOD,OS_ZWPOD.win_edit('?'));
+      OS_ZWPOD.display()
+   || _err:='Brak dokumentu wycofującego.'@
+   ?}
+?};
+OS_ZWPOD.cntx_pop();
+{? +_err
+|| FUN.info(_err);
+   return(0)
+?};
+~~
+
+
+\os_zwpod_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: "Rekord - przed" dla okienek wertowania tabeli OS_ZWPOD
+::   WE: _a [INTEGER] - 0/1 czy rekord, dla którego wywołana jest formuła, jest ostatnim odrysowywanym rekordem
+::   WY: ~~
+::  OLD: \os_zwpod_bd/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _a
+|| OS_ZWPOD.actions_grayed(OS_ZWPOD.win_sel('?'),{? OS_ZWPOD.REZYGN='T' || 'CT' || '' ?})
+?};
+~~
+
+:Sign Version 2.0 jowisz:1045 2023/11/15 14:14:34 aa9dd136e7716ed41fdaf10e38c2fad79c9fafc2b639183f2b1d0ba24174c84d66754d5a237cb3872cedee67e5f043493d5484a51036f3797b515fb0eb997fe824739a8d06de628bb3a52a83dcc79b8446b2bd18187da8964dec4b720bb9faf047bc25329b780dfd97008e9ea71359af7a4c5bea74a2f606ec3cfe196fcc30ea

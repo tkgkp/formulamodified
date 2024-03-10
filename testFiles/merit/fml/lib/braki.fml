@@ -1,0 +1,1347 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: braki.fml
+:: Utworzony: 04.08.2015
+:: Autor: WH
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi braków operacyjnych na pozycjach przewodnika
+::======================================================================================================================
+
+
+\gen_repair_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tablica parametrów dla \gen_repair
+::   WY: _args
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new(
+::    Pozycja przewodnika na której wystąpił brak
+      'ZGP_BRAK'
+::    Kwalifikacja braków do której będą należały operacje naprawcze
+      ,'BRAKI_K'
+::    Identyfikator kwalifikacji braków do której będą należały operacje naprawcze
+      ,'BRAKIUID'
+::    Czy wygenerowane operacje naprawcze maja być planowane
+      ,'PLANUJ'
+::    Kwalifikacja braków do której należała operacja na której wystąpił brak
+      ,'BRAKI_SRC'
+::    Pozycja przewodnika którą obrabiać
+      ,'ZGP'
+::    Typ braku który wystąpił
+      ,'TYPE'
+::    Ilość której brakuje i którą należy dogenerować
+      ,'IL_BRAK'
+::    Proporcja wg której generować nowe pozycje planu
+      ,'PROP'
+::    Operacja do której generować
+      ,'ZGP_STOP'
+::    Czy wywołanie rekurencyjne
+      ,'REC'
+::    Tabela z refami przetworzonych ZGPów
+      ,'VISITED'
+::    Argumenty dla funkcji tworzącej nowe pozycje planu
+      ,'ARGS_SPLIT'
+::    Tryb wyświetlania komunikatów 0 - na ekran, 1 do komma
+      ,'KOM_MODE'
+::    Tablica refów zleceń którym wygenerowano nowe operacje naprawcze
+      ,'ZL_TAB'
+              );
+_args.ZGP:=null();
+_args.BRAKI_K:=null();
+_args.BRAKIUID:='';
+_args.PLANUJ:='T';
+_args.BRAKI_SRC:=null();
+_args.ZGP_BRAK:=null();
+_args.TYPE:=exec('type_not_repair','braki');
+_args.IL_BRAK:=0;
+_args.PROP:=0;
+_args.ZGP_STOP:=null();
+_args.REC:=0;
+_args.VISITED:=exec('ref_table','#table');
+
+_args_split:=exec('split_a','po_split');
+_args_split.MODE:='REPAIR';
+_args.ARGS_SPLIT:=_args_split;
+_args.KOM_MODE:=0;
+_args.ZL_TAB:=exec('ref_table','#table');
+_args
+
+
+\gen_repair
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Generuje pozycje naprawcze na zabrakowaną ilość
+::   WE: _a - _args - argumenty funkcji generującej operacje naprawcze, wynik działania exec('gen_repair_a','braki')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('gen_repair_a','braki')
+?};
+
+_result:=0;
+_can_continue:=1;
+
+BRAKI_K.cntx_psh();
+ZGP.cntx_psh();
+ZGP.clear();
+{? _args.PROP=0
+||
+:: Obliczam proporcję ze źródłowej pozycji przewodnika wg której będą generowane pozycje naprawcze
+   {? ZGP.seek(_args.ZGP_BRAK)
+   ||
+      _args.PROP:=_args.IL_BRAK/ZGP.ILOSC;
+      _args.PROP:=exec('max','#math',0,_args.PROP)
+   ?}
+?};
+
+ZGP.clear();
+
+:: Wstępna kontrola czy mozna generować operacje naprawcze
+_can_add:=1;
+{? _can_add>0
+|| {? _args.ZGP=_args.ZGP_BRAK
+   || _il_all:=exec('count_naprawcze','braki',_args.BRAKI_K,_args.ZGP_BRAK);
+      _il_type:=exec('count_naprawcze','braki',_args.BRAKI_K,_args.ZGP_BRAK,_args.TYPE);
+      {? ZGP.seek(_args.ZGP_BRAK)
+      || {? _il_all>=ZGP.IL_BRAK
+         ||
+::          Dla podanej operacji wygenerowano już operacje naprawcze w wystarczającej ilości
+            _can_add:=0;
+            _msg:='Pozycja przewodnika: %1. %2 ma utworzone operacje naprawcze na całą zabrakowaną ilość.'@
+                  [$ZGP.NRP,ZGP.OPIS];
+            {? _args.KOM_MODE>0
+            || KOMM.add(_msg,7,,1)
+            || FUN.info(_msg)
+            ?}
+         ?};
+         {? _il_type>=_args.IL_BRAK
+         ||
+::          Dla podanej operacji wygenerowano już operacje naprawcze danego typu w wystarczającej ilości
+            _can_add:=0;
+            _msg:='Pozycja przewodnika: %1. %2 ma utworzone operacje naprawcze typu: %3 na całą zakwalifikowaną ilość.'@
+                  [$ZGP.NRP,ZGP.OPIS,_args.TYPE];
+            {? _args.KOM_MODE>0
+            || KOMM.add(_msg,7,,1)
+            || FUN.info(_msg)
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+
+ZGP.clear();
+{? ZGP.seek(_args.ZGP) & _can_add>0 & _args.VISITED.r_find(_args.ZGP)=0
+||
+:: Dodaje do tablicy odwiedzonych pozycji
+   _args.VISITED.add(ZGP.ref());
+   _added_zgp:=null();
+   {? (ZGP.NAPRAW='T' & ZGP.BRAKI_K=_args.BRAKI_SRC) | ZGP.NAPRAW='N'
+   ||
+      _buffer:=exec('ZGP','buffer');
+      _buffer.get();
+
+::    Przed generowaniem nowych pozycji naprawczych zapamiętuję oryginalne ilości limitów
+      _tab:=_args.ARGS_SPLIT.ZLIM_OLD;
+      ZLIM.cntx_psh();
+      exec('openmask','zl_common',ZGP.ZL);
+      ZLIM.index('ZGP_KM');
+      ZLIM.prefix(ZGP.ref());
+      {? ZLIM.first()
+      || {!
+         |?
+            _tab.prefix($ZLIM.ref());
+            {? _tab.size()=0
+            || _tab.blank();
+               _tab.ZLIM:=$ZLIM.ref();
+               _tab.LIL:=exec('sum_il','zl_limit',ZLIM.ref());
+               _tab.add()
+            ?};
+            ZLIM.next()
+         !}
+      ?};
+      ZLIM.cntx_pop();
+
+      _buffer.NAPRAW:='T';
+      _buffer.BRAKI_K:=_args.BRAKI_K;
+      _buffer.NAPR_TYP:=_args.TYPE;
+      _buffer.PL_SPLIT:=null();
+      _buffer.PLANUJ:=_args.PLANUJ;
+      _buffer.BRAKIUID:=_args.BRAKIUID;
+      _buffer.PX_STAGE:=null();
+      _added_zgp:=exec('create_new_zgp','po_split',_args.ARGS_SPLIT,_buffer,_args.PROP);
+      {? _added_zgp=null()
+      || _can_continue:=0
+      ?};
+      {? _can_continue>0
+      || _args.ZL_TAB.add(_buffer.ZL)
+      ?}
+   ?};
+
+   _can_next:=1;
+   {? _args.ZGP=_args.ZGP_STOP & _can_continue>0
+   || _can_next:=0;
+
+      {? _args.TYPE=exec('type_repair','braki')
+      ||
+         ZL.cntx_psh();
+         exec('tktl_cntx_psh','tech_common');
+         _rtktl:=
+         {? ZGP.ZL().RTKTL<>''
+         || _rtktl:=ZL.RTKTL
+         || _rtktl:=ZL.RKTL
+         ?};
+         _msk:=((8+_rtktl)+3);
+         exec('tktl_use','tech_common',_msk);
+         TKTL.prefix();
+         {? TKTL.seek(_rtktl)
+         ||
+::          Wygenerowanie surowców do operacji naprawczej, które nie mają przypisanej operacji
+            {? 1
+::               TKTL.TYP().SUR='K'
+            ||
+::             Surowce do karty (bez przypisanej operacji) więc do pierwszej operacji braku naprawialnego
+::             muszę wygenerować wszystkie limity i nielimity, które najwyżej ktoś później skoryguje
+               _top_level:=exec('top_level','zl_link',ZGP.ZL);
+               _can_continue:=exec('zlim_gen_main','zl_limit','',_top_level,,0,0,1,0,0,1,1,,_added_zgp)
+            ?}
+         ?};
+         ZL.cntx_pop();
+         exec('tktl_cntx_pop','tech_common');
+         ~~
+      ?}
+   ?};
+
+:: Obsługa planu strategicznego - usuwam opóźnienia do etapu do którego wygenerowano operacje naprawcze
+:: bo to by przeplanować ten etap, być może ze zmienionymi normami. Gdyby opóźnienia zostały to normy by się nie zmieniły
+   {? _can_continue>0 & _args.ZGP=_args.ZGP_BRAK
+   ||
+      {? ZGP.PX_STAGE<>null()
+      || PX_STAGE.cntx_psh();
+         PX_POZ.cntx_psh();
+         PX_POZ.index('PX_STAG2');
+         PX_POZ.prefix(ZGP.PX_STAGE);
+         {? PX_POZ.first()
+         || {!
+            |? _next:=0;
+               _ref_nxt:=null();
+               PX_POZ.cntx_psh();
+               {? PX_POZ.next()
+               || _ref_nxt:=PX_POZ.ref()
+               ?};
+               PX_POZ.cntx_pop();
+
+               {? PX_POZ.STATUS=exec('status_delay','px_poz')
+               || _can_continue:=exec('delete','px_poz',PX_POZ.ref(),,0);
+                  {? _can_continue=0
+                  || KOMM.add('Nie udało się usunąć z planu strategicznego pozycji przewodnika do której generowano operacje naprawcze.'@,2,,1)
+                  ?}
+               ||
+                  _making:=exec('px_poz_making','px_poz');
+                  _made:=exec('px_poz_made','px_poz');
+                  {? _making>0 & _made=0
+                  ||
+::                   Pozycja jest częściowo wykonana, więc dzielę ją na część wykonaną w całości
+::                   i nie wykonaną którą usunę
+                     _argsplit:=exec('split_a','px_poz');
+                     _argsplit.SRC_POZ:=PX_POZ.ref();
+                     _argsplit.SRC_STAT:=exec('status_wyk2','px_poz');
+                     _argsplit.MERGE:=0;
+                     _wyk:=exec('count_wyk','px_poz',PX_POZ.ref());
+
+::                   dzielenie pozycji planu
+                     _splitres:=exec('split','px_poz',_argsplit,_wyk);
+                     {? _splitres<>null()
+                     || _can_continue:=exec('delete','px_poz',_splitres,,0);
+                        {? _can_continue=0
+                        || KOMM.add('Nie udało się usunąć z planu strategicznego pozycji przewodnika do której generowano operacje naprawcze.'@,2,,1)
+                        ?}
+                     || _can_continue:=0;
+                        KOMM.add('Nie udała się korekta planu strategicznego.'@,2,,1)
+                     ?}
+                  ?}
+               ?};
+               {? _ref_nxt<>null()
+               || _next:=PX_POZ.seek(_ref_nxt)
+               ?};
+               _next>0 & _can_continue>0
+            !}
+         ?};
+         PX_POZ.cntx_pop();
+         PX_STAGE.cntx_pop()
+      ?}
+   ?};
+   {? _can_continue>0 & _can_next>0
+   ||
+
+::    Iteruję po poprzednikach operacji i generuję kolejne naprawcze operacje
+      NASZGP.cntx_psh();
+      NASZGP.index('NASTOP');
+      NASZGP.prefix(ZGP.ref());
+      {? NASZGP.first()
+      || {!
+         |?
+            _path_ok:=1;
+            {? _args.TYPE=exec('type_repair','braki') & _args.ZGP_STOP<>null()
+            ||
+::             Jeśli brak naprawialny to sprawdzam czy na danej ścieżce znajduje się operacja
+::             od której powtórzyć proces
+               _path_ok:=exec('chk_path','braki',NASZGP.OPER,_args.ZGP_STOP)
+            ?};
+            {? _path_ok>0
+            ||
+               ZGP.cntx_psh();
+               _rec:=_args.REC;
+               _zgp:=_args.ZGP;
+
+               _args.REC:=1;
+               _args.ZGP:=NASZGP.OPER;
+               _can_continue:=exec('gen_repair','braki',_args);
+               _args.REC:=_rec;
+               _args.ZGP:=_zgp;
+               ZGP.cntx_pop()
+            ?};
+            NASZGP.next() & _can_continue>0
+         !}
+      ?};
+      NASZGP.cntx_pop()
+   ?}
+?};
+ZGP.cntx_pop();
+
+{? _can_continue>0 & _args.REC=0
+||
+:: Po wygenerowaniu operacji naprawczych uruchamiam odtwarzanie powiązań między operacjami dla utworzonych operacji naprawczych
+   _args_next:=exec('copy_nexts_br_a','braki');
+   _args_next.ZGP:=_args.ZGP;
+   _args_next.ZGP_BRAK:=_args.ZGP_BRAK;
+   _args_next.ZGP_STOP:=_args.ZGP_STOP;
+   _args_next.DIR:=-1;
+   _args_next.TYPE:=_args.TYPE;
+   _args_next.BRAKI_K:=_args.BRAKI_K;
+
+   _can_continue:=exec('copy_nexts_br','braki',_args_next);
+   {? _can_continue=0
+   || KOMM.add('Nie udało się kopiowanie następników operacji dla nowo utworzonych operacji naprawczych.'@,2,,1)
+   ?}
+?};
+
+{? _can_continue>0 & _args.REC=0
+||
+:: Po wygenerowaniu operacji naprawczych przenumerowuje pozycje przewodników, ponieważ mogły się zmienić
+   _can_continue:=exec('zgh_renumerate','braki',_args.ARGS_SPLIT.ZGH_RNUM.tab);
+   {? _can_continue=0
+   || KOMM.add('Nie udało się przenumerowanie pozycji przewodników na zleceniu. Wszystkie zmiany zostały wycofane.',2,,1)
+   ?}
+?};
+
+{? _can_continue>0 & _args.REC=0
+||
+:: Odwarzam statusy na przewodnikach, które dostały nowe pozycje
+   _tab_zgh:=_args.ARGS_SPLIT.ZGH_RNUM.tab;
+   _tab_zgh.clear();
+   {? _tab_zgh.first()
+   || {!
+      |? _zgh:=exec('FindAndGet','#table',ZGH,_tab_zgh.SQL,,,null());
+         exec('recover_sta_zgh','zl_guide',_zgh);
+         _tab_zgh.next()
+      !}
+   ?}
+?};
+
+{? _can_continue>0 & _args.REC=0
+||
+:: Aktualizuje przepisy planistyczne zleceń które dostały nowe operacje naprawcze
+   _tab_zl:=_args.ZL_TAB.tab;
+   {? _tab_zl.first()
+   || {!
+      |?
+         _zl:=exec('FindAndGet','#table',ZL,_tab_zl.SQL,,,null());
+         {? _zl<>null()
+         ||
+::          Aktualizuje przepis planistyczny zlecenia
+            _can_continue:=exec('zl_tex_update','px_tex',_zl,2,2)
+         ?};
+         _tab_zl.next() & _can_continue>0
+      !}
+   ?}
+?};
+BRAKI_K.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\type_repair
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Zwraca typ braku - naprawialny
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+'NAPRAWIALNA'
+
+
+\type_not_repair
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Zwraca typ braku - nienaprawialny
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+'NIENAPRAWIALNA'
+
+
+\copy_nexts_br_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Tablica parametrów dla \copy_nexts_br
+::   WY: _args
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new(
+       'ZGP'
+       ,'ZGP_BRAK'
+       ,'ZGP_STOP'
+       ,'BRAKI_K'
+       ,'TYPE'
+       ,'VISITED'
+       ,'DIR'
+              );
+_args.ZGP:=null();
+_args.ZGP_BRAK:=null();
+_args.ZGP_STOP:=null();
+_args.BRAKI_K:=null();
+_args.TYPE:='';
+_args.DIR:=0;
+_args.VISITED:=exec('ref_table','#table');
+_args
+
+
+\copy_nexts_br
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Uzupełnia powiązania międzyoperacyjne dla całej kwalifikacji braków
+::   WE: _args
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('copy_nexts_br_a','braki')
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh(); ZGP.clear();
+NASZGP.cntx_psh();
+{? _args.ZGP<>null() & _args.BRAKI_K<>null()
+|| {? ZGP.seek(_args.ZGP) & _args.VISITED.r_find(_args.ZGP)=0
+   ||
+      _args.VISITED.add(ZGP.ref());
+::    1. Tworzymy kopie nastepnikow
+      NASZGP.index('OPNAST');
+      NASZGP.prefix(ZGP.ref());
+      {? NASZGP.first()
+      || {!
+         |?
+
+            _can_copy:=1;
+
+::          Jeżeli ścieżka się zrównolegla, czyli są więcej niż jeden następnik
+::          to sprawdzam czy wśród tych następników jest operacja na której wystąpił brak.
+::          Jeżeli jest, to znak że jest sens kopiować tylko tego NASZGPa który prowadzi do
+::          operacji z brakiem, ponieważ każdego innego nie uda się skopiować (nie znajdzie rekordu docelowego dla strzałki
+::          ponieważ nie ma go w tej ścieżce naprawczej)
+::                    3
+::          1 - 2 <        > 5
+::                  4(brak) /
+::                         /
+::          naprawcze:    /
+::                       /
+::          1* - 2* - 4*/
+::
+::          W tym przykładzie w ścieżce naprawczej nie ma operacji 3 więc nie ma sensu próbować
+::          kopiować następnika który tam prowadzi
+
+            {? NASZGP.size()>1
+            || _rown_brak:=0;
+               NASZGP.cntx_psh();
+               {? NASZGP.first()
+               || {!
+                  |?
+                     {? NASZGP.NRNAST=_args.ZGP_BRAK
+                     || _rown_brak:=1
+                     ?};
+                     NASZGP.next() & _rown_brak=0
+                  !}
+               ?};
+               NASZGP.cntx_pop();
+
+               {? _rown_brak>0
+               || {? NASZGP.NRNAST<>_args.ZGP_BRAK
+                  || _can_copy:=0
+                  ?}
+               ?}
+            ?};
+
+            {? _can_copy>0 & NASZGP.NRNAST<>null()
+            ||
+               _zl:=NASZGP.KTL;
+               _sciezka:=NASZGP.SCIEZKA;
+               _zl_nast:=NASZGP.ZLNAST;
+
+::             Iterujemy po dzieciach biezacego ZGPa który powstał w wyniku danej kwalifikacji
+               ZGP.cntx_psh();
+               ZGP.index('BRAKITYP');
+               ZGP.prefix(_args.TYPE,_args.BRAKI_K,ZGP.UID);
+               {? ZGP.first()
+               || {!
+                  |?
+::                   Stoję na dziecku
+
+                     {? _args.ZGP=_args.ZGP_BRAK
+                     ||
+::                      Jeśli obrabiam rekord dla którego wystąpił brak, to następnikiem
+::                      będzie ten ZGP na którego wskazuje aktualny NASZGP
+                        _dst:=NASZGP.NRNAST
+                     ||
+::                      Szukam rekordu docelowego dla strzałki
+                        _dst:=exec('find_zgp','braki',_args.BRAKI_K,NASZGP.NRNAST,_args.TYPE)
+                     ?};
+                     {? _dst<>null()
+                     ||
+::                      Sprawdzam czy można dodać
+                        _can_add:=exec('chk_nasz_uniq2','po_split',ZGP.ref(),_dst);
+                        {? _can_add>0
+                        || NASZGP.cntx_psh();
+                           NASZGP.clear();
+                           NASZGP.blank();
+                           NASZGP.KTL:=_zl;
+                           NASZGP.OPER:=ZGP.ref();
+                           NASZGP.NRNAST:=_dst;
+                           NASZGP.SCIEZKA:=_sciezka;
+                           NASZGP.ZLNAST:=_zl_nast;
+                           _can_continue:=NASZGP.add(1);
+                           NASZGP.cntx_pop()
+                        ?}
+                     || KOMM.add('Nie znaleziono następnika dla pozycji przewodnika: '+ZGP.OPIS+' ilość: '+$ZGP.ILOSC+'. Wszystkie zmiany zostały wycofane.',2,,1);
+                        _can_continue:=0
+                     ?};
+                     ZGP.next() & _can_continue>0
+                  !}
+               ?};
+               ZGP.cntx_pop()
+            ?};
+            NASZGP.next() & _can_continue>0
+         !}
+      ?};
+
+::    2. Tworzymy kopie poprzedników
+      {? _can_continue>0
+      ||
+         {? ZGP.ref()<>_args.ZGP_STOP
+         ||
+            NASZGP.index('NASTOP');
+            NASZGP.prefix(ZGP.ref());
+            {? NASZGP.first()
+            || {!
+               |?
+                  {? NASZGP.OPER<>null()
+                  ||
+                     _path_ok:=1;
+                     {? _args.TYPE=exec('type_repair','braki') & _args.ZGP_STOP<>null()
+                     ||
+::                      Jeśli brak naprawialny to sprawdzam czy na danej ścieżce znajduje się operacja
+::                      od której powtórzyć proces
+                        _path_ok:=exec('chk_path','braki',NASZGP.OPER,_args.ZGP_STOP)
+                     ?};
+
+                     {? _path_ok>0
+                     ||
+                        _zl:=NASZGP.KTL;
+                        _sciezka:=NASZGP.SCIEZKA;
+                        _zl_nast:=NASZGP.ZLNAST;
+
+::                      Iterujemy po dzieciach biezacego ZGPa który powstał w wyniku danej kwalifikacji
+                        ZGP.cntx_psh();
+                        ZGP.index('BRAKITYP');
+                        ZGP.prefix(_args.TYPE,_args.BRAKI_K,ZGP.UID);
+                        {? ZGP.first()
+                        || {!
+                           |?
+::                            Stoję na dziecku
+
+::                            Szukam rekordu źródłowego dla strzałki
+                              _dst:=exec('find_zgp','braki',_args.BRAKI_K,NASZGP.OPER,_args.TYPE);
+                              {? _dst<>null()
+                              ||
+::                               Sprawdzam czy można dodać
+                                 _can_add:=exec('chk_nasz_uniq2','po_split',_dst,ZGP.ref());
+                                 {? _can_add>0
+                                 || NASZGP.cntx_psh();
+                                    NASZGP.clear();
+                                    NASZGP.blank();
+                                    NASZGP.KTL:=_zl;
+                                    NASZGP.OPER:=_dst;
+                                    NASZGP.NRNAST:=ZGP.ref();
+                                    NASZGP.SCIEZKA:=_sciezka;
+                                    NASZGP.ZLNAST:=_zl_nast;
+                                    _can_continue:=NASZGP.add(1);
+                                    NASZGP.cntx_pop()
+                                 ?}
+                              ||
+                                 ZGP.cntx_psh();
+                                 {? NASZGP.OPER().BRAKI_K=null()
+                                 || KOMM.add('Nie znaleziono poprzednika dla pozycji przewodnika: '+ZGP.OPIS+' ilość: '+$ZGP.ILOSC+'. Wszystkie zmiany zostały wycofane.',2,,1);
+                                    _can_continue:=0
+                                 ?};
+                                 ZGP.cntx_pop()
+                              ?};
+                              ZGP.next() & _can_continue>0
+                           !}
+                        ?};
+                        ZGP.cntx_pop()
+                     ?}
+                  ?};
+                  NASZGP.next() & _can_continue>0
+               !}
+            ?}
+         ?}
+      ?};
+
+      {? _can_continue>0 & _args.ZGP<>_args.ZGP_STOP
+      ||
+         NASZGP.cntx_psh();
+         {? _args.DIR>0
+         || NASZGP.index('OPNAST');
+            NASZGP.prefix(_args.ZGP);
+            {? NASZGP.first()
+            || {!
+               |?
+::                uruchamiam kopiowanie dla kolejnych ZGPów
+                  _zgp:=_args.ZGP;
+                  _args.ZGP:=NASZGP.NRNAST;
+::                !!! REKURENCJA !!!
+                  _can_continue:=exec('copy_nexts_br','braki',_args);
+                  _args.ZGP:=_zgp;
+                  NASZGP.next() & _can_continue>0
+               !}
+            ?}
+         |? _args.DIR<0
+         || NASZGP.index('NASTOP');
+            NASZGP.prefix(_args.ZGP);
+            {? NASZGP.first()
+            || {!
+               |?
+::                uruchamiam kopiowanie dla kolejnych ZGPów
+                  _zgp:=_args.ZGP;
+                  _args.ZGP:=NASZGP.OPER;
+::                !!! REKURENCJA !!!
+                  _can_continue:=exec('copy_nexts_br','braki',_args);
+                  _args.ZGP:=_zgp;
+                  NASZGP.next() & _can_continue>0
+               !}
+            ?}
+         ?};
+         NASZGP.cntx_pop()
+      ?}
+   ?}
+?};
+
+NASZGP.cntx_pop();
+ZGP.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\find_zgp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Znajduje pozycję przewodnika do której przypiąć powiązanie na podstawie kwalifikacji braków która została dokonana
+::   WE: _a - BRAKI_K.ref() - kwalifikacja braków
+::       _b - ZGP.ref() - źródłowa pozycja przewodnika
+::       _c - STRING - typ braku
+::   WY: ZGP.ref lub null jeśli nie znaleziono
+::----------------------------------------------------------------------------------------------------------------------
+_braki_k:=_a;
+_zgp:=_b;
+_typ:=_c;
+
+_result:=null();
+ZGP.cntx_psh(); ZGP.clear();
+{? ZGP.seek(_zgp)
+|| ZGP.index('BRAKITYP');
+   ZGP.prefix(_typ,_braki_k,ZGP.UID);
+   {? ZGP.first()
+   || _result:=ZGP.ref()
+   ?}
+?};
+ZGP.cntx_pop();
+_result
+
+
+\count_naprawcze
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Dla podanej kwalifikacji zwraca na jaką ilość zostały utworzone operacje naprawcze dla podanej
+::       kwalifikacji braków
+::   WE: _a - BRAKI_K.ref - kwalifikacja braków
+::       [_b] - ZGP.ref - jeśli podany to zlicz operacje naprawcze tylko dla tego ZGPa, jeśli nie podane to dla wszystkich
+::       [_c] - STRING - typ braków które zliczać
+::   WY: REAL - ilość na którą utworzono operacje naprawcze
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+
+_braki_k:=_a;
+
+_zgp:=null();
+{? var_pres('_b')=type_of(ZGP.ref())
+|| _zgp:=_b
+?};
+
+_type:='';
+{? var_pres('_c')=type_of('')
+|| _type:=_c
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+{? _can_continue>0
+|| {? _type=''
+   ||
+      ZGP.index('BRAKISRC');
+      {? _zgp<>null()
+      || _uid:=exec('FindAndGet','#table',ZGP,_zgp,,"UID",null());
+         ZGP.prefix(_braki_k,'N',_uid)
+      || ZGP.prefix(_braki_k,'N')
+      ?};
+      {? ZGP.first()
+      || {!
+         |? _result+=ZGP.ILOSC;
+            ZGP.next()
+         !}
+      ?}
+   || ZGP.index('BRAKITYP');
+      {? _zgp<>null()
+      || _uid:=exec('FindAndGet','#table',ZGP,_zgp,,"UID",null());
+         ZGP.prefix(_type,_braki_k,_uid)
+      || ZGP.prefix(_type,_braki_k)
+      ?};
+      {? ZGP.first()
+      || {!
+         |? _result+=ZGP.ILOSC;
+            ZGP.next()
+         !}
+      ?}
+   ?}
+?};
+ZGP.cntx_pop();
+_result
+
+
+\count_napr4zgp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Dla podanego ZGPa zwraca na jaką ilość zostały utworzone operacje naprawcze, ale pod warunkiem
+::       że dany ZGP ma jakieś rekordy BRAKI_K czyli był źródłem z którego wygenerowano operacje naprawcze
+::   WE: [_a] - ZGP.ref() lub bieżący rekord
+::   WY: REAL - ilosć na operacjach naprawczych jaka została utworzona
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZGP.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+{? _ref<>null()
+|| ZGP.clear();
+   {? ZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   BRAKI_K.cntx_psh();
+   BRAKI_K.index('ZGP_SRC');
+   BRAKI_K.prefix(ZGP.ref());
+   {? BRAKI_K.size()=0
+   || _can_continue:=0
+   ?};
+   {? _can_continue>0
+   ||
+      ZGP.index('NAPRAW');
+      ZGP.prefix('T',ZGP.UID);
+      {? ZGP.first()
+      || {!
+         |? _result+=ZGP.ILOSC;
+            ZGP.next()
+         !}
+      ?}
+   ?};
+   BRAKI_K.cntx_pop()
+?};
+ZGP.cntx_pop();
+_result
+
+
+\del_repair
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Usuwa wszystkie operacje naprawcze skojarzone z daną kwalifikacją BRAKI_K
+::   WE: [_a] - BRAKI_K lub bieżący rekord
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(BRAKI_K.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+BRAKI_K.cntx_psh();
+{? _ref<>null()
+|| BRAKI_K.clear();
+   {? BRAKI_K.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+:: Sprawdzam czy można usunąć
+
+
+   _old_var:=VAR.GRUPA;
+   VAR.GRUPA:='T';
+   _zl_tab:=exec('ref_table','#table');
+   _zgh_tab:=exec('ref_table','#table');
+
+   {? _can_continue>0
+   ||
+      ZGP.cntx_psh();
+
+      ZGP.index('BRAKISRC');
+      ZGP.prefix(BRAKI_K.ref());
+
+      {? ZGP.first()
+      || {!
+         |? _next:=0;
+            _ref_nxt:=null();
+            ZGP.cntx_psh();
+            {? ZGP.next()
+            || _ref_nxt:=ZGP.ref()
+            ?};
+            ZGP.cntx_pop();
+
+            {? ZGP.TPZ<>'T'
+            ||
+               _zl_tab.add(ZGP.ZL);
+               _zgh_tab.add(ZGP.NRZLP);
+
+               _px_stage:=ZGP.PX_STAGE;
+               {? _can_continue>0
+               || _can_continue:=exec('zgp_del','zl_guide',1,0,,0)
+               ?};
+
+               {? _can_continue>0 & _px_stage<>null()
+               || _can_continue:=exec('clean_from_plan','px_stage',_px_stage);
+                  {? _can_continue>0
+                  || _can_continue:=exec('PX_STAGE_del','px_stage',_px_stage)
+                  ?}
+               ?}
+            ?};
+
+            {? _ref_nxt<>null()
+            || _next:=ZGP.seek(_ref_nxt)
+            ?};
+            _next>0 & _can_continue>0
+         !}
+      ?};
+      ZGP.cntx_pop()
+   ?};
+   VAR.GRUPA:=_old_var;
+
+   {? _can_continue>0
+   ||
+      _tab:=_zl_tab.tab;
+      _tab.clear();
+      {? _tab.first()
+      || {!
+         |?
+            _zl:=exec('FindAndGet','#table',ZL,_tab.SQL,,null());
+            {? _zl<>null()
+            ||
+::             Aktualizuje przepis planistyczny zlecenia
+               _can_continue:=exec('zl_tex_update','px_tex',_zl,2,2)
+            ?};
+            _tab.next() & _can_continue>0
+         !}
+      ?}
+   ?};
+   {? _can_continue>0
+   ||
+::    Odwarzam statusy na przewodnikach, które dostały nowe pozycje
+      _tab_zgh:=_zgh_tab.tab;
+      _tab_zgh.clear();
+
+::    Po usunięciu operacji naprawczych przenumerowuje pozycje przewodników, ponieważ mogły się zmienić
+      _can_continue:=exec('zgh_renumerate','po_split',_tab_zgh,'MERGE');
+      {? _can_continue=0
+      || KOMM.add('Nie udało się przenumerowanie pozycji przewodników na zleceniu. Wszystkie zmiany zostały wycofane.',2,,1)
+      ?};
+
+      {? _tab_zgh.first()
+      || {!
+         |? _zgh:=exec('FindAndGet','#table',ZGH,_tab_zgh.SQL,,,null());
+            exec('recover_sta_zgh','zl_guide',_zgh);
+            _tab_zgh.next()
+         !}
+      ?}
+   ?};
+   ~~
+?};
+BRAKI_K.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\zgh_renumerate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Przenumerowuje pozycje w przewodnikach
+::   WE: _a - tab_tmp - tablica zawierająca przewodniki wymagające przenumerowania
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+
+_tab.cntx_psh();
+_tab.clear();
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+ZGP.index('PNRPP');
+{? _tab.first()
+||
+   _args:=exec('renum_args','zl_guide');
+   _args.MODE:='BRAKI';
+   {!
+   |?
+      _zgh:=exec('FindAndGet','#table',ZGH,_tab.SQL,,,null());
+      {? _zgh<>null()
+      || ZGP.prefix(_zgh,'N');
+         _can_continue:=exec('renum_before','zl_guide',_args)
+      ?};
+      _tab.next() & _can_continue>0
+   !};
+   {? _can_continue>0 &_tab.first()
+   || ZGP.index('PNRPP');
+      {!
+      |?
+         _zgh:=exec('FindAndGet','#table',ZGH,_tab.SQL,,,null());
+         {? _zgh<>null()
+         ||
+            ZGP.prefix(_zgh,'N');
+
+            _args.clean();
+            _args.REC:=0;
+            _args.ZGP:=null();
+            _args.CAN_NRP:=1;
+            _args.CAN_REC:=1;
+            _args.NAS_FROM:=null();
+
+            {? _can_continue>0
+            || _can_continue:=exec('renum','zl_guide',_args)
+            ?}
+         ?};
+         _tab.next() & _can_continue>0
+      !}
+   ?};
+
+   {? _can_continue>0 & _tab.first()
+   || ZGP.index('PNRPP');
+      {!
+      |?
+         _zgh:=exec('FindAndGet','#table',ZGH,_tab.SQL,,,null());
+         ZGP.prefix(_zgh,'N');
+         {? _can_continue>0
+         || _can_continue:=exec('renum_after','zl_guide',_args,_zgh)
+         ?};
+         _tab.next() & _can_continue>0
+      !}
+   ?}
+?};
+ZGP.cntx_pop();
+_tab.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\chk_path
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.46]
+:: OPIS: Sprawdza czy na podanej ścieżce znajduje się szukany ZGP
+::   WE: _a - ZGP.ref() - operacja od której rozpocząć przeszukiwanie
+::       _b - ZGP.ref() - szukana operacja
+::   WY: 0 - na podanej ścieżce nie ma szukanej operacji
+::       1 - znaleziono operację
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_start:=_a;
+_target:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh(); ZGP.prefix();
+{? ZGP.seek(_start)
+||
+   {? $ZGP.ref()=$_target
+   || _result:=1;
+      _can_continue:=0
+   ?};
+
+   {? _can_continue>0
+   ||
+::    Iteruję po poprzednikach operacji i generuję kolejne naprawcze operacje
+      NASZGP.cntx_psh();
+      NASZGP.index('NASTOP');
+      NASZGP.prefix(ZGP.ref());
+      {? NASZGP.first()
+      || {!
+         |?
+            {? exec('chk_path','braki',NASZGP.OPER,_target)>0
+            || _result:=1;
+               _can_continue:=0
+            ?};
+            NASZGP.next() & _can_continue>0
+         !}
+      ?};
+      NASZGP.cntx_pop()
+   ?}
+?};
+ZGP.cntx_pop();
+_result
+
+
+\has_braki_todo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy zlecenie/przewodnik ma jakieś zarejestrowane braki które nie zostały zbilansowane
+::       operacjami naprawczymi lub ma jakieś zarejestrowane braki które nie zostały zakwalifikowane
+::   WE: _a - ZL.ref/ZGH.ref lub bieżące zlecenie/przewodnik
+::       [_b] - NUMBER - kryterium sprawdzania: [1] - operacje naprawcze, 0 - kwalifikacja
+::       [_c] - modyfikowana tabela: [ZL] - zlecenie, ZGH - przewodnik
+::   WY: 0 - nie ma żadnych nierozliczonych braków
+::       1 - są nierozliczone braki
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZL.ref())
+|| _ref:=_a
+?};
+_what:=1;
+{? var_pres('_b')=type_of(0)
+|| _what:=_b
+?};
+_tab:={? var_pres('_c')=type_of(ZL) || _c || ZL ?};
+
+_result:=0;
+_can_continue:=1;
+
+_tab.cntx_psh();
+{? _ref<>null()
+|| _tab.prefix();
+   {? _tab.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? _tab=ZL & ZL.RODZAJ<>'P'
+   ||
+::    Zlecenie złożone
+      ZL.cntx_psh();
+      ZL.index('NRNZL');
+      ZL.prefix(ZL.UNRZL);
+      {? ZL.first()
+      || {!
+         |?
+::          !!! REKURENCJA !!!
+            _result:=exec('has_braki_todo','braki',,_what);
+            ZL.next() & _result=0
+         !}
+      ?};
+      ZL.cntx_pop();
+      ~~
+   ||
+::    Zlecenie proste albo półfabrykatowe
+      ZGP.cntx_psh();
+      ZGP.index('PNRPP');
+      ZGH.cntx_psh();
+      {? _tab=ZL
+      || ZGH.index('ZLNR');
+         ZGH.prefix(ZL.ref())
+      ?};
+      {? _tab=ZGH | (_tab=ZL & ZGH.first())
+      || {!
+         |? ZGP.prefix(ZGH.ref(),'N');
+            {? ZGP.first()
+            || {!
+               |? {? ZGP.IL_BRAK>0
+                  ||
+                     _count:={? _what>0
+                             || exec('count_napr4zgp','braki',ZGP.ref())
+                             || exec('count_kwal4zgp','braki_k',ZGP.ref())
+                             ?};
+                     {? ZGP.IL_BRAK>_count
+                     || _result:=1;
+                        _can_continue:=0
+                     ?}
+                  ?};
+                  ZGP.next() & _can_continue>0
+               !}
+            ?};
+            _next:={? _tab=ZGH || 0 || ZGH.next() ?};
+            _next & _can_continue>0
+         !}
+      ?};
+      ZGH.cntx_pop();
+      ZGP.cntx_pop()
+   ?}
+?};
+_tab.cntx_pop();
+_result
+
+
+\count_wyk4zgp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [21.14]
+:: OPIS: Zwraca jak ilość została wykonana na operacjach naprawczych, ale pod warunkiem że dany ZGP
+::       ma jakieś rekordy BRAKI_K czyli był źródłem z którego wygenerowano operacje naprawcze
+::   WE: [_a] - ZGP.ref() lub bieżący rekord
+::       [_b] - czy rekurencja: 1/[0]
+::   WY: obiekt z polami: ILWYK (ilość wykonana) i ILWYK_D(ilość wykonana + zadeklarowana)
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZGP.ref())
+|| _ref:=_a
+?};
+_czy_rek:=0;
+{? var_pres('_b')=type_of(0)
+|| _czy_rek:=_b
+?};
+
+_result:=obj_new('ILWYK','ILWYK_D');
+_result.ILWYK:=0;
+_result.ILWYK_D:=0;
+_can_continue:=1;
+
+ZGP.cntx_psh();
+{? _ref<>null()
+|| ZGP.clear();
+   {? ZGP.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   BRAKI_K.cntx_psh();
+   {? _czy_rek=0
+   || BRAKI_K.index('ZGP_SRC');
+      BRAKI_K.prefix(ZGP.ref());
+      {? BRAKI_K.size()=0
+      || _can_continue:=0
+      ?}
+   ?};
+   {? _can_continue>0
+   ||
+      {? ZGP.NAPRAW='T'
+      || _result.ILWYK+=ZGP.IL;
+         _result.ILWYK_D+=ZGP.IL+ZGP.DEK_IL
+      ?};
+      ZGP.index('NAPRAW');
+      ZGP.prefix('T',ZGP.UID);
+      {? ZGP.first()
+      ||
+         {!
+         |?
+::          !!! REKURENCJA !!! (operacje naprawcze z operacji naprawczych)
+            {? var_press('_tmp')>100 || obj_del(_tmp) ?};
+            _tmp:=exec('count_wyk4zgp','braki',ZGP.ref(),1);
+            _result.ILWYK+=_tmp.ILWYK;
+            _result.ILWYK_D+=_tmp.ILWYK_D;
+            ZGP.next()
+         !}
+      ?}
+   ?};
+   BRAKI_K.cntx_pop()
+?};
+ZGP.cntx_pop();
+_result
+
+
+\zgp_top_level
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [21.37]
+:: OPIS: Znajduje źródłową pozycję przewodnika znajdującej się na najwyższym poziomie dla podanej operacji naprawczej.
+::   WE: _a - ZGP.ref() - ref operacji naprawczej
+::   WY: ZGP.ref
+::----------------------------------------------------------------------------------------------------------------------
+_zgp:=_a;
+
+_result:=_zgp;
+ZGP.cntx_psh(); ZGP.clear();
+{? ZGP.seek(_zgp)
+|| {? ZGP.UID_SRC<>'' & ZGP.find_tab(,'UID',,'=',ZGP.UID_SRC)
+   || _result:=ZGP.ref();
+      {? ZGP.UID_SRC<>''
+      ||
+::       !!! REKURENCJA !!!
+         _result:=exec('zgp_top_level','braki',ZGP.ref())
+      ?}
+   ?}
+?};
+ZGP.cntx_pop();
+_result
+
+
+\braki_r_filter
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Ustawia filtr na tabelę BRAKI_R (Rodzaje braków)
+::   WE: [_a] - ZGP.ref() - gdy podany, wyciąga dane _b i _c z podanego przewodnika
+::       [_b] - tylko gdy _a=null, typ operacji: ['T'] - wewnętrzna, 'N' - zewnętrzna (kooperacja)
+::       [_c] - tylko gdy _a=null, w zalezności od _a: $TTOPER.ref() lub $TTOUT.ref() -
+::              ref operacji, dla której wyfiltrować słownik rodzajów braków
+::----------------------------------------------------------------------------------------------------------------------
+_zgp:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+_typ:={? var_pres('_b')=type_of('') || _b || 'T' ?};
+_ref:={? var_pres('_c')=type_of('') || _c || '' ?};
+{? _zgp<>null()
+|| ZGP.cntx_psh();
+   ZGP.clear();
+   {? ZGP.seek(_zgp)
+   || _typ:=ZGP.WEW;
+      {? ZGP.TOPER<>null()
+      || {? _typ='T'
+         || _ref:=exec('FindAndGet','#table',TOPER,ZGP.TOPER,,"$OPER",'')
+         || _ref:=exec('FindAndGet','#table',TOPER,ZGP.TOPER,,"$TTOUT",'')
+         ?}
+      ?}
+   ?};
+   ZGP.cntx_pop()
+?};
+
+{? BRAKI_R.f_active() || BRAKI_R.f_clear(1) ?};
+BRAKI_R.clear();
+
+{? _typ='T'
+|| _tab1:=TTOPER;
+   _tab2:=TTOUT
+|| _tab1:=TTOUT;
+   _tab2:=TTOPER
+?};
+
+_sort:='KOD';
+_from:='left join BRAKI_RO left join :_a left join :_b';
+_where:=':_b.REFERENCE is null and :_a.REFERENCE is null '+{? _ref<>''|| 'or :_a.REFERENCE=\':_c\'' || '' ?};
+
+BRAKI_R.f_set(_sort,_from,_where,_tab1,_tab2,_ref)
+
+
+\braki_r_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Walidacja dla tabeli BRAKI_R
+::   WE: _a - add/put: [0] - dołącz , 1 - popraw
+::   WY: akronim błędnie wypełnionego pola lub '' w przypadku pomyślnej walidacji
+::----------------------------------------------------------------------------------------------------------------------
+_put:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+_chk:=__CHK.record(BRAKI_R,,'KOD','OPIS');
+{? _chk=''
+||
+:: Sprawdzenie unikalności kodu
+   _ref:={? _put>0 || BRAKI_R.ref() || null() ?};
+   BRAKI_R.cntx_psh();
+   BRAKI_R.index('KOD');
+   BRAKI_R.prefix(BRAKI_R.KOD);
+   {? BRAKI_R.first()
+   || {? _put=0 | (_put>0 & {? _ref=BRAKI_R.ref() || BRAKI_R.next() || 1 ?} )
+      || _chk:='KOD';
+         FUN.info('Istnieje już zdefiniowany rodzaj braku o kodzie \'%1\'.'@[BRAKI_R.KOD])
+      ?}
+   ?};
+   BRAKI_R.cntx_pop()
+?};
+_chk
+
+
+\braki_ro_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Walidacja dla tabeli BRAKI_RO
+::   WE: _a - add/put: [0] - dołącz , 1 - popraw
+::       _b - czy wyświetlać komunikaty: 0 - nie, [1] - tak
+::   WY: akronim błędnie wypełnionego pola lub '' w przypadku pomyślnej walidacji
+::----------------------------------------------------------------------------------------------------------------------
+_put:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+_info:={? var_pres('_b')=type_of(0) || _b || 1 ?};
+_chk:='';
+{? BRAKI_RO.TTOPER=null() & BRAKI_RO.TTOUT=null()
+|| _chk:='KOD';
+   {? _info>0
+   || FUN.info('Operacja musi być określona.'@)
+   ?}
+|? BRAKI_RO.TTOPER<>null() & BRAKI_RO.TTOUT<>null()
+|| _chk:='KOD';
+   {? _info>0
+   || FUN.info('Zapis nie może dotyczyć zarówno operacji wewnętrznej jak i zewnętrznej.'@)
+   ?}
+?};
+{? _chk=''
+||
+:: Sprawdzenie unikalności rekordu
+   _ref:={? _put>0 || BRAKI_RO.ref() || null() ?};
+   BRAKI_RO.cntx_psh();
+   BRAKI_RO.index('BRAKI_R');
+   BRAKI_RO.prefix(BRAKI_RO.BRAKI_R,BRAKI_RO.TTOPER,BRAKI_RO.TTOUT);
+   {? BRAKI_RO.first()
+   || {? _put=0 | (_put>0 & {? _ref=BRAKI_RO.ref() || BRAKI_RO.next() || 1 ?} )
+      || _chk:='KOD';
+         {? _info>0
+         || FUN.info('Dana operacja została już przpisana.'@)
+         ?}
+      ?}
+   ?};
+   BRAKI_RO.cntx_pop()
+?};
+_chk
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:39 4b60da4157cb309921c17a74d7763c7f0f822812d554bc24dfd3f22631f215541d0b77cd9081bb96936e7817b3f2f631e00669449accd0e44e886c75a1bfb8594713c69bc60c8d828e1be5bc55b4249d788e365331267b25c235f8a95808aa3e54d83f8a13e1eb80ee9b1517db532c3e51d95b1851c60165e25863d73871eefa

@@ -1,0 +1,144 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2226_15.fml
+:: Utworzony: 15.11.2022
+:: Autor: IFZ
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 22.26 na 22.26_15
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [22.26_15]
+:: OPIS: Główna formuła aktualizacji 22.26_15 - Wprowadzenie obsługi faktur fiskalnych
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania automatyczne, wykonywane raz dla całego systemu
+__UPG.add_task('DOKREJ',,'T','FKS',4,,,1,'T');
+:: Zadania automatyczne, wykonywane dla każdej firmy
+__UPG.add_task('FAKFIS',,'N','FKS',3,,,1);
+:: Zadania manualne, wykonywane raz dla całego systemu
+:: Zadania manualne, wykonywane dla każdej firmy
+~~
+
+
+\FAKFIS
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [22.26_15]
+:: OPIS: Aktualizacja znacznika zaksięgowany drugi dokument na FAKS
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+FAKS.cntx_psh();
+_msk:=FAKS.names();
+_msk.clear();
+{? _msk.first()
+|| {!
+   |? FAKS.use(_msk.NAME);
+      FAKS.prefix();
+      FAKS.for_each(" __lrec+=1; {? FAKS.ZAK2='' || FAKS.ZAK2:='N'; __lmod+=FAKS.put() ?}");
+      _msk.next()
+   !}
+?};
+FAKS.cntx_pop();  
+__UPG.msg('Zaktualizowano znaczniki zaksięgowania dla faktur fiskalnych.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'[$__lrec,$__lmod]);
+_res
+
+\FAKFIS_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [22.26_15]
+:: OPIS: Aktualizacja znacznika zaksięgowany drugi dokument na FAKS - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja znacznika zaksięgowany drugi dokument na FAKS'
+
+
+\DOKREJ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [22.26_15]
+:: OPIS: Aktualizacja znacznika 'Pusty dekret' na DOK_REJ
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+DOK_REJ.cntx_psh();
+DOK_REJ.prefix();
+DOK_REJ.for_each(" __lrec+=1;
+                  {? DOK_REJ.PUDEK=''
+                  || {? DOK_REJ.KOR_NAG='T' || DOK_REJ.PUDEK:='T';__lmod+=DOK_REJ.put() || DOK_REJ.PUDEK:='N';__lmod+=DOK_REJ.put() ?}
+                  ?}");
+DOK_REJ.cntx_pop();
+__UPG.msg('Zaktualizowano znaczniki zaksięgowania dla faktur fiskalnych.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'[$__lrec,$__lmod]);
+_res
+
+
+\DOKREJ_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [22.26_15]
+:: OPIS: Aktualizacja znacznika 'Pusty dekret' na DOK_REJ - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja znacznika \'Pusty dekret\' na DOK_REJ'
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:16:37 0b7dc3cf3679c9530cd4ab1985949be97d60cf48d11d178797a3be6b8dc18ebcd7129c963eebab29ecd848afe466d47323e5c76bc3298695171fafcd320a6bcb3bb04924d8046ee20fb97d41cc61dd673e3d2c8c7719bc4d5f78f700ed5e36afe89987473e5710e5ca7959147097ee69d78751844bc34fab603b59496875b6cf

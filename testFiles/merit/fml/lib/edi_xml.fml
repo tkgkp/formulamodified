@@ -1,0 +1,3848 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: edi_xml.fml
+:: Utworzony: 18.03.2019
+:: Autor: AWI
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: obsługa odczytu i zapisu plików xml
+::======================================================================================================================
+:: Funkcje:
+:: - definicja
+::    \env                 środowisko
+::    \env_init            środowisko init
+::    \define              definicja xml
+::    \def_imp             import
+::    \def_exp             eksport
+::    \def_z_xsd           utworzenie definicji z wybranego pliku xml
+::    \def_hash            tablica #ów z definicji
+::    \def_del             usuwa definicję
+::    \id_get              funkcja pobierająca unikalny identyfikator elementu w strukturze definicji
+:: - tabela przejściowa
+::    \xml_t               table
+::    \xml_tparse          xml->parse->t
+::    \xml_twrite          t->xml
+::    \t_def               t->ISTXML - tworzy definicję na podstawie pliku xml
+::    \t_read              t->dokument
+::    \t_write             dokument->t
+::    \atrs                zwraca atrybuty elementu
+::    \dnamespc            zwraca definicje przestrzeni nazw
+::    \id_val              funkcja pobierająca wartości z tabeli pośredniej dla unikalnego identyfikatora elemntu
+:: - funkcje pomocnicze
+::    \val_bl_put          zapisuje wartość w _T.BVAL
+::    \val_get             pobiera wartość elementu z _T.VAL lub jeśli ucięta z _T.BVAL
+::    \val_len_max         maksymalna długość wartości
+:: - odczyt
+::    \read                odczyt dokumentów xml
+::    \t_read              odczyt dokumentów z tabeli przejściowej
+::    \pliki               wypełnia tabelę z plikami do odczytu
+::    \verify              Czy uruchomione w trybie weryfikacji?
+:: - zapis
+::    \write               zapis dokumentów w xml
+::    \t_write             zapis dokumentów do tabeli przejściowej
+::    \doc2write           dokumenty do zapisu
+:: DRO_TODO_AWI: pomysły do realizacji
+::    EDI_Z.SYM
+::    EDI_Z.KH
+::    EDI_Z.DOK            zastąpić zmienne odpowiadającymi polami w środowisku czynności zws_edi_uniw
+::                         patrz \env/!zws_edi_uniw
+::    log                  wszystkie komunikaty przekierować do loga
+::    \def_verify          funkcja sprawdzająca poprawność definicji w zakresie
+::                         (uruchamiać: z menu, read, write, import):
+::                         - teraz nie jest sprawdzane usuwanie przestrzeni nazw
+::                         - sprawdzanie unikalności elementów na poziomie
+::                           (tylko import bo redakcja ręczna zabezpieczona)
+
+
+\define
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Definicja komunikatu xml
+::       Przed wywołaniem funkcji należy ustawić nagłówek definicji (ISTDEF)
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env:=exec('env','edi_xml');
+params_set('env_xml',_env);
+_env.select();
+exec('standard','edi_def')
+
+
+\env
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: środowisko - obsługa xml
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::UWAGA: _fld, i _mth to formułki pomocnicze, zeby wygodniej tworzyć tablicę i komentować poszczególne jej elementy
+::       powiedzmy, że to bedzie pole
+         _fld:="31+form(_a)";
+::       powiedzmy, że to bedzie metoda
+         _mth:="31+form(_a)";
+
+_env:=obj_new(
+::             Zmienne pomocnicze
+                _fld('ISTDEF',      'ISTDEF.ref() - nagłówek definicji')
+               ,_fld('T',           'tabela pośrednia')
+               ,_fld('VLM',         'maksymalna długość wartości')
+               ,_fld('INDEX',       'numer pozcyji')
+               ,_fld('ACTION',      'ADD/AFTER/SUB')
+               ,_fld('REF',         '#ISTXML.ref()')
+               ,_fld('TREE',        'TREE_REF')
+
+::             identyfikatory okienek
+               ,_fld('wid_main',    'ID okna definicji')
+               ,_fld('wid_t',       'ID okna tabeli pośredniej')
+
+::             tytuły okienek
+               ,_fld('tit_main',    'Tytuł okna definicji')
+               ,_fld('tit_t',       'Tytuł okna tabeli pośredniej')
+
+::             uchwyty do okien
+               ,_fld('WIN_MAIN',    'Uchwyt okna definicji')
+               ,_fld('WIN_T',       'Uchwyt okna tabeli pośredniej')
+
+::             okno redakcji
+               ,_fld('WIN_EDIT',    'Akronim okna redakcji')
+
+::             METODY
+               ,_mth('select','Pokazuje okno obszaru')
+             );
+
+exec('env_init','edi_xml',_env);
+
+_env.select:="
+   ISTXML.index('TREE');
+   ISTXML.prefix(.ISTDEF);
+   ISTXML.first();
+
+   params_set(params_get());
+   ISTXML.win_sel(.WIN_MAIN);
+   ISTXML.win_edit(.WIN_EDIT);
+   ISTXML.hdr_sel();
+   ISTXML.hdr_sel(': %1 - %2'[ISTDEF.K,ISTDEF.N]);
+   ISTXML.select();
+   ISTXML.hdr_sel()
+";
+
+_env
+
+
+\env_init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: inicjuje
+::   WE: _e - środowisko
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_env.ISTDEF:=ISTDEF.ref();
+_env.T:=~~;
+_env.VLM:=exec('val_len_max','edi_xml');
+
+_env.wid_main:='#istxml_def';
+_env.tit_main:='Definicja xml'@;
+_env.WIN_MAIN:='';
+_env.WIN_EDIT:='RED';
+
+_env.wid_t:='#istxml_t';
+_env.tit_t:='Tabela pośrednia'@;
+_env.WIN_T:='';
+
+:: definicja
+_T:=ISTXML;
+:: okno wertowania
+_w:=_T.mk_sel(_env.tit_main,'P',,_env.wid_main,1,,,1,,,,,,'maximized');
+_T.win_fld(_w,,'NAME',,,30);
+_T.win_fld(_w,,'NAMESPC',,,2);
+::_T.win_fld(_w,,'NTRUNC',,,2);
+_T.win_fld(_w,,'TYPE',,,2);
+_T.win_fld(_w,,'VAL',,,20,,1);
+::_T.win_fld(_w,,'VTRUNC',,,2);
+::_T.win_fld(_w,,'INDEX',,,2);
+_T.win_fld(_w,,'F_START',,,40);
+_T.win_fld(_w,,'F_END',,,40);
+_T.win_fld(_w,,'IS_FLD',,,3,,,,,,2,,"'T'","'N'");
+_T.win_fld(_w,,'F_TEXT',,,30);
+_fb:="
+   {? _a
+   ||
+      _act:=
+:: element główny jest tylko jeden dlatego nie można dodawać kolejnego
+         {? ISTXML.TREE=0 || 'dC' || '' ?}
+         +
+:: artybuty i przestrzenie nazw nie mają elementów podrzędnych
+         {? 'AN'*ISTXML.TYPE || 'O' || '' ?}
+:: artybuty i przestrzenie nazw nie mają przestrzeni nazw
+         +
+         {? 'AN'*ISTXML.TYPE & ISTXML.sel_size()=0 || 'N' || '' ?};
+      ISTXML.actions(ISTXML.win_sel('?'),_act,,1);
+      params_exec('istxml_set_efld_opt','edi_xml')
+   ?};
+   _env:=params_get().env_xml;
+   _env.TREE:=ISTXML.TREE;
+   _env.REF:=#ISTXML.ref();
+   _env.INDEX:=ISTXML.INDEX;
+   _env.ACTION:='';
+   ~~
+";
+_fa:="
+   _result:='';
+   _env:=params_get().env_xml;
+   _tree:={? _env.ACTION='SUB' || _env.REF || _env.TREE ?};
+:: check
+   ISTXML.TYPE:=~-ISTXML.TYPE;
+:: Na najwyższym poziomie definicja może zawierać tylko jedeną pozycję typu element
+   _type:='E'
+      +{? _tree & exec('FindAndGet','#table',ISTXML,_tree,ISTXML.name(),\"ISTXML.TREE=0\",0) || 'N' || '' ?}
+      +{? _tree || 'A' || '' ?};
+   {? ISTXML.TYPE='' | (_type*ISTXML.TYPE)=0
+   ||
+      FUN.info('Nieprawidłowa wartość typu.'
+             '\nMożliwe wartości:          '
+             '\n- E-element                %1%2'@[
+          {? _type*'A'
+          || '\n- A-atrybut                '
+          || ''
+          ?},
+          {? _type*'N'
+          || '\n- N-przestrzeń nazw        '@
+          || ''
+          ?}]);
+      _result:='TYPE'
+   ?};
+   {? _result='' & ISTXML.TYPE<>'' & 'EA'*ISTXML.TYPE
+   ||
+::XML Naming Rules
+::
+::XML elements must follow these naming rules:
+::
+::    Element names are case-sensitive
+::    Element names must start with a letter or underscore
+::    Element names cannot start with the letters xml (or XML, or Xml, etc)
+::    Element names can contain letters, digits, hyphens, underscores, and periods
+::    Element names cannot contain spaces
+::
+::Any name can be used, no words are reserved (except xml).
+      {? ISTXML.NAME=''
+      ||
+         FUN.info('Należy podać nazwę.'@);
+         _result:='NAME'
+
+      |? ISTXML.NAME*' '
+      ||
+         FUN.info('Nazwa nie można zawierać spacji.'@);
+         _result:='NAME'
+
+      |? -(3+ISTXML.NAME)='xml'
+      ||
+         FUN.info('Nazwa nie może rozpoczynać się od ciągu znaków xml (lub XML, lub Xml, itp.).'@);
+         _result:='NAME'
+      ?}
+   ?};
+   {? _result='' & ISTXML.TYPE<>'' & 'NA'*ISTXML.TYPE
+   ||
+      ISTXML.cntx_psh();
+      ISTXML.prefix(ISTDEF.ref(),#ISTXML.ref());
+      _first:=ISTXML.first();
+      ISTXML.cntx_pop();
+      {? _first
+      ||
+         {? ISTXML.TYPE='N'
+         ||
+            FUN.info('Przestrzeń nazw nie może mieć pozycji podrzędnych.'@)
+         ||
+            FUN.info('Atrybut nie może mieć pozycji podrzędnych.'@)
+         ?};
+         _result:='TYPE'
+      ?}
+   ?};
+   {? _result='' & ISTXML.NAMESPC>0
+   ||
+      {? 'N'=ISTXML.TYPE
+      ||
+         FUN.info('Przestrzeń nazw należy ustawić na 0.'@);
+         _result:='NAMESPC'
+
+      |? 'EA'*ISTXML.TYPE
+      ||
+         ISTXML.cntx_psh();
+         ISTXML.index('NAMESPC');
+         ISTXML.prefix(ISTDEF.ref(),0,'N');
+         {? ~ISTXML.seek(ISTXML.NAMESPC,) | ISTXML.TYPE<>'N'
+         ||
+            FUN.info('Nie znaleziono przestrzeni nazw %1.'@[$ISTXML.NAMESPC]);
+            _result:='NAMESPC'
+         ?};
+         ISTXML.cntx_pop()
+      ?}
+   ?};
+:: czy na poziomie nie istnieje taki sam element
+   {? _result='' & ISTXML.TYPE<>''
+   ||
+      _xpth:='';
+      ISTXML.cntx_psh();
+      _loop:=ISTXML.seek(_env.TREE);
+      {!
+      |? _loop
+      |!
+         _namespc:='';
+         {? ISTXML.NAMESPC
+         ||
+            ISTXML.cntx_psh();
+            ISTXML.prefix();
+            {? ISTXML.seek(ISTXML.NAMESPC) & ISTXML.NAME<>'' || _namespc:='%1:'[ISTXML.NAME] ?};
+            ISTXML.cntx_pop()
+         ?};
+         _sep:={? ISTXML.TYPE='E' || '/' || '@' ?};
+         _xpth:=_sep+_namespc+ISTXML.NAME+_xpth;
+         _loop:=ISTXML.seek(ISTXML.TREE)
+      !};
+      ISTXML.cntx_pop();
+      ISTXML.cntx_psh();
+      ISTXML.index('NAMESPC');
+      ISTXML.prefix(_env.ISTDEF,ISTXML.NAMESPC,ISTXML.TYPE,ISTXML.NAME,);
+      _loop:=ISTXML.first();
+      {!
+      |? _loop
+      |!
+         {? (_env.ACTION<>'' | _env.REF<>#ISTXML.ref()) & ISTXML.TREE=_tree
+         ||
+            _txt1:={? ISTXML.TYPE='A' || 'atrybut'@ |? ISTXML.TYPE='E' || 'element'@ || 'przestrzeń nazw'@ ?};
+            _namespc:='';
+            {? ISTXML.NAMESPC
+            ||
+               ISTXML.cntx_psh();
+               ISTXML.prefix();
+               {? ISTXML.seek(ISTXML.NAMESPC) & ISTXML.NAME<>'' || _namespc:='%1:'[ISTXML.NAME] ?};
+               ISTXML.cntx_pop()
+            ?};
+            _txt2:=_namespc+{? ISTXML.NAME='' || 'pusty ciąg znaków'@ || ISTXML.NAME ?};
+            {? ISTXML.TYPE='N' & ISTXML.NAME=''
+            ||
+               FUN.info('Element: %1\nma już pozycję domyślna przestrzeń nazw.'@[_xpth])
+
+            |? ISTXML.TYPE='N'
+            ||
+               FUN.info('Element: %1\nma już pozycję przestrzeń nazw: %2.'@[_xpth,ISTXML.NAME])
+            ||
+               FUN.info('Element: %1\nma już pozycję typu %2 o nazwie: %3.'@[_xpth,_txt1,_txt2])
+            ?};
+            _result:='NAME'
+         ?};
+         _loop:=_result='' & ISTXML.next()
+      !};
+      ISTXML.cntx_pop()
+   ?};
+:: ISTXML.INDEX - kolejność pozycji
+   {? _result=''
+         &
+      'ADD|AFTER|SUB'*_env.ACTION
+   ||
+      ISTXML.TREE:=_tree;
+      _index:=_index1:=
+         {? _env.ACTION='SUB'
+         || ISTXML.cntx_psh();
+            ISTXML.index('TREE');
+            ISTXML.prefix(ISTDEF.ref(),_env.REF);
+            _index:={? ISTXML.last() || ISTXML.INDEX ?};
+            ISTXML.cntx_pop();
+            _index
+         || _env.INDEX
+         ?};
+      {? _index=0 & _env.ACTION<>'SUB'=0 || _index1:=1 ?};
+      _tree:=ISTXML.TREE;
+      {? _env.ACTION='AFTER' | _env.ACTION='SUB' || _index1+=1 ?};
+      {? _index
+      ||
+         ISTXML.cntx_psh();
+         ISTXML.index('TREE');
+         ISTXML.prefix(ISTDEF.ref(),_tree);
+         _loop:=ISTXML.last() & ISTXML.INDEX>=_index1;
+         {!
+         |? _loop
+         |!
+            ISTXML.INDEX+=1;
+            _loop:=ISTXML.put() & ISTXML.prev() & ISTXML.INDEX>=_index1
+         !};
+         ISTXML.cntx_pop()
+      ?};
+      ISTXML.INDEX:=_index1
+   ?};
+   _result
+";
+_T.win_act(_w,1,'Rekord',,,,,_fa);
+_T.win_act(_w,,'Rekord',,,,_fb,_fa);
+_fb:="
+   _env:=params_get().env_xml;
+   _env.ACTION:='ADD';
+   _env.TREE:=0;
+   _env.INDEX:=0;
+   1
+";
+_fa:="0";
+_T.win_act(_w,1,'Dołącz',,,,_fb,_fa);
+_fb:="
+   _env:=params_get().env_xml;
+   _env.ACTION:='ADD';
+   1
+";
+_fa:="0";
+_T.win_act(_w,,'Dołącz',,,,_fb,_fa);
+_fb:="
+   _env:=params_get().env_xml;
+   _env.ACTION:='SUB';
+   1
+";
+_fa:="0";
+_T.win_act(_w,,'Dołącz','D&ołącz podrzędny'@,,,_fb,_fa,,,,,'O');
+_fb:="
+   _env:=params_get().env_xml;
+   _env.ACTION:='AFTER';
+   1
+";
+_T.win_act(_w,,'Dołącz','Dołą&cz za bieżącym'@,,,_fb,_fa,,,,,'C');
+_T.win_act(_w,,'DołączS');
+_T.win_act(_w,,'Popraw',,,,,,1);
+_fb:="
+   _env:=params_get().env_xml;
+   _T:=cur_tab();
+   _val:=exec('val_get','edi_xml',_T);
+   _hash:=hash(exec('val_get','edi_xml',_T));
+   _val:=exec('edit_memo','#edit',_val,_T.NAME,'Edycja wartości'@,180,25,,0,1);
+   {? var_pres('_val')=type_of('')
+   ||
+      {? _hash<>hash(_val)
+      ||
+         _val_len:=+_val;
+         _T.VTRUNC:={? _val_len>_env.VLM || 'T' || 'N' ?};
+         {? _T.VTRUNC='N' || _T.BVAL:=null() || exec('val_bl_put','edi_xml',_T,_val) ?};
+         _T.VAL:=_env.VLM+_val;
+         _T.put()
+      ?}
+   ?}
+";
+_T.win_act(_w,,'Formuła','Popraw &wartość'@,,,_fb,,,,,,'W');
+_T.win_act(_w,,'Usuń',,,,,,,1);
+_fb:="
+   exec('id_copy','edi_xml');
+   ~~
+";
+_T.win_act(_w,,'Formuła','Po&bierz ID'@,,,_fb,,,,,,'B');
+_fb:="params_set(params_get()); _env:=params_get().env_xml; params_exec('dragISTXML','edi_xml',1)";
+_T.win_act(_w,,'Formuła','Przesu&ń'@,,,_fb,,,1,_fb,,'Ń');
+_fb:="exec('istxml_ns_change','edi_xml')";
+_T.win_act(_w,,'Formuła','Przestrzeń &nazw'@,,,_fb,,,1,_fb,,'N');
+_fb:="params_set(params_get()); _env:=params_get().env_xml; exec('def_exp','edi_xml','',_env.ISTDEF,'')";
+_T.win_act(_w,,'Formuła','Eksportuj'@,,,_fb,,,,,,'E');
+_fb:="params_set(params_get()); _env:=params_get().env_xml; exec('def_imp','edi_xml','',_env.ISTDEF,0)";
+_T.win_act(_w,1,'Formuła','Importuj'@,,,_fb,,1,,,,'I');
+_T.win_act(_w,,'Formuła','Importuj'@,,,_fb,,,,,,'I');
+_fb:="exec('zwrw_all','#tree','ISTXML','TREE',params_get().env_xml.WIN_MAIN)";
+_T.win_act(_w,,'Formuła','Zwiń/rozwiń całość'@,,'Zwijanie/rozwijanie całości'@,_fb,,,,,,'Z');
+_ff:="params_exec('dragISTXML','edi_xml')";
+_T.dnd_sel(_w,,'records.ISTXML',_ff);
+_T.win_act(_w,,'Szukaj');
+_env.WIN_MAIN:=_w
+
+
+\def_exp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Definicja xml - eksportuj
+::   WE: _a - file name
+::       _b - ISTDEF.ref()
+::       _c - path
+::       [_d] - exec('hash_def','edi_def')
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_fname:=_a;
+EDI_Z.C:=_b;
+_pth:=_c;
+_hash_kom:={? var_pres('_d')=type_of(obj_new('obj')) || _d || ~~ ?};
+
+_exp:=type_of(_hash_kom)=type_of(~~);
+_wg_pth:=0;
+_file:='';
+
+_tmp_dir:=fmk_tmp_dir(0);
+_tmp_pth:=_tmp_dir.get_path();
+
+:: zakres importu
+_choice:={? _fname<>'' || 3 || 0 ?};
+_tmp_pth:='%1/'[_tmp_pth];
+{? _fname<>''
+||
+   {? _pth<>''
+   ||
+      _fname:='%1%2'[_pth,_fname];
+      _tmp_pth:=''
+   ?}
+||
+   _fname:='edidef_%1_%2'['xsd',form(ISTDEF.K,,,'99')];
+   ISTXML.cntx_psh();
+   ISTXML.index('TREE');
+   ISTXML.prefix(EDI_Z.C);
+   {? ISTXML.first()
+   || _choice:=FUN.choice('Należy wybrać zakres eksportu.'@,,'Struktura'@,'Formuły'@)
+   ?};
+   ISTXML.cntx_pop();
+   {? ~_choice || return() ?};
+   {? _fname='' || return() ?};
+:: usunięcie rozszerzenia
+   _wsk:=0;
+   {! _ii:=+_fname // -1..1
+   |!
+      {? _wsk=0 & (_ii+_fname+1)='.' || _wsk:=_ii ?}
+   !};
+   {? _wsk || _fname:=(_wsk-1)+_fname ?};
+:: usunięcie przyrostka _xsd lub _form
+   {? _choice=1
+   || {? (_fname+4)='_xsd' || _fname-=-4 ?}
+   |? _choice=2
+   || {? (_fname+5)='_form' || _fname-=-5 ?}
+   ?};
+   {? _fname='' || return() ?}
+?};
+:: eksport struktury
+{? _choice || _Hash:=exec('def_hash','edi_xml',EDI_Z.C,0,'',~~) ?};
+{? _choice=3 | _choice=1
+||
+   _file:='%1%2_xsd.dem'[_tmp_pth,_fname];
+   _xsd:=fopen(_file,'uw!',_wg_pth,,1);
+   {? ~_xsd.is_open()
+   ||
+      FUN.info(exec('msg','edi_wspolne','ERR_FOPEN')+_file+'.');
+      return(0)
+   ?};
+   _env:=obj_new('DEF','HASH','T','VAL','ID');
+   _env.DEF:=EDI_Z.C;
+:: #e z definicji
+   _env.HASH:=_Hash;
+   _env.T:=exec('xml_t','edi_xml');
+   _env.VAL:=~~;
+   _env.ID:=_file;
+   params_set('env',_env);
+   _T:=_env.T;
+:: eksport struktury
+:: zapis w tabeli przejściowej
+   {? exec('t_write','edi_xml','XSD',_env.DEF,0,_T,0,'',~~,~~)=1
+   ||
+:: zapis do pliku
+      exec('xml_twrite','edi_xml',_xsd,_T,0,'',1)
+   ?};
+   {? ~_exp
+   ||
+      exec('hash_str','edi_def',_hash_kom,_xsd)
+   ?};
+   fclose(_xsd);
+   {? _exp & _choice<>3 || dlg_save(_file,0) ?}
+?};
+:: eksport formuł
+{? _choice=3 | _choice=2
+||
+   _file:='%1%2_form.dem'[_tmp_pth,_fname];
+   _form:=fopen(_file,'Uw!',_wg_pth,,1);
+   {? _form.is_open()
+   ||
+      ISTXML.cntx_psh();
+      ISTXML.index('TREE');
+      ISTXML.prefix(EDI_Z.C);
+      _loop:=_Hash.first();
+      {!
+      |? _loop
+      |!
+         {? ISTXML.seek(_Hash.REF,)
+         ||
+            {? ISTXML.F_START<>'' || fwrite(_form,_Hash.HASH+'_f_start__'+ISTXML.F_START+%13+%10) ?};
+            {? ISTXML.F_END<>'' || fwrite(_form,_Hash.HASH+'_f_end____'+ISTXML.F_END+%13+%10) ?};
+            {? ISTXML.IS_FLD<>'' || fwrite(_form,_Hash.HASH+'_is_fld___'+ISTXML.IS_FLD+%13+%10) ?};
+            {? ISTXML.F_TEXT<>'' || fwrite(_form,_Hash.HASH+'_f_text___'+ISTXML.F_TEXT+%13+%10) ?}
+         ?};
+         _loop:=_Hash.next()
+      !};
+      ISTXML.cntx_pop()
+   ?};
+   {? ~_exp
+   ||
+      exec('hash_for','edi_def',_hash_kom,_form,'md5')
+   ?};
+   fclose(_form);
+   {? _exp & _choice<>3 || dlg_save(_file,0) ?}
+?}
+
+
+\def_imp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Definicja xml - Importuj
+::   WE: _a - file name
+::       _b - ISTDEF.ref()
+::       _c - 0/1-import z excel
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_fname:=_a;
+EDI_Z.C:=_b;
+_xlsx:=_c;
+
+_wg_pth:=0;
+_file:='';
+
+_tmp_dir:=fmk_tmp_dir(0);
+_tmp_pth:=_tmp_dir.get_path();
+
+:: zakres importu
+_choice:={? _xlsx || 3 || 0 ?};
+{? _xlsx=0
+||
+   ISTXML.cntx_psh();
+   ISTXML.index('TREE');
+   ISTXML.prefix(EDI_Z.C);
+   {? ISTXML.first()
+   || {? FUN.ask('Zaimportować formuły?'@) || _choice:=2 ?}
+   || {? FUN.ask('Zaimportować strukturę?'@) || _choice:=1 ?}
+   ?};
+   ISTXML.cntx_pop();
+   {? ~_choice || return() ?};
+   _fname:=
+      {? _choice=1
+      || dlg_upload(_tmp_pth,0,'.xml,.xsd,.dem',1)
+      |? _choice=2
+      || dlg_upload(_tmp_pth,0,'.dem',1)
+      || ''
+      ?};
+   {? _fname='' || return() ?};
+   _file:=_tmp_pth+'/'+_fname
+?};
+{? _choice=3 || _file:='%1_xsd.dem'[_fname] ?};
+:: import struktury
+{? _choice=3 | _choice=1
+||
+   _env:=exec('env','edi_xml');
+   params_set('env_xml',_env);
+   _filext:=_file+4;
+   _merge:=1;
+   {? _filext='.xsd'
+   ||
+      _mrge:=0
+
+   |? _filext='.xml'
+   ||
+      _merge:=FUN.ask('Czy łączyć powtarzające się elementy struktury?'@)
+   ?};
+   exec('def_z_xsd','edi_xml',_file,_wg_pth,_merge,_xlsx)
+?};
+:: import formuł
+{? _choice=3 | _choice=2
+||
+   {? _choice=3 || _file:='%1_form.dem'[_fname] ?};
+   _form:=fopen(_file,'Ur',_wg_pth,,1);
+   {? ~_form.is_open()
+   ||
+      FUN.info(exec('msg','edi_wspolne','ERR_FOPEN')+_file+'.');
+      return(0)
+   ?};
+   ISTXML.cntx_psh();
+   ISTXML.index('TREE');
+   ISTXML.prefix(EDI_Z.C);
+   _Hash:=exec('def_hash','edi_xml',EDI_Z.C,0,'',~~);
+   {!
+   |? (_text:=fread(_form))<>'\n'
+   |!
+      _hash:=40+_text;
+      _type:=10+(40-_text);
+      _text:=50-_text;
+      {? _Hash.find_key(_hash)
+      ||
+         {? ISTXML.seek(_Hash.REF,)
+         ||
+            {? _type='_f_start__' || ISTXML.F_START:=_text
+            |? _type='_f_end____' || ISTXML.F_END:=_text
+            |? _type='_f_text___' || ISTXML.F_TEXT:=_text
+            |? _type='_is_fld___' || ISTXML.IS_FLD:=_text
+            ?};
+            ISTXML.put()
+         ?}
+      ?}
+   !};
+   ISTXML.cntx_pop()
+?}
+
+
+\def_z_xsd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Definicja xml - Utwórz definicję z xsd
+::   WE: _a - file name
+::       _b - wg pth
+::       _c - 0/1 merge
+::       _d - 0/1-import z excel
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_file:=_a;
+_wg_pth:=_b;
+_merge:=_c;
+_xlsx:=_d;
+_env:=params_get().env_xml;
+
+{? _file='' || return() ?};
+
+_xsd:=fopen(_file,'ur',_wg_pth,,1);
+{? ~_xsd.is_open()
+||
+   FUN.info(exec('msg','edi_wspolne','ERR_FOPEN')+_file+'.');
+   return(0)
+?};
+_t_def:=0;
+{? var_pres('T',_env)=type_of(FIRMA) || obj_del(_env.T) ?};
+_env.T:=exec('xml_tparse','edi_xml',_xsd);
+_T:=_env.T;
+{? _xlsx
+||
+   _t_def:=1
+||
+   _w:=_T.mk_sel(_env.tit_t,'P',,_env.wid_t,1,1,,1);
+   _T.win_fld(_w,,'NAME',,,50);
+   _T.win_fld(_w,,'NAMESPC',,,2);
+   _T.win_fld(_w,,'NTRUNC',,,2);
+   _T.win_fld(_w,,'TYPE',,,2);
+   _T.win_fld(_w,,'VAL',,,50);
+   _T.win_fld(_w,,'VTRUNC',,,2);
+   _T.win_fld(_w,,'INDEX',,,2);
+   _T.win_act(_w,,'Formuła','Wartość'@@,,,"exec('bl_view','#blob',cur_tab(),'BVAL')",,,,,,'W');
+   _T.win_act(_w,,'Formuła','Zakończ'@@,,,"sel_exit()",,1,,,,'Z');
+   _fb:="
+      {? _a || _T:=cur_tab(); _T.actions_grayed(_T.win_sel('?'),{? _T.BVAL=null() || 'W' || '' ?}) ?}
+   ";
+   _T.win_act(_w,,'Rekord',,,,_fb);
+   _T.win_act(_w,,'Szukaj');
+   _T.win_act(_w,,'Kolejność',);
+   _env.WIN_T:=_w;
+   _T.win_sel(_w);
+   {? _T.select() || _t_def:=1 ?}
+?};
+{? _t_def & _T.first()
+||
+   exec('t_def','edi_xml',_env.ISTDEF,_T,0,0,'',~~,~~,_merge)
+?};
+{? _xlsx=0 || exec('zwrw_all','#tree','ISTXML','TREE',_env.WIN_MAIN) ?};
+1
+
+
+\def_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: usuwa definicję
+::   WE: _a - ISTDEF.ref()
+::       _b - ISTXML.ref()
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_istdef:=_a;
+_istxml:=_b;
+ISTXML.cntx_psh();
+ISTXML.index('TREE');
+ISTXML.prefix(_istdef,#_istxml);
+_loop:=ISTXML.first();
+{!
+|? _loop
+|!
+   exec('def_del','edi_xml',_istdef,ISTXML.ref());
+   _loop:=ISTXML.del()
+!};
+ISTXML.cntx_pop();
+~~
+
+
+\t_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: tworzy definicję w tabeli ISTXML na podstawie tabeli przejściowej _a utworzonej z pliku xml
+::   WE: _a - ISTDEF.ref()
+::       _b - tabela przejściowa
+::       _c - #_a.ref()
+::       _d - #ISTXML.ref()
+::       _e - path
+::       _f - _T_hash
+::       _g - _T_ns
+::       _h - 0/1 merge
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_istdef:=_a;
+_T:=_b;
+_ref:=_c;
+_tree:=_d;
+_pth:=_e;
+_T_hash:=_f;
+_T_ns:=_g;
+_merge:=_h;
+
+{? _ref=0
+||
+:: tablica #ów
+   _T_hash:=tab_tmp(1
+      ,'HASH'  ,'STRING[40]', 'HASH'
+      ,'REF'   ,'INTEGER',    'REF');
+   _T_ns:=tab_tmp(1
+      ,'OLD'   ,'INTEGER',    'OLD'
+      ,'NEW'   ,'INTEGER',    'NEW')
+?};
+
+ISTXML.cntx_psh();
+ISTXML.index('TREE');
+ISTXML.prefix(_istdef);
+_T.cntx_psh();
+_T.prefix(_ref);
+_loop:=_T.first();
+{!
+|? _loop
+|!
+   _namespc:='';
+   {? _T.NAMESPC
+   ||
+      _T.cntx_psh();
+      _T.prefix();
+      {? _T.seek(_T.NAMESPC) & _T.NAME<>'' || _namespc:='%1:'[_T.NAME] ?};
+      _T.cntx_pop()
+   ?};
+   _sep:={? _T.TYPE='E' || '/' || '@' ?};
+   _pth1:=_pth+_sep+_namespc+_T.NAME;
+   _hash:=hash(_pth1);
+   _tree1:=0;
+   {? _merge & _T_hash.find_key(_hash)
+   ||
+      _tree1:=_T_hash.REF
+   ||
+      ISTXML.cntx_psh();
+      ISTXML.prefix(_istdef,_tree);
+      _index:={? ISTXML.last() || ISTXML.INDEX+1 || 1 ?};
+      ISTXML.cntx_pop();
+      ISTXML.blank();
+::    pola zgodne z exec('xml_t','edi_xml')
+      ISTXML.TREE:=_tree;
+      ISTXML.NAME:=_T.NAME;
+      ISTXML.NAMESPC:=_T.NAMESPC;
+      ISTXML.NTRUNC:=_T.NTRUNC;
+      ISTXML.TYPE:=_T.TYPE;
+      ISTXML.VAL:=_T.VAL;
+      ISTXML.VTRUNC:=_T.VTRUNC;
+      ISTXML.INDEX:=_index;
+      ISTXML.BVAL:=_T.BVAL;
+::    pola dodatkowe
+      ISTXML.ISTDEF:=_a;
+::    add element
+      {? ISTXML.add()
+      ||
+         _T_hash.HASH:=_hash;
+         _T_hash.REF:=#ISTXML.ref();
+         {? _T_hash.add()
+         ||
+            _tree1:=#ISTXML.ref()
+         ?}
+      ?}
+   ?};
+   {? _T.TYPE='N'
+   ||
+      {? ~_T_ns.find_key(#_T.ref())
+      ||
+         _T_ns.OLD:=#_T.ref();
+         _T_ns.NEW:=_tree1;
+         _T_ns.add()
+      ?}
+   ?};
+   {? _tree1
+   ||
+::    add sub elements
+      exec('t_def','edi_xml',_istdef,_T,#_T.ref(),_tree1,_pth1,_T_hash,_T_ns,_merge)
+   ?};
+   _loop:=_T.next()
+!};
+_T.cntx_pop();
+
+{? _ref=0
+||
+:: update ISTXML.NAMESPC
+   _loop:=ISTXML.first();
+   {!
+   |? _loop
+   |!
+      {? _T_ns.find_key(ISTXML.NAMESPC)
+      ||
+         ISTXML.NAMESPC:=_T_ns.NEW;
+         ISTXML.put()
+      ?};
+      _loop:=ISTXML.next()
+   !}
+?};
+ISTXML.cntx_pop();
+
+~~
+
+
+\istxml_ns_f3
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: F3 ISTXML.NAMESPC
+::   WE: [_a] - tryb: 0 - wywołanie F3 (domyślnie), 1 - wybór
+::   WY: ~~ / wybrana wartość
+::----------------------------------------------------------------------------------------------------------------------
+_wybor:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+{? _wybor
+|| _wyn:=-1
+|| _wyn:=~~
+?};
+_Ns:=tab_tmp(1
+   ,'NAME',    'STRING[255]', 'Nazwa'
+   ,'NAMESPC', 'INTEGER',     'Przestrzeń nazw');
+{? _wybor
+|| _Ns.NAME:='';
+   _Ns.NAMESPC:=0;
+   _Ns.add()
+?};
+ISTXML.cntx_psh();
+ISTXML.index('NAMESPC');
+ISTXML.prefix(ISTDEF.ref(),0,'N');
+_loop:=ISTXML.first();
+{!
+|? _loop
+|!
+   _Ns.NAME:=ISTXML.NAME;
+   _Ns.NAMESPC:=#ISTXML.ref();
+   _loop:=_Ns.add() & ISTXML.next()
+!};
+ISTXML.cntx_pop();
+_wer:=_Ns.mk_sel('Przestrzenie nazw'@,'P',,'xml_namespc',1);
+_Ns.win_fld(_wer,,'NAME',,,30,,,'Nazwa'@);
+_Ns.win_fld(_wer,,'NAMESPC',,,15,,,'Przestrzeń nazw'@);
+_Ns.win_act(_wer,,'Formuła','Wybierz'@,,,"sel_exit()",,1);
+_Ns.win_sel(_wer);
+_Ns.find_tab(,'NAMESPC',,'=',ISTXML.NAMESPC);
+{? _Ns.select(,1,-1)
+|| {? _wybor
+   || _wyn:=_Ns.NAMESPC
+   || ISTXML.NAMESPC:=_Ns.NAMESPC;
+      params_set(params_get());
+      win_disp()
+   ?}
+?};
+_wyn
+
+
+\istxml_ns_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: po redakcji ISTXML.NAMESPC
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+win_disp();
+1
+
+
+\xml_t
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: tabela o strukturze zwracanej przez xml_tparse
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+tab_tmp(2
+   ,'TREE'     ,'TREE_REF'    ,'TREE'
+   ,'INDEX'    ,'INTEGER'     ,'INDEX'
+   ,'NAME'     ,'STRING[255]' ,'NAME'
+   ,'NTRUNC'   ,'STRING[1]'   ,'NTRUNC'
+   ,'TYPE'     ,'STRING[1]'   ,'TYPE'
+   ,'VAL'      ,'STRING[255]' ,'VAL'
+   ,'VTRUNC'   ,'STRING[1]'   ,'VTRNUC'
+   ,'BVAL'     ,'BLOBRAW'     ,'BVAL'
+   ,'NAMESPC'  ,'INTEGER'     ,'NAMESPC')
+
+
+\xml_tparse
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: wczytanie xml do tabeli
+::   WE: _a - xml
+::   WY: uchwyt do tabeli
+::----------------------------------------------------------------------------------------------------------------------
+_xml:=_a;
+
+_name_len:=255;
+_val_len:=exec('val_len_max','edi_xml');
+_no_blob:=0;
+_space_preserve:=0;
+
+return(xml_tparse(_xml,_name_len,_val_len,_no_blob,_space_preserve));
+
+:: kod może się przydać jeśli działanie funkcji xml_tparse okaże się niewystarczające
+
+_x_parse:=0;
+_done:="VAR_DEL.delete('__TP')";
+_done();
+__TP:=obj_new('DEBUG','EOF','T','TREE','ROOT','PTH','INDEX','NDX','VLM','V');
+__TP.DEBUG:=0;
+__TP.EOF:=~_xml.is_open();
+__TP.T:=exec('xml_t','edi_xml');
+__TP.TREE:=0;
+__TP.ROOT:=0;
+__TP.PTH:='';
+__TP.INDEX:=0;
+__TP.NDX:=__TP.T.ndx_tmp(,1
+   ,'NAMESPC',,
+   ,'NAME',,);
+__TP.VLM:=exec('val_len_max','edi_xml');
+__TP.V:=tab_tmp(1
+   ,'TREE', 'INTEGER',     'Tree'
+   ,'VAL',  'STRING[255]', 'Value'
+   ,'BVAL', 'BLOBRAW',     'Blobraw value');
+
+_loop:=~__TP.EOF;
+{!
+|? _loop
+|!
+   _x_parse:=x_parse(
+:: xml
+       _xml
+:: start document
+      ,  "
+         {? __TP.DEBUG || FUN.info('start document'[]) ?};
+         __TP.EOF:=0;
+         1
+         "
+:: end document
+      ,  "
+         {? __TP.DEBUG || FUN.info('end document'[]) ?};
+         __TP.EOF:=1;
+         1
+         "
+:: start element
+      ,  "
+         {? __TP.DEBUG
+         ||
+            FUN.info(
+               'start element:'
+               '\n_a - nazwa elementu: %1'
+               '\n_b - prefiks przestrzeni nazw: %2'
+               '\n_c - uri _b: %3'
+               '\n_d - tablica przestrzeni nazw: %4'
+               '\n_e - tablica z atrybutami: %5'[_a,_b,_c,$obj_len(_d),$obj_len(_e)]
+            )
+         ?};
+         __TP.INDEX+=1;
+         _T:=__TP.T;
+         _namespc:=0;
+         _T.cntx_psh();
+         _T.index(__TP.NDX);
+         _T.prefix(0,_b,);
+         {? _T.first() || _namespc:=#_T.ref() ?};
+         _T.cntx_pop();
+         _T.blank();
+         _T.TREE:=__TP.TREE;
+         _T.INDEX:=__TP.INDEX;
+         _T.NAME:=_a;
+         _T.NTRUNC:='N';
+         _T.TYPE:='E';
+         _T.VAL:='';
+         _T.VTRUNC:='N';
+         _T.BVAL:=null();
+         _T.NAMESPC:=_namespc;
+         {? _T.add()
+         ||
+            __TP.TREE:=#_T.ref();
+            {? __TP.ROOT=0 || __TP.ROOT:=__TP.TREE ?};
+            _var:='__v%1'[form(__TP.TREE,,,'99')];
+            VAR_DEL.delete(_var);
+            _ff:=_var+':=_a';
+            ($_ff)('');
+:: dodanie przestrzeni nazw
+            _len:=obj_len(_d);
+            {! _ii:=1 // 2.._len-1
+            |!
+               __TP.INDEX+=1;
+               _T.blank();
+               _T.TREE:=__TP.ROOT;
+               _T.INDEX:=__TP.INDEX;
+               _T.NAME:=_d[_ii];
+               _T.NTRUNC:='N';
+               _T.TYPE:='N';
+               _val:=_d[_ii+1];
+               _T.VAL:=__TP.VLM+_val;
+               _T.VTRUNC:={? +_val>__TP.VLM || 'T' || 'N' ?};
+               {? _T.add()
+               ||
+                  exec('val_bl_put','edi_xml',_T,_val);
+                  {? _T.NAME=''
+                  ||
+                     _namespc:=#_T.ref();
+                     _T.cntx_psh();
+                     {? _T.seek(__TP.TREE)
+                     ||
+                        _T.NAMESPC:=_namespc;
+                        _T.put()
+                     ?};
+                     _T.cntx_pop()
+                  ?}
+               ?}
+            !};
+:: dodanie atrybutów
+            _len:=obj_len(_e);
+            {! _ii:=1 // 4.._len-1
+            |!
+               _namespc:=0;
+               _T.cntx_psh();
+               _T.index(__TP.NDX);
+               _T.prefix(0,_e[_ii+1],);
+               {? _T.first() || _namespc:=#_T.ref() ?};
+               _T.cntx_pop();
+               __TP.INDEX+=1;
+               _T.blank();
+               _T.TREE:=__TP.TREE;
+               _T.INDEX:=__TP.INDEX;
+               _T.NAME:=_e[_ii];
+               _T.NTRUNC:='N';
+               _T.TYPE:='A';
+               _val:=_e[_ii+3];
+               _T.VAL:=__TP.VLM+_val;
+               _T.VTRUNC:={? +_val>__TP.VLM || 'T' || 'N' ?};
+               _T.NAMESPC:=_namespc;
+               {? _T.add()
+               ||
+                  exec('val_bl_put','edi_xml',_T,_val)
+               ?}
+            !}
+         ?};
+::      __TP.DEBUG:=_a='Note';
+         1
+         "
+:: end element
+      ,  "
+         {? __TP.DEBUG
+         ||
+            FUN.info(
+               'end element:'
+               '\n_a - nazwa elementu: %1'
+               '\n_b - prefiks przestrzeni nazw: %2'
+               '\n_c - uri _b: %3'[_a,_b,_c]
+            )
+         ?};
+         _T:=__TP.T;
+         _tree:=__TP.TREE;
+         {? _T.seek(_tree)
+         ||
+            _var:='__v%1'[form(_tree,,,'99')];
+            _val:=($_var)();
+            {? type_of(_val)=type_of('')
+            ||
+               _T.VAL:=__TP.VLM+_val;
+               {? +_val>__TP.VLM || _T.VTRUNC:='T' ?};
+               {? _T.put()
+               ||
+                  exec('val_bl_put','edi_xml',_T,_val)
+               ?}
+            ||
+               _V:=__TP.V;
+               {? _val.is_open() & _V.find_key(_tree)
+               ||
+                  _T.VTRUNC:='T';
+                  _T.VAL:=_V.VAL;
+                  {? _T.put()
+                  ||
+                     _T.bl_put('BVAL',_val,,,'value.txt')
+                  ?}
+               ?}
+            ?};
+            VAR_DEL.delete(_var)
+         ?};
+         __TP.TREE:={? _T.seek(__TP.TREE) || _T.TREE || 0 ?};
+         1
+         "
+:: text
+      ,  "
+::         {? __TP.DEBUG=0 || __TP.DEBUG:=_a*'RAM:' ?};
+         {? __TP.DEBUG || FUN.info('text (długość: %1): %2'[$+_a,_a]) ?};
+         {? |_a='' || _a:='' ?};
+         {? __TP.TREE & +_a
+         ||
+            _var:='__v%1'[form(__TP.TREE,,,'99')];
+            _val:=($_var)();
+            {? type_of(_val)=type_of('') & ((+_val)+(+_a))<=524172
+            ||
+               _ff:=_var+'+=_a';
+               ($_ff)(_a)
+            ||
+               _ff:=_var+':=_a';
+               _V:=__TP.V;
+               _tree:=__TP.TREE;
+               {? _V.find_key(_tree)
+               ||
+                  _file:=($_var)()
+               ||
+                  _V.TREE:=_tree;
+                  _V.VAL:=__TP.VLM+_val;
+                  {? _V.add()
+                  ||
+                     _V.bl_file('BVAL',1);
+                     _file:=fopen(_V.BVAL,'Ua!',0,,1);
+                     {? _file.is_open()
+                     ||
+                        ($_ff)(_file);
+                        fwrite(_file,_val)
+                     ?}
+                  ?}
+               ?};
+               {? _file.is_open()
+               ||
+                  fwrite(_file,_a)
+               ?}
+            ?}
+         ?};
+         1
+         "
+:: comment
+      ,  "
+         {? __TP.DEBUG || FUN.info('comment: %1'[_a]) ?};
+         1
+         "
+   );
+   {? _x_parse=0 || __TP.EOF:=1 ?};
+   _loop:=~__TP.EOF
+!};
+_T:={? _x_parse || __TP.T || ~~ ?};
+_done();
+
+_T
+
+
+\xml_twrite
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: utworzenie xml z tabeli
+::   WE: _a - xml
+::       _b - tabela przejściowa
+::       _c - #_b.ref()
+::       _d - wcięcie
+::       _e - nr algorytmu
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_xml:=_a;
+_T:=_b;
+_ref:=_c;
+_indent:=_d;
+_alogrytm:=_e;
+
+{? ~_xml.is_open() || return(0) ?};
+
+{? ~(var_pres('__CDATA')=type_of(0) & __CDATA=1) & _alogrytm=1
+||
+   {? _T.first()
+   ||
+      _T.xml_twrite(_xml,0,0,'indentation=1')
+   ?};
+   return(~~)
+?};
+
+:: kod może się przydać jeśli działanie funkcji xml_twrite okaże się niewystarczające
+
+_dnamespc:='';
+{? _ref=0
+||
+   fwrite(_xml,'<?xml version="1.0" encoding="UTF-8"?>');
+   _dnamespc:=exec('dnamespc','edi_xml',_T)
+||
+   _indent+='\t'
+?};
+
+_T.cntx_psh();
+_T.prefix(_ref);
+_loop:=_T.first();
+{!
+|? _loop
+|!
+   {? _T.TYPE='E'
+   ||
+      _namespc:='';
+      {? _T.NAMESPC
+      ||
+         _T.cntx_psh();
+         _T.prefix();
+         {? _T.seek(_T.NAMESPC) & _T.NAME<>'' || _namespc:='%1:'[_T.NAME] ?};
+         _T.cntx_pop()
+      ?};
+      _atrs:=exec('atrs','edi_xml',_T);
+      _val:=exec('val_get','edi_xml',_T);
+      _isSubElem:=0;
+      _T.cntx_psh();
+      _T.prefix(#_T.ref());
+      _loop:=_T.first();
+      {!
+      |? _loop
+      |!
+         _isSubElem:=_T.TYPE='E';
+         _loop:=_isSubElem=0 & _T.next()
+      !};
+      _T.cntx_pop();
+:: write start element
+      _wse:=_isSubElem | _val<>'';
+      _wse:=1;
+      {? _wse || fwrite(_xml,'\n%1<%2%3%4%5>%6'[_indent,_namespc,_T.NAME,_dnamespc,_atrs,_val]) ?};
+:: write sub elements
+      exec('xml_twrite','edi_xml',_xml,_T,#_T.ref(),_indent,2);
+:: write end element
+      _nl:='\n%1'[_indent];
+      {? _wse=1 & _isSubElem=0 || _nl:='' ?};
+      fwrite(_xml,'%1</%2%3>'[_nl,_namespc,_T.NAME])
+   ?};
+   _loop:=_T.next()
+!};
+_T.cntx_pop();
+
+{? _ref=0
+||
+   fwrite(_xml,'\n')
+?};
+
+~~
+
+
+\dnamespc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: zwraca definicje przestrzeni nazw
+::   WE: _a - uchwyt do tabeli o strukturze exec('xml_t','edi_xml')
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_T:=_a;
+
+_result:='';
+
+_ndx:=_T.ndx_tmp(,1
+   ,'TYPE',,);
+_T.cntx_psh();
+_T.index(_ndx);
+_T.prefix('N');
+_loop:=_T.first();
+{!
+|? _loop
+|!
+   _namespc:={? _T.NAME='' || '' || ':%1'[_T.NAME] ?};
+   _val:=exec('val_get','edi_xml',_T);
+   _result+=' xmlns%1="%2"'[_namespc,_val];
+   _loop:=_T.next()
+!};
+_T.cntx_pop();
+_T.ndx_drop(_ndx);
+
+_result
+
+
+\atrs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: zwraca atrybuty elementu
+::   WE: _a - uchwyt do tabeli o strukturze exec('xml_t','edi_xml')
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_T:=_a;
+
+_result:='';
+
+_ele:=#_T.ref();
+
+_T.cntx_psh();
+_T.prefix(_ele);
+_loop:=_T.first();
+{!
+|? _loop
+|!
+   {? _T.TYPE='A'
+   ||
+      _namespc:='';
+      {? _T.NAMESPC
+      ||
+         _T.cntx_psh();
+         _T.prefix();
+         {? _T.seek(_T.NAMESPC) & _T.NAME<>'' || _namespc:='%1:'[_T.NAME] ?};
+         _T.cntx_pop()
+      ?};
+      _val:=exec('val_get','edi_xml',_T);
+      _result+=' %1%2="%3"'[_namespc,_T.NAME,_val]
+   ?};
+   _loop:=_T.next()
+!};
+_T.cntx_pop();
+
+_result
+
+
+\val_bl_put
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: zapis wartości do bloba
+::   WE: _a - uchwyt do tabeli o strukturze exec('xml_t','edi_xml')
+::       _b - wartość
+::   WY: -1/0/1
+::----------------------------------------------------------------------------------------------------------------------
+_T:=_a;
+
+_result:=-1;
+
+{? _T.VTRUNC='T'
+||
+   _val:=_b;
+   _file:=fopen(_T.BVAL,'Uw!',0,,1);
+   {? _file.is_open()
+   ||
+      fwrite(_file,_b);
+      _result:=_T.bl_put('BVAL',_file,,,'value.txt')
+   ?}
+?};
+
+_result
+
+
+\val_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: pobranie wartości
+::   WE: _a - uchwyt do tabeli o strukturze exec('xml_t','edi_xml')
+::   WY: wartość
+::----------------------------------------------------------------------------------------------------------------------
+_T:=_a;
+
+_result:=_T.VAL;
+
+{? _T.VTRUNC='T'
+||
+   {? _T.bl_info('BVAL','SIZE')>524172
+   ||
+      _result:='wartość należy pobrać z __XML.T.BVAL'
+   ||
+      _result:='';
+      _file:=fopen(_T.BVAL,'Ur',0,,1);
+      {? _file.is_open()
+      ||
+         _nl:='';
+         {!
+         |? (_txt:=fread(_file))<>'\n'
+         |!
+            _result+=_nl+_txt;
+            _nl:='\n'
+         !}
+      ?}
+   ?}
+?};
+
+_result
+
+
+\val_len_max
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: maksymalna długość wartości
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+255
+
+
+\def_hash
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: tworzy tabelę #ów z definicji
+::   WE: _a - definicja
+::       _b - #ISTXML.ref()
+::       _c - pth
+::       _d - tablica #ów
+::   WY: tabela
+::----------------------------------------------------------------------------------------------------------------------
+_def:=_a;
+_ref:=_b;
+_pth:=_c;
+_Hash:=_d;
+
+{? _ref=0
+||
+   _Hash:=tab_tmp(1
+      ,'HASH', 'STRING[40]'   ,'HASH'
+      ,'REF',  'INTEGER'      ,'#ISTXML.ref()')
+?};
+
+ISTXML.cntx_psh();
+ISTXML.index('TREE');
+ISTXML.prefix(_def,_ref);
+_loop:=ISTXML.first();
+{!
+|? _loop
+|!
+   _namespc:='';
+   {? ISTXML.NAMESPC
+   ||
+      ISTXML.cntx_psh();
+      ISTXML.prefix();
+      {? ISTXML.seek(ISTXML.NAMESPC) & ISTXML.NAME<>'' || _namespc:='%1:'[ISTXML.NAME] ?};
+      ISTXML.cntx_pop()
+   ?};
+   _sep:={? ISTXML.TYPE='E' || '/' || '@' ?};
+   _pth1:=_pth+_sep+_namespc+ISTXML.NAME;
+   _Hash.HASH:=hash(_pth1);
+   _Hash.REF:=#ISTXML.ref();
+:: add # element
+   _Hash.add();
+:: add # sub elements
+   exec('def_hash','edi_xml',_def,#ISTXML.ref(),_pth1,_Hash);
+   _loop:=ISTXML.next()
+!};
+ISTXML.cntx_pop();
+
+_Hash
+
+
+\verify
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Czy uruchomione w trybie weryfikacji?
+::   WE:
+::   WY: 0/l
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__XML')>100 & var_pres('VERIFY',__XML)=type_of(0) || __XML.VERIFY || 0 ?}
+
+
+\pliki
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Wyznacza listę plików.
+::       W pierwszej kolejności pobierane są pliki przekazane do czynności.
+::       Jeśli nie przekazano plików do czynności lista ustalane jest wg zezwoleń dla komunikatu EDI_Z.C.
+::       Wymagane jest ustawienie zmiennych EDI_Z.C, EDI_Z.WR przed uruchomieniem funkcji.
+::   WE:
+::   WY: ~~ lub tabela z plikami
+::----------------------------------------------------------------------------------------------------------------------
+_edi:=exec('edi','edi_wspolne');
+
+_result:=obj_new('RESULT','PLIKI');
+_result.RESULT:=0;
+_result.PLIKI:=~~;
+
+_PLIKI:=~~;
+{? EDI_Z.C=null
+||
+   FUN.info(exec('msg','edi_wspolne','WARNING_EDI_DEF')+'\pliki/edi_xml.fml.')
+
+|? EDI_Z.WR<>'W' & EDI_Z.WR<>'R'
+||
+   FUN.info(exec('msg','edi_wspolne','WARNING_EDI_DEF_WR')+'\pliki/edi_xml.fml.')
+||
+:: _PLIKI tabela z plikami do odczytania
+   _PLIKI:=_edi.PLIKI;
+   _result.PLIKI:=_PLIKI;
+   _ndx:=_PLIKI.ndx_tmp(,,'PLIK',,0,'PLIK',,0);
+   _PLIKI.index(_ndx);
+   {? _PLIKI.first()
+   ||
+      _result.RESULT:=1
+   ||
+:: Nie przekazano plików do czynności więc pobieramy pliki wg zezwoleń
+::    _ZEZ zezwolenia na odczyt komunikatow danego typu
+      {? EDI_Z.WR='W'
+      || _ZEZ:=sql(
+            'select distinct DEZEZW.FILE_PTH FILE_PTH, DEZEZW.FILE_SIG SIG '+
+            'from DEZEZW '+
+            'where DEZEZW.ISTDEF like :_a '+
+            '  and DEZEZW.B = \'N\' '+
+            '  and to_date(:_b) >= DEZEZW.OD and (to_date(:_b) <= DEZEZW.DO or DEZEZW.DO is null) '+
+            '  and DEZEZW.WR = '':_c''',
+            EDI_Z.C,date(),EDI_Z.WR)
+      || _ZEZ:=sql(
+            'select distinct DEZEZW.FILE_PTH FILE_PTH, DEZEZW.FILE_SIG SIG '+
+            'from DEZEZW '+
+            'where DEZEZW.ISTDEF like :_a '+
+            '  and DEZEZW.B = \'N\' '+
+            '  and DEZEZW.WR = '':_b''',
+            EDI_Z.C,EDI_Z.WR)
+      ?};
+
+      {? ~_ZEZ.first()
+      ||
+         exec('logOrInfo','edi_wspolne',exec('msg','edi_wspolne','MSG_EDI_BRAK_ZEZ'))
+      ||
+         _result.RESULT:=1;
+::       pobranie listy plikow z komunikatami do zmiennej
+         {!
+         |?
+            _pth:=exec('path','edi_xml',_ZEZ.FILE_PTH);
+            _can_continue:=exec('indevice_chk','edi_wspolne',_pth);
+            {? _can_continue>0
+            ||
+               {? exec('interm','#system') & 1+_pth='@'
+               ||
+::                Spawarka, funkcja fdir na razie niedostępna na interm dla ścieżek
+::                @ nawet z indevice, więc użyty zamiennnik dir\#file. Jeżeli fdir będzie
+::                działał na interm to można to rozgałęzienie wyciąć
+                  _pliki:=exec('dir','#file',_pth);
+
+                  {? _pliki.first()
+                  ||
+                     {!
+                     |?
+                        {? ~_PLIKI.find_key(_pliki.FILEPATH,)
+                        ||
+                           _PLIKI.PLIK:=_pliki.FILEPATH;
+                           _PLIKI.PTH:=gsub(_pliki.FILEPATH,_pliki.FILENAME,'');
+                           _PLIKI.SIG:=_ZEZ.SIG;
+                           _PLIKI.OK:='N';
+                           _PLIKI.IN:='N';
+                           {? _PLIKI.add()
+                           ||
+                              _PLIKI.bl_put('BLOB',_PLIKI.PLIK,0)
+                           ?}
+                        ?};
+                        _pliki.next()
+                     !}
+                  ?}
+               ||
+                  _pliki:=exec('pliki','#file',_pth);
+                  {? _pliki.first()
+                  ||
+                     {!
+                     |?
+                        {? ~_PLIKI.find_key(_pliki.LINE,)
+                        ||
+                           _PLIKI.PLIK:=_pliki.LINE;
+                           _PLIKI.PTH:=gsub(_pliki.LINE,_pliki.FILENAME,'');
+                           _PLIKI.SIG:=_ZEZ.SIG;
+                           _PLIKI.OK:='N';
+                           _PLIKI.IN:='N';
+                           {? _PLIKI.add()
+                           ||
+                              _PLIKI.bl_put('BLOB',_PLIKI.PLIK,0)
+                           ?}
+                        ?};
+                        _pliki.next()
+                     !}
+                  ?}
+               ?};
+               obj_del(_pliki)
+            ?};
+            _ZEZ.next()
+         !}
+      ?}
+   ?}
+?};
+
+_result
+
+
+\read
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: odczyt komunikatow typu xml,
+::       wymagane jest wczesniejsze ustawienie zmiennej EDI_Z.C
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('__PLIKI');
+_pliki:=exec('pliki','edi_xml');
+{? _pliki.RESULT=0 || return(~~) ?};
+_PLIKI:=_pliki.PLIKI;
+{? var_pres('_PLIKI')=type_of(~~)
+      |
+   ~_PLIKI.first()
+||
+   exec('logOrInfo','edi_wspolne',exec('msg','edi_wspolne','MSG_EDI_BRAK_PLIKOW'));
+   return(~~)
+
+|? EDI_Z.C=null
+||
+   exec('logOrInfo','edi_wspolne',exec('msg','edi_wspolne','WARNING_EDI_DEF')+'\read/edi_xml.fml.');
+   return(~~)
+
+|? EDI_Z.C().FORMAT<>'N'
+||
+   exec('logOrInfo','edi_wspolne',exec('msg','edi_wspolne','WARNING_EDI_NIEZNANY_FORMAT'));
+   return(~~)
+?};
+:: właściwe działanie
+_edi:=exec('edi','edi_wspolne');
+_context:=_edi.context;
+_verify_only:={? _context.TYPE=exec('context_type_bl','edi_wspolne') || _context.VERIFY_ONLY || 0 ?};
+_fstartg:=ISTDEF.F_STARTG;
+_fendg:=ISTDEF.F_ENDG;
+_fstartd:=ISTDEF.F_STARTD;
+_fendd:=ISTDEF.F_ENDD;
+_psg:='params_set(params_get()); ';
+{? _fstartg<>'' || _fstartg:=_psg+_fstartg ?}; _fstartg:=$_fstartg;
+{? _fendg<>'' || _fendg:=_psg+_fendg ?}; _fendg:=$_fendg;
+{? _fstartd<>'' || _fstartd:=_psg+_fstartd ?}; _fstartd:=$_fstartd;
+{? _fendd<>'' || _fendd:=_psg+_fendd ?}; _fendd:=$_fendd;
+_editms:='tmp_'+tm_stamp();
+:: środowisko
+_env:=obj_new('DEF','HASH','T','THASH','ID');
+_env.DEF:=EDI_Z.C;
+:: #e z definicji
+_env.HASH:=exec('def_hash','edi_xml',_env.DEF,0,'',~~);
+_env.T:=~~;
+_env.THASH:=~~;
+_env.ID:='';
+params_set('env',_env);
+:: formuła - start group
+VAR_DEL.delete('__XML');
+{? _fstartg<>"" & _fstartg()=0
+||
+:: przerwanie działania jeśli formuła przed zwraca zero
+   return(~~)
+?};
+:: Sprawdzenie i ewentualnie usunięcie wcześniej przetwarzanej zawartości DOKUMXML dla załącznika
+exec('dokumxml_del','edi_xml',_context);
+_loop:=_PLIKI.first();
+{!
+|? _loop
+|!
+   _env.ID:=gsub(_PLIKI.PLIK,'\\','/');
+   __DATE:=date();
+   __TIME:=time();
+   EDI_Z.SYM:='';
+   EDI_Z.KH:=null();
+   _xml:=fopen(_PLIKI.BLOB,'b',0,,1);
+   {? ~_xml.is_open()
+   ||
+      exec('logOrInfo','edi_wspolne',exec('msg','edi_wspolne','ERR_FOPEN')
+         +exec('inf_path','edi_wspolne',_PLIKI.PLIK)+'.')
+   ||
+      _env.T:=exec('xml_tparse','edi_xml',_xml);
+      {? var_pres('T',_env)=type_of(~~)
+      ||
+         exec('add_kom','#message','Nie powiódł się odczyt pliku.',2,_env.ID)
+      ||
+         _env.THASH:=exec('t_hash','edi_xml',_env.T,0,'',~~);
+:: Przepisanie stuktury tabeli tymczasowej do tabeli DOKUMXML
+         exec('dokumxml_read','edi_xml',_context,_env.T);
+:: t_read - verify
+         _verify:=1;
+         VAR_DEL.delete('__XML');
+         __XML:=obj_new('ID','VAL','VERIFY','T','HASH','KOM');
+         __XML.ID:=_env.ID;
+         __XML.VAL:=~~;
+         __XML.VERIFY:=_verify;
+         __XML.T:=_env.T;
+         __XML.HASH:=_env.THASH;
+         __XML.KOM:='';
+         {? _fstartd<>"" || _verify:=_fstartd() ?};
+         {? _verify=-1
+         ||
+            exec('add_kom','#message',
+               'Przerwano przetwarzanie pliku podczas weryfikacji w: formuła - start document.',2,_env.ID)
+         ||
+            exec('add_kom','#message','>>> Przetwarzanie wstępne <<<',2,_env.ID);
+            {? exec('t_read','edi_xml',1,EDI_Z.C,_env.HASH,_env.T,0,'')=0
+            ||
+               _edi.err();
+               _verify:=0
+            ?};
+            _verify:=_verify & ~_verify_only
+         ?};
+:: formuła - start document
+         VAR_DEL.delete('__XML');
+         __XML:=obj_new('ID','VAL','VERIFY','T','HASH','KOM');
+         __XML.ID:=_env.ID;
+         __XML.VAL:=~~;
+         __XML.VERIFY:=_verify;
+         __XML.T:=_env.T;
+         __XML.HASH:=_env.THASH;
+         __XML.KOM:='';
+         {? _verify=1 & (_fstartd="" | _fstartd()=1)
+         ||
+:: t_read
+            exec('add_kom','#message','>>> Przetwarzanie końcowe <<<',2,_env.ID);
+            {? exec('t_read','edi_xml',0,EDI_Z.C,_env.HASH,_env.T,0,'')=0
+            ||
+               _edi.err()
+            ||
+::             dodanie zapisu w dzienniku
+::             zmienne EDI_Z.DOK, EDI_Z.SYM, EDI_Z.KH ustawiane w formule dodajacej naglowek dokumentu
+               _file:=_PLIKI.PLIK;
+               _dzien_a:=exec('dzien_add','edi_wspolne',EDI_Z.C,EDI_Z.WR,__DATE,__TIME,OPERATOR.USER,EDI_Z.DOK,
+                  EDI_Z.SYM, EDI_Z.KH,'',_file);
+               {? _dzien_a=0
+               ||
+                  exec('add_kom','#message','Nie powiodło się dodanie zapisu w dzienniku.',2,_env.ID)
+               ||
+                  exec('add_kom','#message','Odczytano dokument %1.'[EDI_Z.SYM],1,_env.ID);
+::                usuniecie pliku z komunikatem po uprzednim zapamietaniu w dzienniku
+                  {? var_pres('XML_DOK')<0 || ferase(_file,0) ?}
+               ?}
+            ?};
+:: formuła - end document
+            VAR_DEL.delete('__XML');
+            __XML:=obj_new('ID','VAL','VERIFY','T','HASH','KOM');
+            __XML.ID:=_env.ID;
+            __XML.VAL:=~~;
+            __XML.VERIFY:=_verify;
+            __XML.T:=_env.T;
+            __XML.HASH:=_env.THASH;
+            _fendd()
+         ?};
+         obj_del(_env.T);
+         obj_del(_env.THASH)
+      ?};
+      fclose(_xml)
+   ?};
+   obj_del(_xml);
+   _loop:=_PLIKI.next()
+!};
+:: formuła - end group
+VAR_DEL.delete('__XML');
+_fendg();
+~~
+
+
+\t_read
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: odczytuje dane z tabeli przjściowej i wykonuje formuły wg definicji
+::   WE: _a - 0/1 - weryfikacja
+::       _b - ISTDEF.ref()
+::       _c - tabela #ów z definicji
+::       _d - tabela przejściowa z danymi do odczytu
+::       _e - aktualnie przetwarzany poziom tabeli przjściowej
+::       _f - ścieżka
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_verify:=_a;
+_def:=_b;
+_Hash:=_c;
+_T:=_d;
+_ref:=_e;
+_pth:=_f;
+
+_result:=1;
+_icon:=33;
+
+{? _ref=0
+||
+   VAR_DEL.delete('__XML');
+   __XML:=obj_new('ID','VAL','VERIFY','T','HASH','KOM');
+   __XML.ID:=params_get().env.ID;
+   __XML.VAL:=~~;
+   __XML.VERIFY:=_verify;
+   __XML.T:=_T;
+   __XML.HASH:=params_get().env.THASH;
+   __XML.KOM:=''
+?};
+
+_T.cntx_psh();
+_T.prefix(_ref);
+_loop:=_T.first();
+{!
+|? _loop
+|!
+   _namespc:='';
+   {? _T.NAMESPC
+   ||
+      _T.cntx_psh();
+      _T.prefix();
+      {? _T.seek(_T.NAMESPC) & _T.NAME<>'' || _namespc:='%1:'[_T.NAME] ?};
+      _T.cntx_pop()
+   ?};
+   _sep:={? _T.TYPE='E' || '/' || '@' ?};
+   _pth1:=_pth+_sep+_namespc+_T.NAME;
+   _f_end:='';
+   {? ~_Hash.find_key(hash(_pth1))
+   ||
+      {? _verify
+      || exec('add_kom','#message','Nie znaleziono w definicji: pozycja: %1'[_pth1],_icon,__XML.ID)
+      ?}
+   ||
+      ISTXML.cntx_psh();
+      ISTXML.prefix(_def);
+      {? ISTXML.seek(_Hash.REF,)
+      ||
+         _f_start:=ISTXML.F_START;
+         _f_end:=ISTXML.F_END;
+         _f_text:=ISTXML.F_TEXT;
+         _is_fld:=ISTXML.IS_FLD='T';
+         __XML.VAL:=exec('val_get','edi_xml',_T);
+         params_set('env',__XML);
+:: formuła - start element
+         {? _f_start<>''
+         ||
+            __XML.KOM:='';
+            _res:=($_f_start)();
+            {? _res<=0
+            ||
+               {? _res=0 | _res=-1
+               ||
+                  exec('add_kom','#message','Formuła - start element - pozycja: %1'[_pth1],_icon,__XML.ID);
+                  {? __XML.KOM<>'' || exec('add_kom','#message','- %1'[__XML.KOM],_icon,__XML.ID) ?}
+               ?};
+               {? _res=0 || _result:=0 ?}
+            ?}
+         ?};
+:: formuła - text
+         {? (_verify | _result) & _f_text<>''
+         ||
+            __XML.KOM:='';
+            _res:=1;
+            {? _is_fld
+            ||
+::             konwersja __XML.VAL
+               _vtype:=-1;
+               _val:=($_f_text)();
+               _vtype:=type_of(_val);
+               _wsk:=_f_text*'.';
+               _atab:=(_wsk-1)+_f_text;
+               _tab:=($_atab)();
+               _afld:=_wsk-_f_text;
+               {? var_pres(_afld,_tab)=36 || _vtype:=36; _val:=__XML.VAL
+               |? type_of(_val)=type_of('') || _val:=__XML.VAL
+               |? type_of(_val)=type_of(0) || _val:=#__XML.VAL
+               |? type_of(_val)=type_of(date(0,0,0)) || _val:=date(#(4+__XML.VAL),#(2+(5-__XML.VAL)),#(__XML.VAL+2))
+               || _res:=0
+               ?};
+               {? _vtype>0 & _res
+               ||
+                  {? _vtype=36
+                  ||
+                     _fld:=$('%1.memo_set(_a,\'%2\')'[_atab,_afld])
+                  ||
+                     _fld:=$('%1:=_a'[_f_text])
+                  ?};
+                  _fld(_val)
+               ?};
+               obj_del(_tab)
+            ||
+               _res:=($_f_text)()
+            ?};
+            {? _res<=0
+            ||
+               {? _res=0 | _res=-1
+               ||
+                  exec('add_kom','#message','Formuła - text - pozycja: %1'[_pth1],_icon,__XML.ID);
+                  {? __XML.KOM<>'' || exec('add_kom','#message','- %1'[__XML.KOM],_icon,__XML.ID) ?}
+               ?};
+               {? _res=0 || _result:=0 ?}
+            ?}
+         ?}
+      ?};
+      ISTXML.cntx_pop()
+   ?};
+:: read sub elements
+   {? _verify | _result
+   ||
+      _res:=exec('t_read','edi_xml',_verify,_def,_Hash,_T,#_T.ref(),_pth1);
+      {? ~_res || _result:=0 ?}
+   ?};
+:: formuła - end element
+   {? (_verify | _result) & _f_end<>''
+   ||
+      __XML.KOM:='';
+      _res:=($_f_end)();
+      {? _res<=0
+      ||
+         {? _res=0 | _res=-1
+         ||
+            exec('add_kom','#message','Formuła - end element - pozycja: %1'[_pth1],_icon,__XML.ID);
+            {? __XML.KOM<>'' || exec('add_kom','#message','- %1'[__XML.KOM],_icon,__XML.ID) ?}
+         ?};
+         {? _res=0 || _result:=0 ?}
+      ?}
+   ?};
+   _loop:=(_verify | _result) & _T.next()
+!};
+_T.cntx_pop();
+
+{? _ref=0
+||
+   VAR_DEL.delete('__XML')
+?};
+
+_result
+
+
+\doc2write
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: dokumenty do zapisu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+tab_tmp(1
+   ,'REF',  'STRING[16]',  'REFERENCE'
+   ,'ID',   'STRING[50]',  'ID'
+   ,'KH',   'STRING[16]',  'KH.KOD'
+   ,'PATH', 'STRING[250]', 'PATH')
+
+
+\write
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: zapis do plików xml dokumentów przekazanych w tabeli _a
+::       wymagane jest wczesniejsze ustawienie zmiennej EDI_Z.C
+::   WE: _a - dokumenty do zapisu w tabeli o strukturze exec('doc2wirte','edi_xml')
+::   WY: gdy wywolywane dla biezacej faktury to zwraca ref dodanego komunikatu
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=_a;
+
+{? type_of(_obj)=type_of(obj_new('obj'))
+|| _Dok:=_obj.DOK;
+   _txt:=_obj.TXT
+|| _Dok:=_obj;
+   _txt:=''
+?};
+
+_result:=null;
+
+_edi:=exec('edi','edi_wspolne');
+_bl_type:='';
+_context:=_edi.context;
+_context_type_bl:=_context.TYPE=exec('context_type_bl','edi_wspolne');
+{? _context_type_bl || _bl_type:=_context.BL_TYPE ?};
+
+SKID.EXP_IMP:='E';
+
+{? EDI_Z.C=null
+||
+   exec('logOrInfo','edi_wspolne',exec('msg','edi_wspolne','WARNING_EDI_DEF')+'\write/edi_xml.fml.');
+   return(null())
+
+|? EDI_Z.C().FORMAT<>'N'
+||
+   exec('logOrInfo','edi_wspolne',exec('msg','edi_wspolne','WARNING_EDI_NIEZNANY_FORMAT'));
+   return(null())
+
+|? var_pres('_Dok')=type_of(~~)
+||
+   exec('logOrInfo','edi_wspolne','Brak dokumentów do zapisu.\n%1'@[_txt]);
+   return(null())
+
+|? ~_Dok.first()
+||
+   exec('logOrInfo','edi_wspolne','Nie wybrano dokumentów do zapisu.'@);
+   return(null())
+?};
+:: właściwe działanie
+_fstartg:=ISTDEF.F_STARTG;
+_fendg:=ISTDEF.F_ENDG;
+_fstartd:=ISTDEF.F_STARTD;
+_fendd:=ISTDEF.F_ENDD;
+_psg:='params_set(params_get()); ';
+{? _fstartg<>'' || _fstartg:=_psg+_fstartg ?}; _fstartg:=$_fstartg;
+{? _fendg<>'' || _fendg:=_psg+_fendg ?}; _fendg:=$_fendg;
+{? _fstartd<>'' || _fstartd:=_psg+_fstartd ?}; _fstartd:=$_fstartd;
+{? _fendd<>'' || _fendd:=_psg+_fendd ?}; _fendd:=$_fendd;
+:: środowisko
+_env:=obj_new('DEF','HASH','T','ID');
+_env.DEF:=EDI_Z.C;
+:: #e z definicji
+_env.HASH:=exec('def_hash','edi_xml',_env.DEF,0,'',~~);
+_env.T:=exec('xml_t','edi_xml');
+_env.ID:='';
+params_set('env',_env);
+{? _fstartg<>"" & _fstartg()=0
+||
+:: formuła - start group
+:: przerwanie działania jeśli zwraca zero
+   return(null())
+||
+   _T:=_env.T;
+   _loop:=_Dok.first();
+   {!
+   |? _loop
+   |!
+      _env.ID:=_Dok.ID;
+      _Tab:=ref_tab(_Dok.REF);
+      {? type_of(_Tab)=type_of(~~)
+      ||
+         exec('add_kom','#message','Nie podano uchwytu tabeli z dokumentami do zapisu.'@,2,_Dok.ID)
+      ||
+         _Tab.cntx_psh();
+         _Tab.use(ref_name(_Dok.REF));
+         _Tab.cntx_psh();
+         _Tab.prefix();
+         {? ~_Tab.seek(_Dok.REF)
+         ||
+            exec('add_kom','#message','Nie znaleziono dokumentu.'@,2,_Dok.ID)
+
+         |? _Tab.r_lock(1,1,1)
+         ||
+:: formuła - start document
+            {? _fstartd="" | _fstartd()=1
+            ||
+               EDI_Z.DOK:=$_Tab.ref();
+               EDI_Z.SYM:=_Dok.ID;
+               EDI_Z.KH:=exec('FindAndGet','#table',KH,_Dok.KH,,,null());
+:: t_write
+               {? exec('t_write','edi_xml','XML',EDI_Z.C,0,_T,0,'',~~,~~)<>1
+               ||
+                  _edi.err();
+                  {? _context_type_bl
+                  ||
+                     exec('FindAndGet','#table',DOKUM,_context.DOKUM,,"
+                        @.DOKUM.BL_STAT:=exec('validation_failed','zbl_stat');
+                        @.DOKUM.put()
+                     ")
+                  ?}
+               ||
+                  _fname:='%1%2_%3'[{? _bl_type='' || '' || _bl_type+'_' ?},form(EDI_Z.KH().KOD),form(EDI_Z.SYM)];
+                  _fname:=gsub(_fname,'/','');
+                  _fname:=gsub(_fname,'\\','');
+                  _file:='%1.xml'[_fname];
+                  _xml:=fopen(null(),'Uw!',,,1);
+                  {? ~_xml.is_open()
+                  ||
+                     FUN.info(exec('msg','edi_wspolne','ERR_FOPEN')+_file+'.')
+                  ||
+:: zapis do pliku
+:: TODO - uzupełnianie tabelki z łapy + wtyczka ( uproszona struktura path + lp + wartość)
+                     exec('xml_twrite','edi_xml',_xml,_T,0,'',1);
+:: dodanie zapisu w dzienniku
+                     _edi.plikAdd(_file,'',_xml);
+                     _dzien_a:=exec('dzien_add','edi_wspolne',EDI_Z.C,EDI_Z.WR,date(),time(),OPERATOR.USER
+                        ,EDI_Z.DOK,EDI_Z.SYM,EDI_Z.KH,'',_file);
+                     {? _dzien_a=0
+                     ||
+                        exec('add_kom','#message','Nie powiodło się dodanie zapisu w dzienniku.',2,EDI_Z.SYM)
+                     ||
+                        exec('add_kom','#message','Dokument zapisano w dzienniku zdarzeń EDI.',1,EDI_Z.SYM);
+                        EDI_I.cntx_psh();
+                        EDI_I.prefix();
+                        {? EDI_I.seek(_dzien_a,ref_name(_dzien_a))
+                        ||
+                           _path:=exec('path','edi_xml',_Dok.PATH);
+                           {? _path+1<>'/' & _path+1<>'\\'
+                           ||
+                              _path+=exec('sep','#file')
+                           ?};
+                           _can_continue:=exec('indevice_chk','edi_wspolne',_path+_file,EDI_Z.SYM);
+                           {? _can_continue>0
+                           ||
+                              {? EDI_I.bl_get('Z1',_path+_file)
+                              ||
+                                 exec('add_kom','#message','Dokument zapisano w pliku %1'[_path+_file],1,EDI_Z.SYM)
+                              ?}
+                           ?}
+                        ?};
+                        EDI_I.cntx_pop();
+:: e-invoicing
+                        exec('atta_add','edi_wspolne',EDI_Z.DOK,EDI_Z.C);
+                        _result:=_dzien_a
+                     ?};
+                     obj_del(_xml);
+                     _Tab.put()
+                  ?};
+:: formuła - end document
+                  _fendd()
+               ?}
+            ?};
+            _Tab.r_unlock()
+         ||
+            exec('add_kom','#message','Dokument obsługiwany przez innego użytkownika.',1,EDI_Z.SYM)
+         ?};
+         _Tab.cntx_pop();
+         _Tab.cntx_pop();
+         obj_del(_Tab);
+         _T.erase()
+      ?};
+      _loop:=_Dok.next()
+   !}
+?};
+:: formuła - end group
+_fendg();
+_result
+
+
+\t_write
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: zapisuje dane w tabeli przjściowej i wykonuje formuły wg definicji
+::   WE: _a - ISTDEF.ref()
+::       _b - aktualnie przetwarzany poziom definicji
+::       _c - tabela przejściowa z danymi do odczytu
+::       _d - aktualnie przetwarzany poziom tabeli przjściowej
+::       _e - ścieżka
+::       _f - ndx tabeli prześciowej
+::       _g - _T_ns
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_type:=_a;
+_def:=_b;
+_defref:=_c;
+_T:=_d;
+_ref:=_e;
+_pth:=_f;
+_ndx:=_g;
+_T_ns:=_h;
+
+_result:=1;
+_icon:=33;
+_icon1:=7;
+_index:=0;
+_vlm:=exec('val_len_max','edi_xml');
+_type_xml:='XML'=_type;
+
+{? _ref=0
+||
+   _ndx:=_T.ndx_tmp(,1
+      ,'NAMESPC',,
+      ,'NAME',,);
+   _T_ns:=tab_tmp(1
+      ,'OLD'   ,'INTEGER',    'OLD'
+      ,'NEW'   ,'INTEGER',    'NEW');
+   VAR_DEL.delete('__XML');
+   __XML:=obj_new('ID','VAL','FIRST','MIN','MAX','USE','KOM');
+   __XML.ID:=params_get().env.ID;
+   __XML.VAL:='';
+   __XML.FIRST:=0;
+   __XML.MIN:=1;
+   __XML.MAX:=1;
+   __XML.USE:=0;
+   __XML.KOM:=''
+?};
+
+ISTXML.cntx_psh();
+ISTXML.index('TREE');
+ISTXML.prefix(_def,_defref);
+_loop:=ISTXML.first();
+{!
+|? _loop
+|!
+   _namespc:='';
+   {? ISTXML.NAMESPC
+   ||
+      ISTXML.cntx_psh();
+      ISTXML.prefix();
+      {? ISTXML.seek(ISTXML.NAMESPC) & ISTXML.NAME<>'' || _namespc:='%1:'[ISTXML.NAME] ?};
+      ISTXML.cntx_pop()
+   ?};
+   _sep:={? ISTXML.TYPE='E' || '/' || '@' ?};
+   _pth1:=_pth+_sep+_namespc+ISTXML.NAME;
+   _f_start:=ISTXML.F_START;
+   _f_end:=ISTXML.F_END;
+   _f_text:=ISTXML.F_TEXT;
+   _is_fld:=ISTXML.IS_FLD='T';
+   params_set('env',__XML);
+   _loop:=__XML.FIRST:=1;
+:: możliwe wartości __XML.CARD
+:: - elementy:
+::    - minOccurs="0", wartość domyślna minOccurs="1"
+::    - maxOccurs="10", nieograniczona ilość maxOccurs="unbounded"
+:: - atrybuty:
+::    - use="optional" lub "required", wartość domyślna use="optional"
+   __XML.MIN:=1;
+   __XML.MAX:=1;
+   __XML.USE:=0;
+   __XML.VAL:='';
+   __XML.KOM:='';
+:: formuła - start element
+   {? _type_xml & _f_start<>''
+   ||
+      _loop:=($_f_start)();
+
+      {? ~_loop
+      ||
+         {? sec_superuser() & exec('get','#params',4007,2,OPERATOR.USER)='T'
+         ||
+            exec('add_kom','#message','Formuła - start element - pozycja pominięta: %1'[_pth1],_icon1,__XML.ID)
+         ?}
+      ?}
+   ?};
+   _xml_val:=__XML.VAL;
+   {!
+   |? _loop
+   |!
+::    przywrócenie wartości ustalonej w formuła - start element
+      __XML.VAL:=_xml_val;
+:: formuła - text
+      {? _type_xml & (_is_fld | _f_text<>'')
+      ||
+         _res:=1;
+         {? _is_fld
+         ||
+            {? _f_text=''
+            ||
+::             pobranie wartości z definicji
+               __XML.VAL:=exec('val_get','edi_xml',ISTXML)
+            ||
+::             konwersja __XML.VAL
+               _val:=($_f_text)();
+               {? type_of(_val)=type_of(0)
+               ||
+                  __XML.VAL:=form(_val,,,'9.')
+
+               |? type_of(_val)=type_of('')
+               ||
+                  __XML.VAL:={? var_pres('__CDATA')=type_of(0) & __CDATA=1 || exec('cdata','edi_wspolne',_val) || _val ?}
+
+               |? type_of(_val)=type_of(date(0,0,0))
+               ||
+                  __XML.VAL:='%1-%2-%3'[form(_val~1,,,'99'),form(_val~2,-2),form(_val~3,-2)]
+               ||
+                  _loop:=_result:=0
+               ?}
+            ?}
+         ||
+            _loop:=($_f_text)();
+            {? _loop || _result:=type_of(__XML.VAL)=type_of('') ?};
+            {? _result=0 || _loop:=0 ?}
+         ?};
+         {? _result=0
+         ||
+            {? type_of(__XML.VAL)>100 || obj_del(__XML.VAL) ?};
+            exec('add_kom','#message','Błędny typ danych.',_icon,__XML.ID)
+         ?};
+         {? ~_loop
+         ||
+            exec('add_kom','#message','Formuła - text - przerwano zapis - pozycja: %1'[_pth1],_icon,__XML.ID);
+            {? __XML.KOM<>'' || exec('add_kom','#message','- %1'[__XML.KOM],_icon,__XML.ID) ?};
+            _result:=0
+         ?}
+
+      |? _type_xml=0
+      ||
+         __XML.VAL:=exec('val_get','edi_xml',ISTXML)
+      ?};
+      {? _loop
+      ||
+         _loop:=0;
+:: dodanie zapisu w tabeli przjściowej
+         _index+=1;
+         _T.TREE:=_ref;
+         _T.INDEX:=_index;
+         _T.NAME:=ISTXML.NAME;
+         _T.NTRUNC:=ISTXML.NTRUNC;
+         _T.TYPE:=ISTXML.TYPE;
+         _T.VAL:=_vlm+__XML.VAL;
+         _T.VTRUNC:={? +__XML.VAL>_vlm || 'T' || 'N' ?};
+         _T.BVAL:=null();
+         _T.NAMESPC:=ISTXML.NAMESPC;
+         {? _T.add()
+         ||
+            exec('val_bl_put','edi_xml',_T,__XML.VAL);
+            {? ISTXML.TYPE='N'
+            ||
+               {? ~_T_ns.find_key(#ISTXML.ref())
+               ||
+                  _T_ns.OLD:=#ISTXML.ref();
+                  _T_ns.NEW:=#_T.ref();
+                  _T_ns.add()
+               ?}
+            ?};
+:: write sub elements
+            _result:=exec('t_write','edi_xml',_type,_def,#ISTXML.ref(),_T,#_T.ref(),_pth1,_ndx,_T_ns);
+:: formuła - end element
+            {? _result & _type_xml & _f_end<>'' || _loop:=($_f_end)() ?}
+         ?}
+      ?};
+      __XML.FIRST:=0
+   !};
+   _loop:=_result & ISTXML.next()
+!};
+ISTXML.cntx_pop();
+{? _ref=0 || exec('update_t','edi_xml','XML',EDI_Z.C,0,_T,0,'',_ndx,_T_ns,'','',0) ?};
+
+{? _ref=0
+||
+:: update ISTXML.NAMESPC
+   _loop:=_T.first();
+   {!
+   |? _loop
+   |!
+      {? _T_ns.find_key(_T.NAMESPC)
+      ||
+         _T.NAMESPC:=_T_ns.NEW;
+         _T.put()
+      ?};
+      _loop:=_T.next()
+   !};
+   _w:=_T.mk_sel('Dane do zapisu w pliku xml'@,'P',,'#t_write',1,1,,1);
+   _T.win_fld(_w,,'NAME',,,50);
+   _T.win_fld(_w,,'NAMESPC',,,2);
+   _T.win_fld(_w,,'NTRUNC',,,2);
+   _T.win_fld(_w,,'TYPE',,,2);
+   _T.win_fld(_w,,'VAL',,,50);
+   _T.win_fld(_w,,'VTRUNC',,,2);
+   _T.win_fld(_w,,'INDEX',,,2);
+   _T.win_act(_w,,'Formuła','Wartość'@@,,,"exec('bl_view','#blob',cur_tab(),'BVAL')",,,,,,'W');
+   _T.win_act(_w,,'Formuła','Zatwierdź'@@,,,"sel_exit()",,1,,,,'Z');
+   _T.win_act(_w,,'Szukaj');
+   _T.win_act(_w,,'Kolejność',);
+   _T.win_sel(_w);
+::   _T.select();
+   _T.ndx_drop(_ndx);
+   VAR_DEL.delete('__XML')
+?};
+
+_result
+
+
+\valid_version
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Sprawdza, czy system jest uruchomiony poprawną wersją macrobase
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_run:=user(11);
+#_run>=18.14 | (1+_run)='P'
+
+
+\id_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: pobiera identyfikator pozycji definicji
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+ISTXML.cntx_psh();
+_pth:='';
+_loop:=1;
+{!
+|? _loop
+|!
+   _namespc:='';
+   {? ISTXML.NAMESPC
+   ||
+      ISTXML.cntx_psh();
+      ISTXML.prefix();
+      {? ISTXML.seek(ISTXML.NAMESPC) & ISTXML.NAME<>'' || _namespc:='%1:'[ISTXML.NAME] ?};
+      ISTXML.cntx_pop()
+   ?};
+   _sep:={? ISTXML.TYPE='E' || '/' || '@' ?};
+   _pth:=_sep+_namespc+ISTXML.NAME+_pth;
+   _loop:={? ISTXML.TREE || ISTXML.seek(ISTXML.TREE,) || 0 ?}
+!};
+ISTXML.cntx_pop();
+hash(_pth)
+
+
+\id_val
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: zwraca wartości dla identyfikatora pozycji definicji
+::   WE: _a - identyfikator pozycji definicji w formacie zwracanym przez exec('id_get','edi_xml')
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_Hash:=__XML.HASH;
+_result:=~~;
+_T:=__XML.T;
+_T.cntx_psh();
+_Hash.cntx_psh();
+_Hash.prefix(_a);
+_loop:=_Hash.first();
+{? _loop || _result:=obj_new(_Hash.size()) ?};
+_ii:=0;
+{!
+|? _loop
+|!
+   _ii+=1;
+   _T.prefix();
+   _result[_ii]:=
+      {? _T.seek(_Hash.REF)
+      ||
+         exec('val_get','edi_xml',_T)
+      ||
+         ~~
+      ?};
+   _loop:=_Hash.next()
+!};
+_Hash.cntx_pop();
+_T.cntx_pop();
+_result
+
+
+\t_hash
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: tworzy tabelę #ów z definicji
+::   WE: _a - tabela
+::       _b - #_T.ref
+::       _c - pth
+::       _d - tablica #ów
+::   WY: tabela
+::----------------------------------------------------------------------------------------------------------------------
+_T:=_a;
+_ref:=_b;
+_pth:=_c;
+_Hash:=_d;
+
+{? _ref=0
+||
+   _Hash:=tab_tmp(1
+      ,'HASH', 'STRING[40]'   ,'HASH'
+      ,'REF',  'INTEGER'      ,'#_T.ref()')
+?};
+
+_T.cntx_psh();
+_T.prefix(_ref);
+_loop:=_T.first();
+{!
+|? _loop
+|!
+   _namespc:='';
+   {? _T.NAMESPC
+   ||
+      _T.cntx_psh();
+      _T.prefix();
+      {? _T.seek(_T.NAMESPC) & _T.NAME<>'' || _namespc:='%1:'[_T.NAME] ?};
+      _T.cntx_pop()
+   ?};
+   _sep:={? _T.TYPE='E' || '/' || '@' ?};
+   _pth1:=_pth+_sep+_namespc+_T.NAME;
+   _Hash.HASH:=hash(_pth1);
+   _Hash.REF:=#_T.ref();
+:: add # element
+   _Hash.add();
+:: add # sub elements
+   exec('t_hash','edi_xml',_T,#_T.ref(),_pth1,_Hash);
+   _loop:=_T.next()
+!};
+_T.cntx_pop();
+
+_Hash
+
+
+\path
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: ścieżka do pliku
+::   WE: _a - path
+::   WY: path
+::----------------------------------------------------------------------------------------------------------------------
+_pth:=_a;
+{? (1+_pth)='@'
+   | ((2+_pth)+1)=':'
+   | (2+_pth)='\\\\'
+   | (1+_pth)='/'
+||
+:: przypadki:
+:: - sciezka na komputerze lokalnym (@), zaklada sie ze zawsze bezwzgledna
+:: - bezwzgledna (c:)
+:: - sieciowa windowsowa (\\)
+:: - linuxowa (/)
+   _pth
+||
+:: przypadek sciezka wzgledna od katalogu wyznaczonego pth_dir()
+   {? sys_name(1)='WINDOWS'
+   ||
+      pth_dir('a.xml')+{? (1+_pth)='\\' || '' || '\\' ?}+_pth
+   ||
+      pth_dir('a.xml')+{? (1+_pth)='/' || '' || '/' ?}+_pth
+   ?}
+?}
+
+
+\id_copy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Wyświetla okienko z którego można skopiować ID
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ctr_id:=exec('create','#desktop',SYSLOG,'edi_id',,8,70,'Identyfikator',,'normal');
+_win_id:='kontrolka1';
+SYSLOG.win_ctr(_ctr_id);
+_before:="
+            _elements:=exec('elements_table','#desktop');
+
+            _elements.blank();
+            _elements.ID_SYS:='id@desktop';
+            _elements.NAME:='Id'@;
+            _elements.add();
+
+            _elements.blank();
+            _elements.ID_SYS:='btn_copy@buttons';
+            _elements.NAME:='&Kopiuj wartość pola'@;
+            _elements.add();
+
+            _elements.blank();
+            _elements.ID_SYS:='btn_cancel@buttons';
+            _elements.NAME:='&Anuluj'@;
+            _elements.add();
+            _opt:=exec('set_options_a','#desktop');
+            _opt.LOAD_ANI:=0;
+            exec('load','#desktop','edi_id','edi_id.dsk',_opt,,,,_elements,1,,1);
+            exec('set_value','#desktop','','edi_id','id@desktop',exec('id_get','edi_xml'));
+            1";
+
+SYSLOG.control(_win_id,'modal=false',_before);
+~~
+
+
+\istxml_namespc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: zwraca przestrzeń nazw
+::   WE: _a - uchwyt do tabeli
+::       _b - definicja
+::       _c - ref pozycji z definicją przestrzeni nazw
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_istdef:=_a;
+_ref:=_b;
+_namespc:='';
+ISTXML.cntx_psh();
+ISTXML.index('NAMESPC');
+ISTXML.prefix(_istdef);
+{? ISTXML.seek(_ref) & ISTXML.NAME<>'' || _namespc:=ISTXML.NAME ?};
+ISTXML.cntx_pop();
+_namespc
+
+
+\ediz_namespc_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: przed wyświetleniem EDI_Z.NAMESPC
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env:=params_get().env_xml;
+fld(exec('istxml_namespc','edi_xml',_env.ISTDEF,ISTXML.NAMESPC));
+~~
+
+
+\istxml_type_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: po redakcji ISTXML.TYPE
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('istxml_set_efld_opt','edi_xml');
+1
+
+
+\istxml_set_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: ustawia opcje pól w oknie redkacji
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env:=params_get().env_xml;
+_win_red:=_env.WIN_EDIT;
+{? ISTXML.TYPE='N'
+||
+   ISTXML.efld_opt(_win_red,'enable=0',,'NAMESPC');
+   ISTXML.efld_opt(_win_red,'enable=0',EDI_Z,'NAMESPC')
+||
+   ISTXML.efld_opt(_win_red,'enable=1',,'NAMESPC');
+   ISTXML.efld_opt(_win_red,'enable=1',EDI_Z,'NAMESPC')
+?}
+
+
+\usun_strukture
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Usuwa strukturę definicji
+::   WE: _a - ISTDEF.ref()
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('def_del','edi_xml',_a,null())
+
+
+\dragISTXML
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [22.26]
+:: OPIS: obsługa drag&drop ISTXML
+::   WE: [_a] - 0(domyślnie) - drag&drop, 1-akcja
+::----------------------------------------------------------------------------------------------------------------------
+_tryb:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+
+_env:=params_get().env_xml;
+_T:=cur_tab();
+_src:=0; _srctree:=0; _srcind:=0; _srctype:=''; _srcname:='';
+_dst:=0; _dsttree:=0; _dstind:=0; _dsttype:=''; _dstname:='';
+_rootree:=0;
+_T.cntx_psh();
+_T.prefix(_env.ISTDEF,0);
+{? _T.first() || _rootree:=#_T.ref() ?};
+_T.cntx_pop();
+{? ~_tryb
+|| _TDR:=dnd_info('dropped_records');
+   _dst:=dnd_info('dest_record')
+|| _ref:=_T.ref();
+   _w:=_T.mk_sel('Wybór dla przesunięcia'@,'P',,'#selistxml',1,,,1);
+   _T.win_fld(_w,,'NAME',,,30);
+   _T.win_fld(_w,,'NAMESPC',,,2);
+   _T.win_fld(_w,,'TYPE',,,2);
+   _T.win_fld(_w,,'VAL',,,20,,1);
+   _T.win_fld(_w,,'F_START',,,40);
+   _T.win_fld(_w,,'F_END',,,40);
+   _T.win_fld(_w,,'IS_FLD',,,3,,,,,,2,,"'T'","'N'");
+   _T.win_fld(_w,,'F_TEXT',,,30);
+   _T.win_act(_w,0,'Formuła','&Wybierz'@@,,'Wybór dla przesunięcia'@,,"sel_exit()",1,,,,'W');
+   _T.win_sel(_w);
+   _T.cntx_psh();
+   _T.seek(_ref);
+   {? _T.select(,1,20) || _dst:=_T.ref() ?};
+   _T.cntx_pop();
+   {? _T.sel_size()
+   || _TDR:=_T.sel_aget();
+      _T.sel_adel()
+   || _TDR:=tab_tmp(1,'REF','INTEGER','');
+      _TDR.blank();
+      _TDR.REF:=#_T.ref();
+      _TDR.add(1)
+   ?}
+?};
+{? _dst=null() || FUN.info('Należy wskazać pozycję docelową.'@) ?};
+{? _TDR.first()
+||
+   _continue:=1;
+   {? _TDR.next()
+   ||
+      FUN.info('Przenoszenie grupy pozycji niedostępne.'@);
+      _continue:=0
+   ?};
+   {? _continue
+   ||
+      _src:=_TDR.REF;
+      _T.cntx_psh();
+      {? _T.seek(_src)
+      ||
+         _srctree:=_T.TREE;
+         _srcind:=_T.INDEX;
+         _srctype:=_T.TYPE;
+         _srcname:=_T.NAME;
+         {? _T.TREE=0
+         ||
+            FUN.info('Przenoszenie głównej pozycji niedostępne.'@);
+            _continue:=0
+         ?}
+      ?};
+      _T.cntx_pop()
+   ?};
+   {? _continue
+   ||
+      _case:='';
+      _T.cntx_psh();
+      {? _T.seek(_dst)
+      ||
+         _dsttree:=_T.TREE;
+         _dstind:=_T.INDEX;
+         _dsttype:=_T.TYPE;
+         _dstname:=_T.NAME;
+         _txt:='Wybierz sposób przeniesienia pozycji:\n%1\nna wskazaną pozycję:\n%2.'@[_srcname,_dstname];
+         {? _dsttree=0
+         ||
+            _case:='SUB'
+
+         |? _dsttype='E' & _srctype<>'N'
+         ||
+            {? _srctree=_dsttree
+            ||
+               {? _srcind<_dstind
+               ||
+                  _case:=FUN.choice(_txt,,'Za pozycją'@,'Pozycja podrzędna'@);
+                  _case:={? _case=1 || 'AFTER' |? _case=2 || 'SUB' || '' ?}
+               ||
+                  _case:=FUN.choice(_txt,,'Przed pozycją'@,'Pozycja podrzędna'@);
+                  _case:={? _case=1 || 'BEFORE' |? _case=2 || 'SUB' || '' ?}
+               ?}
+            ||
+               _case:=FUN.choice(_txt,,'Przed pozycją'@,'Za pozycją'@,'Pozycja podrzędna'@);
+               _case:={? _case=1 || 'BEFORE' |? _case=2 || 'AFTER' |? _case=3 || 'SUB' || '' ?}
+            ?}
+         ||
+            {? _srctree=_dsttree
+            ||
+               {? _srcind<_dstind
+               ||
+                  _case:='AFTER'
+               ||
+                  _case:='BEFORE'
+               ?}
+            ||
+               {? _srctype='N' & _dsttree<>_rootree
+               ||
+                  FUN.info('Pozycję typu przestrzeń nazw można przenosić na'
+                     ' poziomie bezpośrednio pod elementem głównym.'@)
+               ||
+                  _case:=FUN.choice(_txt,,'Przed pozycją'@,'Za pozycją'@);
+                  _case:={? _case=1 || 'BEFORE' |? _case=2 || 'AFTER' || '' ?}
+               ?}
+            ?}
+         ?};
+         {? _case='BEFORE'
+         ||
+            _index:=_T.INDEX;
+            _T.cntx_psh();
+            _T.prefix(_env.ISTDEF,_dsttree);
+            _loop:=_T.last() & _T.INDEX>=_index;
+            {!
+            |? _loop
+            |!
+               _T.INDEX+=1;
+               _loop:=_T.put() & _T.prev() & _T.INDEX>=_index
+            !};
+            _T.cntx_pop();
+            {? _T.seek(_src)
+            ||
+               _T.TREE:=_dsttree;
+               _T.INDEX:=_index;
+               _T.put()
+            ?}
+
+         |? _case='AFTER'
+         ||
+            _index:=_T.INDEX;
+            _T.cntx_psh();
+            _T.prefix(_env.ISTDEF,_dsttree);
+            _loop:=_T.last() & _T.INDEX>_index;
+            {!
+            |? _loop
+            |!
+               _T.INDEX=1;
+               _loop:=_T.put() & _T.prev() & _T.INDEX>_index
+            !};
+            _T.cntx_pop();
+            {? _T.seek(_src)
+            ||
+               _T.TREE:=_dsttree;
+               _T.INDEX:=_index+1;
+               _T.put()
+            ?}
+
+         |? _case='SUB'
+         ||
+            _T.cntx_psh();
+            _T.prefix(_env.ISTDEF,_dst);
+            _index:=1;
+            {? _T.last() || _index:=_T.INDEX+1 ?};
+            _T.cntx_pop();
+            {? _T.seek(_src)
+            ||
+               _T.TREE:=_dst;
+               _T.INDEX:=_index;
+               _T.put()
+            ?}
+         ?}
+      ?};
+      _T.cntx_pop()
+   ?}
+?}
+
+
+\istxml_copy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [23.25]
+:: OPIS: Kopiowanie struktury
+::   WE: _a - ISTDEF.ref() - old
+::       [_b] - ISTDEF.ref() - new
+::       [_c] - 0 - przenieś, 1 - kopiuj
+::       [_d] - TREE_REF
+::       [_e] - tabela ze strukturą drzewa
+::       [_f] - 0/1 - kopiuj wersje
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_old:=_a;
+_new:={? var_pres('_b')=type_of(null()) || _b || null() ?};
+_move:={? var_pres('_c')=type_of(0) || _c || 0 ?};
+_ref:={? var_pres('_d')=type_of(null()) || _d || null() ?};
+_cp_ver:={? var_pres('_f')=type_of(0) || _f || 0 ?};
+_Tree:=~~;
+_ind1:=~~;
+_ind2:=~~;
+_first:=1;
+
+{? _ref
+||
+   _new:=_b;
+   _Tab:=_e;
+   _Tree:=_Tab.TREE;
+   _ind1:=_Tab.IND1;
+   _ind2:=_Tab.IND2;
+   _first:=0
+||
+   _Tab:=obj_new('TREE','IND1','IND2');
+   _Tab.TREE:=_Tree:=tab_tmp(3
+      ,'LP','INTEGER','Lp.'
+      ,'REF','INTEGER','Ref'
+      ,'TREE','INTEGER','Tree'
+      ,'NEW_REF','INTEGER','New ref');
+   _Tab.IND1:=_ind1:=_Tree.index('?');
+   _Tab.IND2:=_ind2:=_Tree.ndx_tmp(,,'REF',,);
+   {? _new=null()
+   ||
+      ISTDEF.cntx_psh();
+      ISTDEF.prefix();
+      ISTDEF.FIRMA:=__Firma;
+      ISTDEF.VER:=ISTDEF.K+ISTDEF.FIRMA;
+      {? ISTDEF.add() || _new:=ISTDEF.ref() ?};
+      ISTDEF.cntx_pop()
+   ?}
+?};
+
+{? _new=null() || return() ?};
+
+ISTXML.cntx_psh();
+ISTXML.index('TREE');
+ISTXML.prefix(_old,_ref);
+_loop:=ISTXML.first();
+{!
+|? _loop
+|!
+   exec('istxml_copy','edi_xml',_old,_new,_move,ISTXML.ref(),_Tab);
+   _Tree.cntx_psh();
+   _lp:={? _Tree.last() || _Tree.LP ?}+1;
+   _Tree.cntx_pop();
+   _Tree.blank();
+   _Tree.LP:=_lp;
+   _Tree.REF:=#ISTXML.ref();
+   _Tree.TREE:=ISTXML.TREE;
+   _Tree.add();
+   ISTXML.cntx_psh();
+   ISTXML.prefix();
+   ISTXML.ISTDEF:=_new;
+   ISTXML.TREE:=0;
+   {? _move
+   ||
+      ISTXML.put()
+   ||
+      ISTXML.ISTDEF:=_new;
+      {? ISTXML.add()
+      ||
+         _Tree.NEW_REF:=#ISTXML.ref();
+         _Tree.put()
+      ?}
+   ?};
+   ISTXML.cntx_pop();
+   _loop:={? _move || ISTXML.first() || ISTXML.next() ?}
+!};
+{? _first & _new
+||
+   ISTXML.prefix(_new);
+   {? _move
+   ||
+      _loop:=_Tree.first();
+      {!
+      |? _loop
+      |!
+         {? ISTXML.seek(_Tree.REF,)
+         ||
+            ISTXML.TREE:=_Tree.TREE;
+            ISTXML.put()
+         ?};
+         _loop:=_Tree.next()
+      !}
+   ||
+      _loop:=_Tree.first();
+      {!
+      |? _loop
+      |!
+         {? ISTXML.seek(_Tree.NEW_REF,)
+         ||
+            _namespc:=ISTXML.NAMESPC;
+            {? _namespc<>0
+            || _Tree.cntx_psh();
+               _Tree.index(_ind2);
+               _Tree.prefix();
+               {? _Tree.find_key(_namespc)
+               || _namespc:=_Tree.NEW_REF
+               || _namespc:=0
+               ?};
+               _Tree.cntx_pop()
+            ?};
+            _Tree.cntx_psh();
+            _Tree.index(_ind2);
+            _Tree.prefix();
+            {? _Tree.TREE=0
+            || {? _namespc<>0
+               || ISTXML.NAMESPC:=_namespc;
+                  ISTXML.put()
+               ?}
+            |? _Tree.find_key(_Tree.TREE)
+            ||
+               {? _namespc<>0
+               || ISTXML.NAMESPC:=_namespc
+               ?};
+               ISTXML.TREE:=_Tree.NEW_REF;
+               ISTXML.put()
+            ?};
+            _Tree.cntx_pop()
+         ?};
+         _loop:=_Tree.next()
+      !}
+   ?}
+?};
+ISTXML.cntx_pop();
+:: kopiowanie wersji
+{? _first & ~_move & _cp_ver
+||
+   ISTDEFV.cntx_psh();
+   ISTDEFV.index('HASH');
+   ISTDEFV.prefix(_old);
+   _loop:=ISTDEFV.first();
+   {!
+   |? _loop
+   |!
+      ISTDEFV.cntx_psh();
+      ISTDEFV.prefix();
+      ISTDEFV.ISTDEF:=_new;
+      ISTDEFV.add();
+      ISTDEFV.cntx_pop();
+      _loop:=ISTDEFV.next()
+   !};
+   ISTDEFV.cntx_pop()
+?};
+_new
+
+
+\istxml_ns_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [23.25]
+:: OPIS: Zapisanie ISTXML.NAMESPC - pozycja i ew. podrzędne
+::   WE: _a - ISTXML.ref()
+::       _b - namespace
+::       _c - zmieniać w podrzędnych
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_istdef:=ISTXML.ISTDEF().ref();
+_istxml:=_a;
+_namespc:=_b;
+_tree:=_c;
+ISTXML.cntx_psh();
+ISTXML.prefix();
+{? ISTXML.seek(_istxml)
+|| {? ISTXML.TYPE='E'
+   || ISTXML.NAMESPC:=_namespc;
+      ISTXML.put()
+   ?}
+?};
+{? _tree
+|| ISTXML.index('TREE');
+   ISTXML.prefix(_istdef,_istxml);
+   {? ISTXML.first()
+   || {!
+      |? exec('istxml_ns_set','edi_xml',ISTXML.ref(),_namespc,_tree);
+         ISTXML.next()
+      !}
+   ?}
+?};
+ISTXML.cntx_pop();
+~~
+
+
+\istxml_ns_change
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [23.25]
+:: OPIS: Zmiana ISTXML.NAMESPC - pozycja i podrzędne
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_grupa:=(ISTXML.sel_size()>1);
+{? ~_grupa
+|| ISTXML.cntx_psh();
+   _ref0:=ISTXML.ref();
+   ISTXML.index('TREE');
+   ISTXML.prefix(ISTDEF.ref(),#_ref0);
+   _tree:=ISTXML.first();
+   ISTXML.cntx_pop()
+|| _tree:=0
+?};
+{? _grupa
+|| _ns0:=0
+|| _ns0:=ISTXML.NAMESPC
+?};
+_ns:=exec('istxml_ns_f3','edi_xml',1);
+{? _ns>=0 & (_grupa | _tree | _ns<>_ns0)
+|| {? _grupa | _tree
+   || _zmiana:=FUN.choice('Zmienić przestrzeń nazw wybranych pozycji?.'@,,'Bez podrzędnych'@,'Z podrzędnymi'@)
+   || _zmiana:=1
+   ?};
+   {? _zmiana>=1
+   || ISTXML.cntx_psh();
+      {? _grupa
+      || _tb:=ISTXML.sel_aget();
+         {? _tb.first()
+         || {!
+            |? {? ISTXML.seek(_tb.REF,ISTXML.name())
+               || exec('istxml_ns_set','edi_xml',ISTXML.ref(),_ns,_zmiana-1);
+                  ISTXML.sel_del()
+               ?};
+               _tb.next()
+            !}
+         ?}
+      || exec('istxml_ns_set','edi_xml',_ref0,_ns,_zmiana-1)
+      ?};
+      ISTXML.cntx_pop()
+   ?}
+?};
+0
+
+
+\obj_get
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [RR.XX]
+:: OPIS: Zwraca ojekt z danymi z domyślnego pliku xml dokumentu. Dane dokumentu pobierana są z bufora tabeli _a.
+::   WE: _a - TAB
+::   WY: ~~ / wynik json_parse
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=_a;
+_result:=~~;
+DOKUM.cntx_psh();
+{? exec('bl_dokum_seek','zbl',_a)
+||
+   _TPARSE:=~~;
+   _edi:=exec('env','edi_wspolne');
+   {? _edi.init()
+   ||
+      _context:=_edi.context:=exec('context_obj_bl','edi_wspolne');
+      _context.DOKUM:=DOKUM.ref();
+      _istdef:=exec('istdef','zbl_dok',_context);
+      _PLIKI:=_edi.PLIKI;
+      {? _PLIKI.first()
+      ||
+         _xml:=fopen(_PLIKI.BLOB,'b',0,,1);
+         {? _xml.is_open()
+         ||
+            _TPARSE:=exec('xml_tparse','edi_xml',_xml);
+            _result:=json_parse(_TPARSE.xml_tconvert())
+         ?}
+      ?}
+   ?}
+?};
+DOKUM.cntx_pop();
+_result
+
+
+\dokumxml_read
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Zapisanie tabeli przejściowej z odczytanym xml do DOKUMXML
+::   WE: _a - context (DOKUM, DOKUMZ)
+::       _b - tabela przejściowa z danymi do odczytu
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('upgrade2325_jst01','zbl') || return(~~) ?};
+_dokum:=_a.DOKUM;
+_dokumz:=_a.DOKUMZ;
+_maska:='';
+DOKUM.cntx_psh();
+{? _dokum & DOKUM.seek(_dokum,ref_name(_dokum),1)
+|| _maska:=('00'+$({? 'doku'<>(4+ref_name(DOKUM.REFSQL))
+                   || DOKUM.DATAKONT
+                   || {? DOKUM.DATA=date(0,0,0) || DOKUM.DATAKONT || DOKUM.DATA ?}
+                   ?}~1))+2
+?};
+DOKUM.cntx_pop();
+{? _dokumz & _maska<>''
+|| DOKUMXML.cntx_psh();
+   DOKUMXML.use((DOKUMXML.name()-2)+_maska);
+   DOKUMXML.index('DOKUMZ'); DOKUMXML.prefix(_dokumz);
+   exec('dokumxml_add','edi_xml',_dokumz,_b,0,0,'');
+   DOKUMXML.cntx_pop()
+?};
+~~
+
+
+\dokumxml_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Dodanie rekordów z tabeli przejściowej do DOKUMXML
+::   WE: _a - DOKUMZ.ref
+::       _b - tabela przejściowa z danymi do odczytu
+::       _c - wskazanie na rekord nadrzędny DOKUMXML
+::       _d - wskazanie na rekord nadrzędny tabeli przejściowej
+::       _e - ścieżka znaczników
+::----------------------------------------------------------------------------------------------------------------------
+_dokumz:=_a;
+_T:=_b;
+_ref:=_c;
+_t_ref:=_d;
+_pth:=_e;
+
+_result:=1;
+_T.cntx_psh();
+_T.prefix(_t_ref);
+_loop:=_T.first();
+{!
+|? _loop
+|!
+   _namespc:='';
+   {? _T.NAMESPC
+   ||
+      _T.cntx_psh();
+      _T.prefix();
+      {? _T.seek(_T.NAMESPC) & _T.NAME<>'' || _namespc:='%1:'[_T.NAME] ?};
+      _T.cntx_pop()
+   ?};
+   _sep:={? _T.TYPE='E' || '/' || '@' ?};
+   _pth1:=_pth+_sep+_namespc+_T.NAME;
+   DOKUMXML.blank();
+   DOKUMXML.DOKUMZ:=_dokumz;
+   DOKUMXML.DOKUMENT:=exec('FindAndGet','#table',DOKUMZ,_dokumz,,"@.DOKUMZ.DOK().IDADD",'');
+   DOKUMXML.TREE:=_ref;
+   DOKUMXML.NAME:=_T.NAME;
+   DOKUMXML.NAMESPC:=_T.NAMESPC;
+   DOKUMXML.NTRUNC:=_T.NTRUNC;
+   DOKUMXML.TYPE:=_T.TYPE;
+   DOKUMXML.VAL:=_T.VAL;
+   DOKUMXML.VTRUNC:=_T.VTRUNC;
+   DOKUMXML.INDEX:=_T.INDEX;
+   DOKUMXML.BVAL:=_T.BVAL;
+   DOKUMXML.PATH:=_pth1;
+   DOKUMXML.LP:=0;
+   DOKUMXML.PTH_HASH:=hash(_pth1);
+   {? ~DOKUMXML.add() || _result:=0 ?};
+   {? _result
+   || _res:=exec('dokumxml_add','edi_xml',_dokumz,_T,#DOKUMXML.ref(),#_T.ref(),_pth1);
+      {? ~_res || _result:=0 ?}
+   ?};
+   _loop:=_result & _T.next()
+!};
+_T.cntx_pop();
+_result
+
+
+\dokumxml_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Usuwanie zawartości tabeli DOKUMXML dla powiązanego załącznika
+::   WE: _a - context (DOKUM, DOKUMZ)
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('upgrade2325_jst01','zbl') || return(~~) ?};
+_dokumz:=_a.DOKUMZ;
+_dokum:=_a.DOKUM;
+_maska:='';
+DOKUM.cntx_psh();
+{? _dokum & DOKUM.seek(_dokum,ref_name(_dokum),1)
+|| _maska:=('00'+$({? 'doku'<>(4+ref_name(DOKUM.REFSQL))
+                   || DOKUM.DATAKONT
+                   || {? DOKUM.DATA=date(0,0,0) || DOKUM.DATAKONT || DOKUM.DATA ?}
+                   ?}~1))+2
+?};
+DOKUM.cntx_pop();
+{? _maska<>''
+|| DOKUMXML.cntx_psh();
+   DOKUMXML.use((DOKUMXML.name()-2)+_maska);
+   DOKUMXML.index('DOKUMZ'); DOKUMXML.prefix(_dokumz);
+   {? DOKUMXML.first()
+   || {!
+      |? exec('dokumxml_del2','edi_xml',_dokumz,DOKUMXML.ref())
+      !}
+   ?};
+   DOKUMXML.cntx_pop()
+?};
+~~
+
+
+\dokumxml_del2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Usuwanie zawartości tabeli DOKUMXML dla powiązanego załącznika (DOKUMZ)
+::   WE: _a - DOKUMZ.ref(),
+::       _b - TREE_REF (wskazanie na element nadrzędny)
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+DOKUMXML.cntx_psh(); DOKUMXML.prefix(_a,_b);
+{? DOKUMXML.first()
+|| {!
+   |? exec('dokumxml_del2','edi_xml',_a,DOKUMXML.ref())
+   !}
+?};
+DOKUMXML.cntx_pop();
+_result:=DOKUMXML.del();
+_result
+
+
+\dokumxml_sel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Akcja na wyświetlenie zawartości DOKUMXML - informacji dodatkowych dla xml
+::   WE: _a - tabela EDOKUM/FAKS/DOK/DOKUM
+::----------------------------------------------------------------------------------------------------------------------
+_tab:={? var_pres('_a')>0 || _a || cur_tab() ?};
+_continue:=1;
+_wer:=exec('dokumxml_win','edi_xml');
+DOKUMXML.cntx_psh();
+_dokum:={? _tab<>DOKUM
+        || exec('find_dokum','dok_ksef',_tab)
+        |? _tab=DOKUM
+        || DOKUM.ref()
+        || _continue:=0;
+           null()
+        ?};
+{? _dokum<>null()
+|| DOKUM.cntx_psh();
+   {? DOKUM.seek(_dokum,ref_name(_dokum),1)
+   || _maska:=('00'+$({? 'doku'<>(4+ref_name(DOKUM.REFSQL))
+                      || DOKUM.DATAKONT
+                      || {? DOKUM.DATA=date(0,0,0) || DOKUM.DATAKONT || DOKUM.DATA ?}
+                      ?}~1))+2;
+      {? _maska='' || _continue:=0 ?};
+      {? _continue
+      || DOKUMZ.cntx_psh(); DOKUMZ.index('KIND'); DOKUMZ.prefix(DOKUM.ref());
+         DOKUMXML.use((DOKUMXML.name()-2)+_maska); DOKUMXML.index('DOKUMZ');
+         {? DOKUMZ.first()
+         ||
+            {!
+            |? DOKUMXML.prefix(DOKUMZ.ref(),);
+               {? DOKUMXML.first() || _continue:=1; _loop:=0 ||  _continue:=0; _loop:=1 ?};
+               _loop & DOKUMZ.next()
+            !}
+         ?};
+         DOKUMZ.cntx_pop()
+      ?};
+      {? _continue=1
+      || DOKUMXML.index('DOKUMENT'); DOKUMXML.prefix(DOKUM.IDADD,);
+         _continue:=DOKUMXML.first()
+      ?};
+      DOKUM.cntx_pop()
+   || _continue:=0
+   ?}
+|| _continue:=0
+?};
+{? _continue
+|| DOKUMXML.win_sel(_wer);
+   DOKUMXML.select(,,,,,'Z')
+|| FUN.info('Dokument nie zawiera odczytanych danych z XML'@)
+?};
+DOKUMXML.cntx_pop();
+~~
+
+
+\dokumxml_win
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Tworzy okno tymczasowe dla poglądu zawartości informacji dodatkowych z XML
+::   wy: akronim okienka
+::----------------------------------------------------------------------------------------------------------------------
+_win:='';
+{? 1
+:: Używamy okienka stałego
+|| _win:='WER'
+|| _win:=DOKUMXML.mk_sel('Dane XML'@,'N',,,,,,1,,,,,,'maximized');
+   DOKUMXML.win_fld(_win,,'NAME');
+   DOKUMXML.win_fld(_win,,'VAL',,,100);
+   DOKUMXML.win_fld(_win,,'VTRUNC',,,,,,'Wartość rozszerzona'@,,,2,,"'T'","'N'");
+   _fb:=$("exec('zwrw_all','#tree','DOKUMXML','TREE',"+$('\'%1\''[_win])+")");
+   DOKUMXML.win_act(_win,,'Formuła','Zwiń/rozwiń całość'@,,'Zwijanie/rozwijanie całości'@,_fb,,,,,,'Z');
+   DOKUMXML.win_act(_win,,'Formuła','Wartość'@,,,"exec('bl_view','#blob',DOKUMXML,'BVAL')",,,,,,'W');
+   _fb:=$("exec('dokumxml_rec','edi_xml',"+$('\'%1\''[_win])+")");
+   DOKUMXML.win_act(_win,,'Rekord',,,,_fb,,,,,,)
+?};
+_win
+
+
+\dokumxml_rec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Rekord przed dla okienka wertowania DOKUMXML
+::----------------------------------------------------------------------------------------------------------------------
+_wer:=cur_win();
+_act:='';
+{? DOKUMXML.VTRUNC<>'T'
+|| _act+='W'
+?};
+DOKUMXML.actions_grayed(_wer,_act)
+
+
+\dokumxml_dok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Podmienia złączenie do dokumentu w tabeli DOKUMXML
+::   WE: _a - context
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('upgrade2325_jst01','zbl') || return(0) ?};
+_result:=0;
+_dok:=EDI_Z.DOK;
+{? _dok<>''
+|| _tab:=ref_tab(_dok);
+   _tab.cntx_psh();
+   _idadd:={? _tab.seek(EDI_Z.DOK,ref_name(EDI_Z.DOK),1)
+           || _tab.IDADD
+           ?};
+   _tab.cntx_pop();
+   {? _idadd<>''
+   || _dokumz:=_a.DOKUMZ;
+      _dokum:=_a.DOKUM;
+      _maska:='';
+      DOKUM.cntx_psh();
+      {? _dokum & DOKUM.seek(_dokum,ref_name(_dokum),1)
+      || _maska:=('00'+$({? 'doku'<>(4+ref_name(DOKUM.REFSQL))
+                         || DOKUM.DATAKONT
+                         || {? DOKUM.DATA=date(0,0,0) || DOKUM.DATAKONT || DOKUM.DATA ?}
+                         ?}~1))+2
+      ?};
+      DOKUM.cntx_pop();
+      {? _maska<>''
+      || DOKUMXML.cntx_psh();
+         DOKUMXML.use((DOKUMXML.name()-2)+_maska);
+         DOKUMXML.index('DOKUMZ'); DOKUMXML.prefix(_dokumz);
+         {? DOKUMXML.first()
+         || {!
+            |? DOKUMXML.DOKUMENT:=_idadd;
+               _result:=DOKUMXML.put();
+               DOKUMXML.next()
+            !}
+         ?};
+         DOKUMXML.cntx_pop()
+      ?}
+   ?}
+?};
+_result
+
+
+\dokumxml_adder
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Funkcja dodająca rekordy DOKUMXML dla dokumentów sprzedaży
+::   WE: _a - ref elementu nadrzędnego (TREE_REF)
+::       _b - sqlref dokumentu, dla którego uzupełniane są informacje KSeF
+::       _c - wartość
+::       [_d] - typ [E*/N/A]
+::       [_e] - nazwa (podać, jeślu _f pusty)
+::       [_f] - ścieżka (ignoruj nazwę _e)
+::   WY: #ref dodanego rekordu DOKUMXML
+::----------------------------------------------------------------------------------------------------------------------
+:: UWAGA! Jeśli korzystamy z argumentu _f (ścieżka), wtedy argument _e jest ignorowany
+_tree:=_a;
+_dok:=_b;
+_val:=_c;
+_type:={? var_pres('_d')=type_of('a') || _d || 'E' ?};
+_name:={? var_pres('_e')=type_of('a') || _e || '' ?};
+_pth:={? var_pres('_f')=type_of('a') || _f || '' ?};
+_zwrot:=0;
+:: Separator
+_sep:={? _type='E' || '/' || '@' ?};
+:: Znajdujemy IDADD dokumentu
+_tab:=ref_tab(_dok);
+_tab.cntx_psh(); _tab.prefix();
+_idadd:={? _tab.seek(_dok,ref_name(_dok),1)
+        || _tab.IDADD
+        || ''
+        ?};
+_tab.cntx_pop();
+{? _idadd='' || return() ?};
+:: Ustalenie maski - dwa ostatanie znaki maski dla FAKS, kod roku związanego z maską DOK
+_mask:=exec('dokumxml_sell_mask','edi_xml',_dok);
+DOKUMXML.cntx_psh(); DOKUMXML.use(_mask); DOKUMXML.prefix();
+:: Dodawanie rekordów DOKUMXML
+:: Ścieżka nie jest podana
+{? _pth=''
+|| _pth:={? _tree || exec('dokumxml_get_path','edi_xml',_tree) || '' ?};
+   _pth1:=_pth+_sep+_name;
+   DOKUMXML.blank();
+   DOKUMXML.DOKUMENT:=_idadd;
+   DOKUMXML.TREE:=_tree;
+   DOKUMXML.NAME:=50+_name;
+   DOKUMXML.TYPE:=_type;
+   DOKUMXML.NTRUNC:={? +_name>50 || 'T' || 'N' ?};
+   DOKUMXML.VTRUNC:={? +_val>255 || 'T' || 'N' ?};
+   DOKUMXML.VAL:=255+_val;
+   DOKUMXML.INDEX:=exec('dokumxml_get_index','edi_xml',_tree,_idadd);
+   DOKUMXML.PATH:=_pth1;
+   DOKUMXML.LP:=0;
+   DOKUMXML.PTH_HASH:=hash(_pth1);
+   {? DOKUMXML.add()
+   || exec('val_bl_put','edi_xml',DOKUMXML,_val);
+      _zwrot:=#DOKUMXML.ref()
+   ?}
+:: Ścieżka jest podana
+|| _sep:='/';
+   {? _pth*_sep=1 || _pth:=1-_pth ?};
+   STR.split(_pth,_sep);
+   _act_tree:=0;
+   {!
+   |? STR.next()
+   |!
+      _base:=STR.get_word();
+      _check:=exec('dokumxml_node_check','edi_xml',_base,_act_tree,_idadd);
+      _act_tree:=_check.tree;
+      {? STR.next() & ~_check.exist
+      || _act_tree:=exec('dokumxml_adder','edi_xml',_act_tree,_dok,'','E',_base)
+      |? ~STR.next()
+      || _act_tree:=exec('dokumxml_adder','edi_xml',_act_tree,_dok,_val,'E',_base)
+      ?};
+      _zwrot:=_act_tree;
+      &_check
+   !}
+?};
+DOKUMXML.cntx_pop();
+_zwrot
+
+
+\dokumxml_get_path
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Pobiera ścieżkę z DOKUMXML
+::   WE: _a - TREE_REF
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_pth:='';
+DOKUMXML.cntx_psh();
+DOKUMXML.prefix();
+{? DOKUMXML.seek(_ref)
+|| _pth:=DOKUMXML.PATH
+?};
+DOKUMXML.cntx_pop();
+_pth
+
+
+\dokumxml_get_index
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Pobiera index z DOKUMXML
+::   WE: _a - TREE_REF
+::       _b - idadd powiązanego dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_dok:=_b;
+_ndx:=1;
+DOKUMXML.cntx_psh(); DOKUMXML.index('DOKUMENT');
+DOKUMXML.prefix(_dok,_ref);
+{? DOKUMXML.last()
+|| _ndx:=DOKUMXML.INDEX+1
+?};
+DOKUMXML.cntx_pop();
+_ndx
+
+
+\dokumxml_node_check
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Sprawdza, czy dany węzeł istnieje
+::   WE: _a - nazwa
+::       _b - TREE_REF nadrzędny
+::       _c - IDADD dokumentu powiązanego
+::   WY: obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+_name:=_a;
+_tree:=_b;
+_idadd:=_c;
+
+_wyn:=obj_new('exist','tree');
+DOKUMXML.cntx_psh(); DOKUMXML.index('NAME'); DOKUMXML.prefix(_idadd,_tree,_name);
+{? DOKUMXML.first()
+|| _wyn.exist:=1;
+   _wyn.tree:=#DOKUMXML.ref()
+|| _wyn.exist:=0;
+   _wyn.tree:=_tree
+?};
+DOKUMXML.cntx_pop();
+_wyn
+
+
+\update_t
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [RR.xx]
+:: OPIS: Aktualizacja tabeli tymczasowej _T z danymi do KSeF
+::   WE: _a - typ, np. XML
+::       _b - ISTDEF.ref
+::       _c - TREE_REF ISTXML
+::       _d - _T (tymczasowa do zapisu xml)
+::       _e - #_T.ref()
+::       _f - ścieżka
+::       _g - index tymczasowy _T
+::       _h - _T_ns
+::       _i - IDADD powiązanego dokumentu
+::       _j - maska DOKUMXML (dwa ostatnie znaki)
+::       _k - #ref DOKUMXML
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('upgrade2325_jst01','zbl') || return(0) ?};
+{? EDI_Z.DOK='' || return(0) ?};
+_type:=_a;
+_def:=_b;
+_defref:=_c;
+_T:=_d;
+_ref:=_e;
+_pth:=_f;
+_ndx:=_g;
+_T_ns:=_h;
+_idadd:=_i;
+_mask:=_j;
+_dref:=_k;
+{? _idadd=''
+|| _dok:=EDI_Z.DOK;
+   _tab:=ref_tab(_dok);
+   {? _tab<>DOK & _tab<>FAKS || return(0) ?};
+   _tab.cntx_psh(); _tab.prefix();
+   {? _tab.seek(_dok,ref_name(_dok))
+   || _idadd:=_tab.IDADD
+   ?};
+   _tab.cntx_pop();
+   _mask:=exec('dokumxml_sell_mask','edi_xml',_dok)
+?};
+
+{? _ref=0
+|| _cont:=1;
+   ISTDEF.cntx_psh(); ISTDEF.prefix();
+   {? ~(ISTDEF.seek(_def) & ((-ISTDEF.BL_TYPE)*'ksef'))
+   || _cont:=0
+   ?};
+   {? _idadd='' | _mask='' || _cont:=0 ?};
+   ISTDEF.cntx_pop();
+   {? ~_cont || return(0) ?};
+   DOKUMXML.cntx_psh(); DOKUMXML.use(_mask); DOKUMXML.index('DOKUMENT')
+?};
+
+_result:=1;
+_icon:=33;
+_icon1:=7;
+_index:=_added:=0;
+_vlm:=exec('val_len_max','edi_xml');
+_type_xml:='XML'=_type;
+
+ISTXML.cntx_psh();
+ISTXML.index('TREE');
+ISTXML.prefix(_def,_defref);
+_T.cntx_psh(); _T.prefix(_ref);
+DOKUMXML.prefix(_idadd,_dref);
+_tfirst:=_T.first();
+_floop:=1;
+_loop:=ISTXML.first() &  DOKUMXML.first();
+{!
+|? _loop
+|!
+   _namespc:='';
+   {? ISTXML.NAMESPC
+   ||
+      ISTXML.cntx_psh();
+      ISTXML.prefix();
+      {? ISTXML.seek(ISTXML.NAMESPC) & ISTXML.NAME<>'' || _namespc:='%1:'[ISTXML.NAME] ?};
+      ISTXML.cntx_pop()
+   ?};
+   _sep:={? ISTXML.TYPE='E' || '/' || '@' ?};
+   _pth1:=_pth+_sep+_namespc+ISTXML.NAME;
+:: Ustawiam się w tym samym miejscu tabeli _T
+   {? _tfirst
+   || _next:=1;
+      _tendx:=_T.INDEX;
+      _T.first()
+   || _next:=0;
+      _tendx:=1
+   ?};
+   {!
+   |? _next & ISTXML.TYPE='E' & exec('t_path','edi_xml',_T,_T.TREE,'')<>_pth1
+   |!
+      _next:=_T.next()
+   !};
+   {? _next
+   || _tendx:=_T.INDEX
+   |? ~_next & _floop
+   || _tendx:=0
+   ?};
+:: DOKUMXML - porównanie PATH
+   {? _pth1<>DOKUMXML.PATH
+   || _loop:=_do:=_added:=0
+   || _do:=_added:=1
+   ?};
+   _inloop:=0;
+   {!
+   |? _loop & ISTXML.TYPE='E'
+   |!
+      {? _loop
+      ||
+         _loop:=0;
+:: dodanie zapisu w tabeli przejściowej
+:: 1. Był zapis - modyfikuję wartość
+         {? _do & _next & ((_T.VAL<>DOKUMXML.VAL) | (_T.VTRUNC<>DOKUMXML.VTRUNC))
+         || _T.VAL:=DOKUMXML.VAL;
+            _T.BVAL:=DOKUMXML.BVAL;
+            _T.VTRUNC:=DOKUMXML.VTRUNC;
+            _T.put
+:: 2. Nie było zapisu - tworzymy nowy, w odpowiednim miejscu + aktualizacja pól INDEX
+         |? (_do & ~_next) | _inloop
+         || {? 1
+            || exec('t_index_rfr','edi_xml',_T,_ref,_tendx+1);
+               _T.blank();
+               _T.TREE:=_ref;
+               _T.INDEX:=_tendx+1;
+               _T.NAME:=ISTXML.NAME;
+               _T.NTRUNC:=ISTXML.NTRUNC;
+               _T.TYPE:=ISTXML.TYPE;
+               _T.VAL:=DOKUMXML.VAL;
+               _T.VTRUNC:=DOKUMXML.VTRUNC;
+               _T.BVAL:=DOKUMXML.BVAL;
+               _T.NAMESPC:=ISTXML.NAMESPC;
+               {? _T.add()
+               ||
+                  {? ISTXML.TYPE='N'
+                  ||
+                     {? ~_T_ns.find_key(#ISTXML.ref())
+                     ||
+                        _T_ns.OLD:=#ISTXML.ref();
+                        _T_ns.NEW:=#_T.ref();
+                        _T_ns.add()
+                     ?}
+                  ?}
+               ?}
+            ?}
+         ?};
+:: update sub elements TO DO
+         DOKUMXML.cntx_psh(); _T.cntx_psh();
+         _result:=exec('update_t','edi_xml',_type,_def,#ISTXML.ref(),_T,#_T.ref(),_pth1,_ndx,_T_ns,_idadd,_mask,#DOKUMXML.ref());
+         DOKUMXML.cntx_pop(); _T.cntx_pop();
+:: formuła - end element
+         _loop:=DOKUMXML.next();
+         {? _loop || _loop:=DOKUMXML.NAME=ISTXML.NAME ?};
+         {? _loop
+         || _tendx+=1;
+            {? ~_next
+            || _inloop:=1
+            || {? ~_T.next() | _T.NAME<>DOKUMXML.NAME || _inloop:=1 ?}
+            ?}
+         ?}
+      ?}
+   !};
+   _floop:=0;
+   _loop:=_result & ISTXML.next()
+!};
+{? _ref=0 || DOKUMXML.cntx_pop() ?};
+ISTXML.cntx_pop(); _T.cntx_pop();
+1
+
+
+\t_path
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Zwraca aktualną ścieżkę dla rekordu _T
+::   WE: _a - tabela _T
+::       _b - tree.ref
+::       _c - ścieżka do doklejenia
+::   WY: ścieżka
+::----------------------------------------------------------------------------------------------------------------------
+_T:=_a;
+_tree:=_b;
+_pth:=_c;
+_sep:={? _T.TYPE='E' || '/' || '@' ?};
+_pth:=_sep+_T.NAME+_pth;
+{? _tree
+|| _T.cntx_psh(); _T.prefix();
+   {? _T.seek(_tree)
+   || _pth:=exec('t_path','edi_xml',_T,_T.TREE,_pth)
+   ?};
+   _T.cntx_pop()
+?};
+_pth
+
+
+\t_index_rfr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Aktualizacja nr index w tabeli _T
+::   WE: _a - _T
+::       _b - _T.TREE
+::       _c - nr indexu do zwolnienia
+::----------------------------------------------------------------------------------------------------------------------
+_T:=_a;
+_tree:=_b;
+_index:=_c;
+_T.cntx_psh();
+_ndx:=_T.ndx_tmp(,1,'TREE',,,'NAME',,);
+_T.index(_ndx);
+_T.prefix(_tree);
+{? _T.first
+|| {! |?
+      {? _T.INDEX>=_index || _T.INDEX+=1; _T.put() ?};
+      _T.next()
+   !}
+?};
+_T.cntx_pop();
+_T.ndx_drop(_ndx);
+1
+
+
+\dokumxml_sell_mask
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Zwraca odpowiednią maskę dla DOKUMXML w przypadku dokumentów sprzedaży
+::   WE: _a - sqlref tabeli DOK lub FAKS
+::   WY: maska DOKUMXML
+::----------------------------------------------------------------------------------------------------------------------
+_dok:=_a;
+_tab:=ref_tab(_dok);
+_mask:='dokxml'+{? _tab=FAKS
+                || ref_name(_dok)+2
+                |? _tab=DOK
+                || 2+(ref_name(_dok)+4)
+                || '00'
+                ?};
+_mask
+
+
+\dokumxml_sel2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Akcja na wyświetl dla dokumentów sprzedaży
+::   WE: _a - SQLREF dokumentu
+::       _b - IDADD dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+_dok:=_a;
+_idadd:=_b;
+DOKUMXML.cntx_psh();
+_mask:=exec('dokumxml_sell_mask','edi_xml',_dok);
+DOKUMXML.use(_mask); DOKUMXML.index('DOKUMENT'); DOKUMXML.prefix(_idadd);
+{? DOKUMXML.size()=0 & ~exec('dokumxml_faks_seek','edi_xml',_dok)
+|| FUN.info('Brak dodatkowych danych XML do wyświetlenia'@)
+|| _wer:=exec('dokumxml_win','edi_xml');
+   DOKUMXML.win_sel(_wer);
+   DOKUMXML.select()
+?};
+DOKUMXML.cntx_pop();
+1
+
+
+\dokumxml_faks_seek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [RR.xx]
+:: OPIS: Wyszukuje powiązanego z dokumentem rekordu FAKS (dla dekretowanych)
+::   WE: _a - SQLREF tabeli DOK
+::   WY: 1/0 - są dane/nie ma danych
+::----------------------------------------------------------------------------------------------------------------------
+_dok:=_a;
+{? ref_tab(_dok)<>DOK || return(0) ?};
+_idadd:=_ref:='';
+_ret:=0;
+DOK.cntx_psh(); DOK.prefix();
+{? DOK.seek(_dok,ref_name(_dok),1) & (1+DOK.DOKZRODL='D' | 1+DOK.DOKZRODL='K')
+|| FAKS.cntx_psh();
+   FAKS.use('faktu'+(3+(1-DOK.DOKZRODL))); FAKS.prefix();
+   {? FAKS.seek(#(4-DOK.DOKZRODL),FAKS.name)
+   || _ref:=$FAKS.ref();
+      _idadd:=FAKS.IDADD;
+      _mask:=exec('dokumxml_sell_mask','edi_xml',_ref);
+      DOKUMXML.use(_mask); DOKUMXML.index('DOKUMENT'); DOKUMXML.prefix(_idadd);
+      _ret:=DOKUMXML.size()>0
+   ?};
+   FAKS.cntx_pop()
+?};
+DOK.cntx_pop();
+_ret
+
+
+\dokumxml_blob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Wyświetla wartość rozszerzoną (blob) z DOKUMXML
+::----------------------------------------------------------------------------------------------------------------------
+exec('bl_view','#blob',DOKUMXML,'BVAL')
+
+
+\dokumxml_del3
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [RR.xx]
+:: OPIS: Usuwanie rekordów dla dokumentu sprzedaży
+::   WE: _a - SQLREF dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+_dok:=_a;
+_tab:=ref_tab(_dok);
+_tab.cntx_psh(); _tab.prefix();
+_idadd:='';
+{? _tab.seek(_dok,ref_name(_dok))
+|| _idadd:=_tab.IDADD
+?};
+_tab.cntx_pop();
+{? _idadd<>''
+|| _mask:=exec('dokumxml_sell_mask','edi_xml',_a);
+   DOKUMXML.cntx_psh(); DOKUMXML.use(_mask); DOKUMXML.index('DOKUMENT'); DOKUMXML.prefix(_idadd);
+   {? DOKUMXML.last()
+   || {! |? DOKUMXML.del(); DOKUMXML.last() !}
+   ?};
+   DOKUMXML.cntx_pop()
+?};
+1
+
+:Sign Version 2.0 jowisz:1045 2024/01/29 14:27:18 8104107f3d4cc65915c1d203303175ff76ec5cd09687f8044f0e96eb812ecbc0122602078e76e6f3cf108d81bac9320a71d7f5b1b6a2da3185af0895b13a973db7de6a7f3f70c5b136e74ea89c7be3a187d227ba3cfac42179613ef2ffeb31899ca757acc3dda909f1b12d114a2de24ea670f8828bb36de2999e8dd4b22b98bf

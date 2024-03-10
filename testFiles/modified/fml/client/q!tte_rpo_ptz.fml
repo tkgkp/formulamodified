@@ -1,0 +1,318 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: q!tte_rpo_ptz.fml
+:: Utworzony: 09.02.2021
+:: Autor: TP
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi procesu tworzenia/usówania zleceń
+::======================================================================================================================
+
+
+\key_px_conn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Wystawia klucz grupujący z pozycjami planu strategicznego dla których należy utwożyć polecenia utworzenia zleceń
+::   WE:
+::   WY:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_mp.grpkey();
+_data_startu:=date()+14;
+_data_konca:=date()+21;
+
+_tab_1:=sql(' select PX_CONN.REFERENCE as REF_PX,
+                      PX_OBJ.ZK_P as REF_ZK_P,
+                      DATY.DATA as TERMIN,
+                      PX_OBJ.QPDP as START
+                 from @PX_CONN join @PX_VER
+                              join @PX_OBJ
+                               join @ZK_P
+                               join DATY using (PX_OBJ.STARTD,DATY.REFERENCE)
+                where PX_VER.PRIMARY=1
+                      and PX_OBJ.ZL is null
+                      and PX_OBJ.REM_ZGL is null
+                      and PX_OBJ.ZK_P is not null
+                      and PX_OBJ.QPDP is not null
+             order by TERMIN');
+{? _tab_1.first()
+|| {!
+   |? {? _tab_1.START>_data_startu & _tab_1.START<=_data_konca
+      ||
+:: Sprawdzenie czy zamówienie ma już wygenerowane zlecenia i czy można jeszcze coś wygenerować
+         ZLZAM.cntx_psh();
+         ZLZAM.index('ZMZL');
+         ZLZAM.prefix(_tab_1.REF_ZK_P);
+         _IL_ZL:=0;
+         _IL_WYTW:=exec('FindAndGet','#table',ZK_P,_tab_1.REF_ZK_P,,"ZK_P.ILP-ZK_P.ILRB",0);
+         {? ZLZAM.first()
+         || {!
+            |? _IL_ZL+=ZLZAM.ILZL;
+               _ilr:=0;
+               _ilr:=sql('select sum(REZ.ILR) as S_ILR
+                            from @REZ
+                           where REZ.ZLZAM=\':_a\' and REZ.RODZ=\'B\''
+                           , $ZLZAM.ref()).S_ILR;
+               _IL_WYTW+=_ilr;
+               ZLZAM.next()
+            !}
+         ?};
+         ZLZAM.cntx_pop();
+         {? _IL_WYTW-_IL_ZL>0
+         ||
+:: Sprawdzenie czy nie uruchomiono już zadania TODO dla tej pozycji zamówienia
+             _uid_ref:=exec('FindAndGet','#table',PX_CONN,_tab_1.REF_PX,,"PX_CONN.uidref()",'');
+            {? _uid_ref<>'' & exec('record_keyrefed','#b__box',_uid_ref,'ZWS_MAN_UALL')=0
+            || _mp.grpkeyAdd(_tab_1.REF_PX)
+            ?}
+         ?}
+      ?};
+      _tab_1.next()
+   !}
+?};
+
+_mp.done();
+~~
+
+
+\key_zl_zam_old
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Wystawia klucz grupujący ze zleceniami dla których pozycje zamówień zostały zamknięte bądź zrealizowane
+::       wersja stara - do usunięcia
+::   WE:
+::   WY:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_mp.grpkey();
+_tab_zk_p:=sql('select (\'(\'||ZK_N.SYM||\' p. \'||to_string(ZK_P.POZ)||\')\') as SYM, ZK_P.POZ,ZK_P.ILP
+                  from @ZK_P join @ZK_N
+                 where ZK_P.A=\'A\' and ILP>0
+              order by SYM,POZ');
+_tab_zl:=sql('select ZL.OPIS,ZL.SYM as SYM_ZL,ZL.ST_W, ZL.REFERENCE as REF
+                from ZL
+               where ZL.ST_W=\'T\'
+            order by 1 ');
+
+_tab_zk_p.first();
+{!
+|? _tab_zl.prefix();
+    _tab_zl.prefix(_tab_zk_p.SYM);
+    {? _tab_zl.first() || {!|? _tab_zl.del() !} ?};
+    _tab_zk_p.next()
+!};
+_tab_zl.prefix();
+
+{? _tab_zl.first()
+|| {!
+   |? _mp.grpkeyAdd(_tab_zl.REF);
+      _tab_zl.next()
+   !}
+?};
+
+_mp.done();
+~~
+
+
+\zl_zamknij
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MKO [8.60]
+:: OPIS: Obsługa zamknięcia zlecenia.
+::   WE: [_a] - ZL.ref() - ref zlecenia lub bieżące zlecenie
+::       [_b] - INTEGER - 0/[1] - czy wyświetlać pytania
+::       [_c] - INTEGER - 0/[1] - czy inicjować i wyświetlać KOMMa
+::       [_d] - INTEGER - [0]/1 - czy uruchomienie rekurencyjne
+::       [_e] - INTEGER -  [0]/1 - czy uruchomienie dla grupy rekordów
+::   WY: 0 / 1
+::  OLD: \zzlec2end/zlec4.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(ZL.ref()) || _ref:=_a || _ref:=null() ?};
+{? var_pres('_b')=type_of(0) || _ask:=_b || _ask:=1 ?};
+{? var_pres('_c')=type_of(0) || _komm:=_c || _komm:=1 ?};
+{? var_pres('_d')=type_of(0) || _rec:=_d || _rec:=d ?};
+{? var_pres('_e')=type_of(0) || _isgroup:=_e || _isgroup:=0 ?};
+
+{? var_pres('DocLib')<=0
+|| exec('declare','tech_doc');
+   DocLib:=obj_new(@.CLASS.oPLIB)
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZL.cntx_psh();
+{? _ref<>null()
+|| ZL.prefix();
+   {? ZL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _zl_top:=exec('top_level','zl_link',ZL.ref());
+   _nad:=exec('FindAndGet','#table',ZL,_zl_top,,"RODZAJ",'');
+
+   {? _komm>0
+   || KOMM.init(250,,'Zamknięcie zlecenia'@)
+   ?};
+
+   _subzlec:=exec('subzlec_exist','zl_link',ZL.ref());
+   _px_tex:=exec('get_tex_zl','px_tex',ZL.ref());
+   _tex_locked:=1;
+   _tex_obj:=~~;
+   {? _px_tex<>null()
+   || _tex_obj:=exec('lock','px_tex',_px_tex,_isgroup);
+      _tex_locked:=_tex_obj.LOCKED
+   ?};
+
+   _ok:=1;
+
+::    Sprawdzana możliwość zablokowania zlecenia w każdym zakresie
+   {? exec('zl_lock','zl_common',,'N') &
+      exec('zl_lock','zl_common',,'T') &
+      exec('zl_lock','zl_common',,'P') &
+      exec('zl_lock','zl_common',,'L') &
+      exec('zl_lock','zl_common',,'I') &
+      exec('zl_lock','zl_common',,'R') &
+      _tex_locked>0
+   ||
+      _chk:=1;
+
+::       Sprawdzane zakończenie rejestrowania nagłówka
+      {? ZL.STAT_N='N'
+      || _can_continue:=0;
+         exec('komm_add','zl_common','Nie zakończono rejestracji nagłówka zlecenia.'@)
+      ?};
+
+::       Sprawdzenie czy zostało już zamknięte
+      {? ZL.STAN='Z'
+      || _can_continue:=0;
+         exec('komm_add','zl_common','Zlecenie jest już zamknięte.'@,1);
+         _result:=1
+      ?};
+
+      {? _can_continue>0
+      || ZLEC.CLEANER:='T'
+      ?};
+
+::          Zamykane jest bieżące zlecenie
+      {? _ok>0 || _result:=exec('poj2end','!tte_pzl_ezam') ?};
+      {? _result & ZLEC.CLEANER='T' || exec('clean_record','#b__box',ZL.uidref(),0) ?}
+   ||
+::       Nie udało się zablokować zlecenia
+      exec('komm_add','zl_common','Nie udało się zablokować zlecenia'@)
+   ?};
+   exec('zl_unlock','zl_common',,'N');
+   exec('zl_unlock','zl_common',,'T');
+   exec('zl_unlock','zl_common',,'P');
+   exec('zl_unlock','zl_common',,'L');
+   exec('zl_unlock','zl_common',,'I');
+   exec('zl_unlock','zl_common',,'R');
+   {? _px_tex<>null()
+   || exec('unlock','px_tex',_tex_obj)
+   ?};
+   {? _komm>0 & _ok>=0
+   || KOMM.select()
+   ?}
+?};
+ZL.cntx_pop();
+
+_result
+
+
+\key_zl_zam_zb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Wystawia klucz grupujący ze zleceniami  zbiorczymi ZB dla których wszystkie zlecenia niezależne zostały już zamknięte
+::   WE:
+::   WY:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_mp.grpkey();
+
+_tab_zl:=sql('select ZL.OPIS,ZL.SYM as SYM_ZL,ZL.STAN, ZL.REFERENCE as REF, ZL.UNRZL, ZL.NRNZL
+                from ZL
+               where ZL.STAN<>\'Z\' and ZL.OPIS like \'ZL.ZB. -%\'
+            order by 1 ');
+
+{? _tab_zl.first()
+|| {!
+   |? {? ~(sql('select ZL.SYM from ZL where ZL.NRNZL=:_a and ZL.STAN<>\'Z\'',_tab_zl.UNRZL).first())
+      || _mp.grpkeyAdd(_tab_zl.REF)
+      ?};
+      _tab_zl.next()
+   !}
+?};
+
+_mp.done();
+~~
+
+
+\key_zl_zam
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Wystawia klucz grupujący ze zleceniami dla których pozycje zamówień zostały zamknięte bądź zrealizowane
+::   WE:
+::   WY:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_mp.grpkey();
+_tab_zk_p:=sql('select (\'(\'||ZK_N.SYM||\' p. \'||to_string(ZK_P.POZ)||\')\') as SYM, ZK_P.POZ,ZK_P.ILP, ZK_P.REFERENCE as REF
+                  from @ZK_P join @ZK_N
+                 where ZK_P.A=\'A\' and ILP>0 and ZK_P.RODZ=\'Z\'
+              order by SYM,POZ');
+_tab_zl:=sql('select ZL.OPIS,ZL.SYM as SYM_ZL,ZL.STAN, ZL.REFERENCE as REF
+                from ZL
+               where ZL.STAN=\'N\'
+            order by 1 ');
+
+_tab_zl.first();
+{!
+|? _del:=0;
+   _sym:='';
+:: Symbol pozycji zamówienia z opisu zlecenia
+   {? 2+_tab_zl.OPIS='(Z' & ((_tab_zl.OPIS*')')+_tab_zl.OPIS)*'p. '>0
+   || _sym:=(_tab_zl.OPIS*')')+_tab_zl.OPIS
+:: Zlecenia podzielone mają symbol w dalszej części opisu
+   |? _od:=_tab_zl.OPIS*'((ZS';
+      _poz:=_tab_zl.OPIS*' p. ';
+      _do:=_tab_zl.OPIS*') ';
+      _od>0 & _od<_poz & _poz<_do
+   || _sym:=_od-(_do+_tab_zl.OPIS)
+   ?};
+   _zk_p:=sql('select ZLZAM.ZAMPOZ from ZLZAM where ZLZAM.ZL=\':_a\'',_tab_zl.REF).ZAMPOZ;
+   {? _sym<>''
+   || _tab_zk_p.clear();
+      _tab_zk_p.prefix(_sym);
+      {? _tab_zk_p.first()
+      || _del:=_tab_zl.del()
+      ?}
+   |? _zk_p<>''
+   || {? sql('select :_a.SYM from :_a where :_a.REF=\':_b\'',_tab_zk_p,_zk_p).first()
+      || _del:=_tab_zl.del()
+      ?}
+   || _del:=_tab_zl.del()
+   ?};
+   _del | _tab_zl.next()
+!};
+
+{? _tab_zl.first()
+|| {!
+   |? _mp.grpkeyAdd(_tab_zl.REF);
+      _tab_zl.next()
+   !}
+?};
+
+_mp.done();
+~~

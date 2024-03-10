@@ -1,0 +1,560 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2042_04.fml
+:: Utworzony: 27.05.2020
+:: Autor: [PK]
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych na wersje 20.42
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [PK] [20.42]
+:: OPIS: Główna formuła aktualizacji 20.42_04
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania wykonywane raz dla całego systemu
+__UPG.add_task('kart_dod',,,'PPL',,,,,'T');
+:: Zadania wykonywane dla każdej firmy osobno
+__UPG.add_task('formuly_typ_W',,'N','PPL',,,,1,'T');
+~~
+
+
+\kart_dod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [20.42]
+:: OPIS: Dodanie kartoteki dla wniosków wyrównań zasiłków chorobowych.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_result:=-1;
+_symbol:='WYR_TARC';
+
+KART_DEF.cntx_psh();
+KART_DEF.clear();
+KART_DEF.index('SYMBOL');
+{? KART_DEF.find_key(_symbol,_symbol)
+|| __UPG.msg('Kartoteka dodatkowa "Wyrównanie wypłaconych zasiłków: TARCZA" już istnieje.');
+   _result:=1
+|| KART_DEF.blank(1);
+   KART_DEF.SYMBOL:=_symbol;
+   KART_DEF.NAZWA:='Wyrównanie wypłaconych zasiłków: TARCZA';
+   KART_DEF.WER:='ODDO';
+   KART_DEF.OPIS:='Opis';
+   KART_DEF.OD:='Data od';
+   KART_DEF.DO:='Data do';
+
+   {? KART_DEF.add(1)
+   || _update:="
+         {? ~(_put:=SLO_KOD.find_key(_a,_b,))
+         || SLO_KOD.blank(1);
+            SLO_KOD.SLO_TYP:=_a;
+            SLO_KOD.KOD:=_b
+         ?};
+         _zmiana:=0;
+         {? SLO_KOD.NAZWA<>_c
+         || SLO_KOD.NAZWA:=_c;
+            _zmiana+=1
+         ?};
+         {? var_pres('_d')=type_of('') & SLO_KOD.SYSTEM<>_d
+         || SLO_KOD.SYSTEM:=_d;
+            _zmiana+=1
+         ?};
+         {? SLO_KOD.SYSTEM<>'N' & SLO_KOD.SYSTEM<>'T'
+         || SLO_KOD.SYSTEM:='N';
+            _zmiana+=1
+         ?};
+         {? _put
+         || {? _zmiana
+            || SLO_KOD.put()
+            ?}
+         || SLO_KOD.add()
+         ?}
+      ";
+
+      SLO_KOD.cntx_psh();
+      SLO_KOD.index('KOD');
+      SLO_KOD.prefix();
+:     Statusy przebiegu zatrudnienia
+      _typ:=exec('slo_typ','ext_slo','H_STAT');
+      _update(_typ,'T_ZM_WYM','Tarcza antykryzysowa - zmiana wymiaru zatrudnienia','T');
+      _update(_typ,'T_ZM_WAR','Tarcza antykryzysowa - zmiana stawki wynagrodzenia','T');
+      SLO_KOD.cntx_pop();
+
+      __UPG.msg('Kartoteka dodatkowa "Wyrównanie wypłaconych zasiłków: TARCZA" została dodana.');
+      _result:=1
+   || __UPG.msg('Dodanie kartoteki dodatkowej "Wyrównanie wypłaconych zasiłków: TARCZA" zakończone niepowodzeniem.')
+   ?}
+?};
+KART_DEF.cntx_pop();
+_result
+
+
+\kart_dod_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [20.42]
+:: OPIS: Dodanie kartoteki dla wniosków wyrównań zasiłków chorobowych - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie kartoteki dodatkowej: Wyrównanie wypłaconych zasiłków: TARCZA'
+
+
+
+\formuly_typ_W
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [20.42_04]
+:: OPIS: Aktualizacja 20.42_04 formuł płacowych o dodatkowy typ formuł W dla list typu OTK.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+FM.index('FORMNAZ');
+FM.prefix(exec('ref_firma','ustawienia'),'W');
+{? FM.first
+|| __UPG.msg('Znaleziono formuły obliczeniowe dla listy wyrównań, typ: \'W\'.'
+      'Automatyczna aktualizacja formuł obliczeniowych typu \'W\', nie będzie wykonana.');
+   return(-1)
+?};
+
+exec('__RUB','object');
+
+_rs:='465,467,469,500,511,513,517,524,530,537,650,710,711,712,715,714,713,716,717,718,719,740,753,754,765,766,767,'
+   '780,784,790,791,792,793,795,797,800,950,958,959,960,970,971,972,980,981,982,983,985,990,994,995,996,999,7108';
+_rn:=spli_str(_rs,',');
+_tp:=spli_str('W',',');
+{! _ii:=1..obj_len(_rn)
+|! {? __RUB.ref(#_rn[_ii])=null
+   || __UPG.msg('Aktualizacja została wstrzymana. Wymagane istnienie rubryk: %1'[_rs]);
+      return(-1)
+   ?}
+!};
+_err:=exec('formuly_import','upgrade_2042_04',_tp,_rn,'formuly_txt');
+
+{? _err>0
+|| __UPG.msg('Podczas aktualizacji formuł wystąpiło %1 błędów.'[$_err]);
+   -1
+|| __UPG.msg('Wprowadzono nowy tym formuł typu \'W\' do obliczenia listy wyrównań OTK');
+   1
+?}
+
+
+\formuly_import
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DAROKR [20.42]
+:: OPIS: Funkcja do aktualizacji formuł płacowych.
+::   WE: _a [ARRAY] - Tablica aktualizowanych typów formuł płacowych.
+::       _b [ARRAY] - Tablica kodów aktualizowanych składników płacowych.
+::       _c [STRING] - Nazwa formuły do importu formuł płacowych.
+::   WY: _err (0/1) - Liczba błędów, które wystąpiły podczas importu.
+::----------------------------------------------------------------------------------------------------------------------
+_tp:=_a;
+_rn:=_b;
+_formula:=_c;
+_err:=0;
+
+FM.cntx_psh();
+{! _ni:=1..obj_len(_tp)
+|! FM.index('FORMNAZ');
+   FM.prefix(exec('ref_firma','ustawienia'),_tp[_ni]);
+   {? FM.size()=0
+   || {! _mi:=1..obj_len(_rn)
+      |! _fm:=form(exec(_formula,'upgrade_2042_04',_tp[_ni],#_rn[_mi]));
+         {? _fm<>''
+         || _ok:=1;
+            _org:='';
+            _found:=FM.find_tab(,'R','RN','=',#_rn[_mi]);
+            {? _found
+            || _org:=FM.memo_txt(,1,'F')
+            || FM.blank();
+               FM.TP:=_tp[_ni];
+               FM.R:=__RUB.ref(#_rn[_mi]);
+               FM.W:={? 'U,F,D'*_tp[_ni] || 'T' || 'N' ?};
+               {? ~FM.add()
+               || _err+=0;
+                  _ok:=0
+               ?}
+            ?};
+            {? _found & _fm=_org
+            || __UPG.msg('Formuła typu "%1" dla składnika %2 nie wymaga aktualizacji.'[_tp[_ni],_rn[_mi]])
+            |? _ok
+            || FM.memo_set(_fm,'F');
+               {? FM.memo_put(,'F')
+               || {? _found
+                  || __UPG.msg('Zaktualizowano formułę typu "%1" dla składnika %2.'[_tp[_ni],_rn[_mi]])
+                  ?}
+               |? _found
+               || __UPG.msg('Aktualizacja formuły typu "%1" dla składnika %2 nie powiodła się.'[_tp[_ni],_rn[_mi]]);
+                  _err+=1
+               ?}
+            ?}
+         ?}
+      !}
+   ?}
+!};
+FM.cntx_pop();
+_err
+
+
+\formuly_txt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [20.42]
+:: OPIS: Zwraca treść formuły płacowej.
+::   WE: _a [STRING] - typ formuły
+::       _b [INTEGER] - numer rubryki
+::   WY: treść formuły
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_tp:=_a;
+_rn:=_b;
+
+{? _rn=465
+|| "
+exec('kor_zas','lista_wyr')
+"
+|? _rn=467
+|| "
+FUNKCJE.W(467)"
+|? _rn=469
+|| "
+FUNKCJE.W(469)"
+|? _rn=500
+|| "
+FUNKCJE.L(100,499)+FUNKCJE.L_SYS(48)"
+|? _rn=511
+|| "
+FUNKCJE.W(511)"
+|? _rn=513
+|| "
+FUNKCJE.W(513)"
+|? _rn=517
+|| "
+FUNKCJE.W(517)"
+|? _rn=524
+|| "
+FUNKCJE.W(524)"
+|? _rn=530
+|| "
+FUNKCJE.W(530)"
+|? _rn=537
+|| "
+FUNKCJE.W(537)"
+|? _rn=650
+|| "
+FUNKCJE.L(510,649)+FUNKCJE.L_SYS(331)"
+|? _rn=710
+|| "
+FUNKCJE.W(710)"
+|? _rn=711
+|| "
+FUNKCJE.W(711)"
+|? _rn=712
+|| "
+FUNKCJE.W(712)"
+|? _rn=713
+|| "
+FUNKCJE.W(713)"
+|? _rn=714
+|| "
+FUNKCJE.W(714)"
+|? _rn=715
+|| "
+FUNKCJE.W(715)"
+|? _rn=716
+|| "
+FUNKCJE.W(716)"
+|? _rn=717
+|| "
+FUNKCJE.W(717)"
+|? _rn=718
+|| "
+DoList.p[1]"
+|? _rn=719
+|| "
+DoList.p[2]"
+|? _rn=740
+|| "
+FUNKCJE.L(650,739)+FUNKCJE.L_SYS(332)"
+|? _rn=753
+|| "
+exec('podst_sk','!ppl_pll_nals')+FUNKCJE.L(751)"
+|? _rn=754
+|| "
+exec('podstawa_sk','oddelegowanie','.ZUS',754)+FUNKCJE.L(752)"
+|? _rn=765
+|| "
+_podemer:=FUNKCJE.L(753);
+DoList.m[15]:=1;
+DoList.m[3]:=exec('kor_skl_kor_zus','lista_licz',_podemer,FUNKCJE.L(754));
+{? DoList.m[3] & DoList.m[15]
+|| exec('kor_licz','!ppl_pll_nals',765)
+|| _podstkor:=exec('kor_rca_kor_zus','lista_licz',765,3);
+   _skladkor:=exec('kor_rca_kor_zus','lista_licz',765,4);
+   ((FUNKCJE.LU(753)+_podemer+DoList.k[1]+_podstkor)*KST.PRFE*0.005)$2-
+   FUNKCJE.LU(765)-DoList.k[5]-_skladkor
+?}"
+|? _rn=766
+|| "
+{? DoList.m[3] & DoList.m[15]
+|| exec('kor_licz','!ppl_pll_nals',766)
+|| _podstkor:=exec('kor_rca_kor_zus','lista_licz',766,3);
+   _skladkor:=exec('kor_rca_kor_zus','lista_licz',766,4);
+   ((FUNKCJE.LU(753)+FUNKCJE.L(753)+DoList.k[1]+_podstkor)*KST.PRFRP*0.01)$2-
+   FUNKCJE.LU(766)-DoList.k[6]-_skladkor
+?}"
+|? _rn=767
+|| "
+{? DoList.m[3]
+|| exec('kor_licz','!ppl_pll_nals',767)
+|| _podstkor:=exec('kor_rca_kor_zus','lista_licz',767,3);
+   _skladkor:=exec('kor_rca_kor_zus','lista_licz',767,4);
+   ((FUNKCJE.LU(754)+FUNKCJE.L(754)+DoList.k[2]+_podstkor)*KST.PRFC*0.01)$2-
+   FUNKCJE.LU(767)-DoList.k[7]-_skladkor
+?}"
+|? _rn=780
+|| "
+{? var_pres('KST_PPK')=type_of(SYSLOG)  & ~FUNKCJE.L(7093) || exec('del_O_RH','ppk_kwn',P.ref,O.ref,,'W') ?};
+_zw_prz:=exec('skl_bez_odlicz','lista_licz');
+exec('p_ipod_podatek','lista_licz');
+_zp_prz:=FUNKCJE.L_SYS(9022);
+{? _zp_prz
+|| _zp_skl:=FUNKCJE.L(765,767)-FUNKCJE.L_SYS(9026);
+   {? _zw_prz>_zp_skl || _zw_prz:=_zp_skl ?}
+|| _zp_skl:=FUNKCJE.L(765,767)
+?};
+_przychod:=exec('przychod','oddelegowanie',LICZ.Wylicz(,'.POD')+FUNKCJE.L(779)-_zp_prz-_zp_skl);
+_przychod+_zw_prz"
+|? _rn=784
+|| "
+_skl_prac:=FUNKCJE.L(765,767);
+_korekty:={? _skl_prac>0 || fabs(FUNKCJE.L(470)+FUNKCJE.L(7017)+FUNKCJE.L(532)) ?};
+_l:=FUNKCJE.L(780)-FUNKCJE.L(7002);
+{? _l>0
+|| _l+=_korekty-FUNKCJE.L_SYS(551)-FUNKCJE.L_SYS(32)+{? ~FUNKCJE.L_SYS(9022) || _skl_prac ?}
+|| _l:=0
+?};
+{? _l>0 & P_IPOD.KU<>'B'
+|| _ku:={? P_IPOD.KU='Z'
+             || KST.KUZ
+             || KST.KU
+             ?};
+   _n_zysk:=FUNKCJE.L_SYS(73);
+   {? _n_zysk>0
+   || _brutto:=FUNKCJE.L(500);
+      {? FUNKCJE.L_SYS(710) & _brutto>0
+      || _l-=_n_zysk/_brutto*FUNKCJE.L_SYS(724)$2
+      ?}
+   ?};
+   {? _l>0
+   || _ku-=FUNKCJE.LP(784,,,,1);
+      {? _ku<0 || _ku:=0 ?};
+      {? _l<_ku
+      || _l
+      || _ku
+      ?}
+   ?}
+?}"
+|? _rn=790
+|| "
+exec('oblicz_podatek','!ppl_pll_nals')"
+|? _rn=791
+|| "
+exec('podstawa_sk','oddelegowanie','.UBZ',791)-FUNKCJE.L(765,767)"
+|? _rn=792
+|| "
+exec('skladka_zdrowotna','lista_licz')"
+|? _rn=793
+|| "
+&kc2+FUNKCJE.L(7079)"
+|? _rn=795
+|| "
+{? FUNKCJE.L(790)=0 || return(0) ?};
+_pod:=FUNKCJE.L(790)-FUNKCJE.L(793,794);
+{? DoList.p[3]<=0
+|| 0
+|? _pod>DoList.p[3]
+|| DoList.p[3]
+|| _pod
+?}$(O.RP<2006)"
+|? _rn=797
+|| "
+_kw:=FUNKCJE.L(790);
+{? _kw>0
+|| _kw+=FUNKCJE.LP(790);
+   _kw-=(FUNKCJE.L(793,795)+FUNKCJE.LP(793,795)+FUNKCJE.LP(797));
+   _kw:=_kw$(O.RP<2006);
+   {? _kw<0
+   || {? DoList.p[1]<=_kw || _kw
+      |? DoList.p[5] || 0
+      || DoList.p[1]$(O.RP<2006)
+      ?}
+   || _kw
+   ?}
+?}"
+|? _rn=800
+|| "
+DoList.d[2]"
+|? _rn=950
+|| "
+exec('potracenie_komornik','lista_licz',1);
+FUNKCJE.L(765,767)+FUNKCJE.L(789)+FUNKCJE.L(792)+FUNKCJE.L(797,799)+FUNKCJE.L(801,948)+FUNKCJE.L_SYS(333)"
+|? _rn=958
+|| "
+FUNKCJE.L(765)"
+|? _rn=959
+||"
+{? DoList.m[3] & DoList.m[15]
+|| exec('kor_licz','!ppl_pll_nals',959)
+|| _podstkor:=exec('kor_rca_kor_zus','lista_licz',959,3);
+   _skladkor:=exec('kor_rca_kor_zus','lista_licz',959,4);
+   ((FUNKCJE.LU(753)+FUNKCJE.L(753)+DoList.k[1]+_podstkor)*KST.PRFRF*0.01)$2-
+   FUNKCJE.LU(959)-DoList.k[15]-_skladkor
+?}"
+|? _rn=960
+|| "
+{? DoList.m[3]
+|| exec('kor_licz','!ppl_pll_nals',960)
+|| _podstkor:=exec('kor_rca_kor_zus','lista_licz',960,3);
+   _skladkor:=exec('kor_rca_kor_zus','lista_licz',960,4);
+   ((FUNKCJE.LU(754)+FUNKCJE.L(754)+DoList.k[3]+_podstkor)*KST.PRFW*0.01)$2-
+   FUNKCJE.LU(960)-DoList.k[8]-_skladkor
+?}"
+|? _rn=970
+|| "
+{? date(O.RU,O.MU,1)>=date(2001,6,1)
+|| exec('podst_bp_podst_sk','lista_licz','m')
+?}"
+|? _rn=971
+|| "
+{? date(O.RU,O.MU,1)>=date(2001,6,1)
+|| ((FUNKCJE.LU(970)+FUNKCJE.L(970))*KST.PRFE*0.01)$2-FUNKCJE.LU(971)
+?}"
+|? _rn=972
+|| "
+{? date(O.RU,O.MU,1)>=date(2001,6,1)
+|| ((FUNKCJE.LU(970)+FUNKCJE.L(970))*KST.PRFR*0.01)$2-FUNKCJE.LU(972)
+?}"
+|? _rn=980
+|| "
+FUNKCJE.L(650)"
+|? _rn=981
+|| "
+exec('podstawa_sk','oddelegowanie','.ZUS',981)"
+|? _rn=982
+|| "
+licz_fp:=licz_fg:=0;
+P_INFO.cntx_psh();
+{? exec('zn_ttub','pracownik',P.OSOBA,date(O.RU,O.MU,0))
+|| licz_fp:=(-P_INFO.FP='t');
+   licz_fg:=(-P_INFO.FG='t')
+?};
+P_INFO.cntx_pop();
+{? exec('fp_fgsp_podst_sk','lista_licz')
+|| licz_fp:=licz_fg:=1
+|| {? PAR_SKID.get(181)='T' & exec('blok_fp_podst_sk','lista_licz',1)
+   ||  licz_fp:=1
+   ?}
+?};
+{? ~(&licz_fp)
+|| ((FUNKCJE.LU(981)+FUNKCJE.L(981)+DoList.k[16])*KST.FP*0.01)$2-FUNKCJE.LU(982)-DoList.k[13]
+?}"
+|? _rn=983
+|| "
+{? ~(&licz_fg)
+|| ((FUNKCJE.LU(981)+FUNKCJE.L(981)+DoList.k[12])*KST.FGSP*0.01)$2-FUNKCJE.LU(983)-DoList.k[14]
+?}"
+|? _rn=985
+|| "
+FUNKCJE.L(765,767)+FUNKCJE.L(792)+FUNKCJE.L(958,960)+FUNKCJE.L(962)-FUNKCJE.L(980)+FUNKCJE.L(982,983)"
+|? _rn=990
+|| "
+{? var_pres('KST_PPK')=type_of(SYSLOG) & ~FUNKCJE.L_SYS(741) || exec('del_O_RH','ppk_kwn',P.ref,O.ref,,'Z') ?};
+DoList.x:=FUNKCJE.L(500)+FUNKCJE.L(740)+FUNKCJE.L(747)-FUNKCJE.L(950)+FUNKCJE.L_SYS(334);
+DoList.m[1]:=DoList.x"
+|? _rn=994
+|| "
+DoList.p[1]:=DoList.p[2]:=DoList.p[3]:=0;
+DoList.p[1]:=exec('kwprzel_kali','lista_licz',994)"
+|? _rn=995
+|| "
+DoList.p[2]:=exec('kwprzel_kali','lista_licz',995)"
+|? _rn=996
+|| "
+DoList.p[3]:=exec('kwprzel_kali','lista_licz',996)"
+|? _rn=999
+|| "
+DoList.m[1]"
+|? _rn=7108
+|| "
+&kc3"
+?}
+
+
+\formuly_typ_W_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK[20.42]
+:: OPIS: Aktualizacja formuł płacowych o formuły typu W.
+::   WE:
+::   WY: opis zadania
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie formuł płacowych o nowy typ formuł: W'
+
+
+:Sign Version 2.0 jowisz:1045 2020/12/14 07:26:40 414a3235d2600cbda411122851927b525b2aedf33f788e5fdeaee3abf7f691d6273bcd7bed074a02d2c1b0bcd6aba755a1468577d83ace553677767f190ec2b042314dab45d5214de3163d7d0d4bc8f52efa117210498f2702918e17587a687795d0e7346a634ef9c372ca6e8ae0cb917be80b3e1cc6a7ce3ffe824e1b7175cf

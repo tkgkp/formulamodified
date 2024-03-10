@@ -1,0 +1,465 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lum_fak_gppp.fml
+:: Utworzony: 24.03.2022
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Obsługa generacji prognozy przychodów z paczki faktur lub dla umowy
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LSP
+::# properties=SERVICE
+::# parses=exec('parses','!lum_fak_gpac')
+::# kind=WE,   symbol=FPACZ,  type=_FPACZ,   name=Paczka faktur,        required=N, keyref=T
+::# kind=WE,   symbol=UM,     type=_UM,      name=Umowa cykliczna,      required=N, keyref=T
+::# kind=WY,   symbol=UM,     type=_UM,      name=Umowa cykliczna,      required=N
+_mp:=params_get().mp;
+_in:=params_get().in;
+_out:=params_get().out;
+
+_akcja:=_mp.akcja();
+
+_fpacz:={? var_pres('FPACZ',_in)=type_of(null()) || _in.FPACZ || null() ?};
+_um:={? var_pres('UM',_in)=type_of(null()) || _in.UM || null() ?};
+
+{? _fpacz=null() & _um=null() || _mp.error('Brak wymaganego parametru FPACZ lub UM.') ?};
+
+:: wygenerowanie tymczasowej paczki
+_fpacz_gen:=0;
+{? _fpacz=null() || _fpacz_gen:=1; _fpacz:=exec('fpacz','!lum_fak_gppp',_um) ?};
+{? _fpacz=null() || _mp.error('Nie powiodło sie wgenerowanie paczki faktur.') ?};
+
+_error:=0;
+_cancel:=0;
+
+UM.cntx_psh();
+UM.prefix();
+FPACZ.cntx_psh();
+FPACZ.prefix();
+{? ~FPACZ.seek(_fpacz)
+||
+   _mp.error('Nie znaleziono paczki faktur.');
+   _error:=1
+
+|? _um & ~UM.seek(_um)
+||
+   _mp.error('Nie znaleziono umowy.');
+   _error:=1
+||
+   {? _akcja='Prognozuj przychody' | _mp.isService()
+   ||
+      ~~
+
+   |? _mp.pathTodo() | _mp.pathArea() & _akcja=''
+   ||
+      {? _fpacz_gen
+      ||
+         _cancel:=~FUN.ask('Czy obliczyć prognozę przychodu dla umowy %1?'@[exec('record','#to_string',UM.ref())])
+      ||
+         exec('fpacz_win_edit_set','!lum_fak_gppp');
+         _win_red:=FPACZ.win_edit('?');
+         _cntx:=obj_new('AKCEPTUJ');
+         _cntx.AKCEPTUJ:=0;
+         params_set('mp',_mp,'grpkey','','cntx',_cntx,'pp',1+_fpacz_gen);
+         FPACZ.display();
+         _cancel:=~_cntx.AKCEPTUJ;
+::       Usunięcie definicji tymczasowych okien
+         FPACZ.win_edit(''); FPACZ.win_edel(_win_red)
+      ?}
+   ||
+      _mp.error('Nieobsługiwana ścieżka.');
+      _error:=1
+   ?};
+   {? ~_error & ~_cancel
+   ||
+      _Zakres:=exec('zakres','!lum_fak_gppp',_um,_fpacz_gen);
+      _loop:=_Zakres.first();
+      {!
+      |? _loop
+      |!
+         _dw:={? _fpacz_gen || _Zakres.DO || FPACZ.DW ?};
+         {? _fpacz_gen | _mp.isService()
+         ||
+            __PARSES.setVal('OddzialLogProd',FPACZ.ODDZ);
+            _args:=__PARSES.args('OkresRok');
+            _args.OBSZAR:='LSP';
+            _args.AR:=_dw~1;
+            _args.AM:=_dw~2;
+            __PARSES.setVal('OkresRok',_args);
+            obj_del(_args);
+            {? __PARSES.setEnv('LUM_FAK_GPPP',,1)
+            ||
+               {? _fpacz_gen
+               ||
+                  FPACZ.UM_OD:=FPACZ.UM_DO:=exec('FindAndGet','#table',UM,_Zakres.UM,,"UM.ref()",null());
+                  FPACZ.AR:=_Zakres.OD~1;
+                  FPACZ.OD:=_Zakres.OD;
+                  FPACZ.DO:=_Zakres.DO;
+                  FPACZ.DW:=FPACZ.DS:=FPACZ.DO;
+                  FPACZ.NR:=exec('nr_pacz','!lum_fak_dpac');
+                  FPACZ.put()
+               ?}
+            ||
+               _cancel:=1
+            ?}
+         ?};
+         {? ~_cancel
+         ||
+            {? _fpacz_gen
+            || FPACZ.ODDZ:=ST.ODDZ;
+               FPACZ.AR:=ST.AR;
+               FPACZ.NR:=exec('nr_pacz','!lum_fak_dpac');
+               FPACZ.put()
+            ?};
+            params_set('mp',_mp,'grpkey','','pp',1+_fpacz_gen);
+            _cancel:=exec('fpacz_gen_dok','!lum_fak_gppp')=0;
+            {? _fpacz_gen || exec('fpacz_log_del','umowy_faktury',FPACZ.ref()) ?}
+         ?};
+         _loop:=~_cancel & _Zakres.next()
+      !}
+   ?};
+   {? ~_cancel & _mp.pathTodo()
+   ||
+      {? _fpacz_gen
+      ||
+         exec('um_pp','!lum_fak_gppp')
+      ||
+         FPACZFAP.index('FPACZ');
+         FPACZFAP.prefix(FPACZ.ref());
+         {? FPACZFAP.first()
+         ||
+            _wer:=exec('fpaczfap_wer','umowy_faktury',_fpacz_gen);
+            FPACZFAP.win_sel(_wer);
+            FPACZFAP.select()
+         ?}
+      ?}
+   ?};
+:: usunięcie tymczasowej paczki
+   {? _fpacz_gen || FPACZ.del() ?}
+?};
+FPACZ.cntx_pop();
+UM.cntx_pop();
+{? _error || {? _mp.isService() || _mp.error() ?}; return() ?};
+{? _cancel || {? _mp.isService() || _mp.error() ?}; return() ?};
+:: zapis umowy na wyjściu
+_mp.save(exec('kind_out','#b_port'),'UM',_in.UM);
+:: zakończenie czynności
+_mp.done()
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+{? var_pres('FPACZ',_in)=type_of(null()) & _in.FPACZ
+|| 'Prognozuj przychody wg paczki faktur: %1'@@[exec('record','#to_string',_in.FPACZ)]
+|? var_pres('UM',_in)=type_of(null()) & _in.UM
+|| 'Prognozuj przychody dla umowy: %1'@@[exec('record','#to_string',_in.UM)]
+|| ''
+?}
+
+
+\fpacz_gen_dok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: generuj dokumenty - Prognozuj przychody
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('pacz_gen','umowy_faktury')
+
+
+\fpacz_win_edit_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Ustawia okno redakcji tabeli FPACZ, wymagane pola, okna słowników
+::   WE: _a - akronim okna redakcji
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_win_akr:={? var_pres('_a')=type_of('') || _a || 'RED' ?};
+_win_red:=exec('fpacz_win_edit','umowy_faktury',_win_akr);
+_result:=obj_new('ACR','BTN');
+_result.ACR:=_win_red;
+_result.BTN:=obj_new('GENERUJ','ANULUJ');
+{? _win_akr='RED'
+||
+   _ff:="params_get().cntx.AKCEPTUJ:=1; 'key:F2'"
+
+|? _win_akr='KOM'
+||
+   _ff:='key:F2'
+?};
+_result.BTN.GENERUJ:=FPACZ.win_ebtn(_win_red,
+   'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Prognozuj przychody'@],_ff);
+_ff:='key:Esc';
+_result.BTN.ANULUJ:=FPACZ.win_ebtn(_win_red,
+   'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],_ff);
+FPACZ.win_edit(_win_red);
+exec('fpacz_set_efld_opt','umowy_faktury',_win_red);
+_result
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+{? var_pres('FPACZ',_in)=type_of(null()) & _in.FPACZ
+||
+   FPACZ.cntx_psh();
+   FPACZ.use(ref_name(_in.FPACZ));
+   FPACZ.prefix();
+   {? FPACZ.seek(_in.FPACZ)
+   ||
+      __PARSES.setVal('OddzialLogProd',FPACZ.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LUM';
+      _args.AR:=FPACZ.DW~1;
+      _args.AM:=FPACZ.DW~2;
+      __PARSES.setVal('OkresRok',_args)
+   ?};
+   FPACZ.cntx_pop()
+?};
+1
+
+
+\fpacz_pp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Akcja - Prognozuj przychody dla paczki faktur
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LUM_FAK_GPPP';
+_params.UIDREF:=FPACZ.uidref();
+_params.AKCJA:='Prognozuj przychody';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'FPACZ',FPACZ.ref());
+
+exec('mp_run','#b__box',_params)
+
+
+\um_pp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Akcja - Prognoza przychodu dla umowy
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_setinit:=0;
+{? var_pres('__xan_gen')<=0
+||
+   _setinit:=1;
+   exec('init_set_aneks','umowy_aneks');
+   __mod:=exec('get','#params',100176,2)='T';
+   __xan_gen()
+?};
+_Tab:={? __x_xan.first() || __x_xan || FPACZFAP ?};
+__UM_REF:=UM.ref();
+_env:=obj_new('UM');
+_env.UM:=UM.ref();
+params_set('env',_env);
+{? _Tab=__x_xan
+||
+   _fb:="
+      params_get().env.UM:=cur_tab(1,1).UM_REF;
+      params_exec('um_pp_sel','!lum_fak_gppp')
+   ";
+   __x_xan.win_act(__um_sel,,'Formuła','Wybierz'@,,,_fb,,1);
+   __x_xan.win_sel(__um_sel);
+   __x_xan.select()
+||
+   exec('um_pp_sel','!lum_fak_gppp')
+?};
+{? _setinit
+||
+   exec('done_set_aneks','umowy_aneks');
+   VAR_DEL.delete('__mod')
+?}
+
+
+\um_pp_sel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Prognoza przychodu dla umowy - select
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_grp:=FPACZFAP.grp_make('Prognoza przychodu'@,,'pp_um');
+_wer:=__WER:=exec('fpaczfap_wer','umowy_faktury',1);
+FPACZFAP.cntx_psh();
+_Names:=FPACZFAP.names();
+_loop:=_Names.last();
+_tab:=1;
+{!
+|? _loop
+|!
+   FPACZFAP.use(_Names.NAME);
+   FPACZFAP.cntx_psh();
+   FPACZFAP.index('UM');
+   FPACZFAP.prefix(null(),params_get().env.UM);
+   {? FPACZFAP.first()
+   ||
+      _tab:=0;
+      _fb:=$('
+         FPACZFAP.use(''%1'');
+         FPACZFAP.cntx_psh();
+         FPACZFAP.index(''UM'');
+         FPACZFAP.prefix(null(),params_get().env.UM);
+         FPACZFAP.first()
+      '
+      [_Names.NAME]);
+      _fa:="FPACZFAP.cntx_pop()";
+      FPACZFAP.grp_sel(_grp,,_wer,$FPACZFAP.ROK,,,,,_fb,_fa,,,'maximized')
+   ?};
+   FPACZFAP.cntx_pop();
+   _loop:=_Names.prev()
+!};
+{? _tab
+||
+   _fb:=$('
+      FPACZFAP.use(''%1'');
+      FPACZFAP.cntx_psh();
+      FPACZFAP.index(''UM'');
+      FPACZFAP.prefix(null(),params_get().env.UM);
+      FPACZFAP.first()
+   '
+   ['fpfap'+ST.ODDZ+ST.ROK]);
+   _fa:="FPACZFAP.cntx_pop()";
+   FPACZFAP.grp_sel(_grp,,_wer,$ST.AR,,,,,_fb,_fa,,,'maximized')
+?};
+FPACZFAP.cntx_pop();
+FPACZFAP.win_sel(_grp);
+params_set(params_get());
+FPACZFAP.select()
+
+
+\fpacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Generuje paczkę
+::   WE: _a - UM.ref()
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+F_HELP.RODZ:='U';
+FPACZ.blank();
+FPACZ.UM_OD:=FPACZ.UM_DO:=_a;
+FPACZ.TYPYSP:=null();
+TYPYSP.cntx_psh();
+TYPYSP.prefix();
+_where:=
+   'UE=\'N\' and EXPORT=\'N\' and KOR=\'N\' and ZAL=\'N\' and HIS=\'N\' and FIS=\'N\'and ZAK=\'N\' and FIS=\'N\''
+   ' and ZAL_ROZ<>\'S\'';
+TYPYSP.f_set('T',,_where);
+{? TYPYSP.f_first() || FPACZ.TYPYSP:=TYPYSP.ref() ?};
+TYPYSP.f_clear();
+TYPYSP.cntx_pop();
+{? FPACZ.add() || FPACZ.ref() || null() ?}
+
+
+\zakres
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Zakres zgłoszeń
+::   WE: _a - UM.ref()
+::       _b - 0/1 - wygenerowano paczkę tymczasową
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_um:=_a;
+_fpacz_gen:=_b;
+_Tab:=tab_tmp(1,'UM','INTEGER',,'OD','DATE',,'DO','DATE',);
+_setinit:=0;
+{? var_pres('__xan_gen')<=0
+||
+   _setinit:=1;
+   exec('init_set_aneks','umowy_aneks');
+   __mod:=exec('get','#params',100176,2)='T';
+   __xan_gen()
+?};
+{? _um=null()
+||
+   _Tab.blank();
+   _Tab.add()
+||
+   ZLP.cntx_psh();
+   _Names:=ZLP.names();
+   _loop:=__x_xan.first();
+   {? ~_loop || __x_xan.UM_REF:=#_um; _loop:=1 ?};
+   {!
+   |? _loop
+   |!
+      {? _fpacz_gen || exec('um_pp_del','umowy_faktury',__x_xan.UM_REF) ?};
+      _loop:=_Names.last();
+      {!
+      |? _loop
+      |!
+         ZLP.use(_Names.NAME);
+         ZLP.cntx_psh();
+         ZLP.index('UM');
+         ZLP.prefix(__x_xan.UM_REF,'N','T');
+         {? ZLP.first()
+         ||
+            _dw:=ZLP.DW;
+            _Tab.UM:=__x_xan.UM_REF;
+            _Tab.OD:=date(_dw~1,_dw~2,1);
+            _Tab.DO:=date(_dw~1,_dw~2,0);
+            _Tab.add()
+         ||
+            ZLP.prefix(__x_xan.UM_REF,'T','T');
+            _loop:=ZLP.first()=0
+         ?};
+         ZLP.cntx_pop();
+         _loop:=_loop & _Names.prev()
+      !};
+      _loop:=__x_xan.next()
+   !};
+   ZLP.cntx_pop()
+?};
+{? _setinit
+||
+   exec('done_set_aneks','umowy_aneks');
+   VAR_DEL.delete('__mod')
+?};
+_Tab
+
+
+\fpacz_pp_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Usuwa prognozę paczki faktur
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask('Czy usunąć prognązę przychodu paczki faktur?')
+||
+   exec('fpacz_pp_del','umowy_faktury')
+?}
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:38 19a650d092f4e0f870670428f865cfb8be42d9736dcc2e21e3e7dfc1778d75689a80f7fb7f970e188e254fb8f7a95458777a7b4d2c72421cf3f93ec8b8fdfb22e311061976245098c08bae9db7d64a4e7d115f16dfb378ea2b97c671585341043b60b1a98bc8976bffa87854a69fbaa483bb30281624107a1ec2d8c2cfe8ae6b

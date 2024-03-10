@@ -1,0 +1,244 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !psz_sdo_gpsz.fml
+:: Utworzony: 05.12.2017
+:: Autor: jaws
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PSZ_SDO_GPSZ - Gen. zapotrzebowań z matrycy.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.02]
+:: OPIS: Gen. zapotrzebowań z matrycy - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+
+SZK_DAT.cntx_psh();
+SZK_DAT.index('SZK_DAT');
+SZK_DAT.prefix(exec('ref_firma','ustawienia'));
+SZK_DAT.find_le(date());
+SZK_DAT.win_sel('DEF');
+{? SZK_DAT.select(,1)
+|| exec('generuj','!psz_sdo_gpsz',SZK_DAT.ref());
+   SZK_DAT.GEN:='T';
+   SZK_DAT.DATA:=date();
+   SZK_DAT.put()
+?};
+SZK_DAT.cntx_pop();
+~~
+
+
+\szk_dat_xxx_ob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.02]
+:: OPIS: Okienko przed okienek tabeli SZK_DAT.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('zz_pom_psh','phr_widok','PSZ_SDO_GPSZ');
+
+SZK_DAT.win_edit('RED');
+SZK_DAT.win_patt('WZO');
+
+1
+
+
+\szk_dat_xxx_oa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.02]
+:: OPIS: Okienko po okienek tabeli SZK_DAT.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('zz_pom_pop','phr_widok');
+
+1
+
+
+\szk_dat_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.02]
+:: OPIS: Po edycji wiersza tabeli SZK_DAT.
+::   WE:
+::   WY: wynik testu poprawności
+::----------------------------------------------------------------------------------------------------------------------
+exec('szk_dat_chk','phr_sz_tab',-menu_txt()='popraw')
+
+
+\generuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KO [12.30]
+:: OPIS: Generowanie zapotrzebowań na podstawie danych z matrycy szkoleń.
+::   WE: _a [_SZK_DAT] - wskazanie wiersza
+::  OLD: \mtr2zap/szk_prac.fml
+::----------------------------------------------------------------------------------------------------------------------
+SZK_DAT.cntx_psh();
+SZK_DAT.clear();
+{? ~SZK_DAT.seek(_a)
+|| SZK_DAT.cntx_pop();
+   return()
+?};
+
+: aktualizacja zapotrzebowań na podstawie matrycy
+exec('szk_zap_aktualizuj','!psz_sdo_gpsz',_a);
+_choice:=FUN.choice(
+   'Dla pracowników, bez wymaganych szkoleń, termin realizacji zapotrzebowania ustalić na:',1,
+   'Dzień zatrudnienia'@,,,,'Początek okresu'@
+);
+
+SZK_WZO.cntx_psh();
+SZK_WZO.prefix();
+P.cntx_psh();
+P.index('PRACOZAT');
+P.prefix(exec('ref_firma','ustawienia'),'P','T');
+
+do();
+_ile:=0;
+_zdate:=date(0,0,0);
+_loop:=P.first();
+{!
+|? _loop
+|! _kk:=exec('kk_hist','pracownik',P.ref(),SZK_DAT.OD);
+
+   _SZK_WZO:=sql(
+      'select distinct SZK_STN.SZK_WZO as REF '
+      'from SZK_STN '
+      'where '
+      '  (:_a is not null and SZK_STN.STO=:_a) or '
+      '  (:_b is not null and SZK_STN.STN_GR=:_b)',
+      exec('szukaj_sto','stanprac',P.WYDZIAL,P.ST),
+      exec('stn_stn_gr','stanprac',P.ST)
+   );
+
+   _loop:=_SZK_WZO.first();
+   {!
+   |? _loop & SZK_WZO.seek(_SZK_WZO.REF)
+   |! _temat:=SZK_WZO.TEMAT().TEMAT;
+:     ustal ważność szkolenia
+      _waznosc:=exec('pobierz_wd','szkolenia',P.ref(),SZK_WZO.ref());
+:     jeśli data ważnosci jest różna od 00-00-0000 to znaczy, że pracownik miał takie szkolenie i należy wygenerować
+:     zapotrzebowanie na dzień następny po dacie utraty ważności
+:     jesli data ważności jest 00-00-0000 to znaczy, że pracownik nie miał szkolenia i generujemy zapotrzebowanie
+:     na dzien zatrudnienia do realizacji w roku bieżącym
+      {? _waznosc<>_zdate
+      || _data:=_waznosc+1;
+         {? _data>=SZK_DAT.OD & _data<=SZK_DAT.DO
+         || {? exec('szk_zap_utworz','szkolenia',
+                  SZK_WZO.ref(),P.ref(),_data,SZK_WZO.TEMAT().TEMAT,
+                  0,0,0,P.WYDZIAL,P.ST,P.ST().K,_kk,_a
+               )
+            || _ile+=1
+            ?}
+         ?}
+      || _dat_zat:=exec('dza_stn','pracownik',P.ref(),P.ST);
+:        data zatrudnienia pracownika na stanowisku
+         {? _dat_zat<>_zdate
+         || _miesiac:={? ~_choice || SZK_DAT.OD~2  || _dat_zat~2 ?};
+            _dzien:={? ~_choice || SZK_DAT.OD~3 || _dat_zat~3 ?};
+            _kwartal:=exec('kwartal','#datetime',_miesiac);
+:           rok pobierany z daty od z zakresu dat
+            _rok:=SZK_DAT.OD~1;
+            _data:=date(_rok,_miesiac,_dzien);
+            {? _data>=SZK_DAT.OD & _data<=SZK_DAT.DO
+            || {? exec('szk_zap_utworz','szkolenia',
+                     SZK_WZO.ref(),P.ref(),_data,SZK_WZO.TEMAT().TEMAT,
+                     _rok,_kwartal,_miesiac,P.WYDZIAL,P.ST,P.ST().K,_kk,_a
+                  )
+               || _ile+=1
+               ?}
+            ?}
+         ?}
+      ?};
+      _loop:=_SZK_WZO.next()
+   !};
+   obj_del(_SZK_WZO);
+   _loop:=P.next()
+!};
+: aktualizacja tabeli dat
+{? _ile>0
+|| SZK_DAT.GEN:='T';
+   SZK_DAT.DATA:=date();
+   SZK_DAT.put(1)
+?};
+end();
+
+P.cntx_pop();
+SZK_WZO.cntx_pop();
+SZK_DAT.cntx_pop();
+
+FUN.info(
+   'Dla okresu od %1 do %2 utworzono %3 zapotrzebowań.'@
+   [$SZK_DAT.OD,$SZK_DAT.OD,$_ile]
+)
+
+
+\szk_zap_aktualizuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KO [12.30]
+:: OPIS: Aktualizacja zapotrzebowań pochodzących matrycy, czyli usunięcie i utworzenie nowych.
+::   WE: _a [_SZK_DAT] - wskazanie wiersza
+::  OLD: \aktzap/szk_prac.fml
+::----------------------------------------------------------------------------------------------------------------------
+_statusy:='';
+
+_TEST:=sql(
+   'select count(SZK_PSZK.REFERENCE) as LICZ '
+   'from SZK_PSZK '
+   'join SZK_ZAP using (SZK_PSZK.SZK_ZAP,SZK_ZAP.REFERENCE) '
+   'where SZK_ZAP.SZK_PRAC is null and SZK_ZAP.SZK_DAT=:_a',
+   _a
+);
+: jeśli istanieją niezrealizowane pozycje planu szkoleń
+{? _TEST.first() & _TEST.LICZ<>0
+|| FUN.info(
+      'Ponowne generowanie zapotrzebowań spowoduje usunięcie pozycji planów szkoleń\n'
+      'o wybranych statusach i utworzenie nowych ze statusem "oczekujące".'@
+   );
+   _WYBOR:=exec('wybierz_kody','ext_slo','WER_WYN').WYBOR;
+   _loop:=_WYBOR.first();
+   {!
+   |? _loop
+   |! _statusy+='[%1]'[_WYBOR.KOD];
+      _loop:=_WYBOR.next()
+   !}
+?};
+
+do();
+SZK_ZAP.cntx_psh();
+SZK_ZAP.index('SZK_DAT');
+SZK_ZAP.prefix(_a,'M','M');
+{? SZK_ZAP.first()
+|| {!
+   |? SZK_PSZK.index('SZK_ZAP');
+      SZK_PSZK.prefix(SZK_ZAP.ref());
+      {? SZK_PSZK.first()
+      || {? _statusy*('[%1]'[SZK_ZAP.WER_WYN().KOD]) & SZK_ZAP.SZK_PRAC=null
+:           usunięcie pozycji planów zgodnie z ustalonymi kodami statusów
+         || {! |? SZK_PSZK.del() !};
+            SZK_ZAP.del()
+         || SZK_ZAP.next()
+         ?}
+      || SZK_ZAP.del()
+      ?}
+   !}
+?};
+SZK_ZAP.cntx_pop();
+
+{? _statusy<>''
+|| SZK_DAT.cntx_psh();
+   SZK_DAT.index('SZK_DAT');
+   SZK_DAT.prefix(exec('ref_firma','ustawienia'));
+   {? SZK_DAT.seek(_a)
+   || SZK_DAT.STATUSY:=_statusy;
+      SZK_DAT.put(1)
+   ?};
+   SZK_DAT.cntx_pop()
+?};
+end()
+
+:Sign Version 2.0 jowisz:1045 2023/11/15 14:14:34 c161e75f8b65e7514fbb7f1f0b0726ea11757c6e6c2b3dc70663c6baeaabd83432d7806737cdd9193f7bf731f4563f62a1adbec120170cf2853659dc1268f882afd56063b2d5b70d4c3a1e4c6287bac3579a65e970c09ea3bea2d6d5092c4b2593d3ec4ea55752f007407c9b28ff27d7cdba83ba0d1727adbe19d013011d730d

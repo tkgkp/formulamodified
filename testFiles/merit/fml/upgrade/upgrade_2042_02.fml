@@ -1,0 +1,727 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2042_02.fml
+:: Utworzony: 27.10.2020
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 20.14 na 20.42
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Główna formuła upgrade-ów 20.xx
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania wykonywane raz dla całego systemu
+__UPG.add_task('upgrade_act',,,'ZPR',14,,,,'T');
+__UPG.add_task('color',,,'ZWS',3,,,,'T');
+__UPG.add_task('funpar',,,'ZWS',5,,,,'T');
+__UPG.add_task('id_sync',,,'ZWS',3,,,,'T');
+__UPG.add_task('areatitle',,,'ZWS',,,,,'T');
+__UPG.add_task('PKALSYNC',,,'POR',2,,,,'T');
+__UPG.add_task('o',,,'POR',,,,,'T');
+__UPG.add_task('slo_wn_pap',,,'ZWS',2,,,,'T');
+__UPG.add_task('hash_fill',,,'ZWS',,,,,'T');
+__UPG.add_task('stalesys_ini',,,'ZWS',2,,,,'T');
+__UPG.add_task('imp_sch_form',,,'POR',,,,1,'T');
+__UPG.add_task('p',,,'PKD',,,,1,'T');
+__UPG.add_task('os_us',,,'PKD',,,,1,'T');
+__UPG.add_task('wnurl',,,'POR',,,,1,'T');
+__UPG.add_task('kst_ppor',,,'POR',,,,1,'T');
+
+:: Zadania wykonywane dla każdej firmy osobno
+__UPG.add_task('porslo',,'N','POR',3,,,1,'T');
+__UPG.add_task('role',,'N','ZWS',9,,,1,'T');
+:: Zadania manualne
+
+~~
+
+
+\funpar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [20.14]
+:: OPIS: Aktualizacja obszaru Ustawienia i parametryzacja.
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('aktualizuj','funpar',1)
+|| __UPG.msg('Zaktualizowano zawartość obszaru: Ustawienia i parametryzacja.')
+|| __UPG.msg('Nie zaktualizowano zawartości obszaru: Ustawienia i parametryzacja.')
+?}
+
+
+\funpar_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.14]
+:: OPIS: Aktualizacja obszaru Ustawienia i parametryzacja - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ustawień i parametryzacji'
+
+
+\upgrade_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [20.14]
+:: OPIS: Aktualizacja typów danych oraz czynności dla wskazanych obszarów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+:: Poniżej wpisać domeny, których dotyczą nowe lub aktualizowane czynności
+_dom:=spli_str('POR.ZWS.TRE.ZPR.OBE','.');
+_len:=obj_len(_dom);
+
+{? _len & _dom[1]<>''
+|| FUN.prg_start(_len+2,'Aktualizacja czynności.',,,1);
+
+:: Uzupełnienie domen (zawsze)
+   FUN.prg_next();
+   exec('add_domain','#b_action');
+   __UPG.msg('Zaktualizowano dziedziny.');
+
+:: Uzupełnienie typów (zawsze)
+   FUN.prg_next();
+   exec('fill_tab','#b_type',0);
+   __UPG.msg('Zaktualizowano typy danych.');
+
+   {! _i.._len
+   |! FUN.prg_next();
+      _domain:=exec('FindInSet','#table','B_DOMAIN','SYMBOL',_dom[_i]);
+      {? _domain<>null()
+      || exec('import_needed_dom','#b_design',_domain,0);
+         __UPG.msg('Zaktualizowano czynności dziedziny: %1.'[_dom[_i]])
+      ?}
+   !};
+   FUN.prg_stop()
+?};
+obj_del(_dom);
+_res
+
+
+\upgrade_act_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [20.14]
+:: OPIS: Aktualizacja typy danych oraz czynności dla wskazanych obszarów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja typów danych oraz czynności dla modelera'
+
+
+\id_sync
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Dodaje definicje identyfikatorów rekordów
+::----------------------------------------------------------------------------------------------------------------------
+_init:=exec('init','sync_id');
+_result:=_init.RESULT;
+_args:=_init.ARGS;
+{? _result
+|| __UPG.msg('Zaktualizowano definicje identyfikatorów rekordów.')
+|| __UPG.msg('Wystąpił problem podczas aktualizacji definicji identyfikorów rekordów %1 - %2 do systemu %3.'
+      [_args.KOD,_args.OPIS,_args.SYSTEM])
+?};
+_result
+
+
+\id_sync_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Dodaje definicje identyfikatorów rekordów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie definicji identyfikatorów rekordów:\n'
+
+
+\color
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [17.42]
+:: OPIS: Aktualizacja schematów kolorów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+exec('Color','#object');
+exec('Legend','#object');
+exec('odtw_kolor_iko','color',2);
+__UPG.msg('Zostały zaaktualizowane schematy kolorów i ikon dla akcji Legenda.');
+_res
+
+
+\color_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [17.42]
+:: OPIS: Aktualizacja schematów kolorów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja schematu kolorów.'
+
+
+\areatitle
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.42]
+:: OPIS: Inicjuje AreaTitle - obiekt do wyświetlania tytułów w obszarach roboczych
+::----------------------------------------------------------------------------------------------------------------------
+exec('init','areatitle');
+__UPG.msg('Zainicjowano tytuły obszarów roboczych.');
+1
+
+
+\areatitle_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [18.42]
+:: OPIS: Inicjuje AreaTitle - obiekt do wyświetlania tytułów w obszarach roboczych - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Inicjuje AreaTitle - obiekt do wyświetlania tytułów obszarów roboczych'
+
+
+\porslo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Dodanie słowników wykorzystywanych na portalu
+::----------------------------------------------------------------------------------------------------------------------
+exec('init','portal_slowniki','J');
+exec('init','portal_slowniki','W');
+__UPG.msg('Dodano słowniki portalowe.');
+1
+
+
+\porslo_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Dodanie słowników wykorzystywanych na portalu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie słowników wykorzystywanych na portalu.'
+
+
+\PKALSYNC
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Dodanie zapisów do synchronizacji kalendarzy pracowników z HR Portal
+::----------------------------------------------------------------------------------------------------------------------
+P.cntx_psh();
+P.use('pracowni');
+P.index('PRACONAZ');
+P.prefix();
+P.for_each("exec('update4P','pkalsync')",1);
+P.cntx_pop();
+__UPG.msg('Dodano zapisy do synchronizacji kalendarzy pracowników z HR Portal.');
+1
+
+
+\PKALSYNC_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Dodanie słowników wykorzystywanych na portalu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie zapisów do synchronizacji kalendarzy pracowników z HR Portal.'
+
+
+\role
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [20.42]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami portalowymi.
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('roleActions','upgrade',
+      'Pracownik',
+      'POR_PRA_DPAP,POR_PRA_LINK,POR_PRA_OGUL,POR_PRA_PAWY,POR_PRA_PBAD,POR_PRA_PBEN,POR_PRA_PBWI,POR_PRA_PDNA,'
+      'POR_PRA_PFIR,POR_PRA_PGSL,POR_PRA_PINF,POR_PRA_PJEZ,POR_PRA_PKAL,POR_PRA_PKAR,POR_PRA_PKFI,POR_PRA_PKON,'
+      'POR_PRA_PLIS,POR_PRA_PNIE,POR_PRA_PNZB,POR_PRA_POWY,POR_PRA_PPOD,POR_PRA_PPOM,POR_PRA_PPOW,POR_PRA_PPOZ,'
+      'POR_PRA_PPPK,POR_PRA_PPRD,POR_PRA_PPYT,POR_PRA_PROD,POR_PRA_PSAK,POR_PRA_PSWY,POR_PRA_PSZK,POR_PRA_PURL,'
+      'POR_PRA_PURZ,POR_PRA_PWYK,POR_PRA_PWYN,POR_PRA_PZAT,POR_PRA_PZLE,OBE_FAW_ZAMK,OBE_FAW_WYCO,POR_PRA_PSTA,'
+      'POR_PRA_PWNA,POR_PRA_PWYP'
+   ) &
+   exec('roleActions','upgrade',
+      'Przełożony',
+      'POR_KIE_CAKC,POR_KIE_DARP,POR_KIE_EAKP,POR_KIE_PAWY,POR_KIE_PAWZ,POR_KIE_PBAD,POR_KIE_PBEN,POR_KIE_PGSL,'
+      'POR_KIE_PHZA,POR_KIE_PINF,POR_KIE_PJEZ,POR_KIE_PKAL,POR_KIE_PKNI,POR_KIE_PKON,POR_KIE_PLOS,POR_KIE_PMAS,'
+      'POR_KIE_PNIE,POR_KIE_PNME,POR_KIE_POPS,POR_KIE_PPOD,POR_KIE_PPOW,POR_KIE_PPPR,POR_KIE_PPRA,POR_KIE_PPRE,'
+      'POR_KIE_PPST,POR_KIE_PSPR,POR_KIE_PSWN,POR_KIE_PSWY,POR_KIE_PSZK,POR_KIE_PULI,POR_KIE_PURL,POR_KIE_PWKO,'
+      'POR_KIE_PWNA,POR_KIE_PWPL,POR_KIE_PWYD,POR_KIE_PWYK,POR_KIE_PWYN,POR_KIE_PZAT,POR_KIE_PZLE,POR_KIE_PZSL,'
+      'POR_KIE_WYCO,POR_KIE_ZDAR,POR_KIE_PWNA,POR_KIE_ZAMK,POR_KIE_PSTA,POR_KIE_PWRO,POR_KIE_PWUZ,POR_KIE_PWYP,'
+      'POR_KIE_POOS'
+   ) &
+   exec('roleActions','upgrade',
+      'Specjalista HR,Specjalista ds. kadr',
+      'POR_BIP_RBLT,POR_BIP_RBWD,POR_BIP_ROGL,POR_BIP_RULP,POR_BIP_RWDG,POR_BIP_PWDG,POR_PYT_APYT,POR_PYT_RPYT,'
+      'ZWS_PAR_PULP,ZWS_PAR_POGL,POR_KIE_PSWN,POR_KIE_EAKP,POR_KIE_DARP,POR_KIE_ZAMK,POR_KIE_WYCO,ZWS_PAR_PWDK,'
+      'ZWS_PAR_PBWK,ZWS_PAR_PBLK,ZWS_PAR_PKDR,ZWS_PAR_PBKN,ZWS_PAR_PYTO,ZWS_PAR_PWAR,ZWS_PAR_PBNF,ZWS_PAR_PPNB,'
+      'ZWS_PAR_PGSW,ZWS_PAR_PGSP'
+   ) &
+   exec('roleActions','upgrade',
+      'Dyrektor HR,Przeglądający Kadry',
+      'POR_BIP_PBLT,POR_BIP_PBWD,POR_BIP_POGL,POR_BIP_PULP,POR_BIP_PWDG,POR_PYT_APYT,POR_KIE_PSWN,POR_KIE_EAKP,'
+      'POR_KIE_DARP,POR_KIE_ZAMK,POR_KIE_WYCO,POR_KIE_PWPL,POR_KIE_PSPR,POR_KIE_POPS,POR_KIE_POOS,POR_KIE_PWKO,'
+      'POR_PYT_PPYT,ZWS_PAR_PYTO'
+   ) &
+   exec('roleActions','upgrade',
+      'Administrator',
+      'ZWS_PAR_PULP,ZWS_PAR_POGL,ZWS_PAR_PSLO,ZWS_PAR_PULW,ZWS_PAR_WTYP,ZWS_PAR_PTYP,ZWS_PAR_PBKN,ZWS_PAR_PBLK,'
+      'ZWS_PAR_PBNF,ZWS_PAR_PBWK,ZWS_PAR_PGSP,ZWS_PAR_PGSW,ZWS_PAR_PKDR,ZWS_PAR_PPNB,ZWS_PAR_PWDK,ZWS_PAR_PYTO'
+   )
+|| 1
+|| -1
+?}
+
+
+\role_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [20.42]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami portalowymi - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ról/uprawnień związana z czynnościami portalowymi.'
+
+
+\o
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Uzupełnienie nowych pól w tabeli O (dla wszystkich firm).
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+O.cntx_psh();
+O.index('LISTYMIE');
+O.prefix();
+{? O.first()
+|| _stat:=obj_new('ok','poprawiono','niepoprawiono');
+   {! _lp:=1 .. obj_len(_stat)
+   |! _stat[_lp]:=0
+   !};
+   O.trig_off('*','*');
+   {!
+   |? {? O.PORTAL=''
+      || O.PORTAL:='N';
+         {? O.put()
+         || _stat.poprawiono+=1
+         || _stat.niepoprawiono+=1
+         ?}
+      || _stat.ok+=1
+      ?};
+      O.next()
+   !};
+   O.trig_on('*','*');
+   {? _stat.niepoprawiono
+   || _ret:=-1
+   ?};
+   __UPG.msg('Liczba zapisów poprawnych (niewymagających uzupełnienia): %1' [$_stat.ok]);
+   __UPG.msg('Liczba zapisów, które udało się uzupełnić: %1' [$_stat.poprawiono]);
+   __UPG.msg('Liczba zapisów, których NIE udało się uzupełnić: %1' [$_stat.niepoprawiono])
+
+|| __UPG.msg('Brak list płac.')
+?};
+O.cntx_pop();
+_ret
+
+
+\o_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Uzupełnienie nowych pól w tabeli O (dla wszystkich firm) - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie nowych pól w tabeli nagłówków list płac (O).'
+
+
+\slo_wn_pap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [20.42]
+:: OPIS: Aktualizacja typów załączników - usunięcie typu "Wniosek papierowy".
+::       Dodatkowo zmiana przypisania dotychczasowo zapisannych załączników akt osobowych z "Wniosku papierowego"
+::       na "Wniosek z załącznikiem" (zmiana nazewnictwa).
+::----------------------------------------------------------------------------------------------------------------------
+_result:=-1;
+_typ_papier:='Wniosek papierowy';
+_typ_zzalacz:=exec('_wn_zzal','portal_walidacja').name;
+_needsUpdating:=1;
+_typ:=exec('FindInSet','#table','SLO_TYP','SYMBOL','ZAL','ZAL',,1,,null);
+{? _typ<>null
+|| _naz_papier:=exec('FindInSet','#table','SLO_NAZ','NAZWA',_typ_papier,_typ,,1,_typ_papier,null);
+   _naz_zzalacz:=exec('FindInSet','#table','SLO_NAZ','NAZWA',_typ_zzalacz,_typ,,1,_typ_zzalacz,null);
+   {? _naz_papier<>null
+   || _errMsg:='Aktualizacja typów załączników zakończona niepowodzeniem.';
+      _continue:=1;
+      do();
+      {? _naz_zzalacz<>null
+      || ZALACZ.cntx_psh();
+         SLO_NAZ.cntx_psh();
+         SLO_NAZ.index('NAZWA'); SLO_NAZ.clear();
+         ZALACZ.index('TYP_ZAL');
+         _firma:=exec('ref_firma','ustawienia');
+         ZALACZ.prefix(_firma,_naz_papier);
+         _howMany:=ZALACZ.size();
+         ZALACZ.prefix(_firma);
+         _loop:=ZALACZ.find_key(_naz_papier);
+         {? _loop & SLO_NAZ.seek(_naz_zzalacz,,1)
+         || _processed:=0;
+            {! _loop
+            |?
+               ZALACZ.TYP_ZAL:=SLO_NAZ.ref();
+               _processed+=ZALACZ.put();
+               _loop:=ZALACZ.find_key(_naz_papier)
+            !};
+            {? _processed<>_howMany || _continue*=0 ?}
+         ?};
+         SLO_NAZ.cntx_pop();
+         {? _continue
+         || _oper_zao:=0;
+            _zaoh:=null;
+            ZAOTS.cntx_psh(); ZAOH.cntx_psh();
+            ZAOTS.index('SLO_NAZ');
+            ZAOTS.prefix(_naz_papier);
+            {? ZAOTS.find_key('Z')
+            || _zaoh:=ZAOTS.ZAOH().ref();
+               _oper_zao:=ZAOTS.del(,1)
+            || _oper_zao:=1
+            ?};
+            {? _oper_zao<1
+            || _continue*=0
+            || {? _zaoh<>null & exec('FindInSet','#table','ZAOTS','SLO_NAZ','Z',_naz_zzalacz,,1,,null)=null()
+                  & ZAOH.seek(_zaoh,,1) & SLO_NAZ.seek(_naz_zzalacz,,1)
+               || ZAOTS.prefix(); ZAOTS.blank();
+                  ZAOTS.ZAOH:=ZAOH.ref();
+                  ZAOTS.SLO_NAZ:=SLO_NAZ.ref();
+                  _continue:=ZAOTS.add()
+               ?};
+               {? _continue
+               || _oper:=exec('FindInSet','#table','SLO_NAZ','NAZWA',
+                     _typ_papier,_typ,"@.SLO_NAZ.del(,1)",1,_typ_papier,~~);
+                  {? type_of(_oper)=type_of(0) & _oper>0
+                  || __UPG.msg('Typy załączników zostały zaktualizowane.');
+                     _result:=1
+                  || _continue*=0
+                  ?}
+               ?}
+            ?};
+            ZAOH.cntx_pop();
+            ZAOTS.cntx_pop()
+         ?};
+         ZALACZ.cntx_pop()
+      || _errMsg+=' ';
+         _errMsg+='Nie udało się odnaleźć typu %1'[_typ_zzalacz];
+         _continue*=0
+      ?};
+      {? ~_continue
+      || undo();
+         __UPG.msg(_errMsg)
+      ?};
+      end()
+   || _needsUpdating*=0
+   ?}
+|| _needsUpdating*=0
+?};
+{? ~_needsUpdating
+|| __UPG.msg('Typy załączników nie wymagały aktualizacji.');
+   _result:=1
+?};
+_result
+
+
+\slo_wn_pap_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [20.42]
+:: OPIS: Aktualizacja typów załączników - usunięcie typu "Wniosek papierowy" - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Usunięcie z typów załączników wniosku papierowego (obowiązuje nowa nazwa: "Wniosek z załącznikiem").'
+
+
+\hash_fill
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [20.42]
+:: OPIS: Wypełnienie pola ZZ_DOKZ.HASH wartościami skrótu załącznika.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+ZZ_DOKZ.trig_off('*','*');
+ZZ_DOKZ.cntx_psh();
+ZZ_DOKZ.prefix();
+{? ZZ_DOKZ.first()
+|| {!
+   |? {? ~+ZZ_DOKZ.HASH
+      || ZZ_DOKZ.HASH:=exec('hash','#blob',ZZ_DOKZ.PLIK);
+         {? ~ZZ_DOKZ.put()
+         || _ret:=-1
+         ?}
+      ?};
+
+      ZZ_DOKZ.next()
+   !}
+?};
+ZZ_DOKZ.cntx_pop();
+ZZ_DOKZ.trig_on('*','*');
+_msg:={? _ret=1
+      || 'Wypełniono pola "Skrót treści załącznika" kartoteki "Załącznik do dokumentu".'@
+      || 'Niektóre pola "Skrót treści załącznika" kartoteki "Załącznik do dokumentu" nie zostały wypełnione.'@
+      ?};
+__UPG.msg(_msg);
+
+_ret
+
+
+\hash_fill_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [20.42]
+:: OPIS: Wypełnienie pola ZZ_DOKZ.HASH wartościami skrótu załącznika - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Wypełnienie pola "Skrót treści załącznika" kartoteki "Załącznik do dokumentu" wartościami skrótu załącznika'
+
+
+\stalesys_ini
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Aktualizacja stałych systemu
+::----------------------------------------------------------------------------------------------------------------------
+exec('init_wer','#stalesys');
+__UPG.msg('Zaktualizowano stałe systemu.');
+1
+
+
+\stalesys_ini_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Aktualizacja stałych systemu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja stałych systemu'
+
+
+\imp_sch_form
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Aktualizacja formuł do obsługi wniosków kadrowych.
+::----------------------------------------------------------------------------------------------------------------------
+exec('imp_sch_form','sch_imp');
+__UPG.msg('Aktualizacja wykonana');
+1
+
+
+\imp_sch_form_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Aktualizacja formuł do obsługi wniosków kadrowych - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja formuł do obsługi wniosków kadrowych'
+
+
+\p
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Uzupełnienie nowych pól w tabeli P (dla wszystkich firm).
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+P.cntx_psh();
+P.index('OSOZATR');
+P.prefix();
+{? P.first()
+|| _por:=exec('lic','#b_domain','POR');
+   _stat:=obj_new('ok','poprawiono','niepoprawiono');
+   {! _lp:=1 .. obj_len(_stat)
+   |! _stat[_lp]:=0
+   !};
+   P.trig_off('*','*');
+   {!
+   |? {? P.PORTAL=''
+      || P.PORTAL:={? _por || P.ZA || 'N' ?};
+         {? P.put()
+         || _stat.poprawiono+=1
+         || _stat.niepoprawiono+=1
+         ?}
+      || _stat.ok+=1
+      ?};
+      P.next()
+   !};
+   P.trig_on('*','*');
+   {? _stat.niepoprawiono
+   || _ret:=-1
+   ?};
+   __UPG.msg('Liczba zapisów poprawnych (niewymagających uzupełnienia): %1' [$_stat.ok]);
+   __UPG.msg('Liczba zapisów, które udało się uzupełnić: %1' [$_stat.poprawiono]);
+   __UPG.msg('Liczba zapisów, których NIE udało się uzupełnić: %1' [$_stat.niepoprawiono])
+
+|| __UPG.msg('Brak pracowników.')
+?};
+P.cntx_pop();
+_ret
+
+
+\p_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Uzupełnienie nowych pól w tabeli P (dla wszystkich firm) - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie nowych pól w tabeli współpracowników (P).'
+
+
+\os_us
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Uzupełnienie nowych pól dla tabeli OS_US
+::----------------------------------------------------------------------------------------------------------------------
+OS_US.cntx_psh();
+OS_US.clear();
+OS_US.for_each("OS_US.put(1)",1);
+OS_US.cntx_pop();
+__UPG.msg('Zakończono uzupełnianie nowych pól dla tabeli urzędów skarbowych osoby.');
+1
+
+
+\os_us_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [20.42]
+:: OPIS: Uzupełnienie nowych pól dla tabeli OS_US
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie nowych pól dla tabeli urzędów skarbowych osoby (OS_US).'
+
+
+\wnurl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła uzupełnianjąca identyfikator wniosku urlopowego.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_nazwa:='Wniosek urlopowy (HR Portal)';
+ETYPY.cntx_psh();
+ETYPY.index('UNIK');
+ETYPY.prefix(exec('add','typ_ob','Obieg wniosków'),_nazwa,);
+{? ETYPY.first()
+|| {? ETYPY.ID_WP=''
+   || ETYPY.trig_off('*','*');
+      ETYPY.ID_WP:='WniosekUrlopowy';
+      {? ETYPY.put()
+      || __UPG.msg('Uzupełnienie identyfikatora wniosku zakończone sukcesem.')
+      || __UPG.msg('Uzupełnienie identyfikatora wniosku nie powiodło się.');
+         _ret:=-1
+      ?};
+      ETYPY.trig_on('*','*')
+   || __UPG.msg('Identyfikator wniosku jest już uzupełniony.')
+   ?}
+|| __UPG.msg('"%1" - brak typu dokumentu w obiegu.')
+?};
+ETYPY.cntx_pop();
+_ret
+
+
+\wnurl_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła uzupełnianjąca identyfikator wniosku urlopowego - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie identyfikatora wniosku urlopowego'
+
+
+\kst_ppor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Wartość początkowa pola XINFO.POR0PPOR.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=-1;
+
+_zest:='XINFO';
+_name:='POR0PPOR';
+KST_MAP.cntx_psh();
+KST_MAP.index('KST_MAP');
+KST_MAP.prefix(_zest,_zest,);
+{? KST_MAP.find_key(_name,_name,)
+|| KST_DEF.cntx_psh();
+   KST_DEF.prefix();
+   KST_MAP.KST_DEF();
+   _put:=0;
+   {? KST_DEF.ZAPIS<>'T'
+   || KST_DEF.ZAPIS:='T';
+      _put+=1
+   ?};
+   {? KST_DEF.HISTORIA<>'N'
+   || KST_DEF.HISTORIA:='N';
+      _put+=1
+   ?};
+   {? KST_DEF.WSPOLNA<>'T'
+   || KST_DEF.WSPOLNA:='T';
+      _put+=1
+   ?};
+   {? ~_put | KST_DEF.put()
+   || KST_WAR.cntx_psh();
+      KST_WAR.index('KST_DEF');
+      KST_WAR.prefix(null(),KST_DEF.ref());
+      {? KST_WAR.first()
+      || __UPG.msg('Parametr %1 w zestawie %2 ma już nadaną wartość (%3).' [_name,_zest,KST_WAR.WARTOSC])
+      || KST_WAR.blank();
+         KST_WAR.KST_DEF:=KST_DEF.ref();
+         KST_WAR.FIRMA:=null();
+         KST_WAR.DATA:=date(0,0,0);
+         KST_WAR.WARTOSC:='\'T\'';
+         {? KST_WAR.add()
+         || _ret:=1;
+            __UPG.msg('Parametrowi %1 w zestawie %2 nadano wartość początkową (%3).' [_name,_zest,'T'])
+         || __UPG.msg('Nadanie wartości początkowej parametrowi %1 w zestawie %2 nie powiodło się.' [_name,_zest])
+         ?}
+      ?};
+      KST_WAR.cntx_pop()
+   ?};
+   KST_DEF.cntx_pop()
+|| __UPG.msg('Brak definicji parametru %1 w zestawie %2.' [_name,_zest])
+?};
+KST_MAP.cntx_pop();
+
+_ret
+
+
+\kst_ppor_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Wartość początkowa pola XINFO.POR0PPOR - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Ustalenie wartości początkowej parametru XINFO.POR0PPOR - "PORTAL - prezentacja nowozatrudnionych".'
+
+:Sign Version 2.0 jowisz:1045 2022/08/24 14:12:43 e309c61cd2a178d452f3750027683dc73633ed25bcadb426ac4988a5f108038383dbf33405935cfa876607159a92dcce3f907c87d50b0bc563fc6860e4a348c2ae483fc59c62b51a18984c4b4d5c6620180512f1cd97800cbd83c966372df59f533961c84c7323b089abc69983a7a64f9edf3b88e5ef0bcb2100f365ddf5e1f9

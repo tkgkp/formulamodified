@@ -1,0 +1,537 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lum_haw_dpha.fml
+:: Utworzony: 06.02.2019
+:: Autor: [WH]
+::======================================================================================================================
+:: Zawartość: Formuły czynności LUM_HAW_DPHA
+::            Redakcja harmonogramu rocznego
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [WH] [19.22]
+:: OPIS: Czynność LUM_HAW_DPHA - formuła główna
+::   WE: _a - [obj_new] - parametry wejsciowe czynności
+::       _b - [obj_new] - parametry wewnętrzne czynności
+::       _c - [obj_new] - parametry wyjściowe czynności
+::       _d - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get);
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+::# properties=SERVICE
+::# permissions=ODDZ
+::# parses=exec('parses','!lum_haw_dpha')
+::# access=exec('access','!lum_haw_dpha')
+::# required HN|HN_SQL
+
+::# kind=WE,   symbol=HN,  type=_HN,  name=Harmonogram umów,     required=N, keyref=T
+{? var_pres('HN',_in)<>type_of(~~) & var_pres('HN',_in)<>type_of(null()) || return() ?};
+{? var_pres('HN',_in)=type_of(~~) || _in.HN:=null() ?};
+::# kind=WE, symbol=HN_SQL, type=STRING, name=Harmonogram umów (SQL ref), required=N, keyref=T
+{? var_pres('HN_SQL',_in)<>type_of(~~) & var_pres('HN_SQL',_in)<>type_of('') || return() ?};
+{? var_pres('HN_SQL',_in)=type_of(~~) || _in.HN_SQL:='' ?};
+
+::# kind=WE,   symbol=ROK,  type=NUMBER,  name=Redagowany rok harmonogramu,     required=N, keyref=N
+{? var_pres('ROK',_in)=type_of(~~) || _in.ROK:=date()~1 ?};
+::# kind=WY, symbol=RESULT, type=STRING, name=Rezultat działania, required=N
+
+_keyRefs:=_mp.getRefs();
+
+:: jest rekord kluczowy HN, to ustawiam odpowiednie HN
+{? var_pres('[1]',_keyRefs)>0 & ref_name(_keyRefs[1])=HN.name()
+|| _kref:=_keyRefs[1];
+   _hn:=exec('FindAndGet','#table',HN,_kref,,,null())
+:: jest parametr wejściowy HN
+|? var_pres('HN',_in)=type_of(null())
+|| _hn:=exec('FindAndGet','#table',HN,_in.HN,,"ref()",null())
+|| _hn:=null()
+?};
+{? _hn=null() & _in.HN_SQL<>''
+|| _hn:=exec('FindAndGet','#table',HN,_in.HN_SQL,,,null())
+?};
+
+_year:=_in.ROK;
+
+_can_continue:=1;
+HARMON.cntx_psh();
+HARMON.index('HN');
+
+_dialog:=1;
+{? _mp.isAutoRun() | _mp.isService()
+|| _dialog:=0
+?};
+{? _mp.isGroup()
+|| _dialog:=2
+?};
+
+exec('__KAL','object');
+
+HN.cntx_psh();
+HN.prefix();
+_what:='';
+{? _can_continue>0 & HN.seek(_hn)
+|| _what:=exec('HN','#to_string')
+|| _can_continue:=0
+?};
+{? _can_continue=0
+||
+   _msg:='Nie znaleziono harmonogramu umów. Prawdopodobnie został usunięty.'@;
+   {? _mp.isService()=0
+   || FUN.emsg(_msg)
+   ?};
+   _mp.error(_msg)
+?};
+
+{? _can_continue>0
+|| _can_continue:=exec('set_cal','umowy_harm',HN.KAL_NAZW,_dialog,_year);
+
+   {? _can_continue=0 & _mp.isService()
+   ||
+::    W serwisie problem z kalendarzem, pcham proces dalej i zwracam do RESULT błąd
+      _mp.done()
+   ?}
+?};
+
+{? _can_continue>0
+||
+   HARMON.prefix(HN.ODDZ,HN.KOD,_year);
+
+   {? ~HARMON.first()
+   || exec('new_harm','umowy_harm',_year,HN.KAL_NAZW)
+   ?};
+
+   {? _mp.pathTodo() & _mp.isService()=0
+   || exec('select_single','umowy_harm',,_year,0)
+   ?};
+   {? _mp.akcja()='GENERUJ' | _mp.isService() | _mp.isAutoRun()
+   ||
+      _gen_diag:=_dialog;
+      {? _mp.isAutoRun()
+      || _gen_diag:=1
+      ?};
+      _can_continue:=exec('generate','umowy_harm',_gen_diag,HN.HOP_MODE,HN.HOP_DIR,_year)
+   ?};
+
+   {? _can_continue>0 & (_mp.akcja()='ZAKOŃCZ' | _mp.isService())
+   ||
+      {? _dialog=1
+      || _can_continue:=FUN.ask('Zakończyć redagowanie harmonogramu: %1 w roku: %2?'@[_what,$_year])
+      ?};
+      {? _can_continue>0 & HARMON.first()
+      || {!
+         |?
+            HARMON.STAT_REJ:='Z';
+            _can_continue:=HARMON.put();
+            HARMON.next() & _can_continue>0
+         !}
+      ?}
+   ?};
+   {? _can_continue>0 & _mp.akcja()='WYCZYŚĆ'
+   || _can_continue:=exec('clean','umowy_harm',,_year,_dialog)
+   ?};
+
+:: Obsługa done
+   {? exec('is_ended','umowy_harm',,_year)>0
+   ||
+      _mp.done()
+   ?}
+?};
+
+{? _can_continue>0
+|| _out.RESULT:='OK'
+|| _out.RESULT:='BŁĄD'
+?};
+_mp.save(,_out);
+
+{? type_of(_context)>100 & var_pres('OK',_context)>0
+|| _context.OK:=_can_continue
+?};
+
+HARMON.cntx_pop();
+HN.cntx_pop();
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [WH] [19.22]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+_in:=_mp.load(exec('kind_in','#b_port'));
+{? var_pres('HN',_in)=type_of(~~) || _in.HN:=null() ?};
+{? var_pres('HN_SQL',_in)=type_of(~~) || _in.HN_SQL:='' ?};
+
+_hn:=null();
+:: jest rekord kluczowy HN, to ustawiam odpowiednie HN
+{? var_pres('[1]',_keyRefs)>0 & ref_name(_keyRefs[1])=HN.name()
+|| _kref:=_keyRefs[1];
+   _hn:=exec('FindAndGet','#table',HN,_kref,,,null())
+?};
+
+{? _hn=null() & _in.HN<>null()
+|| _hn:=_in.HN
+?};
+{? _hn=null() & _in.HN_SQL<>''
+|| _hn:=exec('FindAndGet','#table',HN,_in.HN_SQL,,,null())
+?};
+_rok:=date()~1;
+{? var_pres('ROK',_in)>0
+|| _rok:=_in.ROK
+?};
+
+{? _hn<>null()
+|| HN.cntx_psh(); HN.prefix();
+   {? HN.seek(_hn)
+   || _what:=exec('HN','#to_string');
+      _desc:='Zredaguj harmonogram umów: %1 w roku: %2'@@[_what,$_rok]
+   ?};
+   HN.cntx_pop()
+|| _desc:='Zredaguj harmonogram umów'@@
+?};
+_desc
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+{? var_pres('HN',_in)=type_of(~~) || _in.HN:=null() ?};
+{? var_pres('HN_SQL',_in)=type_of(~~) || _in.HN_SQL:='' ?};
+
+_hn:=null();
+{? _in.HN<>null()
+|| _hn:=_in.HN
+?};
+{? _hn=null() & _in.HN_SQL<>''
+|| _hn:=exec('FindAndGet','#table',HN,_in.HN_SQL,,,null())
+?};
+_result:=0;
+
+{? _hn<>null()
+|| HN.cntx_psh();
+   HN.prefix();
+   {? HN.seek(_hn)
+   || __PARSES.setVal('OddzialLogProd',HN.ODDZ);
+      _result:=1
+   ?};
+   HN.cntx_pop()
+:: Nic nie ustawiamy, ale zwracamy 1, w formule przy braku parametrów wejściowych zostanie zgłoszony błąd
+|| _result:=1
+?};
+_result
+
+
+\access
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Formuła ograniczajaca uprawnienia do czynności LUM_HAR_DPHA
+::       Sprawdza czy dany użytkownik może redagować harmonogram w danym oddziale
+::       startowego danego obiektu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+
+{? var_pres('HN',_in)=type_of(~~) || _in.HN:=null() ?};
+{? var_pres('HN_SQL',_in)=type_of(~~) || _in.HN_SQL:='' ?};
+
+_hn:=null();
+{? _in.HN<>null()
+|| _hn:=_in.HN
+?};
+{? _hn=null() & _in.HN_SQL<>''
+|| _hn:=exec('FindAndGet','#table',HN,_in.HN_SQL,,,null())
+?};
+
+_result:=0;
+{? _hn<>null()
+|| HN.cntx_psh();
+   HN.prefix();
+   {? HN.seek(_hn)
+   || _refo:={? HN.ODDZ<>'' || exec('FindInSet','#table','ODDZ','KOD2',HN.ODDZ,HN.ODDZ) || null() ?};
+      {? _refo<>null()
+      ||
+         _result:=exec('usr_upr','b_perm','ODDZ',_refo,_user)
+      ||
+::       Brak oddziału
+         _result:=1
+      ?}
+   ?};
+   HN.cntx_pop()
+:: Jeżeli nie ma parametru to zawsze zwracamy 1 żeby się tu nie powiesiło
+|| _result:=1
+?};
+_result
+
+
+\action_generate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Redakcja harmonogramu - akcja 'Generuj'
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env_harm;
+
+_hn:=HN.ref();
+_what:=exec('HN','#to_string');
+_locked:=exec('blk_lock','#table','HN',_hn,,1,{? VAR.GRUPA='T' || '' || 'Harmonogram %1 jest redagowany'@[_what] ?});
+{? _locked
+|| {? _env.MP_RUN>0
+   ||
+      _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='LUM_HAW_DPHA';
+      _args.UIDREF:=HN.uidref();
+      _args.AKCJA:='GENERUJ';
+      _args.GRUPA:=VAR.GRUPA;
+      _args.CONTEXT:=obj_new('HN','OK','env_harm');
+      _args.CONTEXT.OK:=0;
+      _args.CONTEXT.HN:=HN.ref();
+      _args.CONTEXT.env_harm:=_env;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'HN',HN.ref());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'HN_SQL',$HN.ref());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ROK',_env.AR);
+      exec('mp_run','#b__box',_args);
+
+      {? _args.CONTEXT.OK>0 & VAR.GRUPA<>'T'
+      || _env.RELOAD:=1;
+         grp_disp(HN,_env.WIN_HN,1)
+      ?}
+   || _can_continue:=exec('generate','umowy_harm',1,HN.HOP_MODE,HN.HOP_DIR,_env.AR);
+      {? _can_continue>0 & VAR.GRUPA<>'T'
+      || _env.RELOAD:=1;
+         grp_disp(HN,_env.WIN_HN,1)
+      ?}
+   ?};
+   exec('blk_unlock','#table','HN',_hn)
+
+|| {? VAR.GRUPA='T'
+   || KOMM.add('Nie można generować harmonogramu %1 — jest redagowany.'@[_what])
+   ?}
+?};
+~~
+
+
+\action_generate_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Rejestracja harmonogramu - akcja 'Generuj' (przed grupą rekordów)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env_harm;
+
+_result:=0;
+_ilosc:=HN.sel_size();
+
+_ask:=FUN.ask(
+      'Ilość zaznaczonych harmonogramów: %1.'@[$_ilosc]+'\n\n'+
+      'Czy generować je wszystkie w roku: %1?'@[$_env.AR]);
+{? _ask>0
+||
+   sel_nchk();
+   VAR.GRUPA:='T';
+   KOMM.init(255,,'Generowanie harmonogramów umów'@);
+   _result:=1
+?};
+_result
+
+
+\action_generate_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Rejestracja harmonogramu - akcja 'Generuj' (po grupie rekordów)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env_harm;
+
+VAR.GRUPA:='N';
+KOMM.select();
+_env.RELOAD:=1;
+grp_disp(HN,_env.WIN_HN,1);
+~~
+
+
+
+\action_clear
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Redakcja harmonogramu - akcja 'Wycofaj'
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env_harm;
+
+_hn:=HN.ref();
+_what:=exec('HN','#to_string');
+_locked:=exec('blk_lock','#table','HN',_hn,,1,{? VAR.GRUPA='T' || '' || 'Harmonogram %1 jest redagowany'@[_what] ?});
+{? _locked
+||
+   {? _env.MP_RUN>0
+   ||
+      _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='LUM_HAW_DPHA';
+      _args.UIDREF:=HN.uidref();
+      _args.AKCJA:='WYCZYŚĆ';
+      _args.GRUPA:=VAR.GRUPA;
+      _args.CONTEXT:=obj_new('HN','OK','env_harm');
+      _args.CONTEXT.OK:=0;
+      _args.CONTEXT.HN:=HN.ref();
+      _args.CONTEXT.env_harm:=_env;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'HN',HN.ref());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'HN_SQL',$HN.ref());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ROK',_env.AR);
+
+      exec('mp_run','#b__box',_args);
+
+      {? _args.CONTEXT.OK>0 & VAR.GRUPA<>'T'
+      || _env.RELOAD:=1;
+         _env.RFR_ROK:=null();
+         _env.RFR_CAL:=null();
+::         _env.CAL_LOADED_ROK:=0;
+::         _env.CAL_LOADED_CAL:=0;
+         grp_disp(HN,_env.WIN_HN,1)
+      ?}
+   || _can_continue:=exec('clean','umowy_harm',,_env.AR,1);
+      {? _can_continue>0
+      || _env.RELOAD:=1;
+         _env.RFR_ROK:=null();
+         _env.RFR_CAL:=null();
+::         _env.CAL_LOADED_ROK:=0;
+::         _env.CAL_LOADED_CAL:=0;
+         grp_disp(HN,_env.WIN_HN,1)
+      ?}
+   ?};
+   exec('blk_unlock','#table','HN',_hn)
+
+|| {? VAR.GRUPA='T'
+   || KOMM.add('Nie można generować harmonogramu %1 — jest redagowany.'@[_what])
+   ?}
+?};
+~~
+
+
+\action_zakoncz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Redakcja harmonogramu - akcja 'Zakończ'
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env_harm;
+
+HN.cntx_psh();
+_hn:=HN.ref();
+_what:=exec('HN','#to_string');
+_locked:=exec('blk_lock','#table','HN',_hn,,1,{? VAR.GRUPA='T' || '' || 'Harmonogram %1 jest redagowany'@[_what] ?});
+{? _locked
+|| {? _env.MP_RUN>0
+   ||
+      _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='LUM_HAW_DPHA';
+      _args.UIDREF:=HN.uidref();
+      _args.AKCJA:='ZAKOŃCZ';
+      _args.GRUPA:=VAR.GRUPA;
+      _args.CONTEXT:=obj_new('HN','OK','env_harm');
+      _args.CONTEXT.OK:=0;
+      _args.CONTEXT.HN:=HN.ref();
+      _args.CONTEXT.env_harm:=_env;
+      _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'HN',HN.ref());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'HN_SQL',$HN.ref());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ROK',_env.AR);
+
+      exec('mp_run','#b__box',_args);
+
+      {? _args.CONTEXT.OK>0 & VAR.GRUPA<>'T'
+      || grp_disp(HN,_env.WIN_HN,1)
+      ?}
+   ||
+      _can_continue:=FUN.ask('Zakończyć redagowanie harmonogramu: %1 w roku: %2?'@[_what,$_env.AR]);
+      {? _can_continue>0
+      ||
+         HARMON.cntx_psh();
+         HARMON.prefix(HN.ODDZ,HN.KOD,_env.AR);
+         {? HARMON.first()
+         || {!
+            |? HARMON.STAT_REJ:='Z';
+               _can_continue:=HARMON.put();
+               HARMON.next() & _can_continue>0
+            !}
+         ?};
+         HARMON.cntx_pop()
+      ?};
+      {? _can_continue>0
+      || sel_exit()
+      ?}
+   ?};
+   exec('blk_unlock','#table','HN',_hn)
+
+|| {? VAR.GRUPA='T'
+   || KOMM.add('Nie można generować harmonogramu %1 — jest redagowany.'@[_what])
+   ?}
+?};
+HN.cntx_pop();
+~~
+
+
+\action_zakoncz_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Rejestracja harmonogramu - akcja 'Usuń' (przed grupą rekordów)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env_harm;
+
+_result:=0;
+_ilosc:=HN.sel_size();
+
+_ask:=FUN.ask(
+      'Ilość zaznaczonych harmonogramów: %1.'@[$_ilosc]+'\n\n'+
+      'Czy zakończyć je wszystkie w roku: %1?'@[$_env.AR]);
+{? _ask>0
+||
+   sel_nchk();
+   VAR.GRUPA:='T';
+   KOMM.init(255,,'Usuwanie harmonogramów umów'@);
+   _result:=1
+?};
+_result
+
+
+\action_zakoncz_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Rejestracja harmonogramu - akcja 'Usuń' (po grupie rekordów)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env_harm;
+
+VAR.GRUPA:='N';
+KOMM.select();
+grp_disp(HN,_env.WIN_HN,1);
+~~
+
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:22:50 b8d7cf57d2afbf85ca745bd942d29b9cfea41640655e600624a8f8e7a5507e61d712bd496617e8d47d155cec16944d9e34cc0a18698dbeab18e3fd5c32d6103965a7cb9677e23eb52bdc0526c5d7805eceebbe9797ea2a54e0bf38ebdb52ae773746fbc1d590a00242ecf6e9643460139e504c0933f80cf30272979919c3f21b

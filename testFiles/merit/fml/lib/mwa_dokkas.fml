@@ -1,0 +1,755 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: mwa_doksprz.fml
+:: Utworzony: 16.12.2019
+:: Autor: PD
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi dokumentów sprzedaży przez MacroWebAPI
+::======================================================================================================================
+
+
+\serialize_dokkas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Serializuje dokument/dokumenty kasowe
+::       Kontekst wywołania: ustawiona dziedzina lub bufor tabeli DOKUMENT
+::   WE: _a - buffer - czy wywołanie dla bufora tabeli (1), czy dla całej dziedziny (0)
+::       _b - JSON z błędami/informacjami dodatkowymi
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=params_get();
+_lib:=exec('lib','__mwa');
+::_response:=_lib.Response.open('c:\\!\\response.xml');
+_response:=_lib.Response.open();
+_lib.Response.begin(_response);
+
+:: status:
+_response.fwrite('\n<%1:status>OK</%1:status>\n'[_args.OUTPREF]);
+
+:: data: z tabeli dokumentów i pozycji
+_lib.Response.getTableType.asString(_response,'data','DOKUMENT',,_a);
+
+:: result: z JSON do XML
+{? var_pres('_b')=type_of('') || _json:=_b || _json:='{}' ?};
+json_tparse(_json).json_tconvert(_response,,,,'result',_args.OUTPREF,,'noheader=1,nodata=1,indentation=1');
+
+_lib.Response.end(_response);
+_response
+
+
+\pozycje
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Serializuje pozycje dokumentu magazynowego (wołane dla elementu DK w typie ND)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_lib:=exec('lib','__mwa');
+POZDOK.cntx_psh();
+POZDOK.index('DOKUMENT');
+POZDOK.prefix(DOKUMENT.ref());
+_lib.Response.getTableType.asString(params_get().FILE,_a,'POZDOK');
+POZDOK.cntx_pop();
+return('')
+
+
+\ID_sym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Pobiera zewnętrzny symbol dokumentu przechowywany w dodatkowych strukturach
+::----------------------------------------------------------------------------------------------------------------------
+_id_sym:='';
+
+_id_tab:=exec('get_id','#sync_id','MWA_DOKUMENT_SYM',DOKUMENT.uidref());
+
+{? type_of(_id_tab)>0
+|| {? _id_tab.first()
+   || _id_sym:=_id_tab.ID
+   ?}
+?};
+
+xml_value(_id_sym)
+
+
+\read_dokkas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Odczytuje dokumenty sprzedaży - implementacja metody 'List'
+::       Odczytywane są dokumenty z aktualnego okresu (roku) wg bieżącej daty
+::----------------------------------------------------------------------------------------------------------------------
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+_par:=params_get();
+
+_stankas:=#exec('get_option','mwapi',_par,'Stankas').value;
+_stankas_r:=null();
+
+{? ~#(_stankas_r:=exec('FindInSet','#table','STANKAS','KOD',_stankas,,,0,,null))
+||
+   _wsenv.add_error('Wymagane przekazanie poprawnego kodu stanowiska kasowego.'@)
+|? exec('FindInSet','#table','KUSERUPR','KU_ST',_stankas_r,OPERATOR.USER)=null()
+||
+   _wsenv.add_error('Brak uprawnień do stanowiska kasowego.'@)
+?};
+
+_rok:=#exec('get_option','mwapi',_par,'Rok').value;
+{? _rok=0
+||
+   _wsenv.add_error('Niepoprawnie przekazany parametr: Rok.'@)
+?};
+{? _wsenv.has_errors()||mwa_status(400)?};
+
+{? exec('authorized','mwa_dokkas',_par) & ~_wsenv.has_errors()
+||
+   OKRO_F.cntx_psh();
+   OKRO_F.index('KON');
+   OKRO_F.prefix(REF.FIRMA);
+   {? OKRO_F.find_ge(date(_rok,01,01))
+   ||
+      {? (OKRO_F.POCZ~1)=_rok
+      ||
+         _okro:=OKRO_F.ref()
+      ||
+         _okro:=null()
+      ?}
+   ?};
+   OKRO_F.cntx_pop();
+
+   _set_stk:=__PARSES.setVal('StKasowe',_stankas_r);
+
+   _args:=__PARSES.args('OkresRok');
+   _args.OBSZAR:='KAS';
+   _args.OKRO_F:=_okro;
+   _set_okres:=__PARSES.setVal('OkresRok',_args);
+   __PARSES.setEnv('KAS_DOK');
+   obj_del(_args);
+
+   {? _set_okres & _set_stk
+   || DOKUMENT.cntx_psh();
+      DOKUMENT.index('S1');
+      DOKUMENT.prefix();
+      _resp:=_wsenv.to_json();
+      _result:=params_exec('serialize_dokkas','mwa_dokkas',0,_resp);
+      DOKUMENT.cntx_pop()
+   || _msg:='Nie udało się ustawić parametrów pracy.'@;
+      mwa_status(400,_msg);
+      _wsenv.add_error(_msg);
+      _resp:=_wsenv.to_json();
+      _result:=exec('serialize_res','mwapi',_par,_resp)
+   ?}
+||
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_result
+
+
+\read_dokkas_uidref
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Odczytuje dokument kasowy - implementacja metody 'Get'
+::       Odczytywane jest dokument wg parametru 'uidref'
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_uidref:=exec('get_option','mwapi',_par,'uidref').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_uidref<>48 | type_of(ref_tab(_uidref))<0
+|| _msg:='Niepoprawna wartość parametru \'%1\'.'@['uidref'];
+   mwa_status(400,_msg);
+   _wsenv.add_error(_msg);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+
+|? exec('authorized','mwa_dokkas',_par)
+||
+:: Ustalenie kontekstu rekordu
+   DOKUMENT.cntx_psh();
+   DOKUMENT.prefix();
+: Dla potrzeb obługi błedów sprawdzam czy dany rekord istnieje
+   {? ~DOKUMENT.seek(_uidref, ref_name(_uidref))
+   ||
+      _msg:='Nie odnaleziono rekordu o identyfikatorze %1.'@[_uidref];
+      mwa_status(204,_msg);
+      _wsenv.add_error(_msg)
+   ||
+      _raport:=exec('FindAndGet','#table',DOKUMENT,_uidref,,"DOKUMENT.RAPORT",'');
+      _data:=exec('FindAndGet','#table',RAPORT,_raport,,"RAPORT.DATA_OD",'');
+      _r_msk:=ref_name(_raport);
+      _stankas:=#(3-_r_msk-2);
+      {? ~(#(_stankas_r:=exec('FindInSet','#table','STANKAS','KOD',_stankas,,,0,,null))
+      & #exec('FindInSet','#table','KUSERUPR','KU_ST',_stankas_r,OPERATOR.USER))
+      ||
+         _msg:='Brak uprawnień do stanowiska kasowego.'@;
+         mwa_status(400,_msg);
+         _wsenv.add_error(_msg)
+      ?}
+   ?};
+
+   {? ~_wsenv.has_errors()
+   ||
+      OKRO_F.cntx_psh();
+      OKRO_F.index('KON');
+      OKRO_F.prefix(REF.FIRMA);
+      {? OKRO_F.find_ge(_data)
+      ||
+         _okro:=OKRO_F.ref()
+      ?};
+      OKRO_F.cntx_pop();
+
+      _set_stk:=__PARSES.setVal('StKasowe',_stankas_r);
+
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='KAS';
+      _args.OKRO_F:=_okro;
+      _set_okres:=__PARSES.setVal('OkresRok',_args);
+      __PARSES.setEnv('KAS_DOK');
+      obj_del(_args);
+
+      {? _set_okres & _set_stk
+      || DOKUMENT.cntx_psh();
+         DOKUMENT.prefix();
+         {? DOKUMENT.seek(_uidref)
+         || _resp:=_wsenv.to_json();
+            _result:=params_exec('serialize_dokkas','mwa_dokkas',1,_resp)
+         || _msg:='Nie odnaleziono rekordu o identyfikatorze %1.'@[_uidref];
+            mwa_status(204,_msg);
+            _wsenv.add_error(_msg);
+            _resp:=_wsenv.to_json();
+            _result:=exec('serialize_res','mwapi',_par,_resp)
+         ?};
+         DOKUMENT.cntx_pop()
+      || _msg:='Nie udało się ustawić parametrów pracy.'@;
+         mwa_status(400,_msg);
+         _wsenv.add_error(_msg);
+         _resp:=_wsenv.to_json();
+         _result:=exec('serialize_res','mwapi',_par,_resp)
+      ?}
+   || _resp:=_wsenv.to_json();
+      _result:=exec('serialize_res','mwapi',_par,_resp)
+   ?};
+   DOKUMENT.cntx_pop()
+?};
+
+_result
+
+
+\create_dokkas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Dodaje dokument kasowy - implementacja metody 'Add'
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+:: Ustala zawartość pól nagłówka dokumentu i pozycji (zapis do tablic buforowych)
+_buffers:=exec('set_buffers','mwa_dokkas',_par.DATA,_par.METHOD);
+
+_stankas:=#exec('get_option','mwapi',_par,'Stankas').value;
+_stankas_r:=null();
+
+{? ~#(_stankas_r:=exec('FindInSet','#table','STANKAS','KOD',_stankas,,,0,,null))
+||
+   _wsenv.add_error('Wymagane przekazanie poprawnego kodu stanowiska kasowego.'@)
+|? exec('FindInSet','#table','KUSERUPR','KU_ST',_stankas_r,OPERATOR.USER)=null()
+||
+   _wsenv.add_error('Brak uprawnień do stanowiska kasowego.'@)
+|? exec('FindInSet','#table','STANKAS','KOD',_stankas,,"STANKAS.WALUTA().SYM",0,,'0')<>'PLN'
+||
+   _wsenv.add_error('Obsługa tylko stanowisk z walutą PLN.'@)
+?};
+
+:: Uzupełnia pola w tablicy buforowej i podstawowe zabezpieczenia
+exec('update_buffers','mwa_dokkas',_buffers, _stankas_r);
+
+{? ~_wsenv.has_errors()
+||
+   {? exec('create_chk','mwa_dokkas',_buffers)
+   ||
+::    parametry pracy dla czynności
+      OKRO_F.cntx_psh();
+      OKRO_F.index('KON');
+      OKRO_F.prefix(REF.FIRMA);
+      {? OKRO_F.find_ge(_buffers.DOKUMENT.DATA)
+      ||
+         _okro:=OKRO_F.ref()
+      ||
+         _wsenv.add_error('Brak okresu obrachunkowego.'@)
+      ?};
+      OKRO_F.cntx_pop();
+
+      _set_stk:=0;
+      _set_okres:=0;
+
+      {? ~_wsenv.has_errors()
+      ||
+         _set_stk:=__PARSES.setVal('StKasowe',_stankas_r);
+
+         _args:=__PARSES.args('OkresRok');
+         _args.OBSZAR:='KAS';
+         _args.OKRO_F:=_okro;
+         _set_okres:=__PARSES.setVal('OkresRok',_args);
+         __PARSES.setEnv('KAS_DOK');
+         obj_del(_args);
+
+:Ustawiamy raport zgodny z parametrami pracy i sprawdzamy
+         RAPORT.cntx_psh();
+         RAPORT.index('NUMER');
+         RAPORT.prefix(#_buffers.DOKUMENT.Raport_NUM_RAP);
+         {? RAPORT.first()
+         ||
+            _buffers.DOKUMENT.RAPORT:=RAPORT.ref();
+            {? RAPORT.STATUS='zamknięty'
+            ||
+               _wsenv.add_error('Raport został już zamknięty.'@)
+            |? RAPORT.DATA_OD>_buffers.DOKUMENT.DATA
+            | RAPORT.DATA_DO<_buffers.DOKUMENT.DATA
+            ||
+               _wsenv.add_error('Data dokumentu niezgodna z zakresem raportu.'@)
+            ?}
+         ||
+            _wsenv.add_error('Nie odnaleziono raportu.'@)
+         ?};
+         RAPORT.cntx_pop()
+      ?};
+
+      {? _set_okres & _set_stk & ~_wsenv.has_errors()
+      ||
+         DOKUMENT.cntx_psh();
+         DOKUMENT.prefix();
+::       uruchomienie czynności, czynność jest kończona
+         _args:=exec('mp_run_a','#b__box');
+         _args.ACT_UID:='KAS_DOK_DDOK';
+         _args.AKCJA:='DołączMWA';
+         _args.PROC_START:='T';
+         _args.QUIET:='T';
+         _context:=obj_new('BUFFERS'); _context.BUFFERS:=_buffers;
+         _args.CONTEXT:=_context;
+         exec('mp_run','#b__box',_args);
+::    uzupełnienie identyfikatorów "portalowych"
+         {? _wsenv.IDADD<>''
+         || DOKUMENT.index('IDADD');
+            DOKUMENT.prefix(_wsenv.IDADD);
+            {? DOKUMENT.first()
+            ||
+               exec('add_id','#sync_id','MWA_DOKUMENT_SYM',DOKUMENT.uidref(),_buffers.DOKUMENT.ID_sym)
+            ?}
+         ?};
+         DOKUMENT.cntx_pop();
+         ~~
+      ||
+         _wsenv.add_error('Nie udało się ustawić parametrów pracy.')
+      ?}
+   ?}
+?};
+
+{? ~_wsenv.has_errors() & _wsenv.IDADD<>''
+||
+   DOKUMENT.index('IDADD');
+   DOKUMENT.prefix(_wsenv.IDADD);
+   mwa_status(201);
+   _resp:=_wsenv.to_json();
+   _result:=params_exec('serialize_dokkas','mwa_dokkas',0,_resp)
+|| mwa_status(400);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_result
+
+
+\delete_dokkas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Usuwa dokument magazynowy - implementacja metody 'Delete'
+::       Usuwany jest dokument wg parametru 'uidref'
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_uidref:=exec('get_option','mwapi',_par,'uidref').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_uidref<>48 | type_of(ref_tab(_uidref))<0
+||
+   _msg:='Niepoprawna wartość parametru \'%1\'.'@['uidref'];
+   mwa_status(400,_msg);
+   _wsenv.add_error(_msg)
+|? exec('FindAndGet','#table',DOKUMENT,_uidref,,"ref()",null())=null()
+||
+   _msg:='Nie odnaleziono rekordu o identyfikatorze %1.'@[_uidref];
+   mwa_status(204,_msg);
+   _wsenv.add_error(_msg)
+||
+:: Ustalenie kontekstu rekordu
+   _raport:=exec('FindAndGet','#table',DOKUMENT,_uidref,,"DOKUMENT.RAPORT",'');
+   _data:=exec('FindAndGet','#table',RAPORT,_raport,,"RAPORT.DATA_OD",'');
+   _r_msk:=ref_name(_raport);
+   _stankas:=#(3-_r_msk-2);
+
+   {? #(_stankas_r:=exec('FindInSet','#table','STANKAS','KOD',_stankas,,,0,,null))
+   & #exec('FindInSet','#table','KUSERUPR','KU_ST',_stankas_r,OPERATOR.USER)
+   & type_of(_data)=4
+
+   ||
+      OKRO_F.cntx_psh();
+      OKRO_F.index('KON');
+      OKRO_F.prefix(REF.FIRMA);
+      {? OKRO_F.find_ge(_data)
+      ||
+         _okro:=OKRO_F.ref()
+      ?};
+      OKRO_F.cntx_pop();
+
+      _set_stk:=__PARSES.setVal('StKasowe',_stankas_r);
+
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='KAS';
+      _args.OKRO_F:=_okro;
+      _set_okres:=__PARSES.setVal('OkresRok',_args);
+      __PARSES.setEnv('KAS_DOK');
+      obj_del(_args);
+
+      {? _set_okres & _set_stk
+      ||
+         DOKUMENT.cntx_psh();
+         DOKUMENT.prefix();
+
+         {? DOKUMENT.seek(_uidref)
+         ||
+::       uruchomienie czynności, czynność jest kończona
+            _args:=exec('mp_run_a','#b__box');
+            _args.ACT_UID:='KAS_DOK_DDOK';
+            _args.AKCJA:='UsuńMWA';
+            _args.PROC_START:='N';
+            _args.QUIET:='T';
+            _args.UIDREF:=DOKUMENT.uidref();
+            _args.CONTEXT:=obj_new('RESULT'); _args.CONTEXT.RESULT:=0;
+            exec('mp_run','#b__box',_args);
+            {? _args.CONTEXT.RESULT=0
+            ||
+               _msg:='Nie usunięto dokumentu.'@;
+               mwa_status(400,_msg);
+               _wsenv.add_error(_msg)
+            ?}
+
+         ||
+            _msg:='Nie odnaleziono rekordu o identyfikatorze %1.'@[_uidref];
+            mwa_status(204,_msg);
+            _wsenv.add_error(_msg)
+         ?};
+         DOKUMENT.cntx_pop()
+      ||
+         _msg:='Nie udało się ustawić parametrów pracy.'@;
+         mwa_status(400,_msg);
+         _wsenv.add_error(_msg)
+      ?}
+   ?}
+?};
+
+_resp:=_wsenv.to_json();
+_result:=exec('serialize_res','mwapi',_par,_resp,~_wsenv.has_errors());
+
+_result
+
+
+\set_buffers
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Ustala zawartość bufora nagłówka i tablicy buforów pozycji zamówienia (funkcja dedykowana)
+::   WE: _a - [FILE] lub [TEXT] zawiera analizowany XML
+::       _b - request method
+::   WY: obj_new('DOKUMENT','POZDOK') - bufor nagłówka i tablica buforów pozycji
+::----------------------------------------------------------------------------------------------------------------------
+_xml:=_a;
+_method:=_b;
+_buffers:=obj_new('DOKUMENT','POZDOK');
+_buffers.DOKUMENT:=exec('DOKUMENT','buffer1',"'Raport_NUM_RAP','Oper_KOD','ID_sym'");
+_buffers.DOKUMENT.Raport_NUM_RAP:=_buffers.DOKUMENT.Oper_KOD:=_buffers.DOKUMENT.ID_sym:=~~;
+_tab:=xml_tparse(_xml);
+
+{? _tab.find_tab(,'NAME',,'=',_method+'Request')
+||
+:: Pętla po zawartości parametru 'Dokkas'
+   {? _tab.find_tab(,'NAME',,'=','Dokkas')
+   || _node:=_tab.ref();
+      _tab.prefix(_node);
+      _size:=_tab.size();
+
+      {? _tab.first()
+      || {!
+         |?
+::          Pola tabeli DOKUMENT (nagłówek dokumentu)
+            {? _tab.NAME<>'POZDOK'
+            || _size-=1;
+               exec('set_field','mwapi',_tab,DOKUMENT,_buffers.DOKUMENT)
+            ?};
+            _tab.next()
+         !}
+      ?};
+
+::    Pozycje
+      _buffers.POZDOK:=obj_new(_size); _it:=0;
+      _tab.prefix(_node);
+      {? _tab.first()
+      || {!
+         |? {? _tab.NAME='POZDOK'
+            || _it+=1;
+               _buffers.POZDOK[_it]:=exec('POZDOK','buffer1',"'Pozoper_KOD','Rej_KOD','Dok_rej_NAZ','Rvat_SYM'");
+               _buffers.POZDOK[_it].Pozoper_KOD:=_buffers.POZDOK[_it].Rej_KOD:=_buffers.POZDOK[_it].Dok_rej_NAZ:=
+               _buffers.POZDOK[_it].Rvat_SYM:=~~;
+               _tab.cntx_psh();
+               _tab.prefix(_tab.ref());
+               {? _tab.first()
+               || {!
+                  |?
+::                   Pola tabeli POZDOK (pozycja dokumentu)
+                     exec('set_field','mwapi',_tab,POZDOK,_buffers.POZDOK[_it]);
+                     _tab.next()
+                  !}
+               ?};
+               _tab.cntx_pop()
+            ?};
+            _tab.next()
+         !}
+      ?}
+   ?}
+?};
+_buffers
+
+
+\update_buffers
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Uzupełnia pola w tablicy buforowej
+::   WE: _a - _buffers
+::       _c - Oddz
+::----------------------------------------------------------------------------------------------------------------------
+_buffers:=_a;
+exec('czytaj','#stalesys',,INFO);
+exec('czytaj','#stalesys',,XINFO,'SLWYDZIA','SLP','SLJEZYK','SLWAL');
+
+_wsenv:=exec('wsenv','#mwapi');
+
+:: Uzupełnienie danych w tablicy buforowej - nagłówek
+{? type_of(_buffers.DOKUMENT.Raport_NUM_RAP)=0
+||
+   _wsenv.add_error('Brak przekazanego numeru raportu.'@)
+?};
+
+{? type_of(_buffers.DOKUMENT.Oper_KOD)=0
+||
+   _wsenv.add_error('Brak przekazanego kodu numeru operacji.'@)
+||
+   _buffers.DOKUMENT.OPER:=exec('FindInSet','#table','OPER','KOD',_buffers.DOKUMENT.Oper_KOD,,,1,,);
+   {? type_of(_buffers.DOKUMENT.OPER)<>7
+   ||
+      _wsenv.add_error('Nieprawidłowy kod operacji.'@)
+   ?}
+?};
+
+{? type_of(_buffers.DOKUMENT.DATA)<>4 | (type_of(_buffers.DOKUMENT.DATA)=4 & _buffers.DOKUMENT.DATA=date(0,0,0))
+||
+   _buffers.DOKUMENT.DATA:=date()
+?};
+
+:: --- Komunikaty kontrolne - można włączyć do debugowania
+::c
+:_wsenv.add_info($_buffers.FAKS.TZ);
+:_wsenv.add_info($type_of(_buffers.FAKS.PL));
+::_wsenv.add_info('Mag_SYM:'+_buffers.ND.Mag_SYM);
+::_wsenv.add_info('MAG:'+$_buffers.ND.MAG);
+::_wsenv.add_info('D:'+$_buffers.ND.D);
+::_wsenv.add_info('Kh_KOD:'+_buffers.ND.Kh_KOD);
+::_wsenv.add_info('KH:'+$_buffers.ND.KH);
+::_wsenv.add_info('AR:'+$_buffers.ND.AR);
+::_wsenv.add_info('AM:'+$_buffers.ND.AM);
+
+{? ~_wsenv.has_errors()
+||
+:: Uzupełnienie pól w tablicy buforowej - pozycje
+   {! _it:=1.. obj_len(_buffers.POZDOK)
+   |!
+      {? type_of(_buffers.POZDOK[_it].Pozoper_KOD)=0
+      ||
+         _wsenv.add_error('Brak przekazanego kodu transakcji.'@)
+      ||
+         _buffers.POZDOK[_it].POZOPER:=
+         exec('FindInSet','#table','POZOPER','OPER',_buffers.POZDOK[_it].Pozoper_KOD,_buffers.DOKUMENT.OPER,,1,,);
+         {? type_of(_buffers.POZDOK[_it].POZOPER)<>7
+         ||
+            _wsenv.add_error('Nieprawidłowy kod transakcji.'@)
+         ?}
+      ?};
+      {? type_of(_buffers.POZDOK[_it].KW_PLN)=0
+      ||
+         _wsenv.add_error('Brak przekazanej kwoty w walucie narodowej.'@)
+      ||
+         {? type_of(_buffers.POZDOK[_it].KW_PLN)=1 & (_buffers.POZDOK[_it].KW_PLN<=0)
+         ||
+            _wsenv.add_error('Kwota musi być większa od 0.'@)
+         ?}
+      ?};
+: Sprawdzenie dla sytuacji gdy typ transakcji ma zaznaczony checkbox "Dotyczy dokumentów VAT"
+      {? ~_wsenv.has_errors()
+      ||
+         POZOPER.cntx_psh();
+         POZOPER.prefix();
+         {? POZOPER.seek(_buffers.POZDOK[_it].POZOPER) & POZOPER.VAT='T'
+         ||
+            {? type_of(_buffers.POZDOK[_it].MF_FIKS)<>2
+            | (type_of(_buffers.POZDOK[_it].MF_FIKS)=2 & _buffers.POZDOK[_it].MF_FIKS='')
+            ||
+               _wsenv.add_error('Brak symbolu faktury lub rozrachuku.'@)
+            |? type_of(_buffers.POZDOK[_it].KH)<>2
+            | (type_of(_buffers.POZDOK[_it].KH)=2 & _buffers.POZDOK[_it].KH='')
+            ||
+               _wsenv.add_error('Brak nazwy kontrahenta.'@)
+            |? type_of(_buffers.POZDOK[_it].NIP)<>2
+            | (type_of(_buffers.POZDOK[_it].NIP)=2 & _buffers.POZDOK[_it].NIP='')
+            ||
+               _wsenv.add_error('Brak kodu NIP kontrahenta.'@)
+            ?};
+:Rejestr
+            {? type_of(_buffers.POZDOK[_it].Rej_KOD)=0
+            ||
+               _wsenv.add_error('Brak kodu rejestru.'@)
+            ||
+               OKRO_F.cntx_psh();
+               OKRO_F.index('KON');
+               OKRO_F.prefix(REF.FIRMA);
+               {? OKRO_F.find_ge(_buffers.DOKUMENT.DATA)
+               ||
+                  _rok_f:=OKRO_F.ROK
+               ||
+                  _wsenv.add_error('Brak okresu obrachunkowego.'@)
+               ?};
+               OKRO_F.cntx_pop();
+
+               STANKAS.cntx_psh();
+               ODD.cntx_psh();
+               STANKAS.seek(_b);
+               _odd:=STANKAS.ODD().ref();
+               STANKAS.cntx_pop();
+               ODD.cntx_pop();
+
+               {? ~_wsenv.has_errors()
+               ||
+                 _buffers.POZDOK[_it].REJ:=
+                 exec('FindInSet','#table','REJ','KOD',_buffers.POZDOK[_it].Rej_KOD,_rok_f,,1,_odd,);
+                 {? type_of(_buffers.POZDOK[_it].REJ)<>7
+                 ||
+                    _wsenv.add_error('Nieprawidłowy kod stanowiska rejestrowania dokumentów źródłowych.'@)
+                 ?}
+              ?}
+            ?};
+:Rodzaj
+            {? type_of(_buffers.POZDOK[_it].Dok_rej_NAZ)=0
+            ||
+               _wsenv.add_error('Brak nazwy rodzaju dokumentu.'@)
+            ||
+               {? ~_wsenv.has_errors()
+               ||
+                  _buffers.POZDOK[_it].DOK_REJ:=
+                  exec('FindInSet','#table','DOK_REJ','NAZ',_buffers.POZDOK[_it].Dok_rej_NAZ,
+                  _buffers.POZDOK[_it].REJ,,1,,);
+                  {? type_of(_buffers.POZDOK[_it].DOK_REJ)<>7
+                  ||
+                     _wsenv.add_error('Nieprawidłowy rodzaj dokumentu.'@)
+                  ?}
+               ?}
+            ?};
+:Rejestr VAT
+            {? type_of(_buffers.POZDOK[_it].Rvat_SYM)=0
+            ||
+               _wsenv.add_error('Brak symbolu rejestru VAT.'@)
+            ||
+               {? ~_wsenv.has_errors()
+               ||
+                  _buffers.POZDOK[_it].RVAT:=
+                  exec('FindInSet','#table','VAT_REJ','REJ_SYM',_buffers.POZDOK[_it].Rvat_SYM,
+                  _buffers.POZDOK[_it].REJ,,1,,);
+                  {? type_of(_buffers.POZDOK[_it].RVAT)<>7
+                  ||
+                     _wsenv.add_error('Nieprawidłowy rejestr VAT.'@)
+                  ?}
+               ?}
+            ?};
+:Daty
+            {? type_of(_buffers.POZDOK[_it].DATA1)<>4
+            | (type_of(_buffers.POZDOK[_it].DATA1)=4 & _buffers.POZDOK[_it].DATA1=date(0,0,0))
+            ||
+               _buffers.POZDOK[_it].DATA1:=date()
+            ?};
+            {? type_of(_buffers.POZDOK[_it].TP)<>4
+            | (type_of(_buffers.POZDOK[_it].TP)=4 & _buffers.POZDOK[_it].TP=date(0,0,0))
+            ||
+               _buffers.POZDOK[_it].TP:=date()
+            ?};
+            {? _buffers.DOKUMENT.DATA < _buffers.POZDOK[_it].DATA1
+            ||
+               _wsenv.add_error('Data wystawienia nie może być większa od daty dokumentu kasowego.'@)
+            |? _buffers.POZDOK[_it].TP < _buffers.POZDOK[_it].DATA1
+            ||
+               _wsenv.add_error('Termin płatności nie może być wcześniejszy od daty wystawienia.'@)
+            ?}
+         ?};
+         POZOPER.cntx_pop()
+      ?}
+   !}
+?};
+~~
+
+
+\create_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: sprawdzenie poprawności danych
+::   WE: _a - buffers
+::   WY: [0/1]
+::----------------------------------------------------------------------------------------------------------------------
+_buffers:=_a;
+
+1
+
+
+\prolog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Formuła startowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+exec('prolog','mwapi',_par);
+~~
+
+
+\epilog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Fomuła końcowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+exec('epilog','mwapi');
+~~
+
+
+\authorized
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Sprawdza uprawnienia do odglądania dokumentów magazynowych (w kontekście aktualnego OPERATOR.USER)
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('authorized','#b__box','KAS_DOK','KAS')
+|| 1
+|| _msg:='Brak uprawnień do przeglądania dokumentów kasowych.'@;
+   mwa_status(401,_msg);
+   _wsenv:=exec('wsenv','#mwapi');
+   _wsenv.add_error(_msg);
+   0
+?}
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:36 5d8408d8dc872ce5e84127f706e0557d96c295177b7c500aa36d390623fd5075d3f9fa24d7f0b404feb341b9b44e3bb2bf271aae763dee720e4ada63e791a2d34b7dafa59c00f06eff61f43e713e9f8df4c017c0c1ff25d965c7b0bbd42e490d79c245ca9c8d8f66a9b1feb5a6bee940310d1d6d2ad813b9b7428198711b18cc

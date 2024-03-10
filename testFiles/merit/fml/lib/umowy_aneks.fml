@@ -1,0 +1,3281 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: umowy_aneks.fml
+:: Utworzony: 09.01.2019
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi aneksów do umów
+::======================================================================================================================
+
+
+\um_sp_dt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdzenie do jakiej daty wystawiono faktury dla podanej umowy pozycji umow wraz ze zmianami
+::   WE: _a - ref ostatnich warunkow
+::   WY: _wyn - ostatni dzien jak wszedl do fakturowania
+::  OLD: \um_sp_dt/um_aneks.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=date(0,0,0);
+
+n_dat:=date(0,0,0);
+
+UM.seek(_a);
+_umr:=UM.ref;
+_um:=UM.SYM;
+
+
+:: ustalanie daty od do sprawdzania
+_dat:=UM.DPO;
+
+:: kontrola okresu poniewaz ryczalty sa zapisywane w 1 miesiącu
+_fas:=UM.FAS().KOD;
+:: dla dziennych nie ma ryczaltow
+{? _fas<>'D'
+||
+   _okr:=exec('zwr_okr','#datetime',_fas,_dat);
+   _dat:=exec('okr_data','umowy_wspolne',1,_fas,_okr,_dat~1)
+?};
+
+_hgen:=exec('d_hgenod','umowy_wspolne',ST.ODDZ);
+{? _dat<_hgen || _dat:=_hgen ?};
+
+
+f_add:="
+   _data:=ZLP.DW;
+   {? ZLP.RP='R'
+   ||
+      _fas:=ZLP.ZLE().UM().FAS().KOD;
+      _okr:=exec('zwr_okr','#datetime',_fas,_data);
+      _data:=exec('okr_data','umowy_wspolne',3,_fas,_okr,_data~1)
+   ?};
+   {? ZLP.FAKS='T' | ZLP.SR<>'N' || {? n_dat <  _data || n_dat:=_data ?} ?}
+";
+
+:: formulka sprawdzajaca zlecenie
+
+_form:="HGEN.index('ODDZ');HGEN.prefix(ST.ODDZ);
+        {? HGEN.last || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+        {!
+        |?
+           exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+           ZLP.index('ZLE');ZLP.prefix(ZLE.ref);
+           {? ZLP.first || {!|? f_add();ZLP.next !}?};
+           _a:=exec('add_mies','umowy_wspolne',_a);_dat_do>_a
+        !}";
+
+:: sprawdzanie i przygotowywanie danych
+
+UP.index('UM');
+UP.prefix(_a);
+{? UP.first()
+||
+   {!
+   |?
+      ZLE.index('USL');
+      ZLE.prefix('T',_a,UP.ref);
+      {? ZLE.first()
+      ||
+         {!
+         |?
+            {? n_dat=date(0,0,0) || _form(_dat) || _form(n_dat) ?};
+            ZLE.next()
+         !}
+      ?};
+      UP.next()
+   !}
+?};
+
+{? UM.AN>0
+||
+   UMAN.index('D');
+   UMAN.prefix(_a);
+   {? UMAN.last()
+   ||
+      {!
+      |?
+         _an_ref:=UMAN.ref();
+         UMAN.cntx_psh();
+         _umow:=UMAN.BIE;
+         UM.index('AN');
+         UM.prefix(_an_ref);
+         {? UM.first() || _umow:=UM.ref() || _umow:=UMAN.BIE ?};
+         UMAN.cntx_pop();
+
+         UP.index('UM');
+         UP.prefix(_umow);
+         {? UP.first()
+         ||
+            {!
+            |?
+               ZLE.index('USL');
+               ZLE.prefix('T',_umow,UP.ref());
+               {? ZLE.first()
+               ||
+                  {!
+                  |?
+                     {? n_dat=date(0,0,0) || _form(_dat) || _form(n_dat) ?};
+                     ZLE.next()
+                  !}
+               ?};
+               UP.next()
+            !}
+         ?};
+         UMAN.prev() & n_dat=date(0,0,0)
+      !}
+   ?}
+?};
+
+UM.seek(_umr);
+:: echo();
+&f_add;
+exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2));
+_wyn:=n_dat;
+_wyn
+
+
+\um_sp_us
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdzenie i usuwanie zlecen od podanej daty dla wszystkich pozycji umow wraz ze zmianami
+::   WE:  _a   - ref ostatnich warunkow
+::       [_b] - od daty
+::       [_c] - do daty ... jezeli chcemy cos zrobic od .. do
+::       [_d] - czy wyswietlac znaleznione zlecenia (0 - tak , 1 - nie)
+::       [_e] - czy zlecnia te maja byc usuwane (0 - tak, 1 - nie)
+::       [_f] - 0 - wszystkie zlecenia z umowy, 1 - tylko zlecenia ryczaltowe, 2 - tylko harmonogramy
+::       [_g] - czy transakcja wolana zewnetrznie 0 - nie , 1 -tak
+::       [_h] - jezeli podano UP.ref to dziala tylko dla jednej pozycji umowy
+::              (w takim przypadku sprawdza tylko biezace warunki)
+::  WY: 0 - sa wygenerowane zlecenia, 1 - nie ma zlecen
+:: OLD: \um_sp_us/um_aneks.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+
+n_fakt:=1;
+n_data:=date(0,0,0);
+
+{? _>=2 || {? type_of(_b)<>4 || _b:=date(0,0,0) ?} || _b:=date(0,0,0) ?};
+{? _>=3 || {? type_of(_c)<>4 || _c:=date(0,0,0) ?} || _c:=date(0,0,0) ?};
+{? _>=4 || {? type_of(_d)<>1 || _d:=0 ?} || _d:=0 ?};
+{? _>=5 || {? type_of(_e)<>1 || _e:=0 ?} || _e:=0 ?};
+{? _>=6 || {? type_of(_f)<>1 || _f:=0 ?} || _f:=0 ?};
+_g:=do_state();
+{? _>=8 || {? type_of(_h)<>7 || _h:=null ?} || _h:=null ?};
+
+oodd:=_b;
+dood:=_c;
+
+UM.seek(_a);
+_umr:=UM.ref();
+_um:=UM.SYM;
+
+exec('mmm_init','umowy_wspolne');
+
+:: ustalanie daty od do sprawdzania
+:: szukanie 1 dnia okresu bo nie usuwał zlecen dla kwartalnych
+_dat:=UM.DPO;
+_fas:=UM.FAS().KOD;
+_okr:=exec('zwr_okr','#datetime',_fas,_dat);
+_dat:=exec('okr_data','umowy_wspolne',1,_fas,_okr,_dat~1);
+
+_hgen:=exec('d_hgenod','umowy_wspolne',ST.ODDZ);
+{? _dat<_hgen || _dat:=_hgen ?};
+
+:: formulka dodajaca rekord od tabeli tymczasowej MMM
+f_add:="
+   {? ((oodd=date(0,0,0) & dood=date(0,0,0)) | (ZLP.DW>=oodd & (ZLP.DW<=dood | dood=date(0,0,0)))) & ZLP.ZLE().CZUM='T'
+   || MMM.blank();
+      MMM.ZLE:=ZLE.SYM;
+      MMM.DW:=ZLP.DW;
+      MMM.F:=ZLP.FAKS;
+      {? ZLP.FAKS='T' | ZLP.SR<>'N'
+      ||
+         n_fakt:=0;
+         {? ZLP.FAP<>null
+         ||
+            _msk:='';
+            {? FAP.name()<>ref_name(ZLP.FAP)
+            ||
+               _msk:=3+(ZLP.name()+5);
+               FAKS.cntx_psh();
+               FAP.cntx_psh();
+               FAKS.use('faktu'+_msk);
+               FAP.use('fakpo'+_msk)
+            ?};
+            MMM.FAKS:=ZLP.FAP().FAKS().SYM;
+            MMM.FPOZ:=ZLP.FAP().POZ;
+            {? _msk<>''
+            ||
+               FAP.cntx_pop();
+               FAKS.cntx_pop()
+            ?}
+         ?};
+         MMM.SR:=ZLP.SR
+      ?};
+      MMM.MASK:=ZLP.name();
+      MMM.REF:=#ZLP.ref();
+      MMM.RP:=ZLP.RP;
+      MMM.add()
+   ?}
+";
+
+:: formulka sprawdzajaca zlecenie
+{? _f=0
+||
+   _form:="
+      HGEN.index('ODDZ');
+      HGEN.prefix(ST.ODDZ);
+      {? HGEN.last() || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+      {!
+      |?
+         exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+         ZLP.index('ZLE');
+         ZLP.prefix(ZLE.ref());
+         {? ZLP.first()
+         || {! |? f_add(); ZLP.next() !}
+         ?};
+         _a:=exec('add_mies','umowy_wspolne',_a);
+         _dat_do>_a
+      !}
+   "
+|? _f=1
+||
+   _form:="
+      HGEN.index('ODDZ');
+      HGEN.prefix(ST.ODDZ);
+      {? HGEN.last() || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+      {!
+      |?
+         exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+         ZLP.index('RP');
+         ZLP.prefix(ZLE.ref,'R');
+         {? ZLP.first()
+         || {! |? f_add(); ZLP.next() !}
+         ?};
+         _a:=exec('add_mies','umowy_wspolne',_a);
+         _dat_do>_a
+      !}
+   "
+|? _f=2
+||
+   _form:="
+      HGEN.index('ODDZ');
+      HGEN.prefix(ST.ODDZ);
+      {? HGEN.last() || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+      {!
+      |?
+         exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+         ZLP.index('RP');
+         ZLP.prefix(ZLE.ref,'H');
+         {? ZLP.first()
+         || {! |? f_add(); ZLP.next() !}
+         ?};
+         _a:=exec('add_mies','umowy_wspolne',_a);
+         _dat_do>_a
+      !}
+   "
+?};
+
+:: sprawdzanie i przygotowywanie danych
+UP.index('UM');
+UP.prefix(_a);
+{? UP.first()
+||
+   {? _h=null
+   ||
+      {!
+      |?
+         ZLE.index('USL');
+         ZLE.prefix('T',_a,UP.ref());
+         {? ZLE.first()
+         ||
+            {!
+            |?
+               _form(_dat);
+               ZLE.next()
+            !}
+         ?};
+         UP.next()
+      !}
+   ||
+      ZLE.index('USL');
+      ZLE.prefix('T',_a,_h);
+      {? ZLE.first()
+      ||
+         {!
+         |?
+            _form(_dat);
+            ZLE.next()
+         !}
+      ?}
+   ?}
+?};
+
+{? UM.AN>0 & _h=null
+||
+   UMAN.index('D');
+   UMAN.prefix(_a);
+   {? UMAN.last()
+   ||
+      {!
+      |?
+         _an_ref:=UMAN.ref();
+         UMAN.cntx_psh();
+         _umow:=UMAN.BIE;
+         UM.index('AN');
+         UM.prefix(_an_ref);
+         {? UM.first() || _umow:=UM.ref() || _umow:=UMAN.BIE ?};
+         UMAN.cntx_pop();
+
+         UP.index('UM');
+         UP.prefix(_umow);
+         {? UP.first()
+         ||
+            {!
+            |?
+               ZLE.index('USL');
+               ZLE.prefix('T',_umow,UP.ref());
+               {? ZLE.first()
+               ||
+                  {!
+                  |?
+                     _form(_dat);
+                     ZLE.next()
+                  !}
+               ?};
+               UP.next()
+            !}
+         ?};
+         UMAN.prev()
+      !}
+   ?}
+?};
+
+_wyn:=exec('usu_mmm','umowy_wspolne',_a,_b,_c,_d,_e,_f);
+
+UM.seek(_umr);
+VAR_DEL.delete('f_add');
+exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2));
+_wyn
+
+
+\um_sp_date_poz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [12.10]
+:: OPIS: dla podanej pozycji umowy zwraca faktyczna date zafakturowania - sprawdza wszyskie warunki wsteczne
+::   WE:  _a  - ref pozycji umowy
+::       [_b] - 0 - wszystkie zlecenia z umowy, 1 - tylko zlecenia ryczaltowe, 2 - tylko harmonogramy
+::   WY: data fakturowania
+::  OLD: \um_sp_date_poz/um_aneks.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=date(0,0,0);
+{? _>=2 || {? type_of(_b)<>1 || _b:=0 ?} || _b:=0 ?};
+VAR_DEL.delete('__n_data','__f_addf');
+__n_data:=date(0,0,0);
+
+UMAN.cntx_psh();
+UM.cntx_psh();
+UP.cntx_psh();
+ZLE.cntx_psh();
+ZLP.cntx_psh();
+HGEN.cntx_psh();
+
+__f_addf:="
+   _data:=ZLP.DW;
+   {? ZLP.RP='R'
+   ||
+      _fas:=ZLP.ZLE().UM().FAS().KOD;
+      _okr:=exec('zwr_okr','#datetime',_fas,_data);
+      _data:=exec('okr_data','umowy_wspolne',3,_fas,_okr,_data~1)
+   ?};
+   {? ZLP.FAKS='T' | ZLP.SR<>'N' || {? __n_data <  _data || __n_data:=_data ?} ?}
+";
+
+:: formulka sprawdzajaca zlecenie
+_form:="HGEN.index('ODDZ');HGEN.prefix(ST.ODDZ);
+        {? HGEN.last || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+        {!
+        |?
+           exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+           {? _b=0
+           || ZLP.index('ZLE');ZLP.prefix(ZLE.ref)
+           |? _b=1
+           || ZLP.index('RP');ZLP.prefix(ZLE.ref,'R')
+           |? _b=2
+           || ZLP.index('RP');ZLP.prefix(ZLE.ref,'H')
+           ?};
+           {? ZLP.first || {! |? __f_addf();ZLP.next !} ?};
+           _a:=exec('add_mies','umowy_wspolne',_a);_dat_do>_a
+        !}";
+
+UP.index('HISTW');
+UP.prefix();
+{? UP.seek(_a)
+||
+   _dat:=UP.UM().DPO;
+   UP.index('HISTW');
+   UP.prefix(UP.UP_SRC,UP.UP_SRC);
+   {? UP.last
+   ||
+      {!
+      |?
+         ZLE.index('USL');
+         ZLE.prefix('T',UP.UM,UP.ref);
+         {? ZLE.first()
+         ||
+            {!
+            |?
+               {? __n_data=date(0,0,0) || _form(_dat,_b) || _form(__n_data,_b) ?};
+               ZLE.next()
+            !}
+         ?};
+         UP.prev & __n_data=date(0,0,0)
+      !}
+   ?}
+?};
+_wyn:=__n_data;
+VAR_DEL.delete('__n_data','__f_addf');
+UP.cntx_pop();
+UM.cntx_pop();
+UMAN.cntx_pop();
+ZLE.cntx_pop();
+ZLP.cntx_pop();
+HGEN.cntx_pop();
+_wyn
+
+
+\ae_anrod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: po edycji pola rodzaj aneksu
+::  OLD: \ae_anrod/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('an_sym','umowy_aneks');
+exec('po_end_uman','umowy_aneks');
+''
+
+
+\an_sym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: nadawanie symbolu aneksu - tylko dla aneksow
+::  OLD: \an_sym/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UMAN.RODZ='A' & UMAN.SYM=''
+||
+   UM.cntx_psh();
+   UMAN.cntx_psh();
+   UMAN.index('RODZ');
+   UMAN.prefix(UM.ref(),'A');
+   {? UMAN.last()
+   ||
+      _wynik:=exec('unanex','umowy_aneks');
+      {? +_wynik
+      || _sym:=2-(form(date()~1,,,'99'))+'/'+form((#(3-_wynik)+1),-3,0,'99')
+      || _sym:=2-(form(date()~1,,,'99'))+'/'+form((#(3-UMAN.SYM)+1),-3,0,'99')
+      ?}
+   ||
+      _nr:=0;
+      _nr:=#exec('nran','umowy_aneks')+1;
+      _sym:=2-(form(date()~1,,,'99'))+'/'+form(_nr,-3,0,'99')
+   ?};
+   UMAN.cntx_pop();
+   UM.cntx_pop();
+   UMAN.SYM:=_sym
+?};
+''
+
+
+\unanex
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdza czy nie ma już umow z nr teczki
+::  OLD: \unanex/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:='';
+_kh:=UM.KH;
+_sym:=UM.SYM;
+UM.cntx_psh();
+UMAN.cntx_psh();
+_ndum:=UM.ndx_tmp('',,'KH',,,'SYM',,);
+_nduman:=UMAN.ndx_tmp('',,'BIE',,,'RODZ',,,'D',,,'SYM',,);
+UM.index(_ndum);
+UM.prefix(_kh,_sym);
+{? UM.first()
+|| _buf:='';
+   {!
+   |?
+      UMAN.index(_nduman);
+      UMAN.prefix(UM.ref(),'A');
+      {? UMAN.last()
+      ||
+         {!
+         |?
+            _buf:=UMAN.SYM;
+            {? _buf>_wyn || _wyn:=_buf ?};
+            UMAN.prev()
+         !}
+      ?};
+      UM.next()
+   !}
+?};
+UM.ndx_drop(_ndum);
+UMAN.ndx_drop(_nduman);
+UMAN.cntx_pop();
+UM.cntx_pop();
+_wyn
+
+
+\nran
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: nowy nr aneksu
+::  OLD: \nran/um3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_nry:='0000';
+_ala:=UM.SYM;
+UMAN.cntx_psh();
+UM.cntx_psh();
+KH.cntx_psh();
+_ndx:=UMAN.ndx_tmp('',,'SYM',,,'RODZ',,);
+UM.clear();
+UM.index('KHC');
+UM.prefix(KH.ref());
+{? UM.first()
+||
+   {!
+   |?
+      UMAN.clear();
+      UMAN.index(_ndx);
+      UMAN.prefix(UM.SYM,'A');
+      {? UMAN.last() || _nry:=3+UMAN.SYM ?};
+      UM.next()
+   !}
+?};
+UMAN.ndx_drop(_ndx);
+KH.cntx_pop();
+UM.cntx_pop();
+UMAN.cntx_pop();
+_nry
+
+
+\pr_ag_pr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2011]
+:: OPIS: przed redakcja UMANGR.PR
+::  OLD: \pr_ag_pr/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+UMANGR.R='P'
+
+
+\pr_ag_kw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2011]
+:: OPIS: przed redakcja UMANGR.CH
+::  OLD: \pr_ag_kw/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+UMANGR.R='K'
+
+
+\an_umowa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wyswietlenie umowy
+::  OLD: \an_umowa/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+UM.cntx_psh();
+UMAN.cntx_psh();
+_ndx:=UM.ndx_tmp('',,'UMAN',,);
+UM.index(_ndx);
+UM.prefix(UMAN.ref());
+{? UM.first()
+|| UM.display()
+|| FUN.info('Brak umowy w aneksie.'@)
+?};
+UM.ndx_drop(_ndx);
+UMAN.cntx_pop();
+UM.cntx_pop();
+''
+
+
+\an_pozyc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wyswietlenie pozycji umowy
+::  OLD: \an_pozyc/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+max1m:=0;
+UM.cntx_psh();
+UP.cntx_psh();
+
+UM.index('AN');
+UM.prefix(UMAN.ref());
+{? UM.first()
+||
+   _mod:=exec('get','#params',100176,2)='T';
+   UM.cntx_psh();
+   UM.clear();
+   {? UM.seek(UMAN.BIE) & UM.STU().RODZ='E'
+   || UP.actions('WER2',{? _mod || '' || 'D' ?})
+   || UP.actions('WER2','DP')
+   ?};
+   UM.cntx_pop();
+
+   exec('up_red','umowy');
+   UP.hdr_sel();
+   UP.hdr_sel(' numer %1'@[UM.SYM]);
+   UP.win_sel('WER2');
+   _up_ind:='POZ';
+   {? exec('get','#params',100102,2)='T' || _up_ind:='POS2' ?};
+   UP.index(_up_ind);
+   UP.prefix(UM.ref());
+   UP.select()
+?};
+
+UM.cntx_pop();
+UP.cntx_pop();
+max1m:=0;
+''
+
+
+\uman_rod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wypelnia zmienna rodzaj dla UMAN
+::  OLD: \uman_rod/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UMAN.RODZ='A'
+|| UMO.RODZ:='Aneks'
+|? UMAN.RODZ='Z'
+|| UMO.RODZ:='Zlecenie'
+|? UMAN.RODZ='T'
+|| UMO.RODZ:='Techniczny'
+|? UMAN.RODZ='E'
+|| UMO.RODZ:='Aneks kończący'
+|| UMO.RODZ:='*****'
+?};
+''
+
+
+\ang_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2010]
+:: OPIS: dodanie aneksu grupowego
+::  OLD: \ang_add/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+UMANGR.blank();
+UMANGR.R:='P';
+exec('set_efld_opt_gr','umowy_aneks');
+{? UMANGR.edit("exec('ang_spr','umowy_aneks')")
+|| UMANGR.POZ:=exec('NewOrder','#table','UMANGR','POZ');
+   UMANGR.add()
+?};
+''
+
+
+\ang_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: czy mozna edytowac aneks grupowy
+::  OLD: \ang_edit/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+~UMANGR.IL
+
+
+\ang_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: usuwanie aneksow grupowych
+::  OLD: \ang_del/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UMANGR.IL=0
+|| {? UMANGR.r_lock(1,1,1)
+   || {? FUN.ask('Usunąć bieżący wiersz?'@)
+      || exec('umang_log_del','umowy_aneks',UMANGR.ref());
+         UMANGR.del();
+         exec('ReNumAfterDel','#table','UMANGR','POZ')
+      ?}
+   || {? FUN.ask('Aneks obsługuje inny użytkownik.\nCzy chcesz zobaczyć kto?'@) & UMANGR.r_lock(1,,1)
+      || UMANGR.r_unlock()
+      ?}
+   ?};
+   unlock_r()
+|| FUN.info('Wystawiono aneksy.\nUsunięcie niemożliwe.'@)
+?};
+''
+
+
+\ang_gen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: generowanie aneksow grupowych
+::  OLD: \ang_gen/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UMANGR.r_lock(1,1,1)
+|| _msk:=UMANGR.ODDZ+form(UMANGR.AR-2000,-2,0,'99');
+   UMANGLOG.use('umlog'+_msk);
+
+   UMAN.index('ANG');
+   UMAN.prefix(UMANGR.ref);
+   _ok:=1;
+
+:: sprawdzanie danych z nagl
+   {? UMANGR.R='P'
+   || {? UMANGR.PR=0
+      || FUN.info('Nie wypełniony \% zmiany ceny.'@);
+         _ok:=0
+      ?}
+   |? UMANGR.R='K'
+   || {? UMANGR.CH<>0 | UMANGR.CR<>0
+      ||
+         {? UMANGR.CH<>0
+         || {? UMANGR.OCH=0
+            || FUN.info('Zmiana kwotowa ceny harmonogramu.\nProszę ograniczyć umowy wg ceny.'@)
+            ?}
+         ?};
+         {? UMANGR.CR<>0
+         || {? UMANGR.OCR=0
+            || FUN.info('Zmiana kwotowa ceny ryczałtu.\nProszę ograniczyć umowy wg ceny.'@)
+            ?}
+         ?}
+      || FUN.info('Proszę wypełnić jedną z cen do zmiany kwotowej.'@);
+         _ok:=0
+      ?}
+   |? UMANGR.R='R'
+   ||
+::    ceny podawane recznie
+      _ok:=1
+   ?};
+
+   {? ~UMAN.first() & _ok=1
+   ||
+      VAR_DEL.delete('X_UM','X_UP','__umglog');
+      __umglog:=tab_tmp_out_tr(1,'LP','INTEGER',''
+                 ,'R','STRING[1]',''
+                 ,'OPIS','STRING[255]','');
+      _select:='
+         select distinct
+            KH.KOD KOD,
+            UM.REFERENCE UMREF,
+            UM.SYM SYM
+         from
+            UP
+            join UM using (UP.UM, UM.REFERENCE)
+            join KH using (UM.KH, KH.REFERENCE)
+            left join SLO using (KH.KOD, SLO.KOD)
+            join STU using (UM.STU, STU.REFERENCE)
+      ';
+      _where:='
+         where
+            UM.A=\'N\'
+            and STU.A=\'T\'
+            and UM.ODDZ=\':_a\'
+            and (KH.GRKH=:_b or KH.GRKH is null or :_b=\'\')
+            and (KH.OBS=:_c or KH.OBS is null or :_c=\'\')
+            and (SLO.SLU=:_d or :_d=\'\' )
+            and (UP.C=:_e or :_e=0)
+            and (UP.C_R=:_f or :_f=0)
+      ';
+      {? UMANGR.R='R'
+      || _where+=' and (UP.C<>0 or UP.C_D<>0 or UP.C_R<>0 or UP.DC_R<>0)'
+      || _where+=' and (UP.C<>0 or UP.C_R<>0)'
+      ?};
+      _order:='
+         order by 3,1
+      ';
+
+      X_UM:=sql(_select+_where+_order,ST.ODDZ,UMANGR.GRKH,UMANGR.OBS,UMANGR.SLU,UMANGR.OCH,UMANGR.OCR);
+      {? X_UM.size>0
+      ||
+         X_UM.first();
+
+         t_sumk:='';
+         _oki:=0;
+         {? X_UM.first() || _oki:=exec('ang_c_r','umowy_aneks') ?};
+
+         {? var_pres('X_UP')>100 & sql('select * from :_a where :_a.NCE>0',X_UP).first() & _oki
+         ||
+            _ndx:=X_UP.ndx_tmp('',,'TYP',,,'TAR',,,'USL',,,'JM',,,'CEN',,);
+            _str:='Generowano dnia: %1 przez %2'@[form(date)+', '+form(time,,3),(10+username)];
+            _rodz:='T';
+            exec('memo_add','umowy_aneks',_str,_rodz);
+
+            _size:=X_UM.size();
+            _licz:=0;
+            _time:=time();
+
+            {!
+            |?
+               _licz+=1;
+::               FZL.ECHO(_licz,_size,_time,time(),X_UM.KOD);
+               echo('Trwa generacja aneksów ...%1 z %2'@[form(_licz),form(_size)]);
+
+               UM.index('KH');
+               UM.prefix(ST.ODDZ);
+               _um:=X_UM.UMREF;
+               {? UM.seek(_um,form((8+_um)))
+               ||
+                  _err:=0;
+                  do();
+                  _opis:='Kontrahent %1 Umowa %2'@[X_UM.KOD,UM.SYM];
+                  _stu_ref:=UM.STU;
+                  _stu_f:=UM.STU().F;
+                  {? exec('an_new','umowy_aneks',1,1,_opis)
+                  ||
+::                   to zaczynamy poprawiac pozycje automatem
+                     UM.clear();
+                     {? UM.seek(ref_new)
+                     ||
+                        UP.index('POZ');
+                        UP.prefix(UM.ref);
+::                      poprawa pozycji
+                        {? UP.first()
+                        ||
+                           _czy_pop:=0;
+                           _error:=0;
+                           {!
+                           |?
+                              {? UMANGR.R='P'
+                              ||
+                                 {? UP.C<>0
+                                 || UP.C+=(UP.C*UMANGR.PR)/100; UP.ZM:='T';
+                                    {? UP.put() || _czy_pop:=1 || _error+=1 ?}
+                                 ?};
+                                 {? UP.C_R<>0
+                                 || UP.C_R+=(UP.C_R*UMANGR.PR)/100; UP.ZM:='T';
+                                    {? UP.put() || _czy_pop:=1 || _error+=1 ?}
+                                 ?}
+                              |? UMANGR.R='K'
+                              ||
+                                 {? UMANGR.CH<>0
+                                 || UP.C:=UMANGR.CH; UP.ZM:='T';
+                                    {? UP.put() || _czy_pop:=1 || _error+=1 ?}
+                                 ?};
+                                 {? UMANGR.CR<>0
+                                 || UP.C_R:=UMANGR.CR; UP.ZM:='T';
+                                    {? UP.put() || _czy_pop:=1 || _error+=1 ?}
+                                 ?}
+                              |? UMANGR.R='R'
+                              ||
+                                 X_UP.index(_ndx);
+                                 X_UP.prefix();
+                                 {? X_UP.first()
+                                 ||
+                                    {? UP.F='T' & UP.C<>0
+                                    ||
+                                       UMO.JM:={? UP.RFAK=3 || exec('par_m3','jm') || UP.MJ().J ?};
+                                       X_UP.index(_ndx);
+                                       X_UP.prefix('H',UP.TAR().KOD,UP.MJ().KTM,UMO.JM().KOD,UP.C);
+                                       {? X_UP.first() & X_UP.NCE>0
+                                       || UP.C:=X_UP.NCE$2; UP.ZM:='T';
+                                          {? UP.put() || _czy_pop:=1 || _error+=1 ?}
+                                       ?}
+                                    ?};
+                                    {? UP.DOD='T' & UP.C_D<>0
+                                    ||
+                                       X_UP.index(_ndx);
+                                       X_UP.prefix('HD',UP.TAR().KOD,UP.M_D().KTM,UP.M_D().J().KOD,UP.C_D);
+                                       {? X_UP.first() & X_UP.NCE>0
+                                       || UP.C_D:=X_UP.NCE$2; UP.ZM:='T';
+                                          {? UP.put() || _czy_pop:=1 || _error+=1 ?}
+                                       ?}
+                                    ?};
+                                    {? UP.R='T' & UP.C_R<>0
+                                    ||
+                                       X_UP.index(_ndx);
+                                       X_UP.prefix('R',UP.TAR().KOD,UP.M().KTM,UP.M().J().KOD,UP.C_R);
+                                       {? X_UP.first() & X_UP.NCE>0
+                                       || UP.C_R:=X_UP.NCE$2; UP.ZM:='T';
+                                          {? UP.put() || _czy_pop:=1 || _error+=1 ?}
+                                       ?}
+                                    ?};
+                                    {? UP.DR='T' & UP.DC_R<>0
+                                    ||
+                                       X_UP.index(_ndx);
+                                       X_UP.prefix('RD',UP.TAR().KOD,UP.DM().KTM,UP.M().J().KOD,UP.DC_R);
+                                       {? X_UP.first() & X_UP.NCE>0
+                                       || UP.DC_R:=X_UP.NCE$2; UP.ZM:='T';
+                                          {? UP.put() || _czy_pop:=1 || _error+=1 ?}
+                                       ?}
+                                    ?}
+                                 ?}
+                              ?};
+                              ~_error & UP.next()
+                           !};
+                           {? _czy_pop=0
+                           ||
+                              undo();
+                              {? UMANGR.R<>'R' | _error>0
+                              || _err:=1;
+                                 exec('umglog_add','umowy_aneks'
+                                   ,'Nie poprawiono (nie były spełnione warunki) [%1]'@[_opis],_rodz)
+                              ?}
+                           ?}
+                        ?}
+                     ?};
+::                   zmiana statusu na aktywny
+                     {? _czy_pop=1 || exec('stu_auto','umowy_wspolne',_stu_ref,_stu_f,1,_opis) ?};
+                     1
+                  ||
+                     undo();
+                     _err:=1;
+                     exec('umglog_add','umowy_aneks','Wystawienie aneksu nie powiodło się [%1]'@[_opis],_rodz)
+                  ?};
+                  end();
+                  UMANGR.memo_get(,'O')
+               ?};
+               X_UM.next()
+            !};
+            X_UP.ndx_drop(_ndx);
+            echo();
+            __umglog.clear();
+            {? __umglog.first()
+            || {!
+               |? exec('memo_add','umowy_aneks',__umglog.OPIS,__umglog.R);
+                  __umglog.next()
+               !}
+            ?};
+::          sprawdzanie ile aneksow wystawiono
+            UMAN.index('ANG');
+            UMAN.prefix(UMANGR.ref);
+            UMANGR.IL:=UMAN.size();
+            UMANGR.put();
+            FUN.info('Informacje o generacji zostały zapisane.\n'
+                     'Podgląd po wybraniu akcji \"Funkcje > Błędy generacji\".'@);
+            prgs_clr();
+            echo()
+         ?}
+      ||
+         FUN.info('Brak umów spełniających kryteria.'@)
+      ?};
+      VAR_DEL.delete('X_UM','__umglog')
+   ||
+      {? _ok=1
+      || FUN.info('Generowano aneksy.\nPonowna generacja niemożliwa.'@)
+      ?}
+   ?}
+||
+   {? FUN.ask('Aneks obsługuje inny użytkownik.\nCzy chcesz zobaczyć kto?'@) & UMANGR.r_lock(1,,1)
+   || UMANGR.r_unlock()
+   ?}
+?};
+unlock_r();
+1
+
+
+\ang_c_r
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: ręczne określanie cen dla aneksów
+::       _a - wolane dla aneksow grupowych
+::       UWAGA wywoływane rownież w um3 -> um_cen_p
+::  OLD: \ang_c_r/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of(1) || _a:=1 ?};
+
+_acu:=X_UM.mk_sel('Wykaz umów do aneksu grupowego'@,,0,'#lstumangrp',,,,,'U','T');
+X_UM.win_fld(_acu,,'SYM',,,20,,,'Symbol umowy'@);
+X_UM.win_fld(_acu,,'KOD',,,10,,,'Kod kontrahenta'@);
+:: X_UM.win_act(_acu,0,'Formuła','Ceny do zmiany'@@,,,,"exec('ang_c_r','umowy_aneks')",);
+X_UM.win_act(_acu,0,'Szukaj'@);
+X_UM.win_act(_acu,0,'Kolejność'@);
+X_UM.win_sel(_acu);
+
+VAR_DEL.delete('X_UP');
+X_UP:=tab_tmp(5
+   ,'TYP','STRING[2]','Typ'
+   ,'TAR','STRING[8]','Cennik'
+   ,'USL','STRING[50]','Usługa'
+   ,'JM','STRING[10]','Jm'
+   ,'CEN','REAL','Obecna cena'
+   ,'NCE','REAL','Nowa cena'
+);
+_c6:=UMO.C6;
+_acr:=X_UP.mk_edit('Podaj nową cenę'@,0);
+X_UP.win_esep(_acr,'Cena'@);
+X_UP.win_efld(_acr,UMO,'C6',,,23,2,1,'Zmieniana'@);
+X_UP.win_efld(_acr,,'NCE',,,20,2,,'Nowa'@);
+exec('ok_esc','#window',X_UP,_acr,1);
+X_UP.win_edit(_acr);
+
+_popr_cen:="
+   UMO.C6:=X_UP.CEN;
+   {? X_UP.edit()
+   ||
+      _ol:=X_UP.CEN;
+      _cen:=X_UP.NCE;
+      X_UP.cntx_psh();
+      _ndx:=X_UP.ndx_tmp('',,'CEN',,);
+      X_UP.index(_ndx);
+      X_UP.prefix(_ol);
+      {? X_UP.first()
+      ||
+         {!
+         |?
+            X_UP.NCE:=_cen;
+            X_UP.put();
+            X_UP.next()
+         !}
+      ?};
+      X_UP.ndx_drop(_ndx);
+      X_UP.cntx_pop()
+   ?}
+";
+
+_popr_one:="_sel:=X_UP.sel_aget();
+            _zaz:=_sel.size();
+            X_UP.sel_adel();
+            X_UP.cntx_psh();
+            {? _zaz || X_UP.CEN:=0 || X_UP.get() ?};
+            {? X_UP.edit()
+            || _cen:=X_UP.NCE;
+               {? _sel.first()
+               || {!
+                  |? {? (X_UP.prefix(); X_UP.seek(_sel.REF,)) & X_UP.CEN<>_cen
+                     || X_UP.NCE:=_cen;
+                        X_UP.put(1)
+                     ?};
+                     _sel.next()
+                  !}
+               || X_UP.put(1)
+               ?}
+            ?};
+            X_UP.cntx_pop();
+            obj_del(_sel)
+           ";
+
+_acr:=X_UP.mk_sel('Znalezione ceny'@,'P',1,'#ancenyzmgrp',,,,,'U','T');
+
+{? _a=0 | UMANGR.R='R'
+||
+   X_UP.win_act(_acr,0,'Formuła','&Popraw'@@,,,_popr_one,,,1,_popr_one,,'P');
+   X_UP.win_act(_acr,0,'Formuła','Popraw &wszystkie z obecną ceną'@@,,,,_popr_cen)
+?};
+_form:="_change:=0;
+        {? UMANGR.R='R'
+        || X_UP.cntx_psh();
+           X_UP.prefix();
+           {? X_UP.first() || {! |? _change:=X_UP.NCE>0; ~_change & X_UP.next() !} ?};
+           X_UP.cntx_pop();
+           {? ~_change
+           || {? FUN.ask('Nie podano żadnej nowej ceny.\nAneksy nie zostaną wygenerowane.'
+                         '\n\nRezygnacja z generacji aneksów?'@)
+              || _change:=1
+              ?}
+           ?}
+        || _change:=1
+        ?};
+        {? _change || sel_exit() ?}
+       ";
+
+X_UP.win_act(_acr,,'Formuła','&Akceptuj'@@,,,_form,,1,,,,'A');
+X_UP.win_act(_acr,0,'Szukaj'@);
+X_UP.win_act(_acr,0,'Kolejność'@);
+X_UP.win_sel(_acr);
+
+_form:="
+   X_UP.prefix(_e,UP.TAR().KOD,_a,_b,_c);
+   {? ~X_UP.first()
+   ||
+      X_UP.blank();
+      X_UP.TAR:=UP.TAR().KOD;
+      X_UP.USL:=_a;
+      X_UP.JM:=_b;
+      X_UP.CEN:=_c;
+      {? UMANGR.R='P'
+      || X_UP.NCE:=X_UP.CEN+(X_UP.CEN*UMANGR.PR)/100
+      |? UMANGR.R='K'
+      || X_UP.NCE:=_d
+      ?};
+      X_UP.TYP:=_e;
+      X_UP.add()
+   ?}
+";
+
+X_UM.cntx_psh();
+X_UM.first();
+{!
+|?
+   UM.index('KH');
+   UM.prefix(ST.ODDZ);
+   _um:=X_UM.UMREF;
+   {? UM.seek(_um,form((8+_um)))
+   ||
+      UP.index('POZ');
+      UP.prefix(UM.ref());
+      {? UP.first()
+      ||
+         {!
+         |?
+            {? UP.F='T' & UP.C<>0
+            ||
+               UMO.JM:={? UP.RFAK=3 || exec('par_m3','jm') || UP.MJ().J ?};
+               _form(UP.MJ().KTM,UMO.JM().KOD,UP.C,UMANGR.CH,'H')
+            ?};
+            {? UP.DOD='T' & UP.C_D<>0
+            ||
+               _form(UP.M_D().KTM,UP.M_D().J().KOD,UP.C_D,0,'HD')
+            ?};
+            {? UP.R='T' & UP.C_R<>0
+            ||
+               _form(UP.M().KTM,UP.M().J().KOD,UP.C_R,UMANGR.CR,'R')
+            ?};
+            {? UP.DR='T' & UP.DC_R<>0
+            ||
+               _form(UP.DM().KTM,UP.DM().J().KOD,UP.DC_R,0,'RD')
+            ?};
+            UP.next()
+         !}
+      ?}
+   ?};
+   X_UM.next()
+!};
+X_UM.cntx_pop();
+
+X_UP.prefix();
+
+_grp:=X_UP.grp_make('Zmiany cen dla aneksów'@,,'#aneksgrpcen');
+
+X_UP.grp_sel(_grp,X_UP,_acr,,"X_UM.prefix();X_UM.first();grp_disp(X_UM,X_UM.win_sel('?'))"
+ ,,,,,,,,'maximized_with_title');
+X_UP.grp_splt(_grp,,'vertical','umowy',',33%');
+X_UP.grp_sel(_grp,X_UM,_acu,,,,,,,,,,'maximized_with_title');
+X_UP.win_sel(_grp);
+
+_res:=X_UP.select();
+UMO.C6:=_c6;
+_res
+
+
+\memo_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: dodanie bledu na podstawie generacji -> UMANGR
+::       sprawdza czy taki blad byl juz wpisywany do memo
+::       wg [AKUL] dla logów FPACZ
+::   WE: _a - string z bledem
+::       [_b] - rodzaj operacji domyślnie Generacja='T'
+::  OLD: \memo_add/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_opis:={? var_pres('_a')=type_of('') || _a || '' ?};
+_rodz:={? var_pres('_b')=type_of('') || _b || 'T' ?};
+{? _opis<>''
+||
+::   {? UMANGR.memo_get(,'O')
+::   || _memo:=UMANGR.memo_get('a','O');
+::      {? _memo.is_open
+::      || fwrite(_memo,_a);
+::         UMANGR.memo_put(_memo,'O')
+::      || UMANGR.memo_put(_a,'O')
+::      ?}
+::   ?}
+   UMANGLOG.cntx_psh();
+   UMANGLOG.index('LP');
+   UMANGLOG.prefix();
+   UMANGLOG.blank();
+   UMANGLOG.UMANGR:=UMANGR.ref();
+   UMANGLOG.R:=_rodz;
+   UMANGLOG.LP:=exec('umang_log_lp','umowy_aneks');
+   UMANGLOG.OPIS:=_opis;
+   UMANGLOG.add();
+   UMANGLOG.cntx_pop()
+?};
+''
+
+
+\an_new
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: dodanie nowego aneksu
+::   WE: [_a] - czy transakcja jest wywolywana zewnetrznie (1) lub w formule (0)
+::       [_b] - czy seryjnie (0) nie / tak (1)
+::       [_c] - opis dodatkowy dla wpisywania komunikatow jezeli _b=1 to _e musi byc podany
+::       [_d] - czy mozna wystawiac aneks wstecznie 0 - nie 1 -tak
+::   WE: UM.ref nowego rekoru - wystawiono aneks
+::  OLD: \an_new/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+{? _>=2 || {? type_of(_b)<>1 || _b:=0 ?} || _b:=0 ?};
+
+{? _>=4 || {? type_of(_d)<>1 || _d:=0 ?} || _d:=0 ?};
+_opis:={? var_pres('_c')=type_of('') || _c || '' ?};
+_rodz:='T';
+
+_wyn:=null;
+
+UMAN.cntx_psh();
+UM.cntx_psh();
+VAR_DEL.delete('zmien');
+zmien:=obj_new(20);
+zmien[1]:=date(0,0,0);
+zmien[4]:=0;
+ref_old:=UM.ref();
+UMO.OD:=UM.DPO;
+UMO.DO:=UM.DO;
+_ok:=1;
+_ref_uman:=null();
+_old_stat:=UM.STAT_REJ;
+
+{? _b=0
+|| UMAN.index('POZ');
+   UMAN.prefix(ref_old);
+   UMAN.BIE:=ref_old;
+   UMAN.blank();
+   UMAN.prefix();
+   exec('an_sym','umowy_aneks');
+   {? UM.r_lock(1,1,1)
+   || UM.STAT_REJ:='E';
+      UM.put(1);
+      {? UMAN.add() & UMAN.r_lock(1,1,1)
+      || _ref_uman:=UMAN.ref();
+         _var_umpop:=exec('var_umpop','umowy_aneks');
+         _var_umpop.RODZ:='';
+         _var_umpop.D:=date(0,0,0);
+         _var_umpop.SYM:='';
+         _var_umpop.OPIS:='';
+         _var_umpop.PO_FIRST:=1;
+
+         _context:=params_get();
+
+         params_set('context',_context,'var_umpop',_var_umpop);
+         exec('um_win_edit_set','umowy_aneks');
+
+         UMAN.memo_set(,'MEMO');
+         _ok:=UMAN.edit("exec('chk_an','umowy_aneks')");
+         UMAN.BIE:=ref_old;
+         UMAN.put(1);
+         UMAN.r_unlock()
+      || UMAN.del()
+      ?};
+      UM.r_unlock()
+   ||
+      {? FUN.ask('Umowę %1 obsługuje inny użytkownik.\nCzy chcesz zobaczyć kto?'@[UM.SYM])
+      || UM.r_lock(1,,1)
+      ?};
+      _ok:=0
+   ?}
+||
+:: automatyczne zakladanie pozycji aneksu
+   UMAN.index('POZ');
+   UMAN.prefix(ref_old);
+   UMAN.blank();
+   UMAN.memo_set(,'MEMO');
+   UMAN.BIE:=ref_old;
+   UMAN.D:=UMANGR.DZ;
+   UMAN.NAZ:='Utworzony seryjnie'@;
+   UMAN.RODZ:=UMANGR.RODZ;
+   UMAN.UMANGR:=UMANGR.ref();
+   exec('an_sym','umowy_aneks')
+?};
+_err:=0;
+{? _ok=1
+||
+   {? UM.OD<UMAN.D
+   ||
+      _data:=date(0,0,0);
+      UM.clear();
+      {? UM.seek(UMAN.BIE)
+      ||
+         UP.cntx_psh();
+         UP.index('UM');
+         UP.prefix(UM.ref());
+         {? UP.first()
+         ||
+            {!
+            |?
+               no_msg(1);
+               _data_pom:=exec('up_zlp_sp','umowy_zlecenia',UM.ODDZ,UP.ref(),UMAN.D,'s',1);
+               _err:=errno();
+               no_msg(0);
+               {? _data_pom>_data || _data:=_data_pom ?};
+               UP.next()
+            !}
+         ||
+            {? _b=0
+            || FUN.info('Umowa nie posiada pozycji.'@)
+            || exec('umglog_add','umowy_aneks','Umowa nie posiada pozycji [%1]'@[_opis],_rodz)
+            ?}
+         ?};
+         _data:=_data+1;
+         UP.cntx_pop();
+         _daan:={? UMAN.RODZ='E' || UMAN.DEND || UMAN.D ?};
+         {? (_data>=_daan) & {? UMAN.RODZ='E' || _data>(_daan+1) || 1 ?}
+         ||
+            {? _b=0
+            ||
+::             info o fakturach dla zmiennej w up_zlp_sp
+               {? var_pres('sym_fakt')>0
+               || zmien[5]:='\n\npowiązane dokumenty:\n'@+sym_fakt
+               || zmien[5]:=''
+               ?};
+               zmien[2]:=FUN.choice('Dla podanej daty %1\nIstnieją realizacje, faktury lub karty odpadów.'
+                                    '\nMinimalna data wprowadzenia aneksu to: %2.'
+                                    '\nAkceptujesz datę?'@[form(_daan),form(_data)]+zmien[5]
+                                ,1,'Tak'@,'Nie'@,'Wystaw wstecznie'@);
+               {? zmien[2]=1
+               ||
+                  UMAN.D:=_data;
+                  UMAN.put(1)
+               |? zmien[2]=2
+               ||
+                  _ok:=0
+               |? zmien[2]=3
+               ||
+                  zmien[1]:=UMAN.D;
+                  UMAN.DF:=_data;
+                  UMAN.put(1)
+               ||
+                  _ok:=0
+               ?}
+            ||
+               _ok:=0;
+               exec('umglog_add','umowy_aneks'
+                ,'Dla podanej daty %2 istnieją realizacje lub faktury. '
+                 'Minimalna data wprowadzenia aneksu to: %3 [%1]'@[_opis,form(_daan),form(_data)],_rodz)
+            ?}
+         ?}
+      ||
+         _ok:=0
+      ?}
+   ||
+      VAR_DEL.delete('__aduman'); __aduman:=1;
+      {? _b=0
+      ||
+         {? _d=0
+         ||
+            FUN.info('Data aneksu musi być większa od daty umowy.'@)
+         ||
+            {? FUN.ask('Wprowadzano już następne zmiany. Wprowadzać wstecznie?'@)
+            ||
+               max1m:=1;
+               _wyn:=exec('dod_an_x','umowy_aneks',UMAN.ref())
+            ?}
+         ?}
+      || exec('umglog_add','umowy_aneks','Data aneksu musi być większa od daty umowy [%1]'@[_opis],_rodz)
+      ?};
+::    dla tego przypadku nigdy nie zostanie dodany nowy UMAN (mozliwe ze wprowadzono zmiany wstecznie)
+      _ok:={? _wyn<>null() || {? __aduman || -1 || 0 ?} || 0 ?};
+      VAR_DEL.delete('__aduman')
+   ?}
+?};
+{? _err>0
+|| FUN.info('Ze względu na przetwarzanie zgłoszeń jednorazowych\n'
+            'wprowadzenie aneksu zostało anulowane.\n\n'
+            'Spróbuj za chwilę ponownie.'@);
+   _ok:=0
+?};
+{? ~_ok
+|| UM.STAT_REJ:=_old_stat;
+   UM.put(1);
+   {? _ref_uman<>null() || UMAN.del() ?}
+|? _ok=1
+||
+   {? _a=0 || do() ?};
+   {? _ref_uman<>null() | UMAN.add()
+   ||
+      {? _b=1
+      ||
+         UMAN.put();
+         UMAN.memo_set(UMANGR.OP,'MEMO')
+      ?};
+      UMAN.memo_put(,'MEMO');
+
+      _dd_an:=UMAN.D;
+      UM.cntx_psh();
+      UMAN.cntx_psh();
+      UP.cntx_psh();
+      UP.index('UM');
+      UP.prefix(ref_old);
+      UP.first();
+::    usuwanie zlecen
+      exec('um_sp_us','umowy_zlecenia',ref_old,_dd_an,,1,1,0);
+      {? n_fakt=1
+      ||
+         exec('usu_mmm','umowy_wspolne',ref_old,_dd_an,,1,0,0);
+         echo()
+      ?};
+      UM.cntx_pop();
+      UMAN.cntx_pop();
+      UP.cntx_pop();
+
+      UP.index('UM');
+      UP.prefix(ref_old);
+      UP.first();
+      {!
+      |?
+         exec('up_zlp_sp','umowy_zlecenia',UM.ODDZ,UP.ref(),UMAN.D,'u',1,zmien[1]);
+         UP.next()
+      !};
+
+      _wyn:=exec('kop_umo','umowy_aneks')
+   ||
+      {? _b=1
+      || exec('umglog_add','umowy_aneks','Nie udało się dodać rekordu do tabeli aneksów [%1]'@[_opis],_rodz)
+      ?}
+   ?};
+   {? _a=0 || end() ?}
+?};
+
+UM.cntx_pop();
+UMAN.cntx_pop();
+
+VAR_DEL.delete('zmien');
+{? _ok=1 & _wyn<>null || UM.seek(_wyn) ?};
+_wyn
+
+
+\chk_an
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji aneksu
+::  OLD: \chk_an/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=__CHK.record(UMAN,,'D');
+_back:=exec('get','#params',100176,2)='T';
+{? _wyn='' & UMO.DO<>date(0,0,0) & UMAN.D>UMO.DO
+||
+   FUN.info('Umowa obowiązuje do %1.\nData aneksu nie może być późniejsza.'@[$UMO.DO]);
+   _wyn:='D'
+?};
+{? _wyn='' & UMAN.D<=UMO.OD
+||
+   FUN.info('Umowa obowiązuje od %1.\nNależy podać późniejszą datę zmiany.'@[$UMO.OD]);
+   _wyn:='D'
+|? _wyn='' & ~(UM.OD<UMAN.D) & ~_back
+||
+   FUN.info('Umowa obowiązuje od %1.\nNależy podać późniejszą datę zmiany.'@[$UM.OD]);
+   _wyn:='D'
+|? _wyn='' & UMAN.RODZ='E' & UMAN.D>UMAN.DEND
+||
+   FUN.info('Data aneksu nie może być większa od daty zakończenia umowy.'@);
+   _wyn:='DEND'
+?};
+_wyn
+
+
+\dod_an_x
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: dodaje aneks w (srodku)
+::   WE: _a - ref tworzonego aneksu
+::   WY: UM.ref nowej umowy
+::  OLD: \dod_an_x/um_aneks.fml
+::----------------------------------------------------------------------------------------------------------------------
+_uman:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+
+UMAN.cntx_psh();
+_uman_old:=UMAN.ref;
+_data:=UMAN.D;
+
+:: sprawdzanie daty (czy nie jest taka sam jak juz zarejestrowany aneks)
+_add:=1;
+UMAN.cntx_psh();
+UMAN.index('D');
+UMAN.prefix(ref_old,_data);
+{? UMAN.first() & (_isDat:=0;{! |? _isDat:=_uman<>UMAN.ref(); ~_isDat & UMAN.next() !};_isDat)
+||
+   FUN.info('W dniu %1 zarejestrowano już aneks.\nUmowa zostanie odblokowana do modyfikacji.'@[$_data]);
+   _add:=0;
+   {? var_pres('__aduman')>0 || __aduman:=0 ?}
+?};
+UMAN.cntx_pop();
+
+_wyn:=null;
+{? _add=1
+||
+   _um:=UMAN.BIE;
+
+::   UMAN.BIE:=ref_old;
+::   UMAN.add;
+   UMAN.memo_put(,'MEMO');
+   UM.clear();
+
+   _uman:=UMAN.ref;
+   _data:=UMAN.D;
+
+:: przenumerowanie pozycji
+   UMAN.cntx_psh();
+   UMAN.index('D');
+   UMAN.prefix(ref_old);
+   {? UMAN.first
+   || {!
+      |?
+         UMAN.POZ+=10000;
+         UMAN.put();
+         UMAN.next
+      !};
+      UMAN.first;
+      _poz:=0;
+      {!
+      |?
+         _poz+=1;
+         UMAN.POZ:=_poz ;
+         UMAN.put();
+         UMAN.next
+      !}
+   ?};
+   UMAN.cntx_pop()
+||
+   UMAN.index('D');
+   UMAN.prefix(ref_old,_data);
+   UMAN.first;
+   _uman:=UMAN.ref;
+   _data:=UMAN.D;
+   UMAN.prefix(ref_old)
+?};
+
+_do_dat:=exec('d_hgen_do','umowy_wspolne',ST.ODDZ);
+
+UM.cntx_psh();
+UMAN.cntx_psh();
+exec('um_sp_us','umowy_zlecenia',ref_old,_data,_do_dat,1,1);
+UMAN.cntx_pop();
+UM.cntx_pop();
+
+{? n_fakt
+||
+   UMAN.cntx_psh();
+   exec('um_sp_us','umowy_zlecenia',ref_old,_data,_do_dat,1,0);
+   UMAN.cntx_pop();
+   UMAN.cntx_psh();
+   UMAN.index('D');
+   UMAN.prefix(ref_old);
+   _czy_fir:=0;
+   {? UMAN.seek(_uman)
+   || {? UMAN.next()
+      || ref_old:=exec('uman_umo','umowy_aneks',UMAN.ref);_czy_fir:=0
+      || UMAN.seek(_uman_old);ref_old:=exec('uman_umo','umowy_aneks',UMAN.ref);_czy_fir:=0
+      ?};
+      {? ~_add || _uman:=UMAN.ref() ?}
+   ?};
+   UMAN.cntx_pop();
+   UMAN.seek(_uman);
+   {? _add || exec('kop_umo','umowy_aneks',1,_czy_fir) ?};
+   UM.cntx_psh();
+   UM.prefix();
+   UM.seek(UMAN.BIE);
+   {? exec('um_stat','umowy',0)
+   || UM.get();
+      UM.STAT_REJ:={? ~UM.AN || 'N' || 'E' ?};
+      UM.put(1)
+   ?};
+   _wyn:=UM.ref();
+   UM.cntx_pop()
+||
+   {? do_state()=0
+   ||
+      {? FUN.ask('Dla podanej daty %1 istnieją realizacje lub faktury.\nUtworzenie aneksu niemożliwe.'
+                 '\n\nWyświetlić szczegóły?'@[form(UMAN.D)])
+      ||
+         exec('um_sp_us','umowy_zlecenia',UMAN.BIE,UMAN.D,_do_dat,0,1)
+      ?}
+   ||
+      FUN.info('Dla podanej daty %1 istnieją realizacje lub faktury.\nUtworzenie aneksu niemożliwe.'@[form(UMAN.D)])
+   ?}
+?};
+UMAN.cntx_pop();
+_wyn
+
+
+\kop_umo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: kopiuje warunki umowy / wystawia aneks
+::       ref_old - ref umowy kopiowanej
+::       ref_new - ref umowy skopiowanej
+::   WE: [_a] - 0 ostatnie warunki , 1 - w srodku
+::        _b - jezeli _a = 1 to drugi parametr czy 1 poz lub czy w srodku 0
+::   WY: UM.ref ref nowej umowy
+::  OLD: \kop_umo/um_aneks.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+{? _>=2 || {? type_of(_b)<>1 || _b:=0 ?} || _b:=0 ?};
+
+_um:=obj_new(100);
+_up:=obj_new(100);
+_up_poj:=obj_new(20);
+
+_il_um:=UM.fld_num();
+_il_up:=UP.fld_num();
+
+il_typu:=UM_TYP.fld_num();
+_um_typ:=obj_new(il_typu);
+
+_il_zaw:=UMZ.fld_num();
+_um_zaw:=obj_new(_il_zaw);
+
+UM.clear();
+UM.seek(ref_old);
+{! _licz:=1.._il_um |! _um[_licz]:=UM[_licz] !};
+
+:: obsluga memo
+_memo:=UM.memo_get('r','U');
+
+UM.blank();
+{! _licz:=1.._il_um
+|!
+   _type_of:=var_pres(UM.fld_acr(_licz),UM);
+   {? _type_of<>25 & _type_of<>36 || UM[_licz]:=_um[_licz] ?}
+!};
+
+{? _a=0 || UM.STU:=exec('kst_ste','umowy_wspolne') ?};
+
+{? _a=1 & _b=1 || UM.OD:=UM.DPO || UM.OD:=UMAN.D; {? UMAN.RODZ='E' & UMAN.DEND<>date(0,0,0) || UM.DO:=UMAN.DEND ?} ?};
+
+ref_new:=null;
+{? UM.add()
+|| UMO.UM:=UM.ref;
+   ref_new:=UM.ref();
+   {? _memo.is_open || UM.memo_put(_memo,'U') ?}
+|| undo()
+?};
+
+UP.index('UM');
+UP.prefix(ref_old);
+{? UP.first()
+||
+   {!
+   |?
+      {! _licz:=1.._il_up |! _up[_licz]:=UP[_licz] !};
+      {? _a=1 & _b=1 || _r_up:=0 || _r_up:=#UP.ref() ?};
+      _up_src:=UP.UP_SRC;
+      UP.cntx_psh();
+      UP.clear();
+      UP.blank();
+      _licz:=0;
+      {! _licz:=1.._il_up |! {? type_of(UP[_licz])<>0 ||  UP[_licz]:=_up[_licz] ?} !};
+      UP.UM:=ref_new;
+      UP.R_UP:=_r_up;
+      UP.ZM:='N';
+      UP.UP_SRC:=_up_src;
+      UP.add();
+      _ref_up:=UP.ref();
+      UP.cntx_pop();
+      {? _a=1 & _b=1 || UP.R_UP:=#_ref_up;UP.put() ?};
+
+      {? _a=1 & _b=0
+      ||
+         UP.cntx_psh();
+         UP.index('R_UP');
+         UP.prefix(_r_up);
+         {? UP.first()
+         ||
+            {!
+            |?
+               {? #UP.ref<>_ref_up
+               || UP.cntx_psh();
+                  UP.clear();
+                  UP.R_UP:=#_ref_up;UP.put();
+                  UP.cntx_pop()
+               ?};
+               UP.next()
+            !}
+         ?};
+         UP.cntx_pop()
+      ?};
+
+      UP.next()
+   !}
+?};
+
+:: przepisanie zawieszen umow
+UM.clear();
+{? UM.seek(ref_old)
+||
+   UMZ.index('UM');
+   UMZ.prefix(UM.ref());
+   {? UMZ.first()
+   || {!
+      |?
+         {! _licz:=1.._il_zaw |! _um_zaw[_licz]:=UMZ[_licz] !};
+         UMZ.cntx_psh();
+         UMZ.clear();
+         UMZ.blank();
+         {! _licz:=1.._il_zaw |! UMZ[_licz]:=_um_zaw[_licz] !};
+         UMZ.UM:=ref_new;
+         UMZ.add();
+         UMZ.cntx_pop();
+         UMZ.next()
+     !}
+   ?}
+?};
+
+:: przepisanie typow umow
+UM.clear;
+{? UM.seek(ref_old)
+||
+   UM_TYP.index('UM');
+   UM_TYP.prefix(UM.ref());
+   {? UM_TYP.first()
+   || {!|?
+         {! _licz:=1..il_typu |! _um_typ[_licz]:=UM_TYP[_licz] !};
+         UM_TYP.cntx_psh();
+         UM_TYP.clear();
+         UM_TYP.blank();
+         {! _licz:=1..il_typu |! UM_TYP[_licz]:=_um_typ[_licz] !};
+         UM_TYP.UM:=ref_new;
+         UM_TYP.add();
+         UM_TYP.cntx_pop();
+         UM_TYP.next()
+     !}
+   ?}
+?};
+VAR_DEL.delete('il_typu');
+
+UM.clear();
+{? UM.seek(ref_old)
+||
+   UM.A:='T';
+   UM.UMAN:=UMAN.ref();
+   UM.put()
+?};
+
+{? _a=0
+||
+   UMAN.cntx_psh();
+   UMAN.index('UMAN');
+   UMAN.prefix(ref_old);
+   {? UMAN.first()
+   ||
+      {!
+      |?
+         UMAN.cntx_psh();
+         UMAN.clear();
+         UMAN.BIE:=ref_new;UMAN.put();
+         UMAN.cntx_pop();
+         UMAN.first()
+      !}
+   ?};
+   UMAN.cntx_pop();
+   exec('licz_an','umowy_aneks',ref_new)
+||
+   exec('licz_an','umowy_aneks',UMAN.BIE)
+?};
+obj_del(_um);
+obj_del(_up);
+obj_del(_up_poj);
+ref_new
+
+
+\licz_an
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: obliczanie ilości aneksów
+::   WE: _a - ref umowy
+::  OLD: \licz_an/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UM.seek(_a)
+|| UMAN.index('UMAN');
+   UMAN.prefix(UM.ref);
+   _licz:=0;
+   {? UMAN.first
+   || {!|?
+         _licz+=1;
+         UMAN.next
+      !}
+   ?};
+   UM.AN:=_licz;
+   UM.put
+?};
+''
+
+
+\uman_umo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: zwraca ref umowy zwiazanej z pozycja aneksu
+::   WE: _a - UMAN.ref
+::   WY: ref umowy zwiazanej z pozycja aneksu
+::  OLD: \uman_umo/um_aneks.fml
+::----------------------------------------------------------------------------------------------------------------------
+UMAN.cntx_psh();
+_wyn:=UMAN.BIE;
+UM.index('AN');
+UM.prefix(_a);
+{? UM.first() || _wyn:=UM.ref() || _wyn:=UMAN.BIE ?};
+UMAN.cntx_pop();
+_wyn
+
+
+\ang_bl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wyswietlanie bledow generacji
+::  OLD: \ang_bl/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+:: UMANGR.memo_get(,'O');
+:: UMANGR.memo_vie(,'O');
+UMANGLOG.cntx_psh();
+_msk:=UMANGR.ODDZ+form(UMANGR.AR-2000,-2,0,'99');
+{? (UMANGLOG.name()+3)<>_msk || UMANGLOG.use('umlog'+_msk) ?};
+UMANGLOG.index('LP');
+UMANGLOG.prefix(UMANGR.ref());
+{? UMANGLOG.size()=0 & UMANGR.memo_line('O')<>'\n'
+|| exec('umang_log_build','umowy_aneks',UMANGR.ref())
+?};
+UMANGLOG.win_sel('WER');
+UMANGLOG.select();
+UMANGLOG.cntx_pop()
+
+
+\ang_wyc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: usuwanie wygenerowanych aneksow
+::  OLD: \ang_wyc/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? UMANGR.r_lock(1,1,1)
+|| _msk:=UMANGR.ODDZ+form(UMANGR.AR-2000,-2,0,'99');
+   UMANGLOG.use('umlog'+_msk);
+
+   VAR_DEL.delete('__umglog');
+   __umglog:=tab_tmp_out_tr(1,'LP','INTEGER',''
+           ,'R','STRING[1]',''
+           ,'OPIS','STRING[255]','');
+   UMAN.index('ANG');
+   UMAN.prefix(UMANGR.ref);
+   _setan:=0;
+   {? (_setan:=UMAN.first(); _setan) & FUN.ask('Usunąć wszystkie aneksy?'@)
+   ||
+      _size:=UMAN.size();
+      _licz:=0;
+      _time:=time();
+      _rodz:='N';
+      _info:='Usuwano dnia: %1 przez %2'@[form(date)+', '+form(time(),,3),(10+username)];
+      exec('memo_add','umowy_aneks',_info,_rodz);
+
+      {!
+      |?
+         _licz+=1;
+::         FZL.ECHO(_licz,_size,_time,time(),UMAN.BIE().SYM);
+         echo('Trwa wycofywanie aneksów ...%1 z %2'@[form(_licz),form(_size)]);
+         _err:=0;
+
+         do();
+
+         _stu_ref:=UMAN.BIE().STU;
+         _stu_f:=UMAN.BIE().STU().F;
+
+         _um_now:=UMAN.BIE;
+         UMAN.cntx_psh();
+         UMAN.index('POZ');
+         UMAN.prefix(_um_now);
+         _ref:=#UMAN.BIE().KH;
+         {? KH.r_lock(1,1,1,_ref,'kontr')
+         || _kodkh:=UMAN.BIE().KH().KOD;
+            KH.r_unlock()
+         || _kodkh:='[W edycji]'@
+         ?};
+         _opis:='Kontrahent %1 Umowa %2'@[_kodkh,UMAN.BIE().SYM];
+         {? exec('an_del','umowy_aneks',1,1,_opis)>0
+         || UM.clear();
+            {? UM.seek(ref_old)
+            || exec('stu_auto','umowy_wspolne',_stu_ref,_stu_f,1,_opis)
+            ?}
+         || _err:=1;
+            undo()
+         ?};
+         UMAN.cntx_pop();
+
+         end();
+         UMANGR.memo_get(,'O');
+         __umglog.clear();
+         {? __umglog.first()
+         || {!
+            |? exec('memo_add','umowy_aneks',__umglog.OPIS,__umglog.R);
+               __umglog.next()
+            !}
+         ?};
+         UMAN.next()
+      !};
+      echo()
+   |? ~_setan
+   || FUN.info('Brak wygenerowanych aneksów.'@)
+   ?};
+   UMAN.index('ANG');
+   UMAN.prefix(UMANGR.ref);
+   UMANGR.IL:=UMAN.size();
+   UMANGR.put();
+   prgs_clr();
+   echo();
+   VAR_DEL.delete('__umglog')
+||
+   {? FUN.ask('Aneks obsługuje inny użytkownik.\nCzy chcesz zobaczyć kto?'@) & UMANGR.r_lock(1,,1)
+   || UMANGR.r_unlock()
+   ?}
+?};
+unlock_r();
+''
+
+
+\an_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: usuwanie aneksu
+::   WE: [_a] - czy transakcja jest wywolywana zewnetrznie (1) lub w formule (0)
+::       [_b] - czy seryjnie (0) nie / tak (1)
+::       [_c] - opis dodatkowy dla wpisywania komunikatow jezeli _b=1 to _c musi byc podany
+::   WY: 0/1 - wynik funkcji UMAN.del()
+::  OLD: \an_del/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+{? _>=2 || {? type_of(_b)<>1 || _b:=0;_c:=0 ?} || _b:=0;_c:=0 ?};
+_opis:={? var_pres('_c')=type_of('') || _c || '' ?};
+_rodz:='N';
+
+_wyn:=-1;
+ref_old:=null;
+UM.cntx_psh();
+
+_del:=0;
+_poz:=UMAN.POZ;
+UMAN.cntx_psh();
+UMAN.index('POZ');
+UMAN.prefix(UMAN.BIE);
+UMAN.last();
+{? UMAN.POZ=_poz
+|| _del:=1
+?};
+UMAN.cntx_pop();
+
+_sprRR:="
+_wyn:=0;
+ZLE.cntx_psh();
+ZLE.index('USL');
+ZLE.prefix('N',UM.ref);
+_wyn:=ZLE.first();
+ZLE.cntx_pop();
+_wyn
+";
+_tabzle:=tab_tmp(1,'M','STRING[8]','Maska','R','INTEGER','REF');
+{? _del
+||
+   {? _b=0 & _sprRR()
+   || _txt:='Uwaga do umowy wystawiono zgłoszenie ręczne. \n '@;
+      _txt+='Zgoda na usunięcie aneksu spowoduje że zgłoszenie pozostanie ale zostanie odłączone od umowy \n\n'@
+   || _txt:=''
+   ?};
+   _czy:={? _b=0 || FUN.ask(_txt+'Czy na pewno chcesz wycofać aneks do umowy?'@) || 1 ?};
+
+   {? _a=0 || do() ?};
+
+   UM.index('AN');
+   UM.prefix(UMAN.ref());
+   {? UM.first()
+   ||
+      ref_old:=UM.ref();
+      ref_an:=UM.UMAN;
+      UM.clear();
+      UM.UMAN:=null;
+      UM.A:='N';
+      UM.STU:=exec('kst_ste','umowy_wspolne');
+      UM.put()
+   ||
+      undo();
+      {? _b=0
+      || FUN.info('Nie znaleziono umowy do aneksu.'@)
+      || exec('umglog_add','umowy_aneks','Nie znaleziono umowy do aneksu [%1]'@[_opis],_rodz)
+      ?}
+   ?};
+
+   {? _czy=1
+   ||
+      UM.clear();
+      {? UM.seek(UMAN.BIE)
+      || ref_new:=UM.ref();
+         UMO.UM:=ref_new;
+::       usuwanie zawieszen umow
+         UMZ.index('UM');
+         UMZ.prefix(UM.ref());
+         {? UMZ.first()
+         || {! |? UMZ.del() !}
+         ?};
+
+::       usuwanie typow umow
+         UM_TYP.index('UM');
+         UM_TYP.prefix(UM.ref());
+         {? UM_TYP.first()
+         || {! |? UM_TYP.del() !}
+         ?};
+
+         UP.index('POZ');
+         UP.prefix(UM.ref());
+
+         _fas:=UM.FAS().KOD;
+         _okr:=exec('zwr_okr','#datetime',_fas,UMAN.D);
+         _do:=exec('d_hgen_do','umowy_wspolne',UM.ODDZ);
+         _od_kiedy:=exec('okr_data','umowy_wspolne',1,_fas,_okr,UMAN.D~1);
+
+         _um:=UM.ref();
+         _zlecenia:=exec('zl_usuw','umowy_zlecenia',UM.ref,_od_kiedy,0,_b,_opis);
+
+         UP.index('POZ');
+         UP.prefix(_um);
+         {? UP.first() | _zlecenia
+         ||
+            {!
+            |?
+               {? _tabzle.first() || {!|? _tabzle.del() !} ?};
+               {? UP.count()<>0
+               ||
+::                szukanie zlecen gdyby ktos probowal dodac reczne zgloszenie
+                  ZLE.index('UP');
+                  ZLE.prefix(UP.ref());
+                  {? ZLE.first()
+                  ||
+
+                     {!
+                     |?
+                        _tabzle.blank();
+                        _tabzle.R:=#ZLE.ref;
+                        _tabzle.M:=ZLE.name;
+                        _tabzle.add();
+                      ZLE.next()
+                     !};
+                   {? _tabzle.first()
+                   ||
+                      {!
+                      |?
+                         ZLE.prefix();
+                        {? ZLE.seek(_tabzle.R,_tabzle.M)
+                        ||
+                              {? ZLE.count=0
+                              ||
+                                 POM.TAB:='ZLE';
+                                 POM.TYPDOK:='ZLE';
+                                 numer:=ZLE.NR;
+                                 oldnumer:=1;
+                                 exec('nr_old','numery');
+                                 ZLE.del()
+                              |? ZLE.CZUM='N'
+                              ||
+                                 ZLE.cntx_psh();
+                                 ZLE.UP:=null;
+                                 exec('zlp_um_null','umowy_zlecenia',ZLE.ref,ZLE.UM);
+                                 ZLE.UM:=null;
+                                 ZLE.prefix();
+                                 ZLE.put();
+                                 ZLE.cntx_pop();
+                                  {? ZLE.count=0
+                                  ||
+                                       POM.TAB:='ZLE';
+                                       POM.TYPDOK:='ZLE';
+                                       numer:=ZLE.NR;
+                                       oldnumer:=1;
+                                       exec('nr_old','numery');
+                                       ZLE.del()
+                                 ?}
+                             ?}
+                        ?};
+                        _tabzle.next
+                     !};
+                     POM.TYPDOK:='UMO';
+                     POM.TAB:='UM'
+                  ?}
+                  ?}
+               ?};
+                  {? UP.count<>0
+                  ||
+                     undo();
+                     {? _b=0
+                     || FUN.info('Pozycja umowy jest powiązana\nwycofanie aneksu niemożliwe.'@)
+                     || exec('umglog_add','umowy_aneks'
+                         ,'Pozycja umowy jest powiązana. Wycofanie aneksu niemożliwe [%1]'@[_opis],_rodz)
+                     ?}
+                  ?};
+               UP.del()
+            !}
+         ?};
+
+::       usuwanie zlaczenia aneksu do biezacej umowy
+         UMAN.cntx_psh();
+         UMAN.index('POZ');
+         UMAN.prefix(ref_new);
+         {? UMAN.first()
+         ||
+            {!
+            |?
+               UMAN.cntx_psh();
+               UMAN.prefix();
+               UMAN.BIE:=ref_old;
+               UMAN.put();
+               UMAN.cntx_pop();
+
+               UMAN.first()
+            !}
+         ?};
+         UMAN.cntx_pop;
+
+         {? UM.count<>0 | exec('deladok','dokum','UM')<>1
+         ||
+            undo();
+            {? _b=0
+            || FUN.info('Umowa jest powiązana\nwycofanie aneksu niemożliwe.'@)
+            || exec('umglog_add','umowy_aneks'
+                ,'Pozycja umowy jest powiązana. Wycofanie aneksu niemożliwe [%1]'@[_opis],_rodz)
+            ?}
+         ||
+            UM.del();
+::          sprawdzanie ryczaltowych zlecen
+            UM.cntx_psh();
+            UM.clear();
+            {? UM.seek(ref_old)
+            ||
+::             sprawdzanie jakie zlecenia wywlic
+               {? UM.AN=0
+               ||
+                  _dat:=UM.OD;
+                  exec('zl_usuw','umowy_zlecenia',UM.ref,_dat,0,_b,_opis)
+               ?};
+
+               UP.index('POZ');
+               UP.prefix(UM.ref);
+               {? UP.first()
+               ||
+                  {!
+                  |?
+                     _zle:=exec('czy_zle','umowy_zlecenia',UMAN.D);
+                     {? _zle
+                     ||
+                        ZLP.index('RP');
+                        ZLP.prefix(_zle,'R');
+                        {? ZLP.first()
+                        || ZLP.DOD:=date(0,0,0);
+                           ZLP.put()
+                        ?}
+                     ?};
+                     UP.next()
+                  !}
+               ?};
+               exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2))
+            ?};
+            UM.cntx_pop()
+         ?}
+      ||
+         undo();
+         {? _b=0
+         || FUN.info('Nie znaleziono umowy do aneksu.'@)
+         || exec('umglog_add','umowy_aneks','Nie znaleziono umowy do aneksu [%1]'@[_opis],_rodz)
+         ?}
+      ?};
+      UMAN.clear();
+      {? UMAN.seek(ref_an) ||  _wyn:=UMAN.del(1,1);{? _wyn>0 || _wyn:=1 ?} ?}
+   ||
+      VAR_DEL.delete('ref_new');
+      undo()
+   ?};
+   {? _a=0 || end() ?};
+   {? var_pres('ref_new')>0
+   ||
+      {? ref_new<>null
+      ||
+         exec('licz_an','umowy_aneks',ref_old);
+::       dodatkowo usuwanie znaczników aneksowany dla umowy
+         {? UM.seek(ref_old)
+         ||
+            UMO.UM:=UM.ref;
+
+            UP.index('POZ');
+            UP.prefix(UM.ref());
+            {? UP.first()
+            ||
+               {!
+               |?
+                  exec('up_zlp_an','umowy_zlecenia',UM.ODDZ,UP.ref(),UM.OD);
+                  UP.next()
+               !}
+            ?}
+         ?}
+      ?}
+   ?}
+||
+   {? _b=0
+   || FUN.info('Można usunąć tylko ostatni aneks.'@)
+   || exec('umglog_add','umowy_aneks','Można usunąć tylko ostatni aneks [%1]'@[_opis],_rodz)
+   ?}
+?};
+UM.cntx_pop();
+obj_del(_tabzle);
+:: nowy prefix - biezace UM zostalo usuniete
+{? var_pres('ref_new')>0 & ref_new<>null & var_pres('ref_old')>0 & ref_old<>null
+||
+   UM.seek(ref_old);
+   UMAN.index('POZ');
+   UMAN.prefix(ref_old)
+?};
+_wyn
+
+
+\ang_spr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdzanie wypelnienia rekordu
+::  OLD: \ang_spr/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=__CHK.record(UMANGR,,'D','DZ');
+{? _wyn='' & UMANGR.D>UMANGR.DZ
+|| FUN.info('Data wprowadzenia nie może być późniejsza niż data zmiany.'@);
+   _wyn:='D'
+|? _wyn='' & UMANGR.R='P' & UMANGR.PR=0
+|| FUN.info('Należy podać procent zmiany ceny.'@);
+   _wyn:='PR'
+|? _wyn='' & UMANGR.R='K' & UMANGR.CH=0 & UMANGR.CR=0
+|| FUN.info('Należy podać jedną z cen do zmiany (wg harmonogramu lub ryczałtową).'@);
+   _wyn:='CH'
+|? _wyn='' & UMANGR.CH<0
+|| FUN.info('Cena do zmiany (wg harmonogramu) musi być większa lub równa zero.'@);
+   _wyn:='CH'
+|? _wyn='' & UMANGR.CR<0
+|| FUN.info('Cena do zmiany (ryczałtowa) musi być większa lub równa zero.'@);
+   _wyn:='CR'
+?};
+_wyn
+
+
+\an_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: poprawa aneksow
+::   WY: -1/1 czy poprawiono
+::  OLD: \an_edit/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=-1;
+UMAN.win_edit('RED2');
+UMAN.memo_get(,'MEMO');
+{? UMAN.edit()
+|| UMAN.put();
+   UMAN.memo_put(,'MEMO');
+   _wyn:=1
+?};
+UMAN.win_edit('RED');
+_wyn
+
+
+\ang_poz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wyswietlanie wygenerowanych aneksow
+::  OLD: \ang_poz/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+UMAN.index('ANG');
+UMAN.prefix(UMANGR.ref);
+UMAN.win_sel('WER2');
+UMAN.win_edit('RED');
+UMAN.select;
+UMANGR.IL:=UMAN.size();
+UMANGR.put;
+''
+
+
+\um_an3
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: wyswietlanie lub dodawanie zmian do umowy
+::  OLD: \um_an3/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+UM.cntx_psh();
+_ar:=ST.AR; _am:=ST.AM;
+exec('zle_psh','open_tab');
+UM.get();
+UMO.UM:=UM.ref;
+{? UM.r_lock(1,1,1)
+||
+   UM.r_unlock();
+   exec('um_an','umowy_aneks',1)
+::   {? UM.STU().A='T'
+::   || exec('um_an','umowy_aneks',1)
+::   |? UM.STU().RODZ='' & UM.STU().A='N'
+::   || exec('um_an','umowy_aneks',2)
+::   || exec('um_an','umowy_aneks',0)
+::   ?}
+||
+   {? FUN.ask('Umowę %1 obsługuje inny użytkownik.\nCzy chcesz zobaczyć kto?'@[UM.SYM])
+   || UM.r_lock(1,,1)
+   ?}
+?};
+UM.cntx_pop();
+exec('zle_pop','open_tab');
+ST.AR:=_ar; ST.AM:=_am;
+UM.seek(UMO.UM);
+''
+
+
+\um_an4
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: wyswietlanie lub dodawanie zmian do umowy
+::  OLD: \um_an3/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+UM.cntx_psh();
+UM.get();
+UMO.UM:=UM.ref;
+exec('um_an','umowy_aneks',0);
+UM.cntx_pop();
+UM.seek(UMO.UM);
+''
+
+
+\um_an
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wyswietla aneksy do umowy - w tabeli tymczasowej
+::   WE: _a - 0 bez akcji   1 - wlaczone akcje   2 - dodana akcja usun dla zakonczonych
+::  OLD: \um_an/um_aneks.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+
+exec('done_set_aneks','umowy_aneks');
+_upr_an:=exec('chk_role','#b__box',OPERATOR.USER,'LUM_UMO_EANE');
+_upr_ak:=exec('chk_role','#b__box',OPERATOR.USER,'LUM_UMO_EAUM');
+
+max1m:=0;
+UMAN.win_edit('RED2');
+UMAN.index('POZ');
+UMAN.prefix(UM.ref());
+
+PARAM_W.TAB_TMP:='__x_xan';
+PARAM_W.TAB_POL:='';
+PARAM_W.TAB_TYT:='Aneksy do umowy %1'@[UM.SYM];
+t_sumk:='';
+
+_actpoj:=POJAZDY.actions('SLO_J','W');
+__add:=UM.STAT_REJ='T';
+__mod:=exec('get','#params',100176,2)='T';
+:: akcja Dołącz dla okienka WER2
+UP.actions('WER2',{? __mod || '' || 'D' ?});
+
+__x_xan:=exec('xan_init','umowy_aneks');
+
+__um_sel:=__x_xan.mk_sel('Historia zmian umowy'@,,0,'anks_suhsaksixn',,,,,'U');
+__x_xan.win_fld(__um_sel,,'RODZ',,,6);
+__x_xan.win_fld(__um_sel,,'DATA',,,10);
+__x_xan.win_fld(__um_sel,,'SYM',,,15);
+__x_xan.win_fld(__um_sel,,'NAZ',,,10);
+
+__um:="
+:: odszukuje UM - wykonuje formule _a
+:: bez odswiezania __x_xan
+   {? __x_xan.UM_REF<>0
+   ||
+      UM.cntx_psh();
+      UM.prefix();
+      {? UM.seek(__x_xan.UM_REF,)
+      || UM.memo_get(,'U');
+         _a()
+      ?};
+      UM.cntx_pop()
+   ?}
+";
+
+__dolacz:="
+   _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LUM_UMO_EANE';
+   _params.UIDREF:=exec('FindAndGet','#table',UM,UM.ref(),,\"uidref()\",'');
+   _params.AKCJA:='Aneksuj';
+   _params.PROC_START:='T';
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'UM',UM.ref());
+   exec('mp_run','#b__box',_params);
+   ~~
+";
+
+__uman_um:="
+:: odszukuje UMAN i UM - wykonuje formule _a
+:: odswieza zawartosc __x_xan gdy wynik _a>=0 (ze wzgledu na wynik funkcji del())
+:: dziedzina dla UM musi pozostac niezmieniona!
+   _wyn:=-1;
+   {? __x_xan.UMD<>0
+   || UM.cntx_psh();
+      UMAN.cntx_psh();
+      UMAN.prefix();
+      UM.prefix();
+      {? UMAN.seek(__x_xan.UMD,UMAN.name())
+      ||
+         UMAN.memo_get(,'MEMO');
+         {? UM.seek(UM.ref())
+         || _wyn:=_a()
+         ?}
+      ?};
+      UM.cntx_pop();
+      UMAN.cntx_pop();
+      {? _wyn>0 & var_pres('ref_new')>0 & ref_new<>null & var_pres('ref_old')>0 & ref_old<>null
+      || UM.seek(ref_old);
+         UMAN.index('POZ');
+         UMAN.prefix(ref_old)
+      ?}
+   ||
+      FUN.info('Zapis dotyczy warunków początkowych (bez aneksu).\nEdycja niemożliwa.'@)
+   ?};
+   {? _wyn>=0  || __xan_gen() ?}
+";
+
+__xan_gen:="exec('xan_gen','umowy_aneks')";
+
+__popraw:="
+   {? __x_xan.UMAN=0
+   || UM.cntx_psh();
+      UM.prefix();
+      {? (UM.prefix(); UM.seek(__x_xan.UM_REF,))
+      || _params:=exec('mp_run_a','#b__box');
+         _params.ACT_UID:='LUM_UMO_EANE';
+         _params.UIDREF:=UM.uidref();
+         _params.AKCJA:='Popraw';
+         _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+         exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'UM',UM.ref());
+         exec('mp_run','#b__box',_params)
+      ?};
+      UM.cntx_pop();
+      __xan_gen()
+   || FUN.info('Poprawa nagłówka aneksu umowy cyklicznej możliwe jedynie dla ostatniego aneksu.'@)
+   ?};
+   ~~
+";
+
+__zakoncz:="
+   {? __x_xan.UMAN=0
+   || _bie:=exec('FindAndGet','#table',UM,__x_xan.UM_REF,,,UM.ref());
+      UM.cntx_psh();
+      UM.prefix();
+      {? (UM.prefix(); UM.seek(__x_xan.UM_REF,)) || exec('aneks_zakoncz','umowy_aneks') ?};
+      UM.prefix();
+      UM.seek(_bie);
+      __xan_gen();
+      UM.cntx_pop();
+      UM.seek(__x_xan.UM_REF,)
+   || FUN.info('Zakończenie edycji aneksu umowy cyklicznej możliwe jedynie dla ostatniego aneksu.'@)
+   ?};
+   ~~
+";
+
+__akceptuj:="
+   {? __x_xan.UMAN=0
+   || UM.cntx_psh();
+      UM.prefix();
+      {? (UM.prefix(); UM.seek(__x_xan.UM_REF,)) || exec('aneks_akceptuj','umowy_aneks') ?};
+      UM.cntx_pop();
+      __xan_gen()
+   || FUN.info('Akceptacja aneksu umowy cyklicznej możliwa jedynie dla ostatniego aneksu.'@)
+   ?};
+   ~~
+";
+{? _a=1 & _upr_an & __add
+||
+   __x_xan.win_act(__um_sel,1,'Formuła','&Dołącz'@@,,,,"__dolacz()",1,,,,'D');
+   __x_xan.win_act(__um_sel,0,'Formuła','&Dołącz'@@,,,,"__dolacz()",,,,,'D');
+   __x_xan.win_btn(__um_sel,'text=%1,panel=right,align=begin'['&Dołącz'@],'menu:D')
+?};
+
+{? _upr_an
+|| __x_xan.win_act(__um_sel,0,'Formuła','Popraw'@@,,,"__popraw()",,,,,,'P');
+   __x_xan.win_btn(__um_sel,'text=%1,panel=right,align=begin'['Popraw'@],'menu:P')
+?};
+
+{? _a>0 & _upr_an
+||
+   __x_xan.win_act(__um_sel,0,'Formuła','Usuń'@@,,,,"__uman_um(\"exec('an_del','umowy_aneks')\")",,,,,'U');
+   __x_xan.win_btn(__um_sel,'text=%1,panel=right,align=begin'['Usuń'@],'menu:U')
+?};
+{? _upr_an
+|| __x_xan.win_act(__um_sel,0,'Formuła','&Zakończ'@@,,,"__zakoncz()",,,,,,'Z');
+   __x_xan.win_btn(__um_sel,'text=%1,panel=right,align=begin'['Zakończ'@],'menu:Z')
+?};
+{? _upr_ak
+|| __x_xan.win_act(__um_sel,0,'Formuła','Ak&ceptuj'@@,,,"__akceptuj()",,,,,,'C');
+   __x_xan.win_btn(__um_sel,'text=%1,panel=right,align=begin'['Akceptuj'@],'menu:C')
+?};
+
+__x_xan.win_act(__um_sel,0,'Wyświetl'@,,,,,"__um(\"UM.display()\")");
+__x_xan.win_act(__um_sel,0,'Formuła','Po&każ zmianę'@@,,,,"__uman_um(\"UMAN.win_edit('RED');UMAN.display();-1\")",1);
+__x_xan.win_act(__um_sel,0,'Menu','Druku&j'@@,,,,,,,,,'J',,'icon=print');
+__x_xan.win_act(__um_sel,0,'Formuła','Druku&j'@@,'#J',,,"__uman_um(\"exec('um_an_dr','umowy_aneks');-1\")");
+__x_xan.win_act(__um_sel,0,'Formuła','Użyj szablonu'@@,'#J',,,"__uman_um(\"exec('um_an_word','umowy_aneks');-1\")");
+_record:="__x_xan.cntx_psh();
+          __x_xan.last();
+          _end:={? exec('umTheEnd','umowy_aneks',exec('FindAndGet','#table',UM,__x_xan.UM_REF)) || 'P' || '' ?};
+          __x_xan.cntx_pop();
+          {? __x_xan.UMAN=0
+          || UM.cntx_psh();UM.prefix();
+             {? __x_xan.size() & (UM.prefix(); UM.seek(__x_xan.UM_REF,))
+             || {? UM.STU().A='T'
+                || _act:=_end+'ZPC'
+                |? UM.STAT_REJ='E'
+                || _act:=_end+'CD:D'
+                |? UM.STAT_REJ='X'
+                || _act:=_end+'ZPCD:D'
+                || _act:=_end+'ZPD%1:D'[{? __mod || '' || 'U' ?}]
+                ?};
+                {? UM.STU().RODZ='' & UM.STU().A='N'
+                || __x_xan.actions_grayed(__um_sel,_act)
+                || __x_xan.actions_grayed(__um_sel,_act)
+                ?}
+             || __x_xan.actions_grayed(__um_sel,_end+'ZPC:')
+             ?};
+             UM.cntx_pop()
+          || __x_xan.actions_grayed(__um_sel,_end+'DUZPC:')
+          ?}";
+__x_xan.win_act(__um_sel,0,'Rekord'@,,,,_record);
+__x_xan.win_act(__um_sel,0,'Szukaj');
+
+_poz_um:="
+   {? __x_xan.size=0
+   ||
+      UP.index('UM');
+      UP.prefix(null)
+   ||
+      __um(\"exec('poz_um','umowy_aneks')\")
+   ?};
+   grp_disp(UP,'WER2')
+";
+:: okno grupowe
+_grp_sel:=__x_xan.grp_make('Aneksy do umowy %1'@[UM.SYM],,'__um__an__',);
+__x_xan.grp_sel(_grp_sel,__x_xan,__um_sel,,_poz_um,,,24,,,,,'maximized_with_title');
+__x_xan.grp_splt(_grp_sel,'panel0','vertical','pozycje');
+__x_xan.grp_sel(_grp_sel,UP,'WER2',,,,,24,,,,,'maximized_with_title');
+__x_xan.win_sel(_grp_sel);
+__xan_gen();
+__x_xan.select(,1,10);
+
+exec('done_set_aneks','umowy_aneks');
+VAR_DEL.delete('max1m');
+UM.index('NRU');
+UM.prefix(ST.ODDZ,'N');
+POJAZDY.actions('SLO_J',_actpoj);
+''
+
+
+\poz_um
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009+]
+:: OPIS: pozycje do umowy w oknie grupowym
+::  OLD: \poz_um/um_ankes.fml
+::----------------------------------------------------------------------------------------------------------------------
+_um_ref:=null;
+{? UM.size()>0 || _um_ref:=UM.ref() ?};
+_up_ind:='POZ';
+{? exec('get','#params',100102,2)='T' || _up_ind:='POS2' ?};
+UP.index(_up_ind);
+UP.prefix(_um_ref);
+UP.first();
+exec('up_red','umowy');
+UP.hdr_sel();
+UP.hdr_sel(' numer %1'@[UM.SYM]);
+grp_disp(UP,'WER2');
+''
+
+
+\an_padd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009+]
+:: OPIS: edycja aneksowanej pozycji umowy
+::  OLD: \an_padd/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+UM.cntx_psh();
+UMAN.cntx_psh();
+UP.cntx_psh();
+max1m:=0;
+_popr:=0;
+_data:=UM.OD;
+{? var_pres('__x_xan')>100
+||
+   {? __x_xan.UMAN<>0
+   ||
+      UMAN.prefix();
+      {? UMAN.seek(__x_xan.UMAN,)
+      || _data:=__x_xan.DATA;
+         max1m:=1
+      ?}
+   ||
+      _popr:=1
+   ?}
+||
+   max1m:=1
+?};
+{? max1m=1
+||
+:: _data:=UMAN.D;
+   _do_dat:=exec('d_hgen_do','umowy_wspolne',ST.ODDZ);
+   _um:=UM.ref();
+   UP.cntx_psh();
+   exec('um_sp_us','umowy_aneks',_um,_data,_do_dat,1,1);
+   {? n_fakt=1
+   ||
+      _popr:=exec('um_sp_us','umowy_aneks',_um,_data,_do_dat,1,0)
+   ||
+      _popr:=0;
+      {? FUN.ask('Dla podanej daty %1 istnieją realizacje, faktury lub karty przekazania odpadów.'
+                 '\nWyświetlić szczegóły ?'@[$_data])
+      || exec('um_sp_us','umowy_aneks',UMAN.BIE,_data,_do_dat,0,1)
+      ?}
+   ?};
+   UP.cntx_pop()
+?};
+{? _popr=1 || exec('up_put','umowy') ?};
+max1m:=0;
+UM.cntx_pop();
+UMAN.cntx_pop();
+UP.cntx_pop();
+''
+
+
+\var_umpop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Zmienna - Poprawa nagłówka
+::   WY: uchwyt do zmiennej
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=obj_new('PO_FIRST','RODZ','D','SYM','OPIS');
+_wyn
+
+
+\um_win_edit_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Ustawia okno redakcji tabeli UMAN, wymagane pola, okna słowników
+::   WE: [_a] - 1-bez zakończ 0-(domyślnie) z zakończ
+::----------------------------------------------------------------------------------------------------------------------
+_disp:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+
+BPMN.END:=0;
+_win_red:=exec('um_win_edit','umowy_aneks');
+exec('set_efld_opt','umowy_aneks',_win_red);
+{? ~_disp
+|| exec('ok_esc','#window',UMAN,_win_red,1)
+?};
+UMAN.win_edit(_win_red);
+exec('set_efld_opt','umowy_aneks',_win_red);
+exec('sel_win_kh','ustawienia')
+
+
+\um_win_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Umowa ankes - tymczasowe okienko redakcji
+::----------------------------------------------------------------------------------------------------------------------
+_win_akr:='RED';
+:: Tymczasowe okno redakcji
+_title:='Dane aneksu do umowy';
+_win_red:=UMAN.mk_edit(_title,,,,,'html_maximized');
+UMAN.win_ewin(_win_red,,_win_akr);
+_win_red
+
+
+\set_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Zaznacza wymagalne pola w nagłówku aneksu umowy
+::   WE: _a - akronim okna redakcji
+::----------------------------------------------------------------------------------------------------------------------
+_win_red:={? var_pres('_a')=type_of('') || _a || UMAN.win_edit('?') ?};
+UMAN.efld_opt(_win_red,'mark=1',,'RODZ');
+UMAN.efld_opt(_win_red,'mark=1',,'D');
+~~
+
+
+\done_set_aneks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Usuwa zmienne dla wystawienia aneksu
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('__x_xan','__um_sel','__find_um','__dolacz','__uman_um','__xan_gen','__popraw','__zakoncz'
+ ,'__akceptuj','__add');
+~~
+
+
+\init_set_aneks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Inicjalizuje zmienne dla wystawienia aneksu
+::----------------------------------------------------------------------------------------------------------------------
+exec('done_set_aneks','umowy_aneks');
+
+max1m:=0;
+PARAM_W.TAB_TMP:='__x_xan';
+PARAM_W.TAB_POL:='';
+PARAM_W.TAB_TYT:='Aneksy do umowy %1'@[UM.SYM];
+t_sumk:='';
+
+__x_xan:=tab_tmp(1
+   ,'POZ','INTEGER','Poz'
+   ,'RODZ','STRING[20]','Rodzaj'
+   ,'DATA','DATE','Obowiązuje od daty'
+   ,'SYM','STRING[20]','Symbol aneksu'
+   ,'NAZ','STRING[60]','Opis zmiany'
+   ,'BIE','INTEGER','Biezaca umowa'
+   ,'UM','INTEGER','Dotyczy umowy'
+   ,'UM_REF','INTEGER','Ref umowy'
+   ,'UMAN','INTEGER','Wystawiony aneks'
+   ,'UMD','INTEGER','Ref aneksu'
+);
+
+__um_sel:=__x_xan.mk_sel('Historia zmian umowy'@,,0,'anks_suhsaksixn',,,,,'U');
+__x_xan.win_fld(__um_sel,,'RODZ');
+__x_xan.win_fld(__um_sel,,'DATA');
+__x_xan.win_fld(__um_sel,,'SYM');
+__x_xan.win_fld(__um_sel,,'NAZ',,,20);
+
+__um:="
+:: odszukuje UM - wykonuje formule _a
+:: bez odswiezania __x_xan
+   {? __x_xan.UM_REF<>0
+   ||
+      UM.cntx_psh();
+      UM.prefix();
+      {? UM.seek(__x_xan.UM_REF,)
+      || UM.memo_get(,'U');
+         _a()
+      ?};
+      UM.cntx_pop()
+   ?}
+";
+
+__uman_um:="
+:: odszukuje UMAN i UM - wykonuje formule _a
+:: odswieza zawartosc __x_xan gdy wynik _a>=0 (ze wzgledu na wynik funkcji del())
+:: dziedzina dla UM musi pozostac niezmieniona!
+   _wyn:=-1;
+   {? __x_xan.UMD<>0
+   ||
+      UMAN.index('POZ');
+      UMAN.prefix(UM.ref());
+      {? UMAN.seek(__x_xan.UMD,UMAN.name())
+      ||
+         UMAN.memo_get(,'MEMO');
+         {? UM.seek(UM.ref())
+         || _wyn:=_a()
+         ?}
+      ?}
+   ||
+      FUN.info('Zapis dotyczy warunków początkowych (bez aneksu).\nEdycja niemożliwa.'@)
+   ?};
+   {? _wyn>=0  || __xan_gen() ?}
+";
+
+__xan_gen:="
+:: formula odswiezajaca zawartosc __x_xan
+   __x_xan.clear(); {? __x_xan.first() || {! |? __x_xan.del() !} ?};
+   UM.cntx_psh();
+   UMAN.cntx_psh();
+   UMAN.index('POZ');
+   UMAN.prefix(UM.ref());
+   {? UMAN.first()
+   ||
+      __x_xan.POZ:=0;
+      __x_xan.RODZ:='Umowa'@;
+      __x_xan.DATA:=UMAN.D;
+      __x_xan.SYM:='';
+      __x_xan.NAZ:='Warunki początkowe'@;
+      __x_xan.UM:=0;
+      __x_xan.BIE:=0;
+      __x_xan.UMAN:=#UMAN.ref();
+      __x_xan.UMD:=0;
+      __x_xan.add();
+      {!
+      |?
+         exec('uman_rod','umowy_aneks');
+         _um:=#exec('uman_umo','umowy_aneks',UMAN.ref());
+         __x_xan.POZ:=UMAN.POZ;
+         __x_xan.RODZ:=UMO.RODZ;
+         __x_xan.DATA:=UMAN.D;
+         __x_xan.SYM:=UMAN.SYM;
+         __x_xan.NAZ:={? UMAN.RODZ='E' || 'Zakończenie umowy'@ || UMAN.NAZ ?};
+         __x_xan.UM:=_um;
+         __x_xan.BIE:=#UMAN.BIE;
+         __x_xan.UMD:=#UMAN.ref();
+         __x_xan.add();
+
+         __x_xan.prev();
+         {? __x_xan.POZ=0
+         ||
+            UM.cntx_psh();
+            UM.index('AN');
+            UM.prefix(UMAN.ref());
+            {? UM.first() || __x_xan.DATA:=UM.OD ?};
+            UM.cntx_pop()
+         ?};
+         __x_xan.UMAN:=#UMAN.ref();
+         __x_xan.put();
+
+         UMAN.next()
+      !}
+   ?};
+   {? __x_xan.last()
+   ||
+      __x_xan.UMAN:=0;
+      __x_xan.put();
+      _um_ref:=__x_xan.BIE;
+      {!
+      |?
+         __x_xan.UM_REF:=_um_ref;
+         __x_xan.put();
+         _um_ref:=__x_xan.UM;
+         __x_xan.prev()
+      !}
+   ?};
+   UM.cntx_pop();
+   UMAN.cntx_pop();
+   {? UM.STU().A<>'T'
+   || _act:={? UM.STAT_REJ<>'E' || 'P' || '' ?};
+      {? UM.STU().RODZ='' & UM.STU().A='N'
+      || __x_xan.actions(__um_sel,_act+'A:A',,1)
+      || __x_xan.actions(__um_sel,_act+'A%1:A'[{? __mod || '' || 'U' ?}],,1)
+      ?}
+   ?};
+   __x_xan.last()
+";
+~~
+
+
+\aneks_zakoncz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Zakonczenie aneksu z poziomu Zmian
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LUM_UMO_EANE';
+_params.UIDREF:=UM.uidref();
+_params.AKCJA:='Zakończ_wer';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'UM',UM.ref());
+exec('mp_run','#b__box',_params);
+~~
+
+
+\aneks_akceptuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Akceptacja aneksu z poziomu Zmian
+::----------------------------------------------------------------------------------------------------------------------
+_end:=exec('umTheEnd','umowy_aneks',UM.ref());
+{? UM.STAT_REJ='Z' & _end
+|| _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LUM_UMO_EZAK';
+   _params.UIDREF:=UM.uidref();
+   _params.AKCJA:='Zakończenie';
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'UM',UM.ref());
+   exec('mp_run','#b__box',_params)
+|| _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LUM_UMO_EAUM';
+   _params.UIDREF:=UM.uidref();
+   _params.AKCJA:='Akceptuj';
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'UM',UM.ref());
+   exec('mp_run','#b__box',_params)
+?};
+~~
+
+
+\po_d_uman
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: po wprowadzeniu daty aneksu
+::----------------------------------------------------------------------------------------------------------------------
+{? UMAN.RODZ='E'
+|| UMAN.DEND:=UMAN.D
+|| UMAN.DEND:=date(0,0,0)
+?};
+1
+
+
+\po_end_uman
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: po zmianie znacznika zakończenia aneksu
+::----------------------------------------------------------------------------------------------------------------------
+exec('po_d_uman','umowy_aneks')
+
+
+\pr_dend_uman
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: przed redakcją daty zakończenia aneksu
+::----------------------------------------------------------------------------------------------------------------------
+UMAN.RODZ='E'
+
+
+\po_dend_uman
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: po zmianie daty zakończenia aneksu
+::----------------------------------------------------------------------------------------------------------------------
+UMAN.D:=UMAN.DEND;
+1
+
+
+\umTheEnd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Sprawdza czy do danej umowy wystawiono aneks - kończący
+::   WE: _a - ref UM
+::   WY: 1-tak 0-nie
+::----------------------------------------------------------------------------------------------------------------------
+_res:=0;
+UMAN.cntx_psh();
+UMAN.index('UMAN');
+UMAN.prefix(_a);
+{? UMAN.last()
+|| {!
+   |? _res:=UMAN.RODZ='E';
+      ~_res & UMAN.prev()
+   !}
+?};
+UMAN.cntx_pop();
+_res
+
+
+\um_an_dr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wydruki dotyczace tresci aneksow
+::  OLD: \um_an_dr/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('rep_exec','#b_report','LUM_UMO_XXXX','lum_uman*','Wydruki dotyczące treści aneksów',2,,,,,,'W')
+
+
+\ang_rec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: rekord przed dla aneksów grupowych
+::----------------------------------------------------------------------------------------------------------------------
+{? UMANGR.IL
+|| UMANGR.actions_grayed('WER','pU')
+|| UMANGR.actions_grayed('WER','')
+?};
+''
+
+
+\um_an_word
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: wydruki WORD dotyczace tresci aneksow
+::       Zakładamy bieżący kontekst tabel UM i UMAN
+::----------------------------------------------------------------------------------------------------------------------
+UM.KH(); UM.KH_ODB();
+exec('generuj','szablon_zws','LUM_ANEKS')
+
+
+\xan_init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [20.42]
+:: OPIS: tworzy tabelę __x_xan
+::   WY: tabela
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp(1
+   ,'POZ','INTEGER','Poz'
+   ,'RODZ','STRING[20]','Rodzaj'
+   ,'DATA','DATE','Obowiązuje od daty'
+   ,'SYM','STRING[20]','Symbol aneksu'
+   ,'NAZ','STRING[60]','Opis zmiany'
+   ,'BIE','INTEGER','Biezaca umowa'
+   ,'UM','INTEGER','Dotyczy umowy'
+   ,'UM_REF','INTEGER','Ref umowy'
+   ,'UMAN','INTEGER','Wystawiony aneks'
+   ,'UMD','INTEGER','Ref aneksu'
+);
+_tab
+
+
+\xan_gen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [20.42]
+:: OPIS: formuła odświeżająca zawartosc __x_xan
+::       dawne wywołanie __xan_gen:=""
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__x_xan')>117
+|| __x_xan.clear(); {? __x_xan.first() || {! |? __x_xan.del() !} ?}
+|| VAR_DEL.delete('__x_xan');
+   __x_xan:=exec('xan_init','umowy_aneks')
+?};
+UM.cntx_psh();
+UMAN.cntx_psh();
+UMAN.index('POZ');
+UMAN.prefix(UM.ref());
+{? UMAN.first()
+||
+   __x_xan.POZ:=0;
+   __x_xan.RODZ:='Umowa'@;
+   __x_xan.DATA:=UMAN.D;
+   __x_xan.SYM:='';
+   __x_xan.NAZ:='Warunki początkowe'@;
+   __x_xan.UM:=0;
+   __x_xan.BIE:=0;
+   __x_xan.UMAN:=#UMAN.ref();
+   __x_xan.UMD:=0;
+   __x_xan.add();
+   {!
+   |?
+      exec('uman_rod','umowy_aneks');
+      _um:=#exec('uman_umo','umowy_aneks',UMAN.ref());
+      __x_xan.POZ:=UMAN.POZ;
+      __x_xan.RODZ:=UMO.RODZ;
+      __x_xan.DATA:=UMAN.D;
+      __x_xan.SYM:=UMAN.SYM;
+      __x_xan.NAZ:={? UMAN.RODZ='E' || 'Zakończenie umowy'@ || UMAN.NAZ ?};
+      __x_xan.UM:=_um;
+      __x_xan.BIE:=#UMAN.BIE;
+      __x_xan.UMD:=#UMAN.ref();
+      __x_xan.add();
+
+      __x_xan.prev();
+      {? __x_xan.POZ=0
+      ||
+         UM.cntx_psh();
+         UM.index('AN');
+         UM.prefix(UMAN.ref());
+         {? UM.first() || __x_xan.DATA:=UM.OD ?};
+         UM.cntx_pop()
+      ?};
+      __x_xan.UMAN:=#UMAN.ref();
+      __x_xan.put();
+
+      UMAN.next()
+   !}
+?};
+{? __x_xan.last()
+||
+   __x_xan.UMAN:=0;
+   __x_xan.put();
+   _um_ref:=__x_xan.BIE;
+   {!
+   |?
+      __x_xan.UM_REF:=_um_ref;
+      __x_xan.put();
+      _um_ref:=__x_xan.UM;
+      __x_xan.prev()
+   !}
+?};
+UM.cntx_pop();
+UMAN.cntx_pop();
+{? UM.STU().A<>'T' & var_pres('__um_sel')>1
+|| _act:={? UM.STAT_REJ<>'E' || 'P' || '' ?};
+   {? UM.STU().RODZ='' & UM.STU().A='N'
+   || __x_xan.actions(__um_sel,_act+'A:A',,1)
+   || __x_xan.actions(__um_sel,_act+'A%1:A'[{? __mod || '' || 'U' ?}],,1)
+   ?}
+?};
+__x_xan.last()
+
+
+\add_up_wst
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [22.26]
+:: OPIS: dołaczenie umowy wstecznej
+::----------------------------------------------------------------------------------------------------------------------
+_max1m:=max1m;
+max1m:=2;
+UP.cntx_psh();  UM.cntx_psh();
+UM.prefix();
+{? UM.seek(__x_xan.UM_REF,)
+||
+   _dokiedy:=exec('up_wstecz','umowy_aneks');
+   {? _dokiedy=0
+   || _dokiedy:=FUN.ask('Dla podanej daty istnieją realizacje, faktury.\nCzy napewno dadać pozycję wstecznie ?'@)
+   ?};
+   {? _dokiedy
+   ||
+      params_exec('up_add', 'umowy')
+   ?}
+?};
+UP.cntx_pop();  UM.cntx_pop();
+max1m:=_max1m;
+1
+
+
+\up_wstecz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [22.26]
+:: OPIS: dołączenie umowy wstecz
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+_um:=UP.UM;
+_up:=UP.ref;
+_stu:="
+_wx:=0;
+UM.cntx_psh();
+UM.prefix();
+{? UM.seek(_a,) & UM.STU().KOD='E'
+|| _wx:=1
+?};
+UM.cntx_pop();
+_wx";
+{? var_pres('__x_xan')>100 & __x_xan.UMD<>0 & _stu(__x_xan.BIE)
+||
+
+   UP.cntx_psh();
+   UM.cntx_psh();
+   UMAN.cntx_psh();
+
+   _df:=_od:=__x_xan.DATA;
+
+   _do:=exec('d_hgen_do','umowy_wspolne',UM.ODDZ);
+   {? _od<_do
+   ||
+      echo('Sprawdzam zgłoszenia .... proszę czekać'@);
+      exec('um_sp_us','umowy_aneks',_um,_od,_do,1,1,0,0);
+      {? n_fakt=1 || _wyn:=1 ?};
+      echo('')
+   ||
+      _wyn:=1
+   ?};
+   UP.cntx_pop();
+   UM.cntx_pop();
+   UMAN.cntx_pop()
+?};
+_wyn
+
+
+\umang_log_lp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [23.25]
+:: OPIS: Wyznacza nowy numer porządkowy (lp) błędu do daneaneksu grupowego
+::       UWAGA: Działa na aktualnym buforze tabeli UMANGR.
+::       wg [AKUL] dla logów FPACZ
+::   WY: numer lp
+::----------------------------------------------------------------------------------------------------------------------
+_res:=0;
+UMANGLOG.cntx_psh();
+_msk:=UMANGR.ODDZ+form(UMANGR.AR-2000,-2,0,'99');
+{? (UMANGLOG.name()+3)<>_msk || UMANGLOG.use('umlog'+_msk) ?};
+UMANGLOG.index('LP');
+UMANGLOG.prefix(UMANGR.ref());
+_res:={? UMANGLOG.last() || UMANGLOG.LP || 0 ?}+1;
+UMANGLOG.cntx_pop();
+_res
+
+
+\umang_log_build
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [23.25]
+:: OPIS: Buduje rekordy błędów generacji (UMANGLOG) na podstawie pola .O.
+::       Uruchamiana jeżeli pole O jest wypełnione i aneks grupowy nie ma wygenerowanych rekordów UMANGLOG.
+::       wg [AKUL] dla logów FPACZ
+::   WE: UMANGR.ref() - ref aneksu grupowego
+::----------------------------------------------------------------------------------------------------------------------
+UMANGR.cntx_psh();
+UMANGR.prefix();
+{? UMANGR.seek(_a)
+||
+:: Sprawdzam czy wymagane przeniesienie danych z memo do tabeli UMANGLOG
+   {? UMANGR.memo_line('O')<>'\n'
+   || UMANGLOG.cntx_psh();
+      _msk:=UMANGR.ODDZ+form(UMANGR.AR-2000,-2,0,'99');
+      {? (UMANGLOG.name()+3)<>_msk || UMANGLOG.use('umlog'+_msk) ?};
+      UMANGLOG.index('LP');
+      UMANGLOG.prefix(UMANGR.ref());
+      {? ~UMANGLOG.first()
+      || _rodz:='T';
+         _info:='';
+         _opis:='';
+         _error:='';
+         {? var_press('_tmp')>100 || obj_del(_tmp)?};
+         _tmp:=spli_str(UMANGR.memo_txt(,1,'O'),'\n');
+         _size:=obj_len(_tmp);
+         {! _i:=1.._size
+         |! _tmp[_i]:=gsub(_tmp[_i],'do UMAN','do tabeli aneksów');
+            {? (16+_tmp[_i])='Generowano dnia:' || _info:=_tmp[_i]; _rodz:='T'
+            |? (13+_tmp[_i])='Usuwano dnia:'    || _info:=_tmp[_i]; _rodz:='N'
+            || _info:=''
+            ?};
+            {? (1+form(_tmp[_i]))='+' || _opis:=form(1-form(_tmp[_i])) ?};
+            _error:={? (1+form(_tmp[_i]))='-' || form(1-form(_tmp[_i])) || '' ?};
+
+            {? (6+_tmp[_i])<>' * * *' & (_error<>'' | _info<>'')
+            || _txt:={? _error<>'' || '%1 [%2]'[_error,_opis] || _info ?};
+               _txt:='%1%2'[~-(1+_txt),1-_txt];
+               exec('memo_add','umowy_aneks',_txt,_opis,_rodz)
+            ?}
+         !}
+      ?};
+      UMANGLOG.cntx_pop()
+::    Jak przeniosłem dane to czyszczę pole memo
+::      UMANGR.memo_set('','O');
+::      UMANGR.memo_put(,'O')
+   ?}
+?};
+UMANGR.cntx_pop();
+~~
+
+
+\umang_log_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Usuwa wszystkie błędy genearcji (rekordy UMANGLOG) dla podanego aneksu grupowego.
+::       wg [AKUL] dla logów FPACZ
+::   WE: UMANGR.ref()
+::----------------------------------------------------------------------------------------------------------------------
+UMANGR.cntx_psh();
+UMANGR.prefix();
+{? UMANGR.seek(_a)
+|| UMANGLOG.cntx_psh();
+   _msk:=UMANGR.ODDZ+form(UMANGR.AR-2000,-2,0,'99');
+   {? (UMANGLOG.name()+3)<>_msk || UMANGLOG.use('umlog'+_msk) ?};
+   UMANGLOG.index('LP');
+   UMANGLOG.prefix(UMANGR.ref());
+   {? UMANGLOG.first() || {! |? UMANGLOG.del() !} ?};
+   UMANGLOG.cntx_pop()
+?};
+UMANGR.cntx_pop();
+~~
+
+
+\umglog_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [23.25]
+:: OPIS: Dodanie do log-a - tabela __umglog
+::   WE: _a - opis
+::       _b - rodzaj
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__umglog')>117
+|| __umglog.cntx_psh();
+   __umglog.prefix();
+   _lp:={? __umglog.last() || __umglog.LP || 0 ?}+1;
+   __umglog.blank();
+   __umglog.LP:=_lp;
+   __umglog.R:=_b;
+   __umglog.OPIS:=_a;
+   __umglog.add(1);
+   __umglog.cntx_pop()
+?}
+
+
+\set_efld_opt_gr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [23.25]
+:: OPIS: Zaznacza wymagalne pola w nagłówku aneksie grupowym
+::----------------------------------------------------------------------------------------------------------------------
+_win_red:='RED';
+_mark_pr:=_mark_ch:=_mark_cr:='mark=0';
+{? UMANGR.R='P'
+|| _mark_pr:='mark=1'
+|? UMANGR.R='K'
+|| _mark_ch:={? UMANGR.CR=0 || 'mark=1' || 'mark=0' ?};
+   _mark_cr:={? UMANGR.CH=0 || 'mark=1' || 'mark=0' ?}
+?};
+UMANGR.efld_opt(_win_red,_mark_pr,,'PR');
+UMANGR.efld_opt(_win_red,_mark_ch,,'CH');
+UMANGR.efld_opt(_win_red,_mark_cr,,'CR');
+~~
+
+
+\po_umangr_r
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [23.25]
+:: OPIS: Po polu UMANGR.R
+::----------------------------------------------------------------------------------------------------------------------
+{? UMANGR.R<>'P' || UMANGR.PR:=0 ?};
+{? UMANGR.R<>'K' || UMANGR.CH:=UMANGR.CR:=0 ?};
+exec('set_efld_opt_gr','umowy_aneks');
+1
+
+
+\po_ag_kw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [23.25]
+:: OPIS: Po polu UMANGR.CH lub UMANGR.CR
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_efld_opt_gr','umowy_aneks');
+1
+
+:Sign Version 2.0 jowisz:1045 2023/11/13 14:14:53 3f27ca04d1e719b230d2eb482c80eb1074f13ccc62f85401f79d81545070644c15582aace7bd57c270b834ab03eaa65fb44c1b92c5dd909b5fcba63f088ee49d82b68a9685590191418a8d56d042c30e9310f897b2771cd9c5d23b28ba212d2a940ef5bdd2b1863a893b71213a2d822b1ef9371205055475fa1b8b8375463c94

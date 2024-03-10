@@ -1,0 +1,152 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !zws_par_kret.fml
+:: Utworzony: 20.10.2022
+:: Autor: WHAN
+::======================================================================================================================
+:: Zawartość: Formuły czynności ZWS_PAR_KRET - pobieranie kursów walut z ECB, czynność serwisowa
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WHAN [23.25]
+:: OPIS: Pobieranie kursów walut - główna formuła czynności ZWS_PAR_KRET.
+::       Czynność uruchamiana jako usługa (serwis).
+::----------------------------------------------------------------------------------------------------------------------
+:: WŁAŚCIWOŚCI CZYNNOŚCI
+::# properties=SERVICE,GRP_FIRM
+exec('czytaj','#stalesys',,XINFO);
+
+_par:=params_get();
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+{? _mp.isService()
+|| _ok:=params_exec('ecb_tkrs','!zws_par_kret');
+   {? _ok
+   || _mp.done()
+   || _mp.error()
+   ?}
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WHAN [23.25]
+:: OPIS: Opis dla czynności pobierania kursów walut ECB (ZWS_PAR_KRET)
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_desc:='Pobierz kursy walut z Europejskiego Banku Centralnego.'@@;
+_desc
+
+
+\ecb_tkrs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WHAN [23.25]
+:: OPIS: Formuła pobiera tabele kursowe ECB, wykorzystywana przez czynność serwisową ZWS_PAR_KRET
+::   WE: [_a] - 1 - zapis do logu (domyślnie)
+::              0 - bez zapisu do logu
+::   WY: ~~
+:: wlaczenie/wylaczenie loga:
+{? _>=1 || __ECBlog:=_a || __ECBlog:=1 ?};
+_res:=0;
+exec('add_ecb_log','!zws_par_kret','START przetwarzania');
+exec('czytaj','#stalesys',,FINFO);
+BANORG.cntx_psh(); B.cntx_psh();
+BANORG.index('NDX');
+BANORG.prefix('ECB','Europejski Bank Centralny',);
+_org:=_bank:=null;
+{? BANORG.first()
+|| _org:=BANORG.ref()
+?};
+{? _org
+|| B.index('BANK');
+      B.prefix('Europejski Bank Centralny - Centrala','00000001');
+      {? B.first()
+      || _bank:=B.ref()
+      ?}
+?};
+{? FINFO.SLWAL().SLU=null()
+|| exec('add_ecb_log','!zws_par_kret','Nie wskazano słownika walut w słownikach systemu.')
+|? ~(_org & _bank)
+|| exec('add_ecb_log','!zws_par_kret','Kartoteka banków systemu nie zawiera Europejskiego Banku Centralnego.')
+|? FINFO.B_VIUDO=null()
+|| exec('add_ecb_log','!zws_par_kret','Brak wypełnionego pola Bank dla VIU-DO o Europejski Bank Centralny w parametryzacji systemu.')
+|| POMOC.BANK:=FINFO.B_VIUDO;
+      SLU.cntx_psh(); SLO.cntx_psh();
+      SLO.index('SL');
+      _wal:=null;
+      SLO.prefix(FINFO.SLWAL().SLU,'EUR');
+      {? SLO.first()
+      || _wal:=SLO.ref()
+      ?};
+      SLU.cntx_pop(); SLO.cntx_pop();
+      {? _wal=null()
+      || exec('add_ecb_log','!zws_par_kret','Słownik walut w słownikach systemu nie zawiera waluty Euro.')
+   || exec('tkrs_eb','fks_viudo',1);
+         TKRS.prefix(); KRS.prefix();
+         POMOC.WAL_TKRS:=_wal;
+         POMOC.BANKEB:=_bank;
+         {? TKRS.get() | TKRS.last()
+         || KRS.index('KRS_KRAJ');
+            KRS.prefix(TKRS.ref());
+            KRS.first()
+         || TKRS.BANK:=SLO.ref()
+         ?};
+         exec('imp_tkeb','!zws_par_kret');
+         POMOC.WAL_TKRS:=null();
+         exec('tkrs_eb','fks_viudo',2);
+      _res:=1
+      ?}
+?};
+BANORG.cntx_pop(); B.cntx_pop();
+_res
+
+
+\imp_tkeb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WHAN [23.25]
+:: OPIS: Serwisowe importowanie tabel kursów
+::----------------------------------------------------------------------------------------------------------------------
+SLO.index('SL');
+SLO.prefix(XINFO.SLWAL);
+WAL.index('WAL_SYM');
+WAL.prefix();
+{? XINFO.SLWAL
+|| XINFO.SLWAL();
+:: 90 dni
+   _res:=exec('ecb_xml_90','!zws_par_kreb');
+   {? type_of(_res)=type_of('')
+   || exec('add_ecb_log','!zws_par_kret','Błąd połączenia z Europejskim Bankiem Centralnym. \n'+_res)
+   |? _res=0
+   || exec('add_ecb_log','!zws_par_kret','Błąd przetwarzania XML\'a z kursami walut Europejskiego Banku Centralnego.')
+   |? _res=1
+   || exec('add_ecb_log','!zws_par_kret','Import kursów walut Europejskiego Banku Centralnego zakończony sukcesem.')
+   ?}
+|| exec('add_ecb_log','!zws_par_kret','Nie ustalono słownika walut w parametrach pracy programu.')
+?}
+
+
+\add_ecb_log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WHAN [23.25]
+:: OPIS: Formula dopisuje jeden wiersz do pliku *.log. Sterowanie przez zmienną globalną __ECBlog.
+::   WE: _a - [STRING] tresc jednej linii
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+:: Domyslne wartosci argumentow formuly:
+{? _>= 1 || {? type_of(_a)<>2 || _a:='' ?} || _a:='' ?};
+{? var_pres('__ECBlog')>0 & __ECBlog=1
+|| _log_name:='ecbkurs'+($(date()~1)+2)+'.log';
+   _file:=fopen(_log_name,'ua',1);
+   {? _file<>0 || fwrite(_file, 19+tm_form(SYSLOG.tm_stamp())+' : '+_a) ?};
+   fclose(_file)
+?};
+~~
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 4b9d0b4303dadf11caf7ff8cf2206f6f91d9bd81f64ac5a4976ee67940d5510755aa37908177dfe69e7df319df0aeafebaa224a9469656bc2f6bcf4a7c260cd6189218d97493dcb7660191661ead08944d1a4f84d3d2ec545f408ec3893d468f606302bcda4c6b5e9cf25f94c3a56bd17750166444521fd92c4404b4f484797d

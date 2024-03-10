@@ -1,0 +1,1461 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_1742.fml
+:: Utworzony: 07.04.2017
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 17.28 na 17.42
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - realizacja zakwalifikowana jako wykonana
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Główna formuła upgrade-ów 17.42
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania wykonywane raz dla całego systemu
+__UPG.add_task('upgrade_act',,,'ZPR');
+__UPG.add_task('funpar',,,'ZWS');
+__UPG.add_task('color',,,'ZWS');
+__UPG.add_task('alg_par',,,'FKS');
+__UPG.add_task('skid_mbn',,,'CTR');
+__UPG.add_task('con_rodf',,,'CTR');
+__UPG.add_task('etypy',,,'ZWS');
+__UPG.add_task('edokum',,,'ZWS');
+__UPG.add_task('dok_rej_zaksr',,,'FKS');
+__UPG.add_task('m_kh_sv',,,'ZWS');
+__UPG.add_task('areatitle',,,'ZWS');
+__UPG.add_task('autoksie',,,'ZWS');
+__UPG.add_task('skid_rbk',,,'ZWS');
+__UPG.add_task('rs',,,'ZWS');
+__UPG.add_task('report',,,'ZWS');
+__UPG.add_task('m_fill',,,'ZWS');
+__UPG.add_task('formuly',,,'ZWS');
+__UPG.add_task('wem_wek',,,'PPL');
+__UPG.add_task('wnr_zc',,,'PPL');
+__UPG.add_task('B_PREL',,,'ZPR');
+__UPG.add_task('kh_nasz_kod',,,'ZWS');
+__UPG.add_task('rubatr',,,'PPL');
+__UPG.add_task('edi_ka_P_KIN',,,'PKD');
+__UPG.add_task('aktualizuj_p_kk',,,'PKD');
+:: Zadania wykonywane dla każdej firmy osobno
+__UPG.add_task('ZLZAM',,'N','TTE',,,,1);
+__UPG.add_task('plusREZ',,'N','LMG',,,,1);
+__UPG.add_task('nd_fill',,'N','ZWS',,,,1);
+__UPG.add_task('sch_xd',,'N','ZWS');
+__UPG.add_task('role_druk_mag',,'N','ZWS',,,,1);
+__UPG.add_task('edi_i_fill',,'N','ZWS',,,,1);
+__UPG.add_task('actOperMob',,'N','LMG',,,,1);
+__UPG.add_task('actZlecFakt',,'N','LSP',,,,1);
+__UPG.add_task('ZL',,'N','TTE',,,,1);
+__UPG.add_task('srsr_zb',,'N','FST',,,,1);
+__UPG.add_task('okr_obsg',,'N','FST',,,,1);
+__UPG.add_task('f_zatra',,'N','PPL');
+__UPG.add_task('ctrlParams',,'N','ZWS',,,,1);
+~~
+
+
+\wem_wek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [17.42]
+:: OPIS: Dodanie pol do KST zwiazanych z wiekiem emerytalnym
+::----------------------------------------------------------------------------------------------------------------------
+exec('add_acr','#stalesys','WEM','Wiek emerytalny: mężczyźni','T','T','T','KST','PPL');
+
+_dodano:=exec('kst_war_add','#stalesys','KST.WEM','0',date(0,0,0));
+_dodano+=exec('kst_war_add','#stalesys','KST.WEM','65',date(2017,10,1));
+{? _dodano
+|| __UPG.msg('Dodano informacje o wieku emerytalnym mężczyzn.')
+?};
+exec('add_acr','#stalesys','WEK','Wiek emerytalny: kobiety','T','T','T','KST','PPL');
+_dodano:=exec('kst_war_add','#stalesys','KST.WEK','0',date(0,0,0));
+_dodano+=exec('kst_war_add','#stalesys','KST.WEK','60',date(2017,10,1));
+{? _dodano
+|| __UPG.msg('Dodano informacje o wieku emerytalnym kobiet.')
+?};
+1
+
+
+\wem_wek_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [17.42]
+:: OPIS: Aktualizacja schematów kolorów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja stałych systemu.'
+
+
+\wnr_zc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MK [17.42]
+:: OPIS: Dodanie pol do KST zwiazanych z numerowanie umwo zlecen
+::----------------------------------------------------------------------------------------------------------------------
+exec('add_acr','#stalesys','NR_ZC_AU','Numeracja umów zleceń','T','N','T','KST','PPL');
+{? exec('kst_war_add','#stalesys','KST.NR_ZC_AU','\'B\'',date(0,0,0))
+|| __UPG.msg('Dodano informacje o automatycznej numeracji umów zleceń.')
+?};
+exec('add_acr','#stalesys','NR_ZC_FM','Format numeru umowy zlecenia określony przez formułę','T','N','T','KST','PPL');
+{? exec('kst_war_add','#stalesys','KST.NR_ZC_FM','\'\'',date(0,0,0))
+|| __UPG.msg('Dodano informacje w polu: Format numeru umowy zlecenia określony przez formułę.')
+?};
+1
+
+
+\wnr_zc_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MK [17.42]
+:: OPIS: Opis funkcji aktualizacji stałych systemu zwiazanych z numerowaniem uwów zleceń
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja stałych systemu - numeracja umów zleceń.'
+
+
+\color
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [17.42]
+:: OPIS: Aktualizacja schematów kolorów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+exec('Color','#object');
+exec('Legend','#object');
+exec('odtw_kolor_iko','color',2);
+__UPG.msg('Zostały zaaktualizowane schematy kolorów i ikon dla akcji Legenda.');
+_res
+
+
+\color_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [17.42]
+:: OPIS: Aktualizacja schematów kolorów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja schematu kolorów.'
+
+
+\alg_par
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [17.42]
+:: OPIS: Uaktualnienie pól tabeli związanych ze sprawozdaniami
+::----------------------------------------------------------------------------------------------------------------------
+ALG_PAR.prefix();
+ALG_PAR.for_each("
+   _put:=0;
+   {? ALG_PAR.WYL='' || ALG_PAR.WYL:='N'; _put:=1 ?};
+   {? ALG_PAR.MIEJSCE=''
+   || ALG_PAR.MIEJSCE:={? ALG_PAR.ROK().PLAN_GR='T' || 'G' || 'F' ?};
+      _put:=1
+   ?};
+   {? _put || ALG_PAR.put() ?}
+");
+GR_SIK.index('UID');
+GR_SIK.prefix();
+GR_SIK.for_each("
+   {? GR_SIK.UID=''
+   || _uid:=GR_SIK.SKROT;
+      _nr:=1;
+      GR_SIK.cntx_psh();
+      {!
+      |? {? GR_SIK.find_key(_uid)
+         || _uid:=(8+_uid)+(('00'+$_nr)+2);
+            _nr+=1;
+            1
+         ?}
+      !};
+      GR_SIK.cntx_pop();
+      GR_SIK.UID:=_uid;
+      GR_SIK.put()
+   ?}
+");
+DEFW.index('UID');
+DEFW.prefix();
+DEFW.for_each("
+   {? DEFW.UID=''
+   || DEFW.UID:=exec('set_defw_uid','sprfin');
+      DEFW.put()
+   ?}
+");
+__UPG.msg('Zaktualizowano definicje sprawozdań.');
+1
+
+
+\alg_par_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [17.42]
+:: OPIS: Uaktualnienie pól tabeli ALG_PAR - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uaktualnienie definicji sprawozdań'
+
+
+\skid_mbn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Uaktualnienie pól tabeli SKID_MBN
+::----------------------------------------------------------------------------------------------------------------------
+SKID_MBN.prefix();
+SKID_MBN.for_each("
+   {? SKID_MBN.KONTRPOZ=''
+   || SKID_MBN.KONTRPOZ:={? SKID_MBN.KONTROLA='T' || 'F' || 'N' ?};
+      exec('k_insmbn','konsolidacja');
+      SKID_MBN.put()
+   ?}
+");
+__UPG.msg('Zaktualizowano modele danych.');
+1
+
+
+\skid_mbn_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Uaktualnienie pól tabeli SKID_MBN - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uaktualnienie modeli danych'
+
+
+\ZLZAM
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Nawija nowe pola w tabeli ZLZAM
+::   WY: -1/0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_can_continue:=1;
+_lrec:=_lmod:=0;
+ZLZAM.index('PL_DTTM');
+ZLZAM.prefix();
+{? ZLZAM.first()
+|| {!
+   |? _put:=0;
+      _lrec+=1;
+      {? ZLZAM.SRC=''
+      || _put:=1;
+         {? 1+ZLZAM.ZAMPOZ='z'
+         || ZLZAM.SRC:='Z'
+         |? 3+ZLZAM.ZAMPOZ='psp'
+         || ZLZAM.SRC:='S'
+         |? 5+ZLZAM.ZAMPOZ='plrel'
+         || ZLZAM.SRC:='A'
+         |? 5+ZLZAM.ZAMPOZ='plprd'
+         || ZLZAM.SRC:='P'
+         || ZLZAM.SRC:='R'
+         ?}
+      ?};
+      {? _put>0
+      || _can_continue:=ZLZAM.put();
+         {? _can_continue>0 || _lmod+=1 ?}
+      ?};
+      ZLZAM.next() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+|| _result:=1;
+   __UPG.msg('Zaktualizowano zapisy tabeli ZLZAM.');
+   __UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$_lrec,$_lmod])
+|| __UPG.msg('Nie zaktualizowano wszystkich zapisów tabeli ZLZAM.');
+   __UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$_lrec,$_lmod])
+?};
+_result
+
+
+\ZLZAM_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.28]
+:: OPIS: Nawija nowe pola w tabeli ZLZAM - opis
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja tabeli powiązań zleceń z elementami na podstawie których wygenerowano zlecenie.\n'
+'Może się nie udać, jeżeli nie udał się zapis na rekordzie tabeli ZLZAM (rekord zablokowany, usunięty itp).'
+
+
+\etypy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Uaktualnienie pola tabeli ETYPY
+::----------------------------------------------------------------------------------------------------------------------
+ETYPY.prefix();
+ETYPY.for_each("{? ETYPY.RODZ_DOK='' || ETYPY.RODZ_DOK:='Z'; ETYPY.put() ?};
+                {? ETYPY.FAKT_ZAL='' || ETYPY.FAKT_ZAL:='N'; ETYPY.put() ?}
+               ");
+__UPG.msg('Zaktualizowano typy dokumentów w obiegu.')
+
+
+\etypy_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Uaktualnienie pola tabeli ETYPY - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uaktualnienie pól typów dokumentów w obiegu'
+
+
+\edokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Uaktualnienie pola tabeli EDOKUM
+::----------------------------------------------------------------------------------------------------------------------
+EDOKUM.cntx_psh();
+_name:=EDOKUM.names();
+{? _name.first()
+|| {! |?
+      EDOKUM.use(_name.NAME); EDOKUM.index('TYP'); EDOKUM.prefix();
+      EDOKUM.for_each("{? EDOKUM.LOG_PRZ='' || EDOKUM.LOG_PRZ:='N'; EDOKUM.put() ?}
+                      ");
+      _name.next()
+   !}
+?};
+EDOKUM.cntx_pop();
+__UPG.msg('Zaktualizowano dokumenty w obiegu.')
+
+
+\edokum_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Uaktualnienie pola tabeli EDOKUM - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uaktualnienie pól dokumentów w obiegu'
+
+
+\funpar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.28]
+:: OPIS: Aktualizacja obszaru Ustawienia i parametryzacja.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('aktualizuj','funpar',0)<>0
+|| __UPG.msg('Zaktualizowano zawartość obszaru: Ustawienia i parametryzacja.');
+   1
+?}
+
+
+\funpar_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.14]
+:: OPIS: Aktualizacja obszaru Ustawienia i parametryzacja - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ustawień i parametryzacji'
+
+
+\upgrade_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.28]
+:: OPIS: Aktualizacja typów danych oraz czynności dla wskazanych obszarów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+_dom:=spli_str('LMG.LSP.LZK.PKD.PKW.PPL.TTE.WYP.ZWS.FST.FKS.KON.OBE.OBG','.');
+_len:=obj_len(_dom);
+FUN.prg_start(_len+2,'Aktualizacja czynności.'@,,,1);
+
+:: Uzupełnienie domen (zawsze)
+FUN.prg_next();
+exec('add_domain','#b_action');
+__UPG.msg('Zaktualizowano dziedziny.');
+
+:: Uzupełnienie typów (zawsze)
+FUN.prg_next();
+exec('fill_tab','#b_type',0);
+__UPG.msg('Zaktualizowano typy danych.');
+
+{! _i.._len
+|! FUN.prg_next();
+   _domain:=exec('FindInSet','#table','B_DOMAIN','SYMBOL',_dom[_i]);
+   {? _domain<>null()
+   || exec('import_needed_dom','#b_design',_domain,0);
+      __UPG.msg('Zaktualizowano czynności dziedziny: %1.'@[_dom[_i]])
+   ?}
+!};
+FUN.prg_stop();
+obj_del(_dom);
+_res
+
+
+\upgrade_act_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.28]
+:: OPIS: Aktualizacja typy danych oraz czynności dla wskazanych obszarów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja typów danych oraz czynności dla modelera'
+
+
+\con_rodf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Dodanie funkcji dla controllingu
+::----------------------------------------------------------------------------------------------------------------------
+exec('add_rodf1','upgrade_1742',34,'Aktualizacja danych z wykonań','Aktualizacja wartości ze sprawozdań finansowych',3);
+__UPG.msg('Dodano funkcję aktualizacji modelu ze sprawozdań finansowych');
+1
+
+
+\con_rodf_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Dodanie funkcji dla controllingu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie nowej funkcji aktualizacyjnej dla controllingu'
+
+
+\add_rodf1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2011]
+:: OPIS: Dolaczanie rodzajow funkcji - wewnetrzna
+::   WE: _a - numer rodzaju funkcji
+::       _b - nazwa typu
+::       _c - opis
+::       _d - numer typu
+::----------------------------------------------------------------------------------------------------------------------
+CON_RODF.index('UNIK2'); CON_RODF.prefix(_a);
+{? CON_RODF.first()
+|| CON_RODF.TYP:=_b;
+   CON_RODF.OPIS:=_c;
+   CON_RODF.NUMER:=_d;
+   CON_RODF.put(1)
+|| CON_RODF.NUM_TYP:=_a;
+   CON_RODF.TYP:=_b;
+   CON_RODF.OPIS:=_c;
+   CON_RODF.NUMER:=_d;
+   CON_RODF.add(1)
+?};
+CON_RODF.GRUPA:={? CON_RODF.NUM_TYP=12 | CON_RODF.NUM_TYP=16 | CON_RODF.NUM_TYP=27 | CON_RODF.NUM_TYP=28 |
+                   CON_RODF.NUM_TYP=11 | CON_RODF.NUM_TYP=13 | CON_RODF.NUM_TYP=14 |
+                   CON_RODF.NUM_TYP=2 | CON_RODF.NUM_TYP=5 | CON_RODF.NUM_TYP=4 | CON_RODF.NUM_TYP=23
+                || 0
+                || 1
+                ?};
+CON_RODF.put()
+
+
+\plusREZ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Aktualizacja znacznika REZ.PLUS
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+_msk:=REZ.names();
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+REZ.cntx_psh();
+_msk.clear();
+{? _msk.first()
+|| {!
+   |? REZ.use(_msk.NAME);
+      REZ.prefix();
+      REZ.for_each("__lrec+=1; {? REZ.PLUS='' || REZ.PLUS:='N'; {? REZ.put(1) || __lmod+=1 ?} ?}",1);
+      _msk.next()
+   !}
+?};
+REZ.cntx_pop();
+obj_del(_msk);
+__UPG.msg('Zaktualizowano zapisy dla rezerwacji.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\plusREZ_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Aktualizacja znacznika REZ.PLUS - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja znacznika zwiększenia ilości dla rezerwacji'
+
+
+\sch_xd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Uaktualnienie pól tabeli SCH_XD
+::----------------------------------------------------------------------------------------------------------------------
+SCH_XD.cntx_psh(); DK.cntx_psh(); FAP.cntx_psh();
+_name:=SCH_XD.names();
+{? _name.first()
+|| {! |?
+      SCH_XD.use(_name.NAME); SCH_XD.prefix();
+      SCH_XD.for_each("{? SCH_XD.AUT_GEN=''
+                       || SCH_XD.AUT_GEN:='N'; SCH_XD.put()
+                       ?};
+                       {? SCH_XD.DK<>null & SCH_XD.ND=null
+                       || DK.use(ref_name(SCH_XD.DK)); DK.prefix();
+                          SCH_XD.ND:=SCH_XD.DK().N; SCH_XD.put()
+                       ?};
+                       {? SCH_XD.FAP<>null & SCH_XD.FAKS=null
+                       || FAP.use(ref_name(SCH_XD.FAP)); FAP.prefix();
+                          SCH_XD.FAKS:=SCH_XD.FAP().FAKS; SCH_XD.put()
+                       ?}
+                      ");
+      _name.next()
+   !}
+?};
+SCH_XD.cntx_pop(); DK.cntx_pop(); FAP.cntx_pop();
+__UPG.msg('Zaktualizowano podziały controllingowe dla dokumentów sprzedaży, zakupu i magazynowych.')
+
+
+\sch_xd_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Uaktualnienie pól tabeli SCH_XD - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uaktualnienie pól podziałów controllingowych dla logistyki'
+
+
+\m_kh_sv
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [17.42]
+:: OPIS: Uaktualnienie pól tabeli M_KH_SV
+::----------------------------------------------------------------------------------------------------------------------
+_stat:=obj_new('popr','niepopr','analiza');
+{! _lp:=1 .. obj_len(_stat)
+|! _stat[_lp]:=0
+!};
+params_set('stat',_stat);
+
+M_KH_SV.cntx_psh();
+M_KH_SV.prefix();
+_stat.analiza:=M_KH_SV.size();
+_wyn:=M_KH_SV.for_each(
+         "_stat:=params_get().stat;
+         {? M_KH_SV.SV_KH='' || M_KH_SV.SV_KH:='N';{? M_KH_SV.put(1) || _stat.popr+=1 || _stat.niepopr+=1 ?} ?}",1);
+M_KH_SV.cntx_pop();
+{? _wyn=1
+|| __UPG.msg('Uzupełniono pole SV_KH w tabeli stawek VAT kontrahenta. Poprawiono %1 z %2 analizowanych rekordów.'
+   [$_stat.popr,$_stat.analiza]);
+   {? _stat.niepopr>0
+   ||
+      __UPG.msg('Nie udało uzupełnić pola dla %1 rekordów.'[$_stat.niepopr]);
+      _wyn:=-1
+   ?}
+|| __UPG.msg('Wystąpił błąd podczas uzupełniania pola SV_KH w tabeli stawek VAT kontrahenta.');
+   _wyn:=0
+?};
+_wyn
+
+
+\m_kh_sv_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [17.42]
+:: OPIS: Uaktualnienie pól tabeli M_KH_SV - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie pola w tabeli stawek VAT kontrahenta. Pole (M_KH_SV.SV_KH) domyślną wartością N'
+
+
+\role_druk_mag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [17.42]
+:: OPIS: Dodanie uprawnień
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('ref_firma','ustawienia')=exec('from_sym','#firma','000')
+|| return(1)
+?};
+
+_wyn:=1;
+:: sprawdzenie licencji
+{? exec('lic','#b_domain','LMG')
+||
+   _wyn:=exec('add_actrol_one','#b_role','Magazynier','LMG_MAG_WWDM');
+   {? _wyn=1
+   || __UPG.msg('Nadano uprawnienie do czynności LMG_MAG_WWDM dla roli Magazynier.')
+   || __UPG.msg('Nie udało się nadanie uprawnień do czynności LMG_MAG_WWDM dla roli Magazynier.');
+      _wyn:=-1
+   ?}
+|| __UPG.msg('Brak licencji dla obszaru LMG.')
+?};
+_wyn
+
+
+\role_druk_mag_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [17.42]
+:: OPIS: Dodanie uprawnień  - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie uprawnień do roli Magazynier dla czynności drukowania dokumentów w PDF. Dla innych ról które potrzebują '+
+'takich uprawnień należy ręcznie nadać odpowiednie uprawnienia dla czynności LMG_MAG_WWDM'
+
+
+\dok_rej_zaksr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.42]
+:: OPIS: Uzupełnienie znacznika ZAK_SR (czy zakupy środków trwałych) w tabeli DOK_REJ
+::----------------------------------------------------------------------------------------------------------------------
+DOK_REJ.cntx_psh();
+DOK_REJ.prefix();
+DOK_REJ.for_each("{? DOK_REJ.ZAK_SR='' || DOK_REJ.ZAK_SR:='N'; DOK_REJ.put() ?}",1);
+DOK_REJ.cntx_pop();
+__UPG.msg('Ustawiono wartość nowego parametru <Czy zakupy środków trwałych> '
+          'dla dotychczasowych rodzajów dokumentów księgowych.');
+1
+
+
+\dok_rej_zaksr_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.42]
+:: OPIS: Uzupełnienie znacznika ZAK_SR - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie znacznika: <Czy zakupy środków trwałych> dla rodzajów dokumentów księgowych. '
+'Formuła uzupełnia wartość nowego pola DOK_REJ.ZAK_SR wartością <N>.'
+
+
+\nd_fill
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Uzupełnia pola ND.EDI_R, ND.EDI_W
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+_msk:=ND.names();
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+ND.cntx_psh();
+_msk.clear();
+{? _msk.first()
+|| {!
+   |? ND.use(_msk.NAME);
+      ND.prefix();
+      ND.for_each("
+         _put:=0;
+         __lrec+=1;
+         {? ND.EDI_R='' || _put:=1; ND.EDI_R:='N' ?};
+         {? ND.EDI_W='' || _put:=1; ND.EDI_W:='N' ?};
+         {? _put || {? ND.put() || __lmod+=1 ?} ?}
+      ");
+      _msk.next()
+   !}
+?};
+ND.cntx_pop();
+obj_del(_msk);
+__UPG.msg('Zaktualizowano zapisy dla dokumentów magazynowych.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\nd_fill_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Uzupełnia pola ND.EDI_R, ND.EDI_W - opis
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie ND.EDI_R, ND.EDI_W'
+
+
+\areatitle
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.28]
+:: OPIS: Inicjuje AreaTitle - obiekt do wyświetlania tytułów w obszarach roboczych
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+exec('init','areatitle');
+__UPG.msg('Zainicjowano tytuły obszarów roboczych.');
+1
+
+
+\areatitle_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Inicjuje AreaTitle - obiekt do wyświetlania tytułów w obszarach roboczych - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Inicjuje AreaTitle - obiekt do wyświetlania tytułów obszarów roboczych'
+
+
+\edi_i_fill
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Uzupełnia pole EDI_I.TYP
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+_msk:=EDI_I.names();
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+EDI_I.cntx_psh();
+_msk.clear();
+{? _msk.first()
+|| {!
+   |? EDI_I.use(_msk.NAME);
+      EDI_I.prefix();
+      EDI_I.for_each("
+         _put:=0;
+         __lrec+=1;
+         {? EDI_I.TYP='' || _put:=1; EDI_I.TYP:='L' ?};
+         {? _put || {? EDI_I.put() || __lmod+=1 ?} ?}
+      ");
+      _msk.next()
+   !}
+?};
+EDI_I.cntx_pop();
+obj_del(_msk);
+__UPG.msg('Zaktualizowano zapisy dla dokumentów magazynowych.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\edi_i_fill_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Uzupełnia pole EDI_I.TYP - opis
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie EDI_I.TYP'
+
+
+\actOperMob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Uzupełnia pole EANN.ZLEC
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+_msk:=EANN.names();
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+EANN.cntx_psh();
+_msk.clear();
+{? _msk.first()
+|| {!
+   |? EANN.use(_msk.NAME);
+      EANN.prefix();
+      EANN.for_each("
+         _put:=0;
+         __lrec+=1;
+         {? EANN.ZLEC='' || _put:=1; EANN.ZLEC:='N' ?};
+         {? _put || {? EANN.put() || __lmod+=1 ?} ?}
+      ");
+      _msk.next()
+   !}
+?};
+EANN.cntx_pop();
+obj_del(_msk);
+__UPG.msg('Zaktualizowano zapisy dla operacji mobilnych.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\actOperMob_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Uzupełnia pole EANN.ZLEC - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie znaczników operacji na urządzeniach mobilnych'
+
+
+\autoksie
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Aktualizacja pola AUTOKSIE.WYR
+::----------------------------------------------------------------------------------------------------------------------
+AUTOKSIE.prefix();
+AUTOKSIE.for_each("{? AUTOKSIE.WYR='' || AUTOKSIE.WYR:='N'; AUTOKSIE.put() ?}");
+__UPG.msg('Zaktualizowano schematy dokumentów.');
+1
+
+
+\autoksie_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Aktualizacja pola AUTOKSIE.WYR - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja schematów dokumentu.\nUstawienie AUTOKSIE.WYR:=\'N\''
+
+
+\ZL
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Aktualizacja pola ZL.TREE_TYP
+::----------------------------------------------------------------------------------------------------------------------
+_raport:=obj_new('P','N','Z','M','F');
+_raport.P:=_raport.N:=_raport.Z:=_raport.M:=_raport.F:=0;
+
+ZL.cntx_psh();
+ZL.index('UP_START');
+ZL.prefix();
+_il_rec:=ZL.size();
+ZL.prefix(0);
+{? ZL.first()
+|| {!
+   |? {? ZL.TREE_TYP=''
+      || {? ZL.RODZAJ='P'
+         || ZL.TREE_TYP:='P';
+            {? ZL.put() || _raport.P+=1 ?}
+         || {? ZL.RODZAJ='N'
+            || ZL.TREE_TYP:='N';
+               {? ZL.put() || _raport.N+=1 ?};
+               ZL.cntx_psh();
+               ZL.index('NRNZL');
+               ZL.prefix(ZL.UNRZL);
+               {? ZL.first()
+               || {!
+                  |? ZL.TREE_TYP:='P';
+                     {? ZL.put() || _raport.P+=1 ?};
+                     ZL.next()
+                  !}
+               ?};
+               ZL.cntx_pop()
+            |? ZL.RODZAJ='Z'
+            || ZL.TREE_TYP:='Z';
+               {? ZL.put() || _raport.Z+=1 ?};
+               _ktm:=ZL.KTM;
+               ZL.cntx_psh();
+               ZL.index('NRNZL');
+               ZL.prefix(ZL.UNRZL);
+               {? ZL.first()
+               || {!
+                  |? {? ZL.KTM=_ktm
+                     || ZL.TREE_TYP:='M';
+                        {? ZL.put() || _raport.M+=1 ?}
+                     || ZL.TREE_TYP:='F';
+                        {? ZL.put() || _raport.F+=1 ?}
+                     ?};
+                     ZL.next()
+                  !}
+               ?};
+               ZL.cntx_pop()
+            ?}
+         ?}
+      ?};
+      ZL.next()
+   !}
+?};
+ZL.cntx_pop();
+
+_result:=1;
+{? _il_rec>0
+|| __UPG.msg('Zaktualizowano zapisy w kartotece zleceń.');
+   __UPG.msg('Stan kartoteki zleceń po aktualizacji:');
+   _summary:=sql('select distinct TREE_TYP, count(*) as CNT from ZL group by TREE_TYP order by TREE_TYP');
+   {? _summary.first()
+   || {!
+      |? {? _summary.TREE_TYP=''
+         || __UPG.msg('- Zlecenia błędne, które nie zostały zaktualizowane: %1'[$_summary.CNT]);
+            _zlecenia:=sql('select SYM from ZL where ZL.TREE_TYP=\'\' order by ZL.SYM');
+            {? _zlecenia.first()
+            || {!
+               |? __UPG.msg('   '+_zlecenia.SYM);
+                  _zlecenia.next()
+               !}
+            ?};
+            _result:=-1
+         |? _summary.TREE_TYP='P'
+         || __UPG.msg('- Zlecenia proste: %1'[$_summary.CNT])
+         |? _summary.TREE_TYP='N'
+         || __UPG.msg('- Zlecenia niezależne (nagłówki): %1'[$_summary.CNT])
+         |? _summary.TREE_TYP='Z'
+         || __UPG.msg('- Zlecenia złożone z półfabrykatami (nagłówki): %1'[$_summary.CNT])
+         |? _summary.TREE_TYP='M'
+         || __UPG.msg('- Zlecenia montażowe: %1'[$_summary.CNT])
+         |? _summary.TREE_TYP='F'
+         || __UPG.msg('- Zlecenia półfabrykatowe: %1'[$_summary.CNT])
+         ?};
+         _summary.next()
+      !}
+   ?}
+|| __UPG.msg('Brak zapisów do aktualizacji w kartotece zleceń.')
+?};
+_result
+
+
+\ZL_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.42]
+:: OPIS: Aktualizacja pola ZL.TREE_TYP - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja kartoteki zleceń.\nWypełnienie pola ZL.TREE_TYP (Typ elementu w drzewie zlecenia).'
+
+
+\srsr_zb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.42]
+:: OPIS: Aktualizacja pola SRSR.ZB
+::----------------------------------------------------------------------------------------------------------------------
+SRSR.prefix();
+SRSR.for_each("{? SRSR.ZB='' || SRSR.ZB:='N'; SRSR.put() ?}");
+__UPG.msg('Zaktualizowano dane pierwotne środków trwałych.');
+1
+
+
+\srsr_zb_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.42]
+:: OPIS: Aktualizacja pola SRSR.ZB - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja danych pierwotnych środków trwałych.\nUstawienie SRSR.ZB:=\'N\''
+
+
+\okr_obsg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.42]
+:: OPIS: Uzupełnienie tabeli OKR_OBSG zapisami z OKR_OBSZ - ale tyko dotyczącymi okresów obrachunkowych FK/FST
+::----------------------------------------------------------------------------------------------------------------------
+OKR_OBSZ.cntx_psh(); OKR_OBSG.cntx_psh();
+OKR_OBSZ.prefix(); OKR_OBSG.prefix();
+OKR_OBSZ.for_each("{? OKR_OBSZ.OKRO_F<>null
+                   || OKR_OBSG.index('B_DOMAIN');
+                      OKR_OBSG.prefix(OKR_OBSZ.OKRO_F().ROK().FIRMA,OKR_OBSZ.B_DOMAIN,OKR_OBSZ.OKRO_F);
+                      {? ~OKR_OBSG.first()
+                      || OKR_OBSG.B_DOMAIN:=OKR_OBSZ.B_DOMAIN;
+                         OKR_OBSG.FIRMA:=OKR_OBSZ.OKRO_F().ROK().FIRMA;
+                         OKR_OBSG.OKRO_F:=OKR_OBSZ.OKRO_F;
+                         OKR_OBSG.add()
+                      ?}
+                   ?}
+                  ");
+OKR_OBSZ.cntx_pop(); OKR_OBSG.cntx_pop();
+__UPG.msg('Zaktualizowano globalną kartotekę okresów dla obszarów.');
+1
+
+
+\okr_obsg_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.42]
+:: OPIS: Uzupełnienie tabeli OKR_OBSG - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja globalnej kartoteki okresów dla obszarów.\nUzupełnienie tabeli OKR_OBSG.'
+
+
+\skid_rbk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Aktualizacja pól SKID_RBK
+::----------------------------------------------------------------------------------------------------------------------
+SKID_RBK.prefix();
+SKID_RBK.for_each("
+   {? SKID_RBK.AKTYWNY='' || SKID_RBK.AKTYWNY:='T'; SKID_RBK.put() ?}
+");
+1
+
+
+\skid_rbk_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Aktualizacja pól SKID_RBK - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja rachunków bankowych.\nUstawienie SKID_RBK.AKTYWNY:=\'T\''
+
+
+\actZlecFakt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Uzupełnia pole FAKZ.KOREKTA
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+_msk:=FAKZ.names();
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+FAKZ.cntx_psh();
+_msk.clear();
+{? _msk.first()
+|| {!
+   |? FAKZ.use(_msk.NAME);
+      FAKZ.prefix();
+      FAKZ.for_each("
+         _put:=0;
+         __lrec+=1;
+         {? FAKZ.KOREKTA='' || _put:=1; FAKZ.KOREKTA:='N' ?};
+         {? _put || {? FAKZ.put() || __lmod+=1 ?} ?}
+      ");
+      _msk.next()
+   !}
+?};
+FAKZ.cntx_pop();
+obj_del(_msk);
+__UPG.msg('Zaktualizowano zapisy dla zleceń fakturowania.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\actZlecFakt_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Uzupełnia pole FAKZ.KOREKTA - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie znaczników korekta dla zleceń fakturowania'
+
+
+\report
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.28]
+:: OPIS: Kompilacja wydruków
+::----------------------------------------------------------------------------------------------------------------------
+_result:=rep_tran('*');
+__UPG.msg('Zaktualizowano wydruki i zestawienia.');
+_result
+
+
+\report_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.28]
+:: OPIS: Kompilacja wydruków - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja wydruków i zestawień.'
+
+
+\m_fill
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Uzupełnia pole M.OO
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+M.cntx_psh();
+M.prefix();
+M.for_each("
+   _put:=0;
+   __lrec+=1;
+   {? M.OO='' || _put:=1; M.OO:='N' ?};
+   {? _put || {? M.put() || __lmod+=1 ?} ?}
+");
+M.cntx_pop();
+__UPG.msg('Zaktualizowano zapisy w kartotece materiałowej.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\m_fill_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Uzupełnia pole M.OO - opis
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie M.OO'
+
+
+\f_zatra
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.42]
+:: OPIS: Aktualizacja form współpracy dla czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_docelowa:='T';
+_kod:='Z';
+_lista:='PPL_ZLC_WUZC,PPL_ZLC_WERH';
+
+__UPG.msg('Docelowa forma współpracy: %1' [_docelowa]);
+__UPG.msg('Kod formy współpracy: %1' [_kod]);
+__UPG.msg('Lista czynności:');
+_arr:=spli_str(_lista,',');
+{! _lp:=1 .. obj_len(_arr)
+|! __UPG.msg(' * %1 - %2' [_arr[_lp],exec('name','#b_action',_arr[_lp])])
+!};
+_ret:=exec('f_zatra_add','f_zatr',_docelowa,_kod,_lista,1);
+{? _ret<>''
+|| __UPG.msg(_ret);
+   0
+|| 1
+?}
+
+
+\f_zatra_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.42]
+:: OPIS: Aktualizacja form współpracy dla czynności - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja form współpracy dla czynności'
+
+
+\B_PREL
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Nawija nowe pola w tabeli B_PREL
+::   WY: -1/0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_can_continue:=1;
+B_PREL.cntx_psh();
+B_PREL.index('CODE');
+B_PREL.prefix();
+B_TIMER.cntx_psh();
+B_TIMER.index('B_PREL');
+{? B_PREL.first()
+|| {!
+   |? _put:=0;
+      {? B_PREL.ENABLED=''
+      || _put:=1;
+         B_TIMER.prefix(B_PREL.ref());
+         {? B_TIMER.first()
+         || B_PREL.ENABLED:=B_TIMER.ON
+         || B_PREL.ENABLED:='T'
+         ?}
+      ?};
+      {? _put>0
+      || _can_continue:=B_PREL.put();
+         {? _can_continue=0
+         || _result:=0;
+            __UPG.msg('Nie udany zapis elementu procesu: %1. Proces: %2'@[exec('B_PREL','#to_string'),exec('record','#to_string',B_PREL.B_PROC)])
+         ?}
+      ?};
+      B_PREL.next()
+   !}
+?};
+B_PREL.cntx_pop();
+B_TIMER.cntx_pop();
+{? _result>0
+|| __UPG.msg('Zaktualizowano zapisy tabeli B_PREL.')
+|| __UPG.msg('Nie udało się zaktualizować wszystkich zapisów tabeli B_PREL.')
+?};
+_result
+
+
+\B_PREL_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.42]
+:: OPIS: Nawija nowe pola w tabeli B_PREL - opis
+::   WY: -1/0/1
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie pól w tabeli B_PREL (elementy procesów)'
+
+
+\formuly
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Dodanie formuł na firmę wyłączeniową algorytmów wierszy sprawozadnia
+::----------------------------------------------------------------------------------------------------------------------
+FORMULA.index('FORMULA4');
+FORMULA.prefix();
+_add:="
+   {? FORMULA.find_key('w',_a,)
+   || FORMULA.NAZWA:=_b;
+      FORMULA.FORMULA:=_c;
+      FORMULA.put()
+   || FORMULA.RODZAJ:='w';
+      FORMULA.SKROT:=_a;
+      FORMULA.NAZWA:=_b;
+      FORMULA.FORMULA:=_c;
+      FORMULA.add(1)
+   ?}
+";
+_add('FIRMA','Firma wyłączeniowa z konta z firmą w analityce',$"exec('kon_firma','konsolidacja',_a)");
+_add('^FIRMA','Firma wyłączeniowa z wyróżnika z firmą',$"exec('wyr_firma','konsolidacja')");
+_add('KH','Firma wyłączeniowa z konta z kontrahentem w analityce',$"exec('konto_firma_pow','kontrahent',_a)");
+_add('^KH','Firma wyłączeniowa z wyróżnika z kontrahentem',$"exec('wyr_firma_pow','kontrahent')");
+__UPG.msg('Dodano/uaktualniono formuły na firmę wyłączeniową dla algorytmów wierszy sprawozdań');
+1
+
+
+\formuly_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Dodanie formuł na firmę wyłączeniową algorytmów wierszy sprawozadnia - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie/uaktualnienie formuł na firmę wyłączeniową dla algorytmów wierszy sprawozdań'
+
+
+\rs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Naprawa formuły dla wzorca SKID_RBK
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0;
+RS.cntx_psh();
+RS.index('TAB_POLE'); RS.prefix();
+{? RS.find_key('SKID_RBK','SKID_RBK','KOD','KOD') & RS.TR<>'exec(\'wz_rbk\',\'slo_slu\')'
+|| RS.TR:='exec(\'wz_rbk\',\'slo_slu\')';
+   {? RS.put()
+   || __UPG.msg('Poprawiono formułę na treść dla wzorca słowników opartych o tabelę SKID_RBK.');
+      _ok:=1
+   ?}
+?};
+RS.cntx_pop();
+{? ~_ok
+|| __UPG.msg('Formułę na treść dla wzorca słowników opartych o tabelę SKID_RBK nie wymagała naprawy.')
+?};
+1
+
+
+\rs_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Naprawa formuły dla wzorca SKID_RBK - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Zmiana formuły na treść dla wzorca słowników opartych o tabelę SKID_RBK'
+
+
+\kh_nasz_kod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Uzupełnienie pola KH_DOD.NASZ_KOD
+::----------------------------------------------------------------------------------------------------------------------
+_sql:=sql('select count(*) as ILE from KH_DOD where NASZ_KOD!=\'\'');
+{? _sql.first() & _sql.ILE=0
+|| KH_DOD.index('KH');
+   KH.for_each("
+      {? KH.NASZ_KOD<>''
+      || KH_DOD.prefix(KH.ref());
+         {? KH_DOD.first()
+         || {!
+            |? KH_DOD.NASZ_KOD:=KH.NASZ_KOD;
+               KH_DOD.put();
+               KH_DOD.next()
+            !}
+         ?}
+      ?}
+   ");
+   __UPG.msg('Uzupełniono pole nasz kod u kontrahenta.')
+|| __UPG.msg('Pole nasz kod u kontrahenta było już uzupełniane.')
+?};
+1
+
+
+\kh_nasz_kod_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.42]
+:: OPIS: Uzupełnienie pola KH_DOD.NASZ_KOD - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie pola nasz kod u kontrahenta (KH_DOD.NASZ_KOD=KH.NASZ_KOD)'
+
+
+\rubatr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DAROKR [17.42]
+:: OPIS: Uzupełnienie atrybutów rubryk.
+::----------------------------------------------------------------------------------------------------------------------
+:: Poprawka SPIS ER/WRT/XP/12.41/1610/0098
+exec('add_attr','rubatr',100,1003,'Godziny świadczące o pracy w dni wolne',1,
+     'Składniki, które powinny być uwzględnione przy ustalaniu pracy w dni wolne podczas wyliczenia ekwiwalentu.',,58);
+:: Poprawka SPIS ER/WRT/XP/12.41/1706/0033 - Obsługa odbiorów nadgodzin
+exec('add_use','rubatr',1003,64,65);
+__UPG.msg('Zaktualizowano atrybuty rubryk o symbolu: 1003 - Godziny świadczące o pracy w dni wolne.');
+: Zaświadczenie do celów emerytalnych
+exec('add_attr','rubatr',6,66,'Zaświadczenie do celów emerytalnych',1,'',500,465,467,650);
+exec('add_attr','rubatr',66,661,'Składniki przychodu do zaświadczenia',1,'',,500);
+exec('add_attr','rubatr',66,662,'Składniki wykluczone z przychodu',1,'');
+exec('add_attr','rubatr',66,663,'Składniki wynagrodzenia za chorobę',1,'',,465,467,650);
+__UPG.msg('Dodano atrybuty rubryk o symbolu: 66 - Zaświadczenie do celów emerytalnych');
+: Poprawka SPIS ER/WRT/XP/12.41/1704/0005
+exec('add_use','rubatr',6313108,436,437,438,439,442,443,444);
+exec('add_attr','rubatr',63,633,'GUS Z-02',1,'');
+exec('add_attr','rubatr',633,6331,'Wydatki na doskonalenie, kształcenie kadr',1,
+   'Wydatki na doskonalenie, kształcenie i przekwalifikowanie kadr');
+exec('add_attr','rubatr',633,6332,'Wydatki na delegacje służbowe',1,
+   'Wydatki na delegacje służbowe');
+exec('add_attr','rubatr',633,6333,'Dobrowolne składki na ubezpieczenia społeczne',1,
+   'Dobrowolne składki na ubezpieczenia społeczne');
+exec('add_attr','rubatr',6333,63331,'w tym składki na prac. systemy emer.-rent.',1,
+   '  w tym składki na pracownicze systemy emerytalno-rentowe');
+exec('add_attr','rubatr',633,6334,'Wydatki związane z BHP',1,
+   'Wydatki związane z bezpieczeństwem i higieną pracy');
+exec('add_attr','rubatr',633,6335,'Zakładowy fundusz świadczeń socjalnych',1,
+   'Zakładowy fundusz świadczeń socjalnych (odpis w koszty)');
+exec('add_attr','rubatr',633,6336,'Świadczenia o charakterze rzeczowym',1,
+   'Świadczenia o charakterze rzeczowym');
+exec('add_attr','rubatr',633,6337,'Pozostałe wydatki',1,'Pozostałe wydatki');
+__UPG.msg('Dodano atrybuty sprawozdania GUS-Z02');
+:: Poprawka SPIS ER/WRT/XP/12.41/1710/0007 - Wydruk Zus Z-3 po ustaniu zatrudnienia
+exec('add_attr','rubatr',652,6524,'Nie ujmowane w podstawie chorobowego',1,
+   'Pozycja 11 zaświadczenia.');
+__UPG.msg('Dodano atrybut sprawozdania ZUS-Z3');
+1
+
+
+\rubatr_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DAROKR [17.42]
+:: OPIS: Uzupełnienie atrybutów rubryk - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie atrybutów rubryk'
+
+
+\ctrlParams
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: Kontrola kto z użytkowników miał uprawnienia do parametrów 3050, 2050
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+_len:=2;
+_txt:=obj_new(_len);
+{! _i:=1.._len |! _txt[_i]:='' !};
+
+USERS.cntx_psh();
+USERS.index('USR_KKOD');
+USERS.prefix();
+{? USERS.first()
+|| {!
+   |? {? exec('get','#params',2050,2,USERS.ref())='T' || _txt[1]+=USERS.KOD+', ' ?};
+      {? exec('get','#params',3050,2,USERS.ref())='T' || _txt[2]+=USERS.KOD+', ' ?};
+      USERS.next()
+   !}
+?};
+USERS.cntx_pop();
+{? _txt[1]<>''
+|| _txt[1]:=form(_txt[1])-1;
+   __UPG.msg('Lista użytkowników z ustawionym parametrem, Firma %1'@[REF.FIRMA().SYMBOL]);
+   __UPG.msg('  2050 - \"Uprawnienia do anulowania dokumentów sprzedaży?\":'@);
+   __UPG.msg(_txt[1]);
+   __UPG.msg('Powyższym użytkownikom należy nadać uprawnienia do czynności:'@);
+   __UPG.msg('  LSP_FAK_EANU - Anulowanie dokumentu sprzedaży');
+   _res:=-1
+?};
+{? _txt[2]<>''
+|| _txt[2]:=form(_txt[2])-1;
+   __UPG.msg('Lista użytkowników z ustawionym parametrem, Firma %1'@[REF.FIRMA().SYMBOL]);
+   __UPG.msg('  3050 - \"Uprawnienia do anulowania dokumentów zakupu?\":'@);
+   __UPG.msg(_txt[2]);
+   __UPG.msg('Powyższym użytkownikom należy nadać uprawnienia do czynności:'@);
+   __UPG.msg('  LZK_ZAK_EANU - Anulowanie dokumentu zakupu');
+   _res:=-1
+?};
+{? _res || __UPG.msg('Nie stwierdzono konieczności zmian w parametryzacji, Firma %1.'@[REF.FIRMA().SYMBOL]) ?};
+obj_del(_txt);
+_res
+
+
+\ctrlParams_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.14]
+:: OPIS: Kontrola kto z użytkowników miał uprawnienia do parametrów 3050, 2050 - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Kontrola parametryzacji użytkowników'
+
+
+\edi_ka_P_KIN
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.42]
+:: OPIS: Kod - ER/WRT/XP/17.42/1710/0009
+::       Import danych pracownika pole P.KIN-Wzorzec indywidualny po imporcie ma wartość 'N' a powinna być wartość 'T'.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+P.cntx_psh();
+P.clear();
+{? P.first()
+|| _licz:=_akt:=_err:=0;
+   PROGRESS.set(P.size(),'Trwa aktualizacja wartości pola "Wzorzec indywidualny".'@);
+   {!
+   |? _licz+=1;
+      {? P.KIN<>'T'
+      || P.KIN:='T';
+         {? P.put(1)
+         || _akt+=1
+         || _err+=1
+         ?}
+      ?};
+      PROGRESS.next();
+      P.next()
+   !};
+   PROGRESS.close();
+   {? _err
+   || __UPG.msg('Zaktualizowano wartość w polu "Wzorzec indywidualny" w tabeli współpracowników.');
+      __UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$_licz,$_akt]);
+      __UPG.msg('Próba zapisu dla: %1 współpracowników, zakończyła się niepowodzeniem.'@[$_err])
+   || __UPG.msg('Zaktualizowano wartość w polu "Wzorzec indywidualny" w tabeli współpracowników.');
+      __UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'@[$_licz,$_akt]);
+      _result:=1
+   ?}
+|| __UPG.msg('Nie uzupełniono danych w tabeli współpracowników.');
+   __UPG.msg('Brak danych w tabeli.');
+   _result:=-1
+?};
+P.cntx_pop();
+_result
+
+
+\edi_ka_P_KIN_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.42]
+:: OPIS: Kod - ER/WRT/XP/17.42/1710/0009
+::       Import danych pracownika pole P.KIN-Wzorzec indywidualny po imporcie ma wartość 'N' a powinna być wartość 'T'.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Zmiana wartości w polu "Wzorzec indywidualny" w tabeli P'
+
+
+\aktualizuj_p_kk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.42]
+:: OPIS: Kod - ER/WRT/XP/17.42/1801/0014
+::       Aktualizacja konta kosztowego.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: -1 -> 1
+::  0 -> 2
+::  1 -> 3
+_stat:=obj_new(3);
+{! _lp:=1 .. obj_len(_stat)
+|! _stat[_lp]:=0
+!};
+params_set('stat',_stat);
+P.cntx_psh();
+P.clear();
+P.for_each("params_get().stat[2+exec('pracownik_aktualizuj','pracownik','P_KK')]+=1",1);
+P.cntx_pop();
+__UPG.msg('Liczba pracowników wymagających aktualizacji konta kosztów: %1' [$(_stat[1]+_stat[3])]);
+__UPG.msg('Liczba pracowników z zaktualizowanym kontem kosztów: %1' [$_stat[3]]);
+__UPG.msg('Liczba pracowników, dla których nie udało się zaktualizować konta kosztów: %1' [$_stat[1]]);
+
+{? _stat[1]
+|| -1
+|| 1
+?}
+
+
+\aktualizuj_p_kk_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.42]
+:: OPIS: Kod - ER/WRT/XP/17.42/1801/0014
+::       Aktualizacja konta kosztowego - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja konta kosztowego pracownika na podstawie zapisów w historii konta kosztowego'
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:16:37 8e23e70a7359e368f6395363a0d81abd0b050f63bf2dc4adf2b8dc51d6e23b1ca81ee79a65b8cd2437a4a50ded6baed3e92558abffd7883dd9de7d161b84f8071156fc048a51496dbaf95451e169729cb81049a8a38eceb85b942c557c95989aea5446613c5215c2042f81d95af3745941c1164f1122ed1347a6a29dab78813c

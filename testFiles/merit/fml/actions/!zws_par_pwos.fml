@@ -1,0 +1,278 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !zws_par_pwos.fml
+:: Utworzony: 13.03.2018
+:: Autor: areKc
+::======================================================================================================================
+:: Zawartość: Obsługa czynności ZWS_PAR_PWOS - Wybór osoby.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [18.22]
+:: OPIS: Wybór osoby - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP
+
+:: Parametr wejściowy ON_ESC określa sposób działania akcji wyboru osoby przy braku wyboru.
+:: Parametr może przyjmować wartości:
+::    DONE     - Czynność zostanie zakończona, a parametry wyjściowe przyjmą wartości puste [DOMYŚLNIE].
+::    KEEP     - Czynność zostanie odłożona na listę zadań aby użytkownik mógł do niej wrócić. Oznacza to, że czynności
+::               nie da się zakończyć bez wyboru osoby.
+::    CANCEL   - Jeśli czynność jest pierwszą w procesie to po zakończeniu formuły głównej instancja czynności zostanie
+::               usunięta. Jeśli czynność jest kolejną w procesie to otrzyma status oczekująca i pozostanie na liście
+::               zadań - czyli tak jak dla KEEP.
+::    ERROR    - Czynność jest kończona a proces zatrzymywany z ustawioną flagą błędu.
+::# kind=WE, symbol=ON_ESC, type=STRING, name=Sposób działania przy rezygnacji, required=N, fml_val="exec('on_esc','#bi_stat',{? _a=~~ || 'DONE' || _a ?})"
+::
+:: Parametr wejściowy WIELU określa, czy możliwy jest wybór wielu osób.
+::# kind=WE, symbol=WIELU, type=STRING, name=Wybór wielu osób: (T/N), required=N, fml_val="exec('edit_boolean','#edit',{? _a=~~ || '' || _a ?},'Wiele osób?')"
+::
+:: Parametr wejściowy UKRYJ określa, które kolumny mają zostać pominięte podczas definiowania okna wertowania
+:: wyboru osoby.
+::# kind=WE, symbol=UKRYJ, type=STRING, name=Pola ukrywane w oknie wertowania, required=N, fml_val="exec('pomin_kolumny','!zws_par_pwos',{? _a=~~ || '' || _a ?})"
+::
+:: Parametr wejściowy KOLUMNY określa, czy będzie można dodawać kolumny do okna wertowania czy będą ukryte
+:: wyboru osoby.
+::# kind=WE, symbol=KOLUMNY, type=STRING, name=Dodawanie kolumny w oknie wertowania: (T/N), required=N, fml_val="exec('edit_boolean','#edit',{? _a=~~ || '' || _a ?},'Możliwe dodawanie kolumn')"
+
+::# kind=WY, symbol=OSOBA, type=_OSOBA, name=Wskazanie osoby, required=N
+
+_par:=params_get();
+_mp:=_par.mp;
+
+{? _mp.pathProc() | _mp.pathTodo()
+|| _in:=_par.in;
+   {? _in.WIELU=~~ || _in.WIELU:='N' ?};
+   {? _in.UKRYJ=~~ || _in.UKRYJ:='' ?};
+   {? _in.KOLUMNY=~~ | +_in.UKRYJ || _in.KOLUMNY:='N' ?};
+   _out:=_par.out;
+:: Ustawienie domyślnej wartości parametru LOOP.
+   _mp.save(exec('kind_out','#b_port'),'LOOP','N');
+:: Ustalenie / odzyskanie klucza grupującego.
+   _out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+
+   {? ~_mp.loop()
+:: Pierwszy obrót pętli - przygotujmy dane.
+:: Usuwamy wszystkie dotychczasowe klucze, które mogły zostać zapamiętane przy poprzednim uruchomieniu czynności
+:: (zakończonej _mp.keep()).
+   || _mp.grpkeyDelAll();
+:: Wybór osób.
+      _wyb:=exec('wybierz','!zws_par_pwos',_in);
+      {? _wyb.first()
+      || {!
+         |? _mp.grpkeyAdd(_wyb.UID);
+            _wyb.next()
+         !}
+:: Wybór nie zakończył się sukcesem - co mówi parametr ON_ESC?
+      || {? _in.ON_ESC='KEEP'
+         || _mp.keep()
+         |? _in.ON_ESC='CANCEL'
+         || _mp.cancel()
+         |? _in.ON_ESC='ERROR'
+         || _mp.error('ON_ESC=ERROR')
+         || _mp.save(,_out);
+            _mp.done()
+         ?};
+         return()
+      ?}
+   ?};
+:: Jeżeli coś było nie tak (z parametrami wejściowymi, z wyborem), to zostało obsłużone powyżej.
+:: Tutaj jesteśmy już na etapie obsługi pętli.
+   OSOBA.cntx_psh();
+   OSOBA.prefix();
+   do();
+   _uidref:=_mp.grpkeyGet();
+   {? _uidref<>~~
+   || {? OSOBA.seek(_uidref)
+      || _out.OSOBA:=OSOBA.ref();
+         _mp.save(,_out)
+      ?};
+      {? _mp.grpkeyDel()
+      || {? _mp.grpkeyGet()<>~~
+:: Jeżeli jest jeszcze choć jeden element do przetworzenia, to pętla powinna być kontynuowana.
+         || _mp.loop_continue()
+         ?}
+      ?}
+   ?};
+   _mp.done();
+   end();
+   OSOBA.cntx_pop()
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [18.22]
+:: OPIS: Wybór osoby - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Wybierz osobę'@@
+
+
+\wybierz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [18.22]
+:: OPIS: Wybór osoby - wyświetlenie okna tabeli z osobami.
+::   WE: _a - Parametry wejściowe sterujące wyświetlaniem okna.
+::   WY: Lista wybranych osób.
+::----------------------------------------------------------------------------------------------------------------------
+OSOBA.cntx_psh();
+OSOBA.index('OSOBA');
+OSOBA.prefix();
+OSOBA.fld_attr(,(_a.KOLUMNY='N')+1);
+_OSOBA:=tab_tmp(1,
+   'REF','INTEGER','#OSOBA.ref()',
+   'UID','STRING[48]','OSOBA.uidref()'
+);
+params_set('OSOBA',_OSOBA);
+
+{? +_a.UKRYJ
+|| _pomin:=$("',"+gsub(_a.UKRYJ,' ','')+",'*(','+_a+',')")
+|| _pomin:="0"
+?};
+
+:: Definicja okna do wyboru osób.
+_wyb:=OSOBA.mk_sel('Wybór osoby',,,'procwybosob',,,,,'U',,,,,'maximized');
+:: Kolumny wyświetlanej tabeli osób.
+OSOBA.win_fld(_wyb,,'NAZWISKO',,,-20,,1,'Nazwisko'@,,MS.comment(OSOBA,'NAZWISKO'));
+OSOBA.win_fld(_wyb,,'PIERWSZE',,,-15,,1,'Imię'@,,MS.comment(OSOBA,'PIERWSZE'));
+{? ~_pomin('DRUGIE')
+|| OSOBA.win_fld(_wyb,,'DRUGIE',,,-15,,1,'Drugie imię'@,,MS.comment(OSOBA,'DRUGIE'))
+?};
+{? ~_pomin('PLEC')
+|| OSOBA.win_fld(_wyb,,'PLEC',,,-15,,1,'Płeć'@,,MS.comment(OSOBA,'PLEC'))
+?};
+{? ~_pomin('PESEL')
+|| OSOBA.win_fld(_wyb,,'PESEL',,,-11,,1,'PESEL',,MS.comment(OSOBA,'PESEL'))
+?};
+{? ~_pomin('NIP')
+|| OSOBA.win_fld(_wyb,,'NIP',,,-11,,1,'NIP'@,,MS.comment(OSOBA,'NIP'))
+?};
+{? ~_pomin('KALI')
+|| OSOBA.win_fld(_wyb,,'KALI',,,-5,,1,'Kadry'@,,MS.comment(OSOBA,'KALI'),2,,"'T'","'N'")
+?};
+:: Akcje wyświetlonej tabeli osób.
+OSOBA.win_act(_wyb,,'Formuła','Wybierz'@@,,'Wybór osoby',
+   "  _OSOBA:=params_get().OSOBA;
+      _OSOBA.REF:=#OSOBA.ref();
+      _OSOBA.UID:=OSOBA.uidref();
+      _OSOBA.add()
+   ",
+   "  sel_exit()
+   ",1,_a.WIELU='T',,,'W'
+);
+OSOBA.win_act(_wyb,,'Kolejność');
+OSOBA.win_act(_wyb,,'Wyświetl',,,,
+   {? _a.KOLUMNY='N' | +_a.UKRYJ
+   || ""
+   || "  OSOBA.win_edit('RED');
+         OSOBA.display()
+      "
+   ?}
+);
+:: Pobranie i przekazanie listy wybranych osób.
+OSOBA.win_sel(_wyb);
+OSOBA.select();
+
+OSOBA.fld_attr(,1);
+OSOBA.cntx_pop();
+_OSOBA
+
+
+\pomin_kolumny
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [18.22]
+:: OPIS: Blokada wyświetlania wybranych pól tabeli.
+::   WE: [_a] [STRING] - Aktualna lista akronimów pól ukrywanych w oknie wertowania.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_pola:={? var_pres('_a')=type_of('') || form(_a) || '' ?};
+
+:: Tabela z listą pól, dla których mają być ukrywane kolumny.
+_TAB:=tab_tmp(1,
+   'POLE','STRING[8]','Akronim pola',
+   'NAZWA','STRING[60]','Nazwa pola',
+   'POMOC','STRING[60]','Podpowiedź',
+   'STATUS','STRING[1]','Ukrywanie pola'
+);
+:: Dodawanie listy kolumn, które można ukrywać w oknie wertowania
+_add:=
+   "  _lp:=_a.size()+1;
+      _a.blank();
+      _a.POLE:=_b;
+      _a.NAZWA:=MS.name(OSOBA,_b);
+      _a.POMOC:=MS.comment(OSOBA,_b);
+      _a.STATUS:='N';
+      _a.add()
+   ";
+_add(_TAB,'DRUGIE');
+_add(_TAB,'PLEC');
+_add(_TAB,'PESEL');
+_add(_TAB,'NIP');
+_add(_TAB,'KALI');
+:: Wczytanie ukrywanych kolumn z parametrów wejściowych
+{? _pola<>''
+|| _arr:=spli_str(_pola,',');
+   {! _ii:=1..obj_len(_arr)
+   |! {? _TAB.find_key(_arr[_ii])
+      || _TAB.STATUS:='T';
+         _TAB.put()
+      ?}
+   !}
+?};
+:: Definicja okna do ograniczenia wyświetlania kolumn z tabeli OSOBA.
+_ws:=_TAB.mk_sel('Pola ukrywane w oknie wertowania'@,,,,,,_TAB.size()+2,,'U');
+:: Pola w oknie
+_TAB.win_fld(_ws,,'NAZWA',,,,,1,'Nazwa'@,,'Nazwa pola tabelli'@);
+_TAB.win_fld(_ws,,'STATUS',,,-6,,1,'Ukryte'@,,'Czy ukrytawć pole [T/N]'@,2,,"'T'","'N'");
+:: Akcje w oknie
+_TAB.win_act(_ws,,'Formuła','Ukryj'@@,,'Ukrywa pole w oknie wertowania'@,
+   "  cur_tab(,1).STATUS:='T';
+      cur_tab(,1).put()
+   ",,,1,,,'U');
+_TAB.win_act(_ws,,'Formuła','Pokaż'@@,,'Pokazuje pole w oknie wertowania'@,
+   "  cur_tab(,1).STATUS:='N';
+      cur_tab(,1).put()
+   ",,,1,,,'P');
+_TAB.win_act(_ws,,'Formuła','Akceptuj'@@,,'Akceptacja wyborów'@,"sel_exit()",,,,,,'A');
+_TAB.win_act(_ws,,'Rekord',,,,
+   "  {? _a
+      || _TAB:=cur_tab(,1);
+         _win:=_TAB.win_sel('?');
+         _TAB.cntx_psh();
+         _TAB.index(_TAB.ndx_tmp(,1,'STATUS',,));
+         _gray:={? _TAB.find_key('T') || '' || 'A' ?};
+         _TAB.cntx_pop();
+         _TAB.actions_grayed(_win,_gray+{? _TAB.sel_size() || '' |? _TAB.STATUS='T' || 'U' || 'P' ?});
+         _TAB.actions(_win,,{? _TAB.sel_size() || ':' |? _TAB.STATUS='T' || 'P' || 'U' ?},1)
+      ?}
+   ");
+:: Przyciski w oknie
+_TAB.win_btn(_ws,'text='+'Ukryj'@,'menu:U');
+_TAB.win_btn(_ws,'text='+'Pokaż'@,'menu:P');
+_TAB.win_btn(_ws,'text='+'Akceptuj'@+',icon=xwin16.png:13,panel=bottom','menu:A');
+:: Wyświetlenie okna do ustawienia wartości parametru
+_TAB.win_sel(_ws);
+
+{? _TAB.select()
+|| _pola:='';
+   {? _TAB.first()
+   || {!
+      |? {? _TAB.STATUS='T'
+         || _pola+=_TAB.POLE+','
+         ?};
+         _TAB.next()
+      !}
+   ?};
+   {? +_pola || _pola-1 ?}
+|| _pola
+?}
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:22:56 44f8ccf1270f394aeebd0678da9e3a19ea5d47d2d834e046a2040dd8a0e127d78de19940e4c6285233a98dc7a129817b988ae7e7d44a4a5946018b95f022788fd35a10f7d70e0338a72371b5388cf23d2cf1c54e1933889bfad56510728489c4c1a46518082e262b4a6e8e8fd69a7bdedf6f2ce3c78d8eb1d6d23afda8956b99

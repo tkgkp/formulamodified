@@ -1,0 +1,166 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_zes_znwu.fml
+:: Utworzony: 03.09.2019
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PKD_ZES_ZNWU - Załączniki wniosków urlopowych.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [19.42]
+:: OPIS: Generowanie załączników z wnioskami urlopowymi.
+::   WE:
+::   WY:
+::  OLD: \gen_nwu/gen_zal.fml
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+
+{? ~FUN.ask(
+      'Uruchomienie tej funkcji spowoduje wygenerowanie\n'
+      'załączników z wnioskami urlopowymi dotyczącymi nieobecności,\n'
+      'które rozpoczynają się w zadanym okresie.'@+ '\n'+
+      'Kontynuować?'@
+   )
+|| return()
+?};
+
+_PAR:=tab_tmp(1
+   ,'OD','DATE','Data początku okresu'@
+   ,'DO','DATE','Data końca okresu'@
+   ,'TO','INTEGER','We wskazanym okresie'@
+   ,'OVR','INTEGER','Sposób postępowania w przypadku, gdy załącznik już istnieje'@
+);
+_we:=_PAR.mk_edit('%1 - %2' ['Generowane załączników'@,'Wnioski urlopowe'@],,'#gen_wnu_par');
+_PAR.win_esep(_we,'Parametry'@);
+_PAR.win_efld(_we,,'OD',,,,,,,,'Data początku analizowanego okresu'@);
+_PAR.win_efld(_we,,'DO',,,,,,,,'Datakońca analizowanego okresu'@);
+_PAR.win_efld(_we,,'TO',,,,,,,
+   ,'W jaki sposób wybierane są wnioski'@,'radio-buttons','left_label=1'
+   ,'rozpoczyna się lub kończy wnioskowana nieobecność'@,"0"
+   ,'miała miejsce ostatnia modyfikacja wniosku'@,"1"
+
+);
+_PAR.win_efld(_we,,'OVR',,,,,,'Sposób postępowania, w przypadku gdy załącznik już istnieje:'@,
+   ,'Jak postąpić w sytuacji gdy plik był już utworzony.'@,'radio-buttons','left_label=1'
+   ,'Pozostaw wcześniej utworzoną wersję (nie twórz nowej)'@,"0"
+   ,'Zastąp nową wersją, jeżeli poprzednia nie została pobrana'@,"1"
+   ,'Zawsze zastępuj'@,"2"
+   ,'Dołącz nową wersję'@,"3"
+);
+exec('ok_esc','#window',_PAR,_we,,,,,,,'Generuj'@);
+_PAR.win_edit(_we);
+_PAR.efld_opt(_we,'mark=1',,'OD');
+_PAR.efld_opt(_we,'mark=1',,'DO');
+_PAR.blank();
+_PAR.OD:=date(,,1);
+_PAR.DO:=date(,,0);
+{? ~_PAR.edit("__CHK.record(cur_tab(1,1),,'OD','OD')")
+|| return()
+?};
+
+_args:=exec('wybierz_args','pracownik');
+_args.DOMAIN:='PKD';
+_args.UD_SCH:=exec('domyslny','schemat','PODZORG');
+_args.UD_SKL:=__PARSES.getVal('JednostkaOrganizacyjna').REF;
+_args.F_ZATR:=__PARSES.getVal('F_ZATR').KOD;
+_args.VIEW:=__PARSES.getVal('ZakresDanych');
+_args.SQL_FROM:='join NWU using(NWU.P,"P".REFERENCE)';
+{? _PAR.TO=0
+|| _args.SQL_WHERE:=
+      '((NWU.OD between to_date(\'%1\') and to_date(\'%2\')) or (NWU.DO between to_date(\'%1\') and to_date(\'%2\')))'
+      ' and NWU.AZ in (\'T\',\'N\',\'W\')'
+      [_PAR.OD$1,_PAR.DO$1]
+|? _PAR.TO=1
+|| _args.SQL_WHERE:='(NWU.IDPUT between \'%1\' and \'%2\')' [time_ident(_PAR.OD),time_ident(_PAR.DO+1)]
+?};
+_prac:=exec('wybierz','pracownik',_args);
+obj_del(_args);
+
+{? _prac.P.first()
+|| _RAPORT:=exec('raport','zal','Wnioski urlopowe'@);
+   _prg:=obj_new('size','step','proc','text','title','twait');
+   _prg.size:=_prac.P.size();
+   _prg.step:=0;
+   _prg.proc:=-1;
+   _prg.text:='Generowanie załączników na podstawie wniosków urlopowych.'@;
+   _prg.title:='Przetwarzanie danych'@;
+   _prg.twait:='Proszę czekać ...'@;
+   progress(,'%1 %2'[_prg.text,_prg.twait],_prg.title);
+   P.cntx_psh();
+   P.prefix();
+   R.cntx_psh();
+   R.prefix();
+   NWU.cntx_psh();
+   {? _PAR.TO=0
+   || NWU.index('OD');
+      _war:="(_a<=NWU.OD & NWU.OD<=_b) | (_a<=NWU.DO & NWU.DO<=_b)"
+   |? _PAR.TO=1
+   || NWU.index(_ndx:=NWU.ndx_tmp(,,'P',,,'IDPUT',,));
+      _war:="time_ident(_a)<=NWU.IDPUT & NWU.IDPUT<time_ident(_b+1)"
+   || _war:="0"
+   ?};
+
+   _user:=username();
+
+   _args:=exec('add_args','zal');
+   _args.OWNER:='NWU';
+   _args.OVR:=
+      {? _PAR.OVR=0 || "0"
+      |? _PAR.OVR=1 || "~exec('isNotEmpty','zal_pobh',ZALACZ.ref())"
+      |? _PAR.OVR=2 || "1"
+      |? _PAR.OVR=3 || "2"
+      ?};
+
+   _cntx:=obj_new('SLO_NAZ');
+   params_set('cntx',_cntx);
+
+   {!
+   |? _prg.step+=1;
+      _proc:=(100*_prg.step/_prg.size)$0;
+      {? _prg.proc<>_proc
+      || _prg.proc:=_proc;
+         progress(_prg.proc,'%1 %2 [%3%%]'[_prg.text,_prg.twait,form(_prg.proc,3,0)],_prg.title,1)
+      ?};
+      {? P.seek(_prac.P.SQL,,1)
+      || NWU.prefix(P.ref());
+         {? {? _PAR.TO=0
+            || NWU.find_ge(_PAR.OD)
+            |? _PAR.TO=1
+            || NWU.find_ge(time_ident(_PAR.OD))
+            ?}
+         || {!
+            |? {? _war(_PAR.OD,_PAR.DO)
+               || _cntx.SLO_NAZ:='';
+                  _args.FILE_PATH:=_user+$P.tm_stamp()+'.pdf';
+                  {? rep_exec('pkd_xxx_nwu',,0,_args.FILE_PATH,1) & _cntx.SLO_NAZ<>''
+                  || _args.SLO_NAZ:=_cntx.SLO_NAZ;
+                     _args.ZAL_NAME:='wu_%1_%2.pdf' [gsub($NWU.OD,'/','_'),$NWU.R().RN];
+                     _args.ZAL_DESC:='Wniosek urlopowy: %1 - %2 (%3)' [$NWU.OD,$NWU.DO,NWU.R().RT];
+                     _RAPORT.add(exec('add','zal',_args))
+                  ?};
+                  NWU.next()
+               ?}
+            !}
+         ?}
+      ?};
+      _prac.P.next()
+   !};
+
+   NWU.cntx_pop();
+   {? var_pres('_ndx')=type_of('')
+   || NWU.ndx_drop(_ndx)
+   ?};
+   R.cntx_pop();
+   P.cntx_pop();
+
+   prgs_clr();
+   _RAPORT.show()
+?};
+
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 7853812f0378e8a230661c50243b706bcd24fbc759a5dd706833e40b7e373377c520b7b6d1df258acf691f3866eb44593b494a31dd9d8a247101e3972cefda34be217dd008aa56f2077acc5ca1fc2b765300872456935aa31a84cfd484e223bbf5ea39109a9e6a69b18621b66d18f7bb0ba9659e677da24ab3f2629867049ef4

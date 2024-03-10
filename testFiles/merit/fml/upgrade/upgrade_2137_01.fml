@@ -1,0 +1,291 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2137_01.fml
+:: Utworzony: 14.04.2021
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 21.14 na 21.37_01
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.37]
+:: OPIS: Główna formuła upgrade-ów 21.37_01
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania wykonywane raz dla całego systemu
+__UPG.add_task('upgrade_act',,,'ZPR',2,,,,'T');
+__UPG.add_task('funpar',,,'ZWS',,,,,'T');
+__UPG.add_task('report',,,'ZWS',8,,,,'T');
+
+:: Zadania wykonywane dla każdej firmy osobno
+__UPG.add_task('role_paperless',,'N','ZWS',2,,,1,'T');
+__UPG.add_task('porslo',,'N','POR',,,,1,'T');
+__UPG.add_task('porslo_22020019',,'N','POR',,,,1,'T');
+
+:: Zadania manualne
+__UPG.add_task('paperless_dane_wzorcowe','N','N','PEP',1,,,1,'T');
+~~
+
+
+\upgrade_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.37]
+:: OPIS: Aktualizacja typów danych oraz czynności dla wskazanych obszarów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+:: Poniżej wpisać domeny, których dotyczą nowe lub aktualizowane czynności
+::_dom:=spli_str('LMG.LSP.LZK.LUM.LOD.PKD.POR.PPK.PKW.PPL.TPP.TTE.TRE.WYP.ZWS.FST.FKS.KON.OBE.OBG.PBA','.');
+_dom:=spli_str('ZWS.PEP.OBG.OBE','.');
+_len:=obj_len(_dom);
+
+{? _len & _dom[1]<>''
+|| FUN.prg_start(_len+2,'Aktualizacja czynności.',,,1);
+
+:: Uzupełnienie domen (zawsze)
+   FUN.prg_next();
+   exec('add_domain','#b_action');
+   __UPG.msg('Zaktualizowano dziedziny.');
+
+:: Uzupełnienie typów (zawsze)
+   FUN.prg_next();
+   exec('fill_tab','#b_type',0);
+   __UPG.msg('Zaktualizowano typy danych.');
+
+   {! _i.._len
+   |! FUN.prg_next();
+      _domain:=exec('FindInSet','#table','B_DOMAIN','SYMBOL',_dom[_i]);
+      {? _domain<>null()
+      || exec('import_needed_dom','#b_design',_domain,0);
+         __UPG.msg('Zaktualizowano czynności dziedziny: %1.'[_dom[_i]])
+      ?}
+   !};
+   FUN.prg_stop()
+?};
+obj_del(_dom);
+_res
+
+
+\upgrade_act_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.37]
+:: OPIS: Aktualizacja typy danych oraz czynności dla wskazanych obszarów - opil
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja typów danych oraz czynności dla modelera'
+
+
+\funpar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Aktualizacja obszaru Ustawienia i parametryzacjml
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('aktualizuj','funpar',1)
+|| __UPG.msg('Zaktualizowano zawartość obszaru: Ustawienia i parametryzacja.')
+|| __UPG.msg('Nie zaktualizowano zawartości obszaru: Ustawienia i parametryzacja.')
+?}
+
+
+\funpar_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.14]
+:: OPIS: Aktualizacja obszaru Ustawienia i parametryzacja - opfml
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ustawień i parametryzacji'
+
+
+\role_paperless
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami paperl.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('roleActions','upgrade',
+      'Administrator',
+      'PEP_PAR_ZEST,PEP_PAR_TYPY,PEP_PAR_PGRP,PEP_PRA_PDOK,PEP_UPR_HHHH,PEP_UPR_HUMH,PEP_UPR_ZCZC,PEP_PRA_ODOK,'
+      'PEP_GRP_DOKU,PEP_SPR_PODP'
+   ) &
+   exec('roleActions','upgrade',
+      'Specjalista ds. kadr',
+      'PEP_PRA_PDOK,PEP_UPR_HHHH,PEP_UPR_HUMH,PEP_UPR_ZCZC,PEP_PRA_ODOK,'
+      'PEP_GRP_DOKU,PEP_SPR_PODP'
+   )
+
+|| 1
+|| -1
+?}
+
+
+\role_paperless_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami pape1.fml
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ról/uprawnień związana z czynnościami paperless.'
+
+
+\report
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.37]
+:: OPIS: Kompilacja wydruków
+::----------------------------------------------------------------------------------------------------------------------
+_result:=rep_tran('*');
+__UPG.msg('Zaktualizowano wydruki i zestawienia.');
+_result
+
+
+\report_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.37]
+:: OPIS: Kompilacja wydruków - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja wydruków i zestawień.'
+
+
+\porslo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.37]
+:: OPIS: Aktualizacja słowników wykorzystywanych na portalu
+::----------------------------------------------------------------------------------------------------------------------
+exec('init','portal_slowniki','J');
+exec('init','portal_slowniki','W');
+__UPG.msg('Zaktualizowano słowniki portalowe.');
+1
+
+
+\porslo_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.37]
+:: OPIS: Aktualizacja słowników wykorzystywanych na portalu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja słowników wykorzystywanych na portalu.'
+
+
+\paperless_dane_wzorcowe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.37]
+:: OPIS: Import danych wzorcowych dla aktualizacji Paperless HR.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+FUN.emsg('Podczas importu danych wzorcowych Paperless HR należy wskazać katalog\n'
+         'z danymi wzorcowymi dostarczonymi wraz z aktualizacją 2137_01_Paperless_HR.');
+exec('import_init','#excel_imex');
+_result:=0;
+{? FUN.ask('Czy oznaczyć zadanie: \'%1\' jako wykonane?'@['paperless_dane_wzorcowe'])
+|| __UPG.msg('Import danych wzorcowych dla aktualizacji 21.37_01.');
+   _result:=1
+|| _result:=-1
+?};
+_result
+
+
+\paperless_dane_wzorcowe_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [21.37]
+:: OPIS: Import danych wzorcowych dla aktualizacji Paperless HR.
+::   WE:
+::   WY: opis zadania potransferowego
+::----------------------------------------------------------------------------------------------------------------------
+'Import danych wzorcowych dla aktualizacji 21.37_01.'
+
+
+\porslo_22020019
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.37]
+:: OPIS: Poprawka błędu ER/WRT/XP/21.37/2202/0019 - Błąd dla metody sl_TenantLookupCodeItemsModify.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_porsloCode:='ZaswiadczenieNazwa';
+_firma:=exec('por_conf_firma','portal_lib',exec('ref_firma','ustawienia')).firma;
+
+PORSLO.cntx_psh();
+PORSLO.index('FIELD');
+PORSLO.prefix(_firma,exec('customField','portal_slowniki'),'',_porsloCode);
+{? PORSLO.first()
+|| PORSLOIT.cntx_psh();
+   PORSLOIT.index('SLOVAL');
+   PORSLOIT.prefix(PORSLO.ref,);
+   {? PORSLOIT.first() || {! |? PORSLOIT.del !} ?};
+   PORSLOIT.cntx_pop()
+?};
+PORSLO.cntx_pop();
+
+exec('init','portal_slowniki','J');
+exec('init','portal_slowniki','W');
+
+__UPG.msg('Zaktualizowano zawartość słowników portalowych.'@);
+
+1
+
+
+\porslo_22020019_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [21.37]
+:: OPIS: Poprawka błędu ER/WRT/XP/21.37/2202/0019 - Błąd dla metody sl_TenantLookupCodeItemsModify - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Błąd dla metody sl_TenantLookupCodeItemsModify\n'
+'Poprawka błędu ER/WRT/XP/21.37/2202/0019'
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:25 507ec53b89d45817090ee20c4f9cd0a0d846f238888203de3549e2c9c0a342e8fb81af07c1739e2225dd08f26358b79aebd616371ab326f2b6999e0dc6bb2a03ee4bb492a7a2a80a78954a6299bdd712d31dbe13468ec7324067f826eeac4fa5d4811fce2bfdbede5672c204afeaa4c0f3e8cc7aaf473d99fec1841068f56146

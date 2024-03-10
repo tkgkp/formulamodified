@@ -1,0 +1,14 @@
+﻿:!UTF-8
+select 
+	0 LP,
+	KH.NAZ DOSTAWCA,
+	USERS.DANE UŻYTKOWNIK, 
+	ZD_NAG.SYM,
+	count(DISTINCT ZD_RN.REFERENCE) IL_REALIZACJI
+from @ZD_RN
+   	left join @ZD_NAG using (ZD_RN.ZD_NAG,ZD_NAG.REFERENCE)
+   	left join USERS using (ZD_NAG.US,USERS.REFERENCE)
+   	left join KH using (ZD_NAG.KH,KH.REFERENCE) 
+group by  
+	ZD_NAG.SYM,USERS.DANE,KH.NAZ
+order by 2,3,4

@@ -1,0 +1,570 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !hbn_prz_xprz.fml
+:: Utworzony: 17.04.2015
+:: Autor: PJ
+::======================================================================================================================
+:: Zawartość: Formuły czynności HBN_PRZ_XPRZ - eksport przelewów
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Eksport przelewów - główna formuła czynności HBN_PRZ_XPRZ.
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=FJKS,HRB,HRP
+exec('hbfmlexe','!hbn_prz_xprz')
+
+
+\hbfmlexe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ??
+:: OPIS: Formuła eksportująca płatności
+::  OLD: \hbfmlexe/proc_01.fml
+::----------------------------------------------------------------------------------------------------------------------
+PB.cntx_psh();
+_vref:=0;
+_ref:=_aref:=PB.ref();
+{? var_pres('glob_size')>=0 || VAR_DEL.delete('glob_size') ?};
+{? PB.f_first()
+|| _vc:=1;
+   {! |? {? PB.ZT= 'T' & PB.KW<0 || _vc:=0 ?}; _vc & PB.f_next() !};
+   {? ~_vc
+   || _vc:=~FUN.ask('Istnieją przelewy na kwoty ujemne.\nKontynuować?'@)
+   || _vc:=0
+   ?}
+?};
+_interm:=exec('interm','#system');
+{? _interm
+|| _tmpdir:=fmk_tmp_dir(0);
+  {? type_of(_tmpdir) <> type_of(~~)
+  || __intpath:=_tmpdir.get_path
+  ?}
+?};
+_sep:={? 1+sys_name(0)='W' || '\\' || '/' ?};
+{? ~_vc
+|| SLO.cntx_psh();
+   _bk_blp:=0; _pyt_blp:='';
+   _par_s:=XINFO.BLP_SE; _par_b:=XINFO.BLP_BE; _par_lp:=XINFO.BLP_LP='T';
+   {? PB.f_first() & (_par_s='T' | _par_b<>'N')
+   || {! |? {? PB.ZT='T' & PB.WAL().KOD='PLN' & exec('spr_rb','blp','PB') & exec('cond_pb','blp')
+               & exec('cond_pb','blp')
+:: Sprawdzenie RB z BLP
+            || {? _par_s='T' || exec('chk_pb','blp') ?};
+:: Blokada generowania przelewu w przypadku niezgodności z BLP
+               {? exec('lock_pb','blp',_par_b,1)
+               || {? _pyt_blp=''
+                  || {? _par_b='T'
+                     || _bk_blp:=~FUN.choice('Istnieją niezgłoszone rachunki w wykazie podatników VAT.'@,,
+                                             'Eksportuj zgłoszone'@,,,,'Anuluj eksport'@);
+                        _pyt_blp:='N'
+                     |? _par_b='P'
+                     || _bk_blp:=FUN.choice('Istnieją niezgłoszone rachunki w wykazie podatników VAT.'@,,
+                                            'Eksportuj &zgłoszone'@,'Eksportuj &wszystkie'@,,,'Anuluj eksport'@);
+                        _pyt_blp:={? _bk_blp=2 || 'T' || 'N' ?};
+                        _bk_blp:=~_bk_blp
+                     ?}
+                  ?};
+                  {? _par_b='T' | _pyt_blp='N'
+                  || PB.USER_ZTW:=''; PB.D_ZTW:=date(0,0,0); PB.ZT:='N'; PB.put()
+                  ?}
+               ?}
+            ?};
+            PB.f_next()
+      !}
+   ?};
+   SLO.cntx_pop()
+?};
+PB.f_seek(_ref);
+{? ~_vc & ~_bk_blp
+|| HBPKI.clear();
+   HBPKI.cntx_psh();
+   HBPKI.index('HBPKILP');
+   _max:={? HBPKI.last()
+         || HBPKI.NR
+         || 0
+         ?};
+   {? _max<HBPKI.size() || _max:=HBPKI.size() ?};
+   HBPKI.cntx_pop();
+   VAR_DEL.delete('__fn');
+   __fn:=tab_tmp(1,'NR','INTEGER','Nr',
+                  'FILE','INTEGER','Uchwyt do pliku',
+                  'LOC','INTEGER','Lokalny',
+                  'PATH','STRING[255]','Ścieżka do pliku lokalnego',
+                  'SERWER','STRING[255]','Ścieżka na serwerze',
+                  'NAME','STRING[50]','Nazwa pliku');
+   HBPKI.index('HBPKITP'); HBPKI.prefix(1,'E');
+   {? HBPKI.first()
+   || __TT_HBPKI:=tab_tmp(2,'BANK','STRING[8]','Numer banku','TYP','STRING[1]','Typ przelewu',
+         'PD','STRING[40]','Nazwa pliku','IS_FILE','INTEGER','Czy istnieje plik','NR','INTEGER',
+         'Nr specyfikacji','ID','INTEGER','ID');
+      {! |?
+         __TT_HBPKI.BANK:=HBPKI.KDB().NUMER;
+         __TT_HBPKI.TYP:=HBPKI.TYP;
+         __TT_HBPKI.PD:=HBPKI.PD;
+         __TT_HBPKI.IS_FILE:=0;
+         __TT_HBPKI.NR:=HBPKI.NR;
+         __TT_HBPKI.ID:=#HBPKI.ref();
+         __TT_HBPKI.add();
+         HBPKI.next()
+      !};
+      _tyt:='x';
+      __TT_HBPKI.win_sel(__TT_HBPKI.mk_sel(_tyt,,1))
+   ?};
+   {? PB.lock(1) & HBPKI.lock(0) & HBP.lock(0)
+   || __nexp:=0;
+      {? HBPKI.first()
+      || {! |?
+:: Jezeli dla specyfikacji sa platnosci
+            _ref:=PB.ref();
+            _cont:=0;
+            {? PB.f_first()
+            || {! |?
+                  {? PB.NBD().NUMER=HBPKI.KDB().NUMER
+                     &
+                     ((PB.RODZ='KU' & HBPKI.TYP='U') | (PB.RODZ='KZ' & HBPKI.TYP='Z') | (PB.RODZ='K' & HBPKI.TYP='K') | PB.RODZ='W')
+                     &
+                     ((HBPKI.WAL='N' & 1+PB.RODZ='K') | (HBPKI.WAL='T' & 1+PB.RODZ='W' & ((PB.RODZZAGR().KOD<>'S' & HBPKI.TPK*'SEPA'=0) | (PB.RODZZAGR().KOD='S' & HBPKI.TPK*'SEPA'>0))))
+                     &
+                     (PB.ZT='T' & PB.KW>0)
+                  || _cont:=1
+                  ?};
+                  _cont=0 & PB.f_next()
+               !}
+            ?};
+            {? _cont
+            || {? __TT_HBPKI.find_key(HBPKI.KDB().NUMER, HBPKI.TYP)
+               || {! |?
+                     {? ~(__TT_HBPKI.ID=#HBPKI.ref())
+                     || __TT_HBPKI.next()
+                     || 0
+                     ?}
+                  !}
+               ?};
+               exec('hb_export','!hbn_prz_xprz',HBPKI.ref())
+            ?};
+            HBPKI.next()
+         !}
+      ?};
+      {? ~PB.size() || PAR_WYDR.RPAR1:=PAR_WYDR.RPAR2:=PAR_WYDR.RPAR3:=0 ?};
+      HBPKI.clear();
+      _size:=__fn.size();
+      {? __fn.first()
+      || {! |?
+            {? __fn.FILE<>0 || fclose(__fn.FILE) ?};
+            {? __fn.LOC=1
+            || {? _interm
+               || {? _size=1
+                  || dlg_save(__intpath+_sep+__fn.SERWER,0,__fn.NAME)
+                  || fpack_add(__intpath+'\\Przelewy.zip',__intpath+_sep+__fn.SERWER)
+                  ?}
+               || {? fcopy(__fn.SERWER,__fn.PATH,1,0,1) || ferase(__fn.SERWER,1) ?}
+               ?}
+            ?};
+            __fn.next()
+         !}
+      ?};
+      {? _interm & _size>1 || dlg_save(__intpath+'\\Przelewy.zip',0) ?};
+      PB.unlock(); HBPKI.unlock(); HBP.unlock();
+      {? __nexp>0
+      || FUN.info('Liczba wyeksportowanych zleceń: %1.'@[$__nexp]);
+         PB.f_seek(_aref)
+      || FUN.emsg('Anulowano eksport, bądź brak zleceń spełniających kryteria.'@);
+         PB.f_seek(_aref)
+      ?}
+   || PB.unlock(); HBPKI.unlock(); HBP.unlock();
+      FUN.error('Uruchomienie eksportu zakończone niepowodzeniem!\nProszę spróbować ponownie.'@)
+   ?}
+?};
+VAR_DEL.delete('__TT_HBPKI','__fn','__nexp','__intpath');
+PB.cntx_pop();
+1
+
+
+\hb_export
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMA,PJ,KGS] [1998]
+:: OPIS: Formula eksportujaca przelewy do pliku
+::  OLD: \hb/hb.fml
+:: ~OST: INFEXISTS,INPTHDIR
+::----------------------------------------------------------------------------------------------------------------------
+b14:=b15:=ref1:=ref3:=b2:=b3:=b10:=b11:=b4:=b5:=b7:=l:=0;
+a:=gexp:=1;
+b9:='';
+_interm:=exec('interm','#system');
+_sep:={? 1+sys_name(0)='W' || '\\' || '/' ?};
+
+PB_OP.index('PB');
+PB.cntx_psh();
+ 'a-pozycja wpisywanej wartości';
+   'a4-maxymalna liczba przelewów w paczce';
+   a5:=0;'znacznik kontynuowania pętli';
+   {? HBPKI.PL().KDPL<>''
+   || standard:={? +HBPKI.PL().SYS
+                || 'fun:"'+HBPKI.PL().SYS+'"'
+                || %PL.AD+%PL.CD+%PL.ED+%PL.LD+%PL.ND+
+                   %PL.OD+%PL.SD+%PL.ZID+%PL.ZD+%PL.AM+
+                   %PL.CM+%PL.EM+%PL.LM+%PL.NM+%PL.OM+
+                   %PL.SM+%PL.ZIM+%PL.ZM
+                ?}
+   || standard:=''
+   ?};
+   b1:=HBPKI.ref();
+   a4:=HBPKI.LR;
+   {? a4=0 || a4:=9999; 'liczba przelewow w zasadzie bez ograniczen' ?};
+   {? _interm
+   || _win:=ROZNE.mk_edit('Eksport przelewów'@,0,'rozneqexp',27,17,'','','lumen');
+      ROZNE.win_efld(_win,ROZNE,'EXP_DO',,,10,0,0,'Przelewy do dnia'@,0,'',,'');
+      _btn1:=ROZNE.win_ebtn(_win,'text="%1",panel=bottom,align=end,edit=1'['OK'@],'key:F2');
+      ROZNE.btn_eopt(_win,_btn1,'tooltip="%1"'[exec('help_red_ok','#window','P')]);
+      _btn2:=ROZNE.win_ebtn(_win,'text="%1",panel=bottom,align=end,edit=1'['Anuluj'@],'key:Esc');
+      ROZNE.btn_eopt(_win,_btn2,'tooltip="%1"'[exec('help_red_esc','#window','A')]);
+      ROZNE.win_edit(_win)
+   || ROZNE.win_edit('EXP')
+   ?};
+   ROZNE.hdr_edit();_txt:=' '+HBPKI.TPK;ROZNE.hdr_edit(_txt);
+   {? HBPKI.FILELOC='T'
+   || ROZNE.FILEPATH:=pth_dir('@'+HBPKI.PD)+_sep+HBPKI.PD
+   || ROZNE.FILEPATH:=HBPKI.PD
+   ?};
+   {? _interm & HBPKI.FILELOC='T'|| ROZNE.FILEPATH:=__intpath+_sep+HBPKI.PD ?};
+   _vpos:=HBPKI.PD*'.';
+   {? _vpos
+   || _vfm:='Pliki przelewów (*'+((_vpos-1)-HBPKI.PD)+')|*'
+         +((_vpos-1)-HBPKI.PD)+'|'
+   || ''
+   ?};
+   ROZNE.FILEMASK:=STR.maz2w95(_vfm)+'Wszystkie pliki (*.*)|*.*';
+   _fchk:="{? exec('interm','#system')
+           || _wy:=__CHK.record3(ROZNE,'EXP_DO','Przelewy do dnia')
+           || _wy:=__CHK.record3(ROZNE,'FILEPATH','Ścieżka do pliku',ROZNE,'EXP_DO','Przelewy do dnia');
+           {? _wy='' & HBPKI.FILELOC='T'
+           || _file_ok:=fexists('@'+ROZNE.FILEPATH,0);
+              {? _file_ok<>2
+              || _tmp_ext:=exec('filename','#string',ROZNE.FILEPATH);
+                 {? _tmp_ext*'.'=0 || _tmp_ext:='' ?}
+              || _tmp_ext:='FOLDER'
+              ?};
+              _w_path:=exec('path','#file',ROZNE.FILEPATH);
+              {? _w_path<>'' || _path_ok:=fexists('@'+_w_path,0) || _path_ok:=0 ?};
+              {? _path_ok=0 | _file_ok=2 | ROZNE.FILEPATH+1=exec('sep','#file') | _tmp_ext=''
+              || FUN.emsg('Niepoprawna ścieżka eksportu.\nWskazano nieistniejący folder lub plik bez rozszerzenia.'@);
+                 _wy:='FILEPATH'
+              ?}
+              ?}
+           ?};
+           _wy";
+   {? __TT_HBPKI.IS_FILE | (ROZNE.EXP_DO:=date(); ROZNE.edit(_fchk))
+   || {? ~__TT_HBPKI.IS_FILE
+      || _path:=__TT_HBPKI.PD;
+         __TT_HBPKI.cntx_psh();
+         __TT_HBPKI.prefix(__TT_HBPKI.BANK);
+         {? __TT_HBPKI.first() & __TT_HBPKI.size()>1
+         || {! |?
+               {? __TT_HBPKI.PD=_path & ~__TT_HBPKI.IS_FILE || __TT_HBPKI.PD:=ROZNE.FILEPATH; __TT_HBPKI.put() ?};
+               __TT_HBPKI.next()
+            !}
+         ?};
+         __TT_HBPKI.cntx_pop();
+         __TT_HBPKI.get()
+      ?};
+      {? ~__TT_HBPKI.IS_FILE
+      || _wy_test:=0;
+         {! |?
+            _test_file:={? HBPKI.FILELOC='T' || '@' || '' ?}+ROZNE.FILEPATH;
+            {? exec('test_file','!hbn_prz_xprz',_test_file,{? HBPKI.FILELOC='T' || 0 || 1 ?})
+            || {? FUN.ask('Plik o podanej nazwie:\n %1\njuż istnieje. Nadpisać?'@[_test_file])
+               || _wy_test:=1
+               || {? ~ROZNE.edit(_fchk)
+                  || _wy_test:=2
+                  ?}
+               ?}
+            || _wy_test:=1
+            ?};
+            _wy_test=0
+         !};
+         {? _wy_test=1
+         || __fn.blank();
+            __fn.NR:=__TT_HBPKI.NR;
+            __fn.LOC:={? HBPKI.FILELOC='T' || 1 || 0 ?};
+            {? HBPKI.FILELOC='T'
+            || __fn.PATH:='@'+ROZNE.FILEPATH;
+               __fn.SERWER:=$HBPKI.tm_stamp()+'.'+exec('fileext','#string',ROZNE.FILEPATH)
+            || __fn.PATH:='';
+               __fn.SERWER:=ROZNE.FILEPATH
+            ?};
+::          plik owierany zawsze po stronie serwera - jezeli ma byc lokalny to po zapisie jest kopiowany
+            __fn.FILE:=fopen({? _interm || __intpath+_sep || '' ?}+__fn.SERWER,'bw',{? _interm || 0 || 1 ?});
+            __fn.NAME:=HBPKI.PD;
+            __fn.add();
+            __TT_HBPKI.IS_FILE:=1;
+            __TT_HBPKI.put();
+            _path:=__TT_HBPKI.PD;
+            _nr:=__TT_HBPKI.NR;
+            __TT_HBPKI.cntx_psh();
+            __TT_HBPKI.prefix(__TT_HBPKI.BANK);
+            {? __TT_HBPKI.first() & __TT_HBPKI.size()>1
+            || {! |?
+                  {? __TT_HBPKI.PD=_path & ~__TT_HBPKI.IS_FILE
+                  || __TT_HBPKI.IS_FILE:=1; __TT_HBPKI.NR:=_nr;
+                     __TT_HBPKI.put()
+                  ?};
+                  __TT_HBPKI.next()
+               !}
+            ?};
+            __TT_HBPKI.cntx_pop()
+         ?}
+      || _wy_test:=1
+      ?};
+      {? _wy_test=1
+      || {? __fn.find_key(__TT_HBPKI.NR) || _tmp_fn:=__fn.FILE || _tmp_fn:=0 ?};
+         {? handle:=_tmp_fn
+         || b14:=b15:=0;'liczba znaków końca linii';
+            ref1:=ref3:=0;'ref rekordu HBP';
+            b9:='';'wartość formuły przypisanej do pozycji specyfikacji';
+            b2:=0;'znacznik wystąpienia w specyfikacji nagłówka';
+            b3:=0;'w specyfikacji wystąpił rekord';
+            b10:=0;'w specyfikacji wystąpił rekord kontrolny';
+            b11:=0;'numer pola stanowiącego rekord kontrolny';
+            b4:=0;'numer pola stanowiącego nagłowek';
+            b5:=0;'numer pola stanowiącego rekord';
+            b7:=0;a:=1;l:=0;'l-licznik (nr w paczce)';
+            HBP.cntx_psh();
+            HBP.prefix();
+            HBP.index('HBNAZWA');
+            HBP.prefix(b1);
+            {? HBP.first() || ref1:=ref3:=HBP.ref() ?};
+            {! |?
+               {? HBP.KP().KD='n' || b2:=1;b4:=HBP.NR ?};
+               {? HBP.KP().KD='r' || b3:=1;b5:=HBP.NR ?};
+               {? HBP.KP().KD='e' || b15+=1 ?};
+               {? HBP.KP().KD='x' || b10:=1;b11:=HBP.NR ?};
+               HBP.next()
+            !};
+            {? b15=0||b15:=1?};b14:=b15;
+            HBP.cntx_pop();
+            _ref:=PB.ref();
+            {? PB.f_first()
+            || {! |?
+                  {? PB.NBD().NUMER=HBPKI.KDB().NUMER
+                     & ((PB.RODZ='KU' & HBPKI.TYP='U') | (PB.RODZ='KZ' & HBPKI.TYP='Z') | (PB.RODZ='K' & HBPKI.TYP='K') | PB.RODZ='W')
+                     & ((HBPKI.WAL='N' & 1+PB.RODZ='K') | (HBPKI.WAL='T' & 1+PB.RODZ='W'))
+                     & (PB.DP<=ROZNE.EXP_DO & PB.ZT='T' & PB.KW>0)
+                  || PB.D_EXP:=date(); PB.USER_EXP:=exec('usr_zar','dok_fks');
+                     {? PB.DP<PB.D_EXP || PB.DP:=PB.D_EXP ?};
+                     PB.CN:=time$3;
+                     {? 10+PB.KD='PPL: Płace' | 10+PB.KD='PPL: Umowy'
+                     || _v:=2-tm_form(PB.tm_stamp());
+                        _id:=''; {! _i:=1..6 |! _id+=2+_v; _v:=3-_v !}; _id+=_v;
+                        PB.TYT+=' TMS '+_id
+                     ?};
+                     PB.put();
+                     {? b2=0 & b3=0 & b10<>0 || b15:=0 ?};
+                     {! |?
+                        HBP.prefix();
+                        HBP.index('HBNAZWA');
+                        HBP.prefix(b1);
+                        {? HBP.first()
+                        || {! |?
+                              HBP.seek(ref1);
+                              {? HBP.NR>={?b3||b5|?b10||b11?}||b2:=0 ?};
+                              '------------------------Nagłówek----------------------------';
+                              {? HBP.NR>=b4 & {? b5>0 || HBP.NR <b5 || 1 ?} & b2=1
+                              || exec('zapis','!hbn_prz_xprz')
+                              ?};
+                              '-------------------------Rekord----------------------------';
+                              {? HBP.NR>=b5 & {?b10>0 || HBP.NR<b11 || 1 ?} & b3=1
+                              || exec('zapis','!hbn_prz_xprz')
+                              ?};
+                              '---Nie ma ani nagłówka ani rekordu ani rekordu kontrolnego---';
+                              {? b2=0 & b3=0 & b4=0 & b5=0 & b10=0 & b11=0
+                              || exec('zapis','!hbn_prz_xprz')
+                              ?};
+                              {? a5
+                              || 0
+                              || {? HBP.next()
+                                 || ref1:=HBP.ref();1
+                                 || 0
+                                 ?}
+                              ?}
+                           !};'pętla po HBP';
+                           a5:=0
+                        ?};'HBP.first';
+                        'warunek kontynuowania pętli';
+                        b15<>0
+                     !};
+                     ref1:=ref3;b15:=b14;
+                     {? gexp
+                     || l+=1; __nexp+=1;
+                        PB.NR:=l;
+                        PB.PR:='T';'przelew poszedł';
+                        _vref:=PB.ref();
+::                      exec('use_tab','skid_pla',1,PB.KH);
+::                      _plat:=exec('szukzap','skid_pla',exec('id_rek','skid_pla',PB));
+                        PB.use('pb'+(4+$PB.DP));
+                        PB.prefix();
+                        {? PB.add()
+                        ||
+::                         {? _plat || exec('chsource','skid_pla',exec('id_rek','skid_pla',PB)) ?};
+                           PB_OP.prefix(_vref);
+                           {? PB_OP.first()
+                           || {! |?
+                                 PB_OP.PB:=PB.ref();
+::                               _plat:=exec('szukzap','skid_pla',exec('id_rek','skid_pla',PB_OP));
+                                 PB_OP.use('pop'+(4+$PB.DP));
+                                 PB_OP.prefix();
+                                 PB_OP.add();
+                                 exec('upd_pb_zal','zaliczki');
+::                               {? _plat || exec('chsource','skid_pla',exec('id_rek','skid_pla',PB_OP)) ?};
+                                 PB_OP.use('popxxxx');
+                                 PB_OP.del()
+                              !}
+                           ?};
+                           PB_OP.use('popxxxx')
+                        ?};
+                        PB.use('pbxxxx');
+                        PB.del();
+                        {? PB.f_first() || a4>l || 0 ?}
+                     || PB.f_next()
+                     ?}
+                  || PB.f_next()
+                  ?}
+               !};'pętla po PB'
+            ?};
+            PB.f_seek(_ref);
+            {? b10
+            ||
+               '-----------------Rekord kontrolny !!!----------------';
+               ref1:=ref3;b15:=b14;
+               {! |? 'dopuki b15<>0';
+                  HBP.prefix();
+                  HBP.index('HBNAZWA');
+                  HBP.prefix(b1);
+                  {? HBP.first()
+                  || {! |?
+                        HBP.seek(ref1);
+                        {? HBP.NR>=b11 & b10>0
+                        || exec('zapis','!hbn_prz_xprz')
+                        ?};
+                        {? a5
+                        || 0
+                        || {? HBP.next()
+                           || ref1:=HBP.ref();1
+                           || 0
+                           ?}
+                        ?}
+                     !};'pętla po HBP'
+                  ?};'HBP.first';
+                  b15<>0
+               !}
+            ?}; 'do if b10'
+         ?}
+      ?} ;'do _wy_test=1'
+   ?};
+::
+   &a5;&standard;&b1;&a4;&b14;&b15;&ref1;&ref3;
+   &b9;&b2;&b3;&b10;&b11;&b4;&b5;&b7;&a;&l; &gexp;
+PB.cntx_pop()
+
+
+\zapis
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DRO [??]
+:: OPIS: Formuła wykonuje formułę przyporządkowaną do pozycji specyfikacji
+::  OLD: \zapis/hb.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? HBP.KP().KD='e' | HBP.KP().KD='l' || a:=1 ?};
+{? HBP.KP().KD<>'n' &
+   HBP.KP().KD<>'r' &
+   HBP.KP().KD<>'x' &
+   HBP.KP().KD<>'e' &
+   HBP.KP().KD<>'l'
+|| b9:=exec('format2','!hbn_prz_xprz');
+   b9:=exec('polzn','homebank',b9,standard);
+   fwrite(handle,b9)
+|| ~~
+?};
+{? HBP.next()
+|| ref1:=HBP.ref();
+   {? HBP.NR>={? b10 || b11 || HBP.NR+1 ?}
+   || b15:=0
+   ?};
+   HBP.prev()
+|| b15:=0
+?};
+{? HBP.KP().KD='e'
+|| fwrite(handle,%13+%10);a5:=1
+?};
+{? HBP.KP().KD='l'
+|| fwrite(handle,%12);'wstawienie do pliku znaku nowej strony!!!'
+?}
+
+
+\format2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DRO [??]
+:: OPIS: Formuły (format1 i format2) formatują wynik działania formuły
+::       przypisanej do pozycji sprawozdania zgodnie z wymaganiami co do pola zawartymi
+::       w specyfikacji czyli uzupełniają go z odpowiedniej strony zerami bądż spacjami
+::       do zadanej długości
+::  OLD: \format2/hb.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? HBP.DL='x'
+|| exec('typwyn','hb')
+|| {? +HBP.POL>0
+   || s:=HBP.POL+1;
+      {? s='_' || s:=' '?};
+      s:=#HBP.DL*s;
+      exec('typwyn','hb');
+      exec('format1','!hbn_prz_xprz')
+   ?}
+?}
+
+
+\format1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DRO [??]
+:: OPIS: Formuły (format1 i format2) formatują wynik działania formuły
+::       przypisanej do pozycji sprawozdania zgodnie z wymaganiami co do pola zawartymi
+::       w specyfikacji czyli uzupełniają go z odpowiedniej strony zerami bądż spacjami
+::       do zadanej długości
+::  OLD: \format1/hb.fml
+::----------------------------------------------------------------------------------------------------------------------
+f:=1+HBP.POL;
+{? f='>'
+|| (b13:=s+b13)+#HBP.DL
+|| {? f='<' || #HBP.DL+(b13+s) ?}
+?}
+
+
+\war_pb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.60]
+:: OPIS: Warunek dla przelewow
+::  OLD: \war_pb/hb.fml
+::----------------------------------------------------------------------------------------------------------------------
+PB_OP.cntx_psh();
+_warunek:=(PB.KH<>null & -PB.WSK_S='t' & PB.WSK_S='T' &
+           (PB_OP.index('PB'); PB_OP.prefix(PB.ref()); PB_OP.first()));
+PB_OP.cntx_pop();
+_warunek
+
+
+\test_file
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [2010]
+:: OPIS: Test czy istnieje plik
+::   WE: _a = nazwa pliku, _b = czy lokalnie czy na serwerze
+::   WY:
+::  OLD: \test_file/hb.fml
+::----------------------------------------------------------------------------------------------------------------------
+_fx:=fopen(_a,'r',_b);
+{? _fx
+|| fclose(_fx);
+   1
+|| 0
+?}
+
+:Sign Version 2.0 jowisz:1045 2023/08/23 16:42:59 a99fa6026f1ee4f39578e886adcfdc2959c33bbd76df80f75056f44656d323c89331457a53a88cc95aa717e3a99d8bc3709121af84c11e176d44f88203d18b4a6a769b97d5a4e2fb5b69a27d0274eb116820b9a2f0cd9147d95b2b142fe9de54ca7fb3255a77781f8dc2f2ea66d090d7c6d6eb5e9867ad76817d4715c2fbaa62

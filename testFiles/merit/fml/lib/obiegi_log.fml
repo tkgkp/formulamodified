@@ -1,0 +1,1395 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: obiegi_log.fml
+:: Utworzony: 24.07.2017
+:: Autor: AMK
+::======================================================================================================================
+:: Zawartość: Obsługa powiązania obiegów z logistyką
+::======================================================================================================================
+
+\typ_obi
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Wybór typu dokumentu w obiegu
+::   WE: _a [STRING] 'S' - sprzedaż
+::          [STRING] 'Z' - zakup
+::          [STRING] 'M' - zamówienie dostaw, sprzedaży lub wewnętrzne
+::       _b [STRING] - Bieżąca wartość parametru. Wskazanie pozycji słownika [ETYPY.NAZWA]
+::   WY: ETYPY.NAZWA albo ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? _a='S' | _a='Z'
+|| ETYPY.index('LOG'); ETYPY.prefix(exec('bl_typ','obiegi',1),_a);
+   ETYPY.win_edit('RED'); ETYPY.hdr_sel('Typy faktur w obiegu'@);
+   typobi:=1
+|? _a='M'
+|| ETYPY.win_edit(exec('REDW','obiegi2')); ETYPY.hdr_sel('Typy wniosków w obiegu'@);
+   ETYPY.index('UNIK'); ETYPY.prefix(exec('bl_typ','obiegi',2));
+   typobi:=2
+?};
+{? ETYPY.first() & _b<>~~ & _b<>'' || ETYPY.find_key(_b) ?};
+ETYPY.win_sel('SLO_WYB');
+_zwrot:={? ETYPY.select(,1) || ETYPY.NAZWA || ~~ ?};
+VAR_DEL.delete('typobi');
+_zwrot
+
+
+\select_odd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Wybór jednostki księgowej do czynności
+::       _a [STRING] - Bieżąca wartość parametru. Wskazanie pozycji słownika [ODD.OD]
+::   WY: ODD.OD albo ~~
+::----------------------------------------------------------------------------------------------------------------------
+ODD.index('ODDZIALY'); ODD.prefix(REF.FIRMA);
+{? ODD.first() & _a<>~~ & _a<>''
+|| ODD.find_key(_a)
+?};
+ODD.win_sel('WYB');
+{? ODD.select(,1)
+|| ODD.OD
+|| ~~
+?}
+
+
+\obi_wg_daty
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Tworzenie dokumentu w obiegu wg daty
+::   WE: _a - bieżąca wartość
+::       _b - 'S' - dla sprzedaży
+::            'Z' - dla zakupu
+::----------------------------------------------------------------------------------------------------------------------
+{? _b='S'
+|| _nr:={? _a=~~ | _a='Wystawienia' | _a='' || 1 || 2 ?};
+   _pyt:=FUN.choice('Tworzenie dokumentu w obiegu wg daty'@,_nr,'Wystawienia'@,'Sprzedaży'@);
+   {? _pyt=1
+   || 'Wystawienia'
+   |? _pyt=2
+   || 'Sprzedaży'
+   || ~~
+   ?}
+|| _nr:={? _a=~~ | _a='Wystawienia' | _a='' || 1 |? _a='Sprzedaży' || 2 || 3 ?};
+   _pyt:=FUN.choice('Tworzenie dokumentu w obiegu wg daty'@,_nr,'Wystawienia'@,'Sprzedaży'@,'Otrzymania'@);
+   {? _pyt=1
+   || 'Wystawienia'
+   |? _pyt=2
+   || 'Sprzedaży'
+   |? _pyt=3
+   || 'Otrzymania'
+   || ~~
+   ?}
+?}
+
+
+\faks_win_edit_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Ustawia okno redakcji tabeli FAKS, wymagane pola, okna słowników
+::----------------------------------------------------------------------------------------------------------------------
+_win_red:=exec('faks_win_edit','faktury_nag');
+_ff:="exec('pozycje_fak','faktury_poz',1); ''";
+FAKS.win_ebtn(_win_red,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['Poz&ycje'@],_ff);
+_zak:=FAKS.win_ebtn(_win_red,
+                    'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['"Utwórz &dokument w obiegu"'@],
+                    "BtnObi:=1; 'key:Esc'"
+                   );
+FAKS.btn_eopt(_win_red,_zak,'tooltip='+exec('help_red_zakoncz','#window','LOG_OBG'));
+_anuluj:=FAKS.win_ebtn(_win_red,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],
+              "BtnObi:=0; 'key:Esc'"
+             );
+FAKS.btn_eopt(_win_red,_anuluj,'tooltip='+exec('help_red_esc','#window','A'));
+FAKS.win_edit(_win_red);
+exec('set_efld_opt','faktury_nag',_win_red);
+exec('set_win_slo','faktury_nag',_win_red)
+
+
+\faks_edokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Utworzenie dokumentu w obiegu na podstawie dokumentu logistycznego
+::   WE: _a - 'S' - sprzedaż
+::            'Z' - zakup
+::       _b - typ obiegu (ETYPY.ref())
+::       _c - 1/0 - czy pokazywać komunikaty
+::   WY: ref EDOKUM lub null
+::----------------------------------------------------------------------------------------------------------------------
+_args:=params_get();
+_we:=_args.in;
+params_exec('ustaw_bprel','obiegi');
+_zwrot:=null; _dalej:=1; _odd:=null;
+{? FAKS.STAT_REJ='A'
+|| {? _c
+   || {? _a='S'
+      || FUN.info('Dokument sprzedaży został anulowany.'@)
+      || FUN.info('Dokument zakupu został anulowany.'@)
+      ?}
+   ?};
+   _dalej:=0
+?};
+{? _dalej & FAKS.OBI_POW<>''
+|| {? _c
+   || {? _a='S'
+      || FUN.info('Dla dokumentu sprzedaży został wcześniej uruchomiony obieg.'@)
+      || FUN.info('Dla dokumentu zakupu został wcześniej uruchomiony obieg.'@)
+      ?}
+   ?};
+   _dalej:=0
+?};
+{? _dalej
+|| {? FAKS.STS
+   || STS.cntx_psh(); STS.index('K'); STS.prefix();
+      ODDZ.cntx_psh(); ODDZ.index('KOD2'); ODDZ.prefix(FAKS.STS().ODDZ);
+      {? ODDZ.first() || _odd:=ODDZ.ODD ?};
+      STS.cntx_pop(); ODDZ.cntx_pop()
+   ?};
+   {? ~_odd & FAKS.ODDZ<>''
+   || ODDZ.cntx_psh(); ODDZ.index('KOD2'); ODDZ.prefix(FAKS.ODDZ);
+      {? ODDZ.first() || _odd:=ODDZ.ODD ?};
+      ODDZ.cntx_pop()
+   ?};
+   {? ~_odd & _we.ODD<>~~ & _we.ODD<>''
+   || ODD.cntx_psh(); ODD.index('ODDZIALY'); ODD.prefix(REF.FIRMA,_we.ODD,);
+      {? ODD.first() || _odd:=ODD.ref() ?};
+      ODD.cntx_pop()
+   ?};
+   {? ~_odd
+   || {? _c
+      || {? _a='S'
+         || FUN.info('Dla dokumentu sprzedaży nie można ustalić jednostki księgowej.'@)
+         || FUN.info('Dla dokumentu zakupu nie można ustalić jednostki księgowej.'@)
+         ?}
+      ?};
+      _dalej:=0
+   ?}
+?};
+{? _dalej
+|| exec('czytaj','#stalesys',,XINFO);
+   exec('czytaj','#stalesys',,FINFO,'NAROD');
+   _data:={? _we.WG_DATY=~~ | _we.WG_DATY='' | _we.WG_DATY='Wystawienia'
+          || FAKS.DW
+          |? _we.WG_DATY='Sprzedaży'
+          || FAKS.D
+          || FAKS.DO
+          ?};
+   ROZNE.UT_OKROD:=null;
+   {? _data<>date(0,0,0) || exec('szuk_okr','okresy',_data) ?};
+   {? ROZNE.UT_OKROD
+   || ROK_F.cntx_psh(); ROK_F.index('ROKPOCZ'); ROK_F.prefix();
+      OKRO_F.cntx_psh(); OKRO_F.index('ROK'); OKRO_F.prefix();
+      _ar:=SSTALE.AR; _ao:=SSTALE.AO;
+      SSTALE.AR:=ROZNE.UT_OKROD().ROK; SSTALE.AO:=ROZNE.UT_OKROD;
+      EDOKUM.cntx_psh(); EDOKUM.use('skid_v'+($(ROZNE.UT_OKROD().ROK().POCZ_ROK~1)+2));
+      EDOKUM.index('TYPOBI'); EDOKUM.prefix();
+      exec('use_edokum','obiegi_log',1);
+      _zwrot:=params_exec('edokum','obiegi_log',_a,_b,_c,_odd);
+      exec('use_edokum','obiegi_log',2);
+      EDOKUM.cntx_pop(); ROK_F.cntx_pop(); OKRO_F.cntx_pop()
+   || FUN.info('Nie znaleziono okresu obrachunkowego dla daty dokumentu logistycznego (%1).'@[_data])
+   ?}
+?};
+_zwrot
+
+
+\zd_nag_win_edit_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Ustawia okno redakcji tabeli ZD_NAG
+::   WE: _a - czy ma być guzik uruchamiania obiegu
+::----------------------------------------------------------------------------------------------------------------------
+ZD_POZ.cntx_psh(); ZD_POZ.use('zdpoz'+(ZD_NAG.name()+3));
+_okn:=ZD_NAG.mk_edit('Zamówienie do dostawcy'@);
+ZD_NAG.win_ewin(_okn,,'RED','');
+_ff:="exec('zd_poz','obiegi_log'); ''";
+ZD_NAG.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['Poz&ycje'@],_ff);
+{? _a
+|| _zak:=ZD_NAG.win_ebtn(_okn,
+                         'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['"Utwórz &dokument w obiegu"'@],
+                         "BtnObi:=1; 'key:Esc'"
+                         );
+   ZD_NAG.btn_eopt(_okn,_zak,'tooltip='+exec('help_red_zakoncz','#window','LOG_OBG'))
+?};
+
+_anuluj:=ZD_NAG.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],
+              "BtnObi:=0; 'key:Esc'"
+             );
+ZD_NAG.btn_eopt(_okn,_anuluj,'tooltip='+exec('help_red_esc','#window','A'));
+ZD_NAG.win_edit(_okn);
+exec('set_efld_opt','zamdst_nag');
+ZD_POZ.cntx_pop()
+
+
+\zk_n_win_edit_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Ustawia okno redakcji tabeli ZK_N
+::   WE: _a - czy ma być guzik uruchamiania obiegu
+::       _b - 'S' - zamówienia sprzedaży
+::            'W' - zamówienia wewnętrzne
+::----------------------------------------------------------------------------------------------------------------------
+ZK_P.cntx_psh(); ZK_P.use('zkpoz'+(ZK_N.name()+3));
+{? _b='S'
+|| _okn:=ZK_N.mk_edit('Zamówienie sprzedaży'@,,'zkn_redanuo');
+   ZK_N.win_ewin(_okn,,'RED')
+|| _okn:=ZK_N.mk_edit('Zamówienie wewnętrzne'@,,'zkn_redanuo');
+   ZK_N.win_ewin(_okn,,'REDW')
+?};
+_ff:="params_exec('zkn_pozycje_todo','!lsp_zkn_eanu')";
+ZK_N.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['&Pozycje'@],_ff);
+{? _a
+|| _zak:=ZK_N.win_ebtn(_okn,
+                       'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['"Utwórz &dokument w obiegu"'@],
+                       "BtnObi:=1; 'key:Esc'"
+                      );
+   ZK_N.btn_eopt(_okn,_zak,'tooltip='+exec('help_red_zakoncz','#window','LOG_OBG'))
+?};
+_anuluj:=ZK_N.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],
+              "BtnObi:=0; 'key:Esc'"
+             );
+ZK_N.btn_eopt(_okn,_anuluj,'tooltip='+exec('help_red_esc','#window','A'));
+ZK_N.win_edit(_okn);
+exec('set_efld_opt','zamsiw_nag',_okn);
+ZK_P.cntx_pop()
+
+
+\zd_poz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Pozycje zamówienia dostaw
+::----------------------------------------------------------------------------------------------------------------------
+:: zmienna dla stanow magazynowych
+HELP.WMAG:=2;
+
+:: ustawienie prefixu na materialy
+POMOC.RODZ:='T';
+POMOC.MGR:=null;
+
+PROJZ.PROJEKTY:=ZD_NAG.PROJEKTY;
+BEER.KH:=ZD_NAG.KH;
+
+
+ZD_POZ.cntx_psh();
+
+ZD_POZ.index('POZ'); ZD_POZ.prefix(ZD_NAG.ref());
+ZD_POZ.win_sel('WER_DOK'); ZD_POZ.win_edit('RED');
+ZD_POZ.select();
+ZD_POZ.cntx_pop();
+1
+
+
+\zd_nag_edokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Utworzenie dokumentu w obiegu na podstawie dokumentu logistycznego
+::   WE: _a - typ obiegu (ETYPY.ref())
+::       _b - 1/0 - czy pokazywać komunikaty
+::   WY: ref EDOKUM lub null
+::----------------------------------------------------------------------------------------------------------------------
+_args:=params_get();
+_we:=_args.in;
+params_exec('ustaw_bprel','obiegi');
+_zwrot:=null; _dalej:=1; _odd:=null;
+{? ZD_NAG.STAT_REJ='A'
+|| {? _b
+   || FUN.info('Zamówienie dostaw jest anulowane.'@)
+   ?};
+   _dalej:=0
+?};
+{? _dalej & ZD_NAG.OBI_POW<>''
+|| {? _b
+   || FUN.info('Dla zamówienia dostaw został wcześniej uruchomiony obieg.'@)
+   ?};
+   _dalej:=0
+?};
+{? _dalej
+|| {? ZD_NAG.ODDZ<>''
+   || ODDZ.cntx_psh(); ODDZ.index('KOD2'); ODDZ.prefix(ZD_NAG.ODDZ);
+      {? ODDZ.first() || _odd:=ODDZ.ODD ?};
+      ODDZ.cntx_pop()
+   ?};
+   {? ~_odd & _we.ODD<>~~ & _we.ODD<>''
+   || ODD.cntx_psh(); ODD.index('ODDZIALY'); ODD.prefix(REF.FIRMA,_we.ODD,);
+      {? ODD.first() || _odd:=ODD.ref() ?};
+      ODD.cntx_pop()
+   ?};
+   {? ~_odd
+   || {? _b
+      || FUN.info('Dla zamówienia dostaw nie można ustalić jednostki księgowej.'@)
+      ?};
+      _dalej:=0
+   ?}
+?};
+{? _dalej
+|| exec('czytaj','#stalesys',,XINFO);
+   exec('czytaj','#stalesys',,FINFO,'NAROD');
+   _data:=ZD_NAG.DATA;
+   ROZNE.UT_OKROD:=null;
+   {? _data<>date(0,0,0) || exec('szuk_okr','okresy',_data) ?};
+   {? ROZNE.UT_OKROD
+   || ROK_F.cntx_psh(); ROK_F.index('ROKPOCZ'); ROK_F.prefix();
+      OKRO_F.cntx_psh(); OKRO_F.index('ROK'); OKRO_F.prefix();
+      _ar:=SSTALE.AR; _ao:=SSTALE.AO;
+      SSTALE.AR:=ROZNE.UT_OKROD().ROK; SSTALE.AO:=ROZNE.UT_OKROD;
+      EDOKUM.cntx_psh(); EDOKUM.use('skid_v'+($(ROZNE.UT_OKROD().ROK().POCZ_ROK~1)+2));
+      EDOKUM.index('TYPOBI'); EDOKUM.prefix();
+      exec('use_edokum','obiegi_log',1);
+      _zwrot:=params_exec('edokum_zam','obiegi_log','D',_a,_b,_odd);
+      exec('use_edokum','obiegi_log',2);
+      EDOKUM.cntx_pop(); ROK_F.cntx_pop(); OKRO_F.cntx_pop()
+   ?}
+?};
+_zwrot
+
+
+\edokum_zam
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Tworzenie dokumentu w obiegu dla zamówienia
+::   WE: _a - 'D' - zamówienie dostaw
+::            'S' - zamówienie sprzedaży
+::            'W' - zamówienie wewnętrzne
+::       _b - typ obiegu (ETYPY.ref())
+::       _c - 1/0 - czy pokazywać komunikaty
+::       _d - wskazanie na jednostkę księgową
+::   WY: ref EDOKUM lub null
+::----------------------------------------------------------------------------------------------------------------------
+_args:=params_get();
+_we:=_args.in;
+_service:=params_get().mp.isService();
+_zwrot:=null;
+OBIEGI.DEL_ETAT:=''; SKID.SL_KH:='';
+EDOKUM.blank();
+EDOKUM.TYP:=_b;
+EDOKUM.TYP();
+EDOKUM.TYPOBIEG:=ETYPY.TYPOBIEG;
+EDOKUM.DOSTAWCA:=OPERATOR.USER().OSOBA;
+EDOKUM.USERS:=null;
+EDOKUM.UNIK_ID:=tm_stamp();
+EDOKUM.ODD:=_d;
+EDOKUM.FIRMA:=REF.FIRMA;
+EDOKUM.ROK_F:=SSTALE.AR;
+EDOKUM.ALERTY:='T';
+EDOKUM.AUTOMAT:=2;
+EDOKUM.DATAW:=date();
+{? _a='D'
+|| EDOKUM.SYM:=ZD_NAG.SYM;
+   EDOKUM.DOP:=ZD_NAG.DATA;
+   {? ETYPY.CZY_DATY
+   || EDOKUM.DATA_OD:=ZD_NAG.DATA;
+      EDOKUM.DATA_DO:=ZD_NAG.DTPREAL
+   ?};
+   {? ETYPY.CZY_WAR=3 | ETYPY.CZY_WAR=4
+   || EDOKUM.WAL:=FINFO.NAROD;
+      EDOKUM.NETTO:=EDOKUM.WART:=ZD_NAG.WAR
+   ?};
+   EDOKUM.TR:=ZD_NAG.UWAGI;
+   {? EDOKUM.TR='' || EDOKUM.TR:='Uwagi zamówienia dostaw' ?}
+|? _a='S' | _a='W'
+|| EDOKUM.SYM:=ZK_N.SYM;
+   EDOKUM.DOP:=ZK_N.DP;
+   {? ETYPY.CZY_DATY
+   || EDOKUM.DATA_OD:=ZK_N.DT;
+      EDOKUM.DATA_DO:=ZK_N.PL_DATA
+   ?};
+   EDOKUM.WAL:=FINFO.NAROD;
+   {? ETYPY.CZY_WAR=1 | ETYPY.CZY_WAR=3
+   || EDOKUM.WART:=ZK_N.BRUTTO
+   ?};
+   {? ETYPY.CZY_WAR=3 | ETYPY.CZY_WAR=4
+   || EDOKUM.NETTO:=ZK_N.NETTO
+   ?};
+   EDOKUM.TR:=ZK_N.OP;
+   {? _a='S'
+   || {? EDOKUM.TR='' || EDOKUM.TR:='Uwagi zamówienia sprzedaży' ?}
+   || {? EDOKUM.TR='' || EDOKUM.TR:='Uwagi zamówienia wewnętrznego' ?}
+   ?}
+?};
+{? ETYPY.CZY_KH & ETYPY.DOM_SL & {? _a='D' || ZD_NAG.KH || ZK_N.KH ?}
+|| _kod:={? _a='D' || ZD_NAG.KH().KOD || ZK_N.KH().KOD ?};
+   SLO.cntx_psh(); SLO.index('SL'); SLO.prefix(EDOKUM.TYP().DOM_SL().SLU,_kod,);
+   {? SLO.first()
+   || EDOKUM.KH:=SLO.ref(); EDOKUM.KHKH:=KH.ref()
+   |? SLU.DL=+form(KH.KOD)
+   || EDOKUM.TYP().DOM_SL().SLU();
+      SLO.SLU:=SLU.ref();
+      SLO.KOD:=KH.KOD;
+      SLO.TR:=KH.NAZ;
+      {? SLO.add(1)
+      || EDOKUM.KH:=SLO.ref(); EDOKUM.KHKH:=KH.ref()
+      ?}
+   ?};
+   SLO.cntx_pop()
+?};
+EDOKUM.bl_file('EDOKUM',1); EDOKUM.bl_file('EPODPIS',1);
+EDOKUM.memo_set('','UW_OPDL');
+no_us:=null;
+{? EDOKUM.add()
+|| _zwrot:=EDOKUM.ref();
+   {? ETYPY.AUT_ID='T' & EDOKUM.ID=''
+   || VAR_DEL.delete('id_edok');
+      exec('ustal_numer','obiegi',1,SSTALE.AR,1,0);
+      EDOKUM.ID:={? var_pres('id_edok')>0 || id_edok || '' ?};
+      EDOKUM.put()
+   ?};
+   EDOKUM.memo_put(,'UW_OPDL');
+   {? (EDOKUM.TYP().ATR_ONE>0) & (EDOKUM.TYP().ATR_G1R>0)
+   || exec('edk_atr_dolacz','obiegi',0)
+   ?};
+   {? _a='D'
+   || ZD_NAG.cntx_psh(); ZD_NAG.prefix(); ZD_NAG.OBI_POW:=EDOKUM.uidref(); ZD_NAG.put(); ZD_NAG.cntx_pop();
+      EDOKUM.DOK_POW:=ZD_NAG.uidref(); EDOKUM.LOG_PRZ:='T'; EDOKUM.put();
+      exec('copy_zalacz','obiegi_log',ZD_NAG)
+   || ZK_N.cntx_psh(); ZK_N.prefix(); ZK_N.OBI_POW:=EDOKUM.uidref(); ZK_N.put(); ZK_N.cntx_pop();
+      EDOKUM.DOK_POW:=ZK_N.uidref(); EDOKUM.LOG_PRZ:='T'; EDOKUM.put();
+      exec('copy_zalacz','obiegi_log',ZK_N)
+   ?}
+?};
+VAR_DEL.delete('no_us');
+_zwrot
+
+
+\zk_n_edokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Utworzenie dokumentu w obiegu na podstawie dokumentu logistycznego
+::   WE: _a - typ obiegu (ETYPY.ref())
+::       _b - 1/0 - czy pokazywać komunikaty
+::       _c - 'S' - zamówienie sprzedaży
+::            'W' - zamówienie wewnętrzne
+::   WY: ref EDOKUM lub null
+::----------------------------------------------------------------------------------------------------------------------
+_args:=params_get();
+_we:=_args.in;
+params_exec('ustaw_bprel','obiegi');
+_zwrot:=null; _dalej:=1; _odd:=null;
+{? ZK_N.STAT_REJ='A'
+|| {? _b
+   || {? _c='S'
+      || FUN.info('Zamówienie sprzedaży jest anulowane.'@)
+      || FUN.info('Zamówienie wewnętrzne jest anulowane.'@)
+      ?}
+   ?};
+   _dalej:=0
+?};
+{? _dalej & ZK_N.OBI_POW<>''
+|| {? _b
+   || {? _c='S'
+      || FUN.info('Dla zamówienia sprzedaży został wcześniej uruchomiony obieg.'@)
+      || FUN.info('Dla zamówienia wewnętrznego został wcześniej uruchomiony obieg.'@)
+      ?}
+   ?};
+   _dalej:=0
+?};
+{? _dalej
+|| {? ZK_N.ODDZ<>''
+   || ODDZ.cntx_psh(); ODDZ.index('KOD2'); ODDZ.prefix(ZK_N.ODDZ);
+      {? ODDZ.first() || _odd:=ODDZ.ODD ?};
+      ODDZ.cntx_pop()
+   ?};
+   {? ~_odd & _we.ODD<>~~ & _we.ODD<>''
+   || ODD.cntx_psh(); ODD.index('ODDZIALY'); ODD.prefix(REF.FIRMA,_we.ODD,);
+      {? ODD.first() || _odd:=ODD.ref() ?};
+      ODD.cntx_pop()
+   ?};
+   {? ~_odd
+   || {? _b
+      || {? _c='S'
+         || FUN.info('Dla zamówienia sprzedaży nie można ustalić jednostki księgowej.'@)
+         || FUN.info('Dla zamówienia wewnętrznego nie można ustalić jednostki księgowej.'@)
+         ?}
+      ?};
+      _dalej:=0
+   ?}
+?};
+{? _dalej
+|| exec('czytaj','#stalesys',,XINFO);
+   exec('czytaj','#stalesys',,FINFO,'NAROD');
+   _data:=ZK_N.DP;
+   ROZNE.UT_OKROD:=null;
+   {? _data<>date(0,0,0) || exec('szuk_okr','okresy',_data) ?};
+   {? ROZNE.UT_OKROD
+   || ROK_F.cntx_psh(); ROK_F.index('ROKPOCZ'); ROK_F.prefix();
+      OKRO_F.cntx_psh(); OKRO_F.index('ROK'); OKRO_F.prefix();
+      _ar:=SSTALE.AR; _ao:=SSTALE.AO;
+      SSTALE.AR:=ROZNE.UT_OKROD().ROK; SSTALE.AO:=ROZNE.UT_OKROD;
+      EDOKUM.cntx_psh(); EDOKUM.use('skid_v'+($(ROZNE.UT_OKROD().ROK().POCZ_ROK~1)+2));
+      EDOKUM.index('TYPOBI'); EDOKUM.prefix();
+      exec('use_edokum','obiegi_log',1);
+      _zwrot:=params_exec('edokum_zam','obiegi_log',_c,_a,_b,_odd);
+      exec('use_edokum','obiegi_log',2);
+      EDOKUM.cntx_pop(); ROK_F.cntx_pop(); OKRO_F.cntx_pop()
+   ?}
+?};
+_zwrot
+
+
+\edokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Tworzenie dokumentu w obiegu dla dokumentu sprzedaży lub zakupu
+::   WE: _a - 'S' - sprzedaż
+::            'Z' - zakup
+::       _b - typ obiegu (ETYPY.ref())
+::       _c - 1/0 - czy pokazywać komunikaty
+::       _d - wskazanie na jednostkę księgową
+::   WY: ref EDOKUM lub null
+::----------------------------------------------------------------------------------------------------------------------
+_args:=params_get();
+_we:=_args.in;
+_service:=params_get().mp.isService();
+_zwrot:=null;
+OBIEGI.DEL_ETAT:=''; SKID.SL_KH:='';
+EDOKUM.blank();
+EDOKUM.TYP:=_b;
+EDOKUM.TYP();
+EDOKUM.TYPOBIEG:=EDOKUM.TYP().TYPOBIEG;
+EDOKUM.DOSTAWCA:=OPERATOR.USER().OSOBA;
+EDOKUM.USERS:=null;
+EDOKUM.UNIK_ID:=tm_stamp();
+EDOKUM.ODD:=_d;
+EDOKUM.FIRMA:=REF.FIRMA;
+EDOKUM.ROK_F:=SSTALE.AR;
+EDOKUM.ALERTY:='T';
+EDOKUM.AUTOMAT:=2;
+EDOKUM.DATAW:=date();
+{? _a='Z'
+|| EDOKUM.DOP:=FAKS.D;
+   EDOKUM.DW:=FAKS.DW;
+   EDOKUM.DO:=FAKS.DO
+|| EDOKUM.DOP:=FAKS.D;
+   EDOKUM.DW:=FAKS.DW;
+   EDOKUM.DO:=FAKS.DW
+?};
+EDOKUM.WAL:=FAKS.WAL;
+EDOKUM.SYM:=FAKS.ID;
+EDOKUM.HAN:=FAKS.HAN;
+EDOKUM.PLATNOSC:=FAKS.PL;
+EDOKUM.TP:=FAKS.TZ;
+{? FAKS.KH & ETYPY.DOM_SL
+|| SLO.cntx_psh(); SLO.index('SL'); SLO.prefix(EDOKUM.TYP().DOM_SL().SLU,FAKS.KH().KOD,);
+   {? SLO.first()
+   || EDOKUM.KH:=SLO.ref(); EDOKUM.KHKH:=KH.ref()
+   |? SLU.DL=+form(KH.KOD)
+   || EDOKUM.TYP().DOM_SL().SLU();
+      SLO.SLU:=SLU.ref();
+      SLO.KOD:=KH.KOD;
+      SLO.TR:=KH.NAZ;
+      {? SLO.add(1)
+      || EDOKUM.KH:=SLO.ref(); EDOKUM.KHKH:=KH.ref()
+      ?}
+   ?};
+   SLO.cntx_pop()
+?};
+EDOKUM.bl_file('EDOKUM',1); EDOKUM.bl_file('EPODPIS',1);
+EDOKUM.memo_set('','UW_OPDL');
+no_us:=null;
+{? EDOKUM.add()
+|| _zwrot:=EDOKUM.ref();
+   {? ETYPY.AUT_ID='T' & EDOKUM.ID=''
+   || VAR_DEL.delete('id_edok');
+      exec('ustal_numer','obiegi',1,SSTALE.AR,1,0);
+      EDOKUM.ID:={? var_pres('id_edok')>0 || id_edok || '' ?};
+      EDOKUM.put()
+   ?};
+   EDOKUM.memo_put(,'UW_OPDL');
+   {? (EDOKUM.TYP().ATR_ONE>0) & (EDOKUM.TYP().ATR_G1R>0)
+   || exec('edk_atr_dolacz','obiegi',0)
+   ?};
+   FAKS.cntx_psh(); FAKS.prefix(); FAKS.OBI_POW:=EDOKUM.uidref(); FAKS.put(); FAKS.cntx_pop();
+   EDOKUM.DOK_POW:=FAKS.uidref(); EDOKUM.LOG_PRZ:='T'; EDOKUM.put();
+   exec('copy_zalacz','obiegi_log',FAKS);
+   exec('copy_pvat','obiegi_log');
+   exec('copy_pozycje','obiegi_log')
+?};
+VAR_DEL.delete('no_us');
+_zwrot
+
+
+\use_edokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Otwieranie masek dokumentów w obiegu na podstawie EDOKUM
+::   WE: _a - 1 - otwieranie
+::            2 - przywracanie
+::----------------------------------------------------------------------------------------------------------------------
+{? _a=1
+|| _maska:=(EDOKUM.name()+2);
+   EDOK_ATR.cntx_psh(); EDOK_ATR.use('edokat'+_maska);
+   EDOK_ZAL.cntx_psh(); EDOK_ZAL.use('edokzl'+_maska);
+   EDOKGR.cntx_psh(); EDOKGR.use('skid_c'+_maska);
+   EDOKLOG.cntx_psh(); EDOKLOG.use('skid_d'+_maska);
+   EDOKOS.cntx_psh(); EDOKOS.use('skid_y'+_maska);
+   EDOKPAR.cntx_psh(); EDOKPAR.use('skidh_'+_maska);
+   EDOKUSER.cntx_psh(); EDOKUSER.use('skidk_'+_maska);
+   EDOKRZAP.cntx_psh(); EDOKRZAP.use('skid_q'+_maska);
+   EDOKUMW.cntx_psh(); EDOKUMW.use('skidv1'+_maska);
+   EDOKUMD.cntx_psh(); EDOKUMD.use('bdiety'+_maska);
+   EDOKUMP.cntx_psh(); EDOKUMP.use('skidpu'+_maska);
+   EDOKUMZ.cntx_psh(); EDOKUMZ.use('skid_n'+_maska);
+   EPODZ.cntx_psh(); EPODZ.use('skid_j'+_maska);
+   EDOKUMPR.cntx_psh(); EDOKUMPR.use('skid_i'+_maska);
+   EVAT.cntx_psh(); EVAT.use('skid_a'+_maska);
+   POZF.cntx_psh(); POZF.use('pozf__'+_maska)
+|| EDOK_ATR.cntx_pop();
+   EDOK_ZAL.cntx_pop();
+   EDOKGR.cntx_pop();
+   EDOKLOG.cntx_pop();
+   EDOKOS.cntx_pop();
+   EDOKPAR.cntx_pop();
+   EDOKUSER.cntx_pop();
+   EDOKRZAP.cntx_pop();
+   EDOKUMW.cntx_pop();
+   EDOKUMD.cntx_pop();
+   EDOKUMP.cntx_pop();
+   EDOKUMZ.cntx_pop();
+   EPODZ.cntx_pop();
+   EDOKUMPR.cntx_pop();
+   EVAT.cntx_pop();
+   POZF.cntx_pop()
+?}
+
+
+\copy_zalacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Kopiowanie załączników z dokumentu logistycznego do dokumentu w obiegu
+::   WE: _a - alias do tabeli źródłowej
+::----------------------------------------------------------------------------------------------------------------------
+EDOKUMZ.cntx_psh(); EDOKUMZ.index('DISP'); EDOKUMZ.prefix();
+DOKUM.cntx_psh(); DOKUM.index('DOKUM'); DOKUM.prefix(REF.FIRMA,$_a.ref());
+DOKUMZ.cntx_psh(); DOKUMZ.index('DISP');
+{? DOKUM.first()
+|| {!
+   |? DOKUMZ.prefix(DOKUM.ref());
+      _loop:=DOKUMZ.first();
+      {!
+      |? _loop
+      |! EDOKUMZ.blank(1);
+         EDOKUMZ.DOKUM:=EDOKUM.ref();
+         EDOKUMZ.KR_OP:=DOKUMZ.KR_OP;
+         EDOKUMZ.NAZWA:=DOKUMZ.NAZWA;
+         EDOKUMZ.DATE:=DOKUMZ.DATE;
+         EDOKUMZ.TIME:=DOKUMZ.TIME;
+         EDOKUMZ.B_PREL:=OBIEGI.B_PREL;
+         EDOKUMZ.B_PRELS:=OBIEGI.B_PRELS;
+         EDOKUMZ.USER:=exec('name','users');
+         EDOKUMZ.USERS:=OPERATOR.USER;
+         EDOKUMZ.EDOKUM:=DOKUMZ.DOKUM;
+         _result:=EDOKUMZ.add();
+         _loop:=_result & DOKUMZ.next()
+      !};
+      DOKUM.next()
+   !}
+?};
+DOKUM.cntx_pop(); EDOKUMZ.cntx_pop(); DOKUMZ.cntx_pop()
+
+
+\copy_pvat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Kopiowanie pozycji VAT z dokumentu logistycznego do dokumentu w obiegu
+::----------------------------------------------------------------------------------------------------------------------
+EVAT.cntx_psh(); EVAT.index('EDOKUM'); EVAT.prefix();
+FAKSV.cntx_psh(); FAKSV.use('faksv'+(FAKS.name()+3)); FAKSV.index('FAKS_SV'); FAKSV.prefix($FAKS.ref());
+{? FAKSV.first()
+|| {! |?
+      EVAT.blank();
+      EVAT.EDOKUM:=EDOKUM.ref();
+      EVAT.NETTO:=FAKSV.WN;
+      EVAT.PR:=FAKSV.SV;
+      EVAT.VAT:=FAKSV.WV;
+      EVAT.BRUTTO:=FAKSV.WB;
+      EVAT.add();
+      FAKSV.next()
+   !};
+   SKID.SUMNETTO:=SKID.SUMVAT:=SKID.SUMBRUT:=0;
+   EVAT.cntx_psh(); EVAT.index('EDOKUM'); EVAT.prefix(EDOKUM.ref());
+   {? EVAT.first()
+   || {! |?
+         SKID.SUMNETTO+=EVAT.NETTO;
+         SKID.SUMBRUT+=EVAT.BRUTTO;
+         SKID.SUMVAT+=EVAT.VAT;
+         EVAT.next()
+      !}
+   ?};
+   EVAT.cntx_pop();
+   EDOKUM.NETTO:=SKID.SUMNETTO;
+   EDOKUM.WART:=SKID.SUMBRUT;
+   EDOKUM.cntx_psh(); EDOKUM.prefix(); EDOKUM.put(); EDOKUM.cntx_pop()
+?};
+FAKSV.cntx_pop(); EVAT.cntx_pop()
+
+
+\copy_pozycje
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Kopiowanie pozycji z dokumentu logistycznego do dokumentu w obiegu
+::----------------------------------------------------------------------------------------------------------------------
+{? EDOKUM.TYP().POZF='T'
+|| POZF.cntx_psh(); POZF.index('EDOKUM'); POZF.prefix();
+   FAP.cntx_psh(); FAP.use('fakpo'+(FAKS.name()+3)); FAP.index('FAP'); FAP.prefix(FAKS.ref());
+   {? FAP.first()
+   || _licznik:=0;
+      {! |?
+         POZF.blank();
+         POZF.EDOKUM:=EDOKUM.ref();
+         POZF.LP:=exec('bl_pf_lp','dok_fks');
+         POZF.DZ:=date();
+         POZF.JM:=FAP.JM;
+         POZF.NAZ:=FAP.NX;
+         POZF.IL:=FAP.IL;
+         POZF.C:=FAP.CN;
+         POZF.WN:=FAP.WN;
+         POZF.WV:=FAP.WB-FAP.WN;
+         POZF.WB:=FAP.WB;
+         POZF.SV:=FAP.SV;
+         {? FAKS.DSP_WPOZ<>'T' | FAP.D=date(0,0,0)
+         || POZF.DT:=FAKS.D
+         || POZF.DT:=FAP.D
+         ?};
+         POZF.add();
+         FAP.next()
+      !}
+   ?};
+   FAP.cntx_pop(); POZF.cntx_pop()
+?}
+
+
+\faks_wybor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Wybór dokumentu logistycznego podczas czynności tworzenia z niego dokumentu w obiegu
+::   WE: _a - 'S' - sprzedaż
+::            'Z' - zakup
+::----------------------------------------------------------------------------------------------------------------------
+FAKS.prefix();
+{? _a='Z'
+|| _stz:={? ST.STZ || '(\''+$ST.STZ+'\')' || '' ?};
+   _sort:='NR';
+   _from:='';
+   _where:="FAKS.SZ=':_a'  and FAKS.AR=:_b and FAKS.AM=:_c and FAKS.OBI_POW=\'\' "+
+           "and (FAKS.STAT_REJ=\'T\' or FAKS.STAT_REJ=\'Z\')"+
+           {? _stz='' || "" || "and FAKS.STS in :_d" ?};
+   {? FAKS.sel_size() || FAKS.sel_adel() ?};
+   FAKS.prefix();
+   FAKS.f_clear();
+   FAKS.f_set(_sort,_from,_where,_a,ST.AR,ST.AM,_stz);
+   _okno:=FAKS.mk_sel('Dokumenty zakupu i wewnętrzne'@,'P',0,,,,,,'U');
+   FAKS.win_sel(_okno);
+   FAKS.win_fld(_okno,,'NR',,,11,,1,'Numer'@);
+   FAKS.win_fld(_okno,,'ID',,,11,,1,'Zewnętrzny symbol dokumentu'@);
+   FAKS.win_fld(_okno,,'DW',,,10,,1,'Data wystawienia'@);
+   FAKS.win_fld(_okno,,'KH','NAZ_P',,30,,1,'Kontrahent'@);
+   FAKS.win_fld(_okno,,'NETTO',,,16,2,1,'Wartość netto'@);
+   FAKS.win_fld(_okno,,'BRUTTO',,,16,2,1,'Wartość brutto'@);
+   FAKS.win_fld(_okno,,'NWAL','KOD',,6,,1,'Waluta'@);
+   FAKS.win_act(_okno,0,'Kolejność',,,,,,0);
+   FAKS.win_act(_okno,0,'Wyświetl',,,,"FAKS.f_get(); exec('fall_rek','faktury_nag')",,0);
+   FAKS.win_act(_okno,,'Formuła','Wybierz'@@,,'Wybór bieżącej pozycji'@,"sel_exit()",,1,,,,'W')
+|| _sts:={? ST.STS || '(\''+$ST.STS+'\')' || '' ?};
+   _sort:='NR';
+   _from:='';
+   _where:="FAKS.HIDDEN='N' and FAKS.SZ=':_a'  and FAKS.AR=:_b and FAKS.AM=:_c and FAKS.OBI_POW=\'\' "+
+            {? _sts='' || "" || "and FAKS.STS in :_d " ?};
+   {? FAKS.sel_size() || FAKS.sel_adel() ?};
+   FAKS.f_set(_sort,_from,_where,_a,ST.AR,ST.AM,_sts);
+   _okno:=FAKS.mk_sel('Dokumenty sprzedaży'@,'P',0,,,,,,'U');
+   FAKS.win_sel(_okno);
+   FAKS.win_fld(_okno,,'NR',,,11,,1,'Numer'@);
+   FAKS.win_fld(_okno,,'ID',,,20,,1,'Symbol'@);
+   FAKS.win_fld(_okno,,'DW',,,10,,1,'Data wystawienia'@);
+   FAKS.win_fld(_okno,,'KH','NAZ_P',,30,,1,'Kontrahent'@);
+   FAKS.win_fld(_okno,,'NETTO',,,16,2,1,'Wartość netto'@);
+   FAKS.win_fld(_okno,,'BRUTTO',,,16,2,1,'Wartość brutto'@);
+   FAKS.win_fld(_okno,,'NWAL','KOD',,6,,1,'Waluta'@);
+   FAKS.win_act(_okno,0,'Kolejność',,,,,,0);
+   FAKS.win_act(_okno,0,'Wyświetl',,,,"FAKS.f_get(); exec('fall_rek','faktury_nag')",,0);
+   FAKS.win_act(_okno,,'Formuła','Wybierz'@@,,'Wybór bieżącej pozycji'@,"sel_exit()",,1,,,,'W')
+?};
+{? FAKS.select() || FAKS.ref() || null ?}
+
+
+\zd_nag_wybor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Wybór zamówienia dostaw podczas czynności tworzenia z niego dokumentu w obiegu
+::----------------------------------------------------------------------------------------------------------------------
+ZD_NAG.prefix();
+_sort:='SYM';
+_from:='';
+_where:="ZD_NAG.R=:_a and ZD_NAG.M=:_b and ZD_NAG.OBI_POW=\'\' "+
+        "and (ZD_NAG.STAT_REJ=\'T\' or ZD_NAG.STAT_REJ=\'Z\')";
+{? ZD_NAG.sel_size() || ZD_NAG.sel_adel() ?};
+ZD_NAG.win_edit('RED');
+ZD_NAG.f_clear();
+ZD_NAG.f_set(_sort,_from,_where,ST.AR,ST.AM);
+_okno:=ZD_NAG.mk_sel('Zamówienia do dostawców'@,'P',0,'zd_nag_sel',,,,,'U');
+ZD_NAG.win_sel(_okno);
+ZD_NAG.win_fld(_okno,,'SYM',,,20,,1,'Symbol'@,,'Symbol zamówienia'@);
+ZD_NAG.win_fld(_okno,,'ZAM_DST',,,20,,1,'Zamówienie dostawcy'@,,'Zewnętrzny numer dostawcy'@);
+ZD_NAG.win_fld(_okno,,'DATA',,,10,,1,'Data'@,,'Data zamówienia'@);
+ZD_NAG.win_fld(_okno,,'MG','SYM',,8,,1,'Magazyn'@,,'Symbol magazynu'@);
+ZD_NAG.win_fld(_okno,,'KH','NAZ_P',,30,,1,'Dostawca'@,,'Nazwa dostawcy'@);
+ZD_NAG.win_fld(_okno,,'STATUS',,,25,,1,'Stan'@,,'Stan zamówienia'@);
+ZD_NAG.win_fld(_okno,EANX,'WYS',,,3,,1,'W wysyłce'@,,'Zamówienie zostało powiązane z dokumentem przyjęcia'@);
+ZD_NAG.win_act(_okno,0,'Kolejność',,,,,,0);
+ZD_NAG.win_act(_okno,0,'Rekord',,,,"exec('zdnag_rek','zamdst_nag')",,0);
+ZD_NAG.win_act(_okno,,'Formuła','Wybierz'@@,,'Wybór bieżącej pozycji'@,"sel_exit()",,1,,,,'W');
+{? ZD_NAG.select() || ZD_NAG.ref() || null ?}
+
+
+\zk_n_wybor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Wybór zamówienia sprzedaży podczas czynności tworzenia z niego dokumentu w obiegu
+::   WE: _a - 'S' - zamówienie sprzedaży
+::            'W' - zamówienie wewnętrzne
+::----------------------------------------------------------------------------------------------------------------------
+ZK_N.prefix();
+_sort:='NR,SYM';
+_from:=' join TYPYZAM using(ZK_N.T,TYPYZAM.reference) ';
+_where:="TYPYZAM.R=':_c' and ZK_N.R=:_a and ZK_N.M=:_b and ZK_N.OBI_POW='' "+
+        "and (ZK_N.STAT_REJ='T' or ZK_N.STAT_REJ='Z')";
+{? ZK_N.sel_size() || ZK_N.sel_adel() ?};
+
+ZK_N.f_clear();
+ZK_N.f_set(_sort,_from,_where,ST.AR,ST.AM,{? _a='S' || 'Z' || 'W' ?});
+{? _a='S'
+|| _okno:=ZK_N.mk_sel('Zamówienia sprzedaży'@,'P',0,'zk_ns_sel',,,,,'U');
+   ZK_N.win_edit('RED')
+|| _okno:=ZK_N.mk_sel('Zamówienia wewnętrzne'@,'P',0,'zk_nz_sel',,,,,'U');
+   ZK_N.win_edit('REDW')
+?};
+ZK_N.win_sel(_okno);
+ZK_N.win_fld(_okno,,'NR',,,5,,1,'Numer'@,,'Numer zamówienia'@);
+ZK_N.win_fld(_okno,,'SYM',,,20,,1,'Symbol'@,,'Symbol zamówienia'@);
+ZK_N.win_fld(_okno,,'DP',,,10,,1,'Data'@,,'Data utworzenia zamówienia'@);
+ZK_N.win_fld(_okno,,'NETTO',,,16,2,1,'Netto'@,,'Wartość netto zamówienia'@);
+{? _a='S'
+|| ZK_N.win_fld(_okno,,'NET',,,16,2,1,'Pozostało do realizacji'@,,'Pozostała wartość netto do realizacji (po rabacie)'@)
+?};
+ZK_N.win_fld(_okno,,'BRUTTO',,,16,2,1,'Brutto'@,,'Wartość brutto zamówienia'@);
+ZK_N.win_fld(_okno,,'STAN',,,14,,1,'Stan'@,,'Znacznik stanu zamówienia'@);
+ZK_N.win_act(_okno,0,'Kolejność',,,,,,0);
+ZK_N.win_act(_okno,0,'Rekord',,,,"exec('zam_reko','zamsiw_nag')",,0);
+ZK_N.win_act(_okno,,'Formuła','Wybierz'@@,,'Wybór bieżącej pozycji'@,"sel_exit()",,1,,,,'W');
+{? ZK_N.select() || ZK_N.ref() || null ?}
+
+
+\log_dob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Wyświetlanie dokumentu w obiegu z poziomu dokumentu logistycznego
+::----------------------------------------------------------------------------------------------------------------------
+_edokum:=
+   {? 5+__powdok.REF=5+FAKS.name()
+   ||
+      {? FAKS.OBI_POW<>'' || FAKS.OBI_POW || FAKS.EDOKUM ?}
+
+   |? 5+__powdok.REF=5+ZD_NAG.name()
+   ||
+      ZD_NAG.OBI_POW
+
+   |? 5+__powdok.REF=5+ZK_N.name()
+   ||
+      ZK_N.OBI_POW
+   ?};
+{? _edokum<>''
+|| EDOKUM.cntx_psh(); EDOKUM.index('ID'); EDOKUM.prefix();
+   {? EDOKUM.seek(_edokum,,1,1)
+   || TYPOBIEG.cntx_psh(); TYPOBIEG.prefix();
+      EDOKUM.TYPOBIEG();
+      {? TYPOBIEG.NAZWA='Obieg faktur'
+      || _okn:=EDOKUM.mk_edit('Faktura w obiegu'@);
+         EDOKUM.win_ewin(_okn,,'WPR'); typobi:=1
+      |? TYPOBIEG.NAZWA='Obieg wniosków'
+      || _okn:=EDOKUM.mk_edit('Wniosek w obiegu'@);
+         EDOKUM.win_ewin(_okn,,'KSW'); typobi:=2
+      || _okn:=EDOKUM.mk_edit('Delegacja w obiegu'@);
+         EDOKUM.win_ewin(_okn,,'KSD'); typobi:=3
+      ?};
+      EDOKUM.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['&Historia obiegu'@],
+                      "exec('okn_opis','obiegi'); ''"
+                      );
+      {? typobi=1
+      ||
+         EDOKUM.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['&Pozycje VAT'@],
+                         "exec('pozvdob','obiegi_log'); ''"
+                         )
+      ?};
+      EDOKUM.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['P&odziały'@],
+                      "exec('podz_dob','obiegi_log'); ''"
+                      );
+      {? typobi=1
+      ||
+         EDOKUM.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['Pozycje &faktury'@],
+                         "exec('pozf_edokum','obiegi_log'); ''"
+                         )
+      ?};
+      _anuluj:=EDOKUM.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],'key:Esc');
+      EDOKUM.btn_eopt(_okn,_anuluj,'tooltip='+exec('help_red_esc','#window','A'));
+      EDOKUM.win_edit(_okn);
+      EDOKUM.display();
+      TYPOBIEG.cntx_pop();
+      VAR_DEL.delete('typobi')
+   || FUN.info('Nie znaleziono powiązanego dokumentu.'@)
+   ?};
+   EDOKUM.cntx_pop()
+|| FUN.info('Dla wybranego dokumentu nie uruchomiono obiegu.'@)
+?}
+
+
+\pozvdob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Pozycje VAT dla dokumentu w obiegu
+::----------------------------------------------------------------------------------------------------------------------
+EDOKUM.cntx_psh(); EVAT.cntx_psh();
+{? ~EDOKUM.TYP().TYPVATPR & typobi=1
+|| exec('czytaj','#stalesys',,FINFO,'NAROD');
+   {? EDOKUM.WAL=FINFO.NAROD
+   || {? EDOKUM.r_lock(1,1,1)
+      || EVAT.index('EDOKUM'); EVAT.prefix(EDOKUM.ref());
+         exec('sum_vat','obiegi',0);
+         {? EDOKUM.EDOKUM
+         || EVAT.win_sel('WER_FK2'); OBIEGI.PREVIEW:=EDOKUM.EDOKUM
+         || EVAT.win_sel('WER_FK');
+            OBIEGI.bl_file('PREVIEW',1,'')
+         ?};
+         EVAT.win_edit('RED');
+         EVAT.select(,,,'DUP:D');
+         EDOKUM.r_unlock()
+      || exec('err_kom','obiegi')
+      ?}
+   || FUN.info('Pozycje VAT są edytowane tylko dla narodowej waluty transakcji.'@)
+   ?}
+|| FUN.info('Pozycje VAT nie są edytowane w dokumentach prostych.'@)
+?};
+EDOKUM.cntx_pop(); EVAT.cntx_pop();
+EDOKUM.get()
+
+
+\podz_dob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Podziały controllingowe dla dokumentu w obiegu
+::----------------------------------------------------------------------------------------------------------------------
+_dalej:=1;
+{? _dalej & PAR_SKID.get(80)='N'
+|| FUN.info('W parametrach ustawiono na N parametr 80 (Dostępna ewidencja podziałów controllingowych).'@); _dalej:=0
+?};
+{? _dalej & EDOKUM.TYP().ED_PODZ<>'T'
+|| FUN.info('Wybrany typ nie umożliwia rejestracji podziałów controllingowych.'@); _dalej:=0
+?};
+{? _dalej
+|| exec('set_var_podz','obiegi');
+   {? EDOKUM.r_lock(1,1,1)
+   || PAR_WYDR.RPAR3:=EDOKUM.NETTO;
+      exec('sum_podz','obiegi');
+      {? typobi=1
+      || EPODZ.win_sel('WER');
+         SKID.fld_fml('SKXDRAZE','DISPLAY_FORMAT',"'out_prec=2'")
+      |? typobi=2
+      || EPODZ.win_sel('WER2');
+         SKID.fld_fml('SKXDRAZE','DISPLAY_FORMAT',"'out_prec=2'")
+      |? typobi=3
+      || EPODZ.win_sel('WER4');
+         PAR_WYDR.RPAR3:=100
+      ?};
+      {? typobi=3
+      || EPODZ.win_edit('RED1')
+      || EPODZ.win_edit('RED')
+      ?};
+      OBIEGI.ZAKL:='EPODZ';
+      EPODZ.index('EDOKUMDS'); EPODZ.prefix(EDOKUM.ref());
+      _act:=_actb:='';
+      _act:='DdPpUu'; _actb:='Dd';
+      _act:=_act+{? +_actb || ':'+_actb || _act ?};
+      EPODZ.select(,,,_act);
+      SKID.fld_fml('SKXDRAZE','DISPLAY_FORMAT',"*");
+      EDOKUM.r_unlock()
+   || exec('err_kom','obiegi')
+   ?}
+?}
+
+
+\pozf_edokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Pozycje faktury w obiegu
+::----------------------------------------------------------------------------------------------------------------------
+{? EDOKUM.TYP().POZF='T'
+|| {? EDOKUM.r_lock(1,1,1)
+   || POZF.cntx_psh();
+      POZF.use('pozf__'+(EDOKUM.name()+2));
+      POZF.index('EDOKUM'); POZF.prefix(EDOKUM.ref());
+      _okn:=POZF.mk_edit(,,,,,,'wrapped');
+      POZF.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=top,align=end,display=1'['Zamknij okno'@],"'key:Esc'");
+      _grp:=POZF.grp_make('Pozycje faktury'@,"grp_edisp(EDOKUM,'INFO')",'#pozfsel',,,,,);
+      POZF.grp_edit(_grp,EDOKUM,'INFO',,,,,,'maximized',,);
+      POZF.grp_splt(_grp,,'horizontal','bottom');
+      {? EDOKUM.EDI='P' | EDOKUM.EDI='S' || _win:='WEREEDI' || _win:='WER' ?};
+      POZF.fld_opt(_win,'col_name="%1"'[HELPJPK.KOL_CEN],POZF,'C');
+      POZF.grp_sel(_grp,,_win,,,,,20,,,,,'maximized_with_title',,1);
+      POZF.win_sel(_grp);
+      POZF.actions(_win,'dpUT:d');
+      POZF.select();
+      POZF.cntx_pop();
+      EDOKUM.r_unlock()
+   || FUN.info('Faktura obsługiwana przez innego użytkownika systemu.'@)
+   ?}
+|| FUN.info('Akcja niedostępna dla wskazanego typu faktury.'@)
+?}
+
+
+\dob_log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Wyświetlanie dokumentu logistycznego z poziomu dokumentu w obiegu
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('dok_pow_log','obiegi_log')
+|| {? (5+(EDOKUM.DOK_POW+16))='zdnag'
+   || ZD_NAG.cntx_psh(); ZD_NAG.index('SYM'); ZD_NAG.prefix();
+      {? ZD_NAG.seek(EDOKUM.DOK_POW,ref_name(EDOKUM.DOK_POW),1,1)
+      || exec('zd_nag_win_edit_set','obiegi_log',0);
+         ZD_NAG.display()
+      || FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+      ?};
+      ZD_NAG.cntx_pop()
+   |? (5+(EDOKUM.DOK_POW+16))='zknag'
+   || ZK_N.cntx_psh();
+      {? ZK_N.seek(EDOKUM.DOK_POW,ref_name(EDOKUM.DOK_POW),1,1)
+      || _typ:={? ZK_N.T().R='Z' || 'S' || 'W' ?};
+         exec('zk_n_win_edit_set','obiegi_log',0,_typ);
+         ZK_N.display()
+      || FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+      ?};
+      ZK_N.cntx_pop()
+   |? (5+(EDOKUM.DOK_POW+16))='faktu'
+   || FAKS.cntx_psh(); FAKS.index('FAK_SYM1'); FAKS.prefix();
+      {? FAKS.seek(EDOKUM.DOK_POW,ref_name(EDOKUM.DOK_POW),1,1)
+      || exec('polafaks_get','jpk_log',FAKS.ref(),FAKS);
+         exec('faks_win_edit_set','faktury_nag');
+         FAKS.display()
+      || FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+      ?};
+      FAKS.cntx_pop()
+   || FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+   ?}
+|| FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+?}
+
+
+\dob_log_wt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Wyświetlanie dokumentu logistycznego z poziomu dokumentu w obiegu - webterm
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('dok_pow_log','obiegi_log')
+|| exec('env_wt','b_proces');
+   VAR_DEL.delete('__CURTAB');
+   {? (5+(EDOKUM.DOK_POW+16))='zdnag'
+   || ZD_NAG.cntx_psh();
+      {? ZD_NAG.seek(EDOKUM.DOK_POW,ref_name(EDOKUM.DOK_POW),1,1)
+      || exec('czytaj','#stalesys',,INFO,'NAROD');
+         POMOC.K1:=ZD_NAG.PL().KOD;
+         POMOC.DATA:=ZD_NAG.TZ;
+         __CURTAB:=ZD_NAG;
+         ZD_NAG.web_display('RED_WT',,"ZD_NAG.web_eclose()")
+      || FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+      ?};
+      ZD_NAG.cntx_pop()
+   |? (5+(EDOKUM.DOK_POW+16))='zknag'
+   || ZK_N.cntx_psh();
+      {? ZK_N.seek(EDOKUM.DOK_POW,ref_name(EDOKUM.DOK_POW),1,1)
+      || exec('czytaj','#stalesys',,INFO,'NAROD');
+         __CURTAB:=ZK_N;
+         {? ZK_N.T().R='Z'
+         || ZK_N.web_display('RED_WT',,"ZK_N.web_eclose()")
+         || ZK_N.web_display('REDW_WT',,"ZK_N.web_eclose()")
+         ?}
+      || FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+      ?};
+      ZK_N.cntx_pop()
+   |? (5+(EDOKUM.DOK_POW+16))='faktu'
+   || FAKS.cntx_psh();
+      {? FAKS.seek(EDOKUM.DOK_POW,ref_name(EDOKUM.DOK_POW),1,1)
+      || FAKSPL.use('fakpl'+(FAKS.name()+3));
+         exec('czytaj','#stalesys',,INFO,'NAROD');
+         __CURTAB:=FAKS;
+         {? FAKS.T().ZAK='T'
+         || FAKS.web_display('WREDZ_W',,"FAKS.web_eclose()")
+         || FAKS.web_display('WRED_W',,"FAKS.web_eclose()")
+         ?}
+      || FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+      ?};
+      FAKS.cntx_pop()
+   || FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+   ?};
+   VAR_DEL.delete('__CURTAB')
+|| FUN.info('Dla wybranego dokumentu w obiegu nie znaleziono dokumentu logistycznego.'@)
+?}
+
+
+\bobs_faks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Przed obsługą okienek redakcyjnych tabeli FAKS
+::   WE: _a - 'S' - sprzedaż
+::            'Z' - zakup
+::----------------------------------------------------------------------------------------------------------------------
+FAKSPL.use('fakpl'+(FAKS.name()+3));
+exec('czytaj','#stalesys',,FINFO,'NAROD');
+exec('czytaj','#stalesys',,INFO,'NAROD');
+1
+
+
+\bobs_zd_nag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Przed obsługą okienka redakcyjnego ZD_NAG
+::----------------------------------------------------------------------------------------------------------------------
+exec('czytaj','#stalesys',,INFO,'NAROD');
+exec('czytaj','#stalesys',,FINFO,'NAROD');
+INTRAST.NIP:=ZD_NAG.NIP_UE;
+1
+
+
+\bobs_zk_n
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Przed obsługą okienka redakcyjnego ZK_N
+::----------------------------------------------------------------------------------------------------------------------
+exec('czytaj','#stalesys',,INFO,'NAROD');
+exec('czytaj','#stalesys',,FINFO,'NAROD');
+INTRAST.NIP:=ZK_N.NIP_UE;
+ZMSLAPP.ZL11W:=ZMSLAPP.ZL12W:='';
+1
+
+
+\zl_p_wys_zkn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Przed 'Wyswietl' zlecenie - dokumenty magazynowe
+::----------------------------------------------------------------------------------------------------------------------
+{? ZK_N.ZL<>null()
+|| ZK_N.ZL();
+   {? ZL.NRNZL=0
+   || ZMSLAPP.ZL11W:=ZL.SYM
+   || ZMSLAPP.ZL11W:=exec('nrnzl','zl_head',ZL.NRNZL)
+   ?};
+   ZK_N.ZL:=ZL.ref()
+|| ZMSLAPP.ZL11W:=''
+?}
+
+
+\zl_p_wys3_zkn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Przed 'Wyswietl' zlecenie podrzedne - dokumenty magazynowe
+::----------------------------------------------------------------------------------------------------------------------
+{? ZK_N.ZL<>null() & ZK_N.ZL().NRNZL<>0
+|| ZK_N.ZL();
+   ZK_N.ZL:=ZL.ref();
+   {? ZL.RODZAJ='P' & ZL.NRNZL=0
+   || ZMSLAPP.ZL12W:=''; 0
+   || {? ZL.RODZAJ='P'
+      || ZMSLAPP.ZL12W:=ZL.SYM
+      ?};
+      1
+   ?}
+|| ZMSLAPP.ZL12W:=''; 1
+?}
+
+
+\pw_zdnagnip
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Przed wyświetl dla pola INTRAST.NIP dla tabeli ZD_NAG
+::----------------------------------------------------------------------------------------------------------------------
+INTRAST.NIP:=ZD_NAG.NIP_UE;
+''
+
+
+\pw_zknnip
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [18.02]
+:: OPIS: Przed wyświetl dla pola INTRAST.NIP dla tabeli ZK_N
+::----------------------------------------------------------------------------------------------------------------------
+INTRAST.NIP:=ZK_N.NIP_UE;
+''
+
+
+\edokum_zak
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Ustalenie statusu - ustawienie parametru czynności
+::   WE: _a - bieżąca wartość
+::----------------------------------------------------------------------------------------------------------------------
+_nr:={? _a=~~ | _a='Ustalić status' | _a='' || 1 || 2 ?};
+_pyt:=FUN.choice('Obieg dokumentu'@,_nr,'Ustalić status'@,'Wycofać status'@);
+{? _pyt=1
+|| 'Ustalić status'
+|? _pyt=2
+|| 'Wycofać status'
+|| ~~
+?}
+
+
+\ustal_status
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Ustalenie statusu dokumentu w obiegu
+::   WE: _a - bieżący dokument (uidref)
+::   WY: 'T' - zaakceptowany, 'N' - niezaakceptowany, '' - w trakcie obiegu
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:='T';
+_wp:=0;
+_stat:='';
+{? _ & type_of(_a)=type_of('') & _a<>''
+|| EDOKUM.cntx_psh(); EDOKUM.index('ID'); EDOKUM.prefix();
+   {? EDOKUM.seek(_a,ref_name(_a),1,1)
+   || _stat:=EDOKUM.STATUS;
+      ETYPY.cntx_psh();
+      _wp:=EDOKUM.TYP().W_PORTAL<>'N';
+      ETYPY.cntx_pop();
+      {? EDOKUM.B_PREL<>''
+      || EDOKOS.cntx_psh();
+         EDOKOS.use('skid_y'+(EDOKUM.name()+2));
+         EDOKOS.index('EDOKUM'); EDOKOS.prefix(EDOKUM.ref(),EDOKUM.B_PREL,);
+         {? EDOKOS.first()
+         || {! |?
+               {? EDOKOS.STATUS='O' || _zwrot:='N' ?};
+               _zwrot<>'N' & EDOKOS.next()
+            !};
+            {? _zwrot='T'
+            || {! |?
+                  {? EDOKOS.STATUS='N' || _zwrot:='' ?};
+                  _zwrot<>'' & EDOKOS.next()
+               !}
+            ?}
+         ?};
+         EDOKOS.cntx_pop()
+      ?}
+   ?};
+   EDOKUM.cntx_pop()
+?};
+{? _wp
+|| {? EDOKUM.ZAM='T'
+   || _zwrot:='E'
+   |? _zwrot='N'
+   || _zwrot:='D'
+   |? _zwrot='T'
+   || _zwrot:='Y'
+   || _zwrot:=_stat
+   ?}
+?};
+_zwrot
+
+
+\edokum_status
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Zwrócenie statusu dokumentu w obiegu
+::   WE: _a - bieżący dokument (uidref)
+::   WY: 'T' - zaakceptowany, 'N' - niezaakceptowany, '' - w trakcie obiegu
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:='';
+{? _ & type_of(_a)=type_of('') & _a<>''
+|| EDOKUM.cntx_psh(); EDOKUM.index('ID'); EDOKUM.prefix();
+   {? EDOKUM.seek(_a,ref_name(_a),1,1) || _zwrot:=EDOKUM.STATUS ?};
+   EDOKUM.cntx_pop()
+?};
+_zwrot
+
+
+\rodz_doklog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.42]
+:: OPIS: Sprawdza czy dokument w obiegu _a jest rodzaju _b
+::   WE: _a - EDOKUM.ref()
+::       _b - Oczekiwany rodzaj dokumentu
+::   WY: 0 - dokument w obiegu _a nie jest rodzaju _b
+::       1 - dokument w obiegu _a jest rodzaju _b
+::----------------------------------------------------------------------------------------------------------------------
+exec('FindAndGet','#table',EDOKUM,_a,,"
+   _rodz_dok:=@.EDOKUM.TYP().RODZ_DOK;
+   _fakt_zal:=@.EDOKUM.TYP().FAKT_ZAL;
+   {? _rodz_dok='S'
+   ||
+      {? @.EDOKUM.KOREKTA='T'   || 'LSP_KOR'
+      |? _fakt_zal='T'        || 'LSP_ZAL'
+                              || 'LSP_FAK'
+      ?}
+
+   |? _rodz_dok='Z'
+   ||
+      {? @.EDOKUM.KOREKTA='T'   || 'LZK_KOR'
+      |? _fakt_zal='T'        || 'LZK_ZAL'
+                              || 'LZK_FAK'
+      ?}
+   ||
+      ''
+   ?}
+",'')=_b
+
+
+\edokum_stat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.42]
+:: OPIS: Ustalenie statusu EDOKUM-a dla FAKS-a
+::----------------------------------------------------------------------------------------------------------------------
+_edokum:=exec('FindAndGet','#table',FAKS,_a,,"FAKS.OBI_POW",null);
+exec('FindAndGet','#table',EDOKUM,_edokum,,"@.EDOKUM.STATUS='T'",0)
+
+
+\odd_fml_exp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AFI [20.42]
+:: OPIS: Formuła eksportująca wartość parametru typu _ODD
+::   WE: _a [REFERENCE] - Wartość parametru. Wskazanie pozycji słownika [ODD.ref()]
+::   WY: STRING - Treść formuły do wykonania podczas importu
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(null()) & _a<>null() & ref_tab(_a)=ODD
+|| _odd:=_a
+|| return('')
+?};
+
+_fml:='';
+
+ODD.cntx_psh();
+ODD.prefix();
+{? ODD.seek(_odd)
+|| _fml:=exec('formulizer_common','#b_export');
+   _fml+='
+      ODD.cntx_psh();
+      ODD.index(\'ODDZIALY\');
+      ODD.prefix(B_PROC.FIRMA,\''+ODD.OD+'\',);
+      {? ODD.first()
+      || _result.REF:=ODD.ref();
+         _result.RESULT:=1
+      || _result.RESULT:=0;
+         _result.REF:=null();
+         {? _komm>0
+         || _msg:=\'Nie znaleziono jednostki księgowej: %1\'@[\''+ODD.OD+'\'];
+            exec(\'import_komm\',\'#b_export\',_msg)
+         ?}
+      ?};
+      ODD.cntx_pop();
+      _result
+   ';
+   _fml:=exec('formulizer_clean','#b_export',_fml)
+?};
+ODD.cntx_pop();
+_fml
+
+
+\dok_pow_log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [21.14]
+:: OPIS: Czy dokument w obiegu powiązany z dokumentem logistycznym
+::----------------------------------------------------------------------------------------------------------------------
+EDOKUM.DOK_POW<>'' & 'zdnag,zknag,faktu'*(5+(EDOKUM.DOK_POW+16))
+
+
+:Sign Version 2.0 jowisz:1045 2024/01/08 08:02:08 55a190f359915d67d5ab29170a2ead41916612801d5270090bcc20f6ad5971dcb55d0ecec324a7e90d1b3f47ea4500e3bcc60aa183046a12a27cf8ab3ecea23f157f3e4f9da666a4e96cc030ce3e41871c922c348896c3b1b6c8a54803d89fbb2fb186920a54cc7dda63ed2fc97e2bab8dd013c80d3e442fa9735f8856db1fb8

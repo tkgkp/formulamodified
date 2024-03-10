@@ -1,0 +1,870 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: o_dpar.fml
+:: Utworzony: 28.10.2020
+:: Autor: jaws
+::======================================================================================================================
+:: Zawartość: Formuły biblioteczne dla obsługi tabeli O_DPAR.
+::======================================================================================================================
+
+
+\_modb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed dołączeniem lub poprawieniem wiersza tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - wiersz błędny/poprawny
+::----------------------------------------------------------------------------------------------------------------------
+:: ewentualne uzupełnienie wartościami domyślnymi
+{? O_DPAR.SYSTEM=''   || O_DPAR.SYSTEM:='N' ?};
+{? O_DPAR.TYP=''      || O_DPAR.TYP:='Z' ?};
+{? O_DPAR.WYM_DOST='' || O_DPAR.WYM_DOST:='N' ?};
+{? O_DPAR.WYM_JEST='' || O_DPAR.WYM_JEST:='N' ?};
+
+:: ustal kod dla aktualizacji danych
+exec('mod_uid','#symsys',O_DPAR,'SYSTEM','KOD');
+
+1
+
+
+\_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Sprawdza wypełnienie wymaganych pól. Wykorzystywana w wyzwalaczach przed dołącz i popraw.
+::   WE: _a [INTEGER] - Tryb modyfikacji danych
+::          0 - dołączanie (domyślnie)
+::          1 - poprawianie
+::   WY: wynik testu poprawności danych zależny od kontekstu wywołania:
+::       - jako formuła "rekord po"
+::          - akronim niewypełnionego pola
+::          - akronim pola o błędnej wartości
+::          - 0 w przypadku powielenia unikalnego klucza
+::       - jako formuła sprawdzająca dla wyzwalaczy "dołącz przed" i "popraw przed"
+::          - 1 wiersz poprawny
+::          - 0 niewypełnione wymagane pole, błędna wartość pola, powielony unikalny klucz
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_mode:={? var_pres('_a')=type_of(0) || _a<>0 ?};
+
+__CHK.validate(O_DPAR,
+:: sprawdź wymagane dane i unikalność indeksów
+   $("_a.table(_b,"+$_mode+",,'SYSTEM','KOD','NAZWA','SYMBOL','TYP','WYM_DOST','WYM_JEST','FML_BL')"),
+:: zweryfikuj dozwolone wartości
+   "_a.in_set(_b,'SYSTEM',,'T','N')",
+   "_a.in_set(_b,'TYP',,'Z','R')",
+   "_a.in_set(_b,'WYM_DOST',,'T','N')",
+   "_a.in_set(_b,'WYM_JEST',,'T','N')",
+:: zweryfikuj symbol z uwzględnieniem separacji danych
+   "exec('chk_symbol','#symsys',_a,_b,'SYSTEM','SYMBOL')",
+:: kontrola składni formuł
+   "exec('_x_form_chk','o_dpar',_a,_b,'FML_BL','FML_AE')"
+)
+
+
+\_x_form_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [20.14]
+:: OPIS: Kontrola składni formuły.
+::   WE: _a OBJECT - wskazanie obiektu __CHK
+::       _b TABLE - alias sprawdzanej tabeli
+::       _c STRING - akronimy pól zawierających treść formuły
+::       ...
+::   WY: akronim pola z błędną formułą lub 1
+::----------------------------------------------------------------------------------------------------------------------
+{! _ii:=3.._
+|! _fld:=_[_ii];
+   {? form_chk($_b.memo_txt(,0,_fld)).size()>=1
+   || _a.err_msg('W formule \"%1\" wykryto błędy składniowe.'@[MS.name(_b,_fld)]);
+      return(_fld)
+   ?}
+!};
+1
+
+
+\_addb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wyzwalacz przed dołączeniem wiersza tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - wiersz błędny/poprawny
+::----------------------------------------------------------------------------------------------------------------------
+exec('_modb','o_dpar') & exec('_chk','o_dpar',0)
+
+
+\_adda
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wyzwalacz po dołączeniu wiersza tabeli O_DPAR.
+::   WE: _a INTEGER - zgodny ze specyfikacją narzędzi
+::   WY: zgodny ze specyfikacją narzędzi
+::----------------------------------------------------------------------------------------------------------------------
+:: podstawowy warunek dalszego działania
+{? ~_a | do_state()<>1 || return() ?};
+
+:: dodaj parametr do wszystkich firm
+O_FPAR.cntx_psh();
+O_FPAR.index('WLACZONY');
+O_FPAR.prefix(O_DPAR.ref());
+FIRMA.cntx_psh();
+FIRMA.index('SYMBOL2');
+FIRMA.prefix('S');
+_loop:=FIRMA.first();
+_quit:=0;
+{!
+|? _loop
+|! {? ~O_FPAR.find_key(FIRMA.ref())
+   || O_FPAR.blank();
+      O_FPAR.FIRMA:=FIRMA.ref();
+      O_FPAR.O_DPAR:=O_DPAR.ref();
+      {? O_DPAR.SYSTEM='T' | O_DPAR.WYM_JEST='T'
+      || O_FPAR.WLACZONY:='T'
+      ?};
+      O_FPAR.WYM_JEST:=O_DPAR.WYM_JEST;
+      {? ~O_FPAR.add()
+      || _quit:=1
+      ?}
+   ?};
+   _loop:=(~_quit & FIRMA.next())
+!};
+FIRMA.cntx_pop();
+O_FPAR.cntx_pop();
+~~
+
+
+\_putb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wyzwalacz przed poprawieniem wiersza tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - wiersz błędny/poprawny
+::----------------------------------------------------------------------------------------------------------------------
+exec('_modb','o_dpar') & exec('_chk','o_dpar',1)
+
+
+\_puta
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wyzwalacz po poprawieniu wiersza tabeli O_DPAR.
+::   WE: _a INTEGER - zgodny ze specyfikacją narzędzi
+::   WY: zgodny ze specyfikacją narzędzi
+::----------------------------------------------------------------------------------------------------------------------
+:: podstawowy warunek dalszego działania
+{? ~_a | do_state()<>1 || return() ?};
+
+{? O_DPAR.WYM_JEST='T' & O_DPAR.WYM_JEST<>bfld('WYM_JEST')
+:: włącz parametr we wszystkich firmach
+|| O_FPAR.cntx_psh();
+   O_FPAR.clear();
+   O_FPAR.f_set(,,
+      'O_FPAR.O_DPAR=:_a and (O_FPAR.WLACZONY<>\'T\' or O_FPAR.WYM_JEST<>\'T\')',
+      O_DPAR.ref()
+   );
+   _loop:=O_FPAR.f_first();
+   {!
+   |? _loop
+   |! O_FPAR.WLACZONY:='T';
+      O_FPAR.WYM_JEST:='T';
+      O_FPAR.put();
+      _loop:=O_FPAR.f_next()
+   !};
+   O_FPAR.f_clear(1);
+   O_FPAR.cntx_pop()
+?};
+~~
+
+
+\_delb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wyzwalacz przed usunięciem wiersza tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - wiersz może/nie może być usunięty
+::----------------------------------------------------------------------------------------------------------------------
+exec('del_ndx','#table',O_FPAR,'WLACZONY',O_DPAR.ref())
+
+
+\def_fml_bl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Domyślna formuła na wartość początkową zależnie od typu danych.
+::   WE: _a STRING - symbol typu danych
+::   WY: treść formuły
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of('') || ''
+|? _a='Z' || exec('def_z_fml_bl','o_dpar')
+|? _a='R' || exec('def_r_fml_bl','o_dpar')
+|| ''
+?}
+
+
+\def_z_fml_bl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Domyślna formuła na wartość początkową dla parametru typu Z.
+::   WE:
+::   WY: treść formuły
+::----------------------------------------------------------------------------------------------------------------------
+'\'N\''
+
+
+\def_r_fml_bl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Domyślna formuła na wartość początkową dla parametru typu R.
+::   WE:
+::   WY: treść formuły
+::----------------------------------------------------------------------------------------------------------------------
+'0.00'
+
+
+\buf_utwórz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Tworzy i ustawia wartościami domyślnymi bufor danych dla wiersza tabeli O_DPAR.
+::   WE:
+::   WY: wskazanie tablicy nazwanej o strukturze:
+::          REF - wskazanie wiersza w tabeli O_DPAR
+::          SYSTEM - znacznik blokady modyfikacji
+::          KOD - kod dla aktualizacji
+::          SYMBOL - unikalny symbol
+::          NAZWA - krótki opis
+::          OPIS - adnotacje i uwagi
+::          TYP - symbol typu
+::          WYM_JEST - domyślnie wymagany
+::          WYM_DOST - możliwość zmiany wymagania
+::          FML_BL - treść formuły na wartość początkową
+::          FML_AE - treść formuły weryfikującej dane
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=obj_new(
+   'REF','SYSTEM','KOD',
+   'SYMBOL','NAZWA','OPIS','TYP',
+   'WYM_JEST','WYM_DOST','FML_BL','FML_AE'
+);
+
+_ret.REF:=null;
+_ret.SYSTEM:='';
+_ret.KOD:='';
+_ret.SYMBOL:='';
+_ret.NAZWA:='';
+_ret.OPIS:='';
+_ret.TYP:='';
+_ret.WYM_JEST:='';
+_ret.WYM_DOST:='';
+_ret.FML_BL:='';
+_ret.FML_AE:='';
+
+_ret
+
+
+\buf_ustaw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wypełnia bufor danych wiersza tabeli O_DPAR bieżącymi wartościami.
+::   WE: _a OBJECT - wskazanie tablicy nazwanej bufora (patrz buf_utwórz)
+::   WY: _a
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_ret:=_a;
+
+_ret.REF:=O_DPAR.ref();
+_ret.SYSTEM:=O_DPAR.SYSTEM;
+_ret.KOD:=O_DPAR.KOD;
+_ret.SYMBOL:=O_DPAR.SYMBOL;
+_ret.NAZWA:=O_DPAR.NAZWA;
+_ret.OPIS:=O_DPAR.memo_txt(,1,'OPIS');
+_ret.TYP:=O_DPAR.TYP;
+_ret.WYM_JEST:=O_DPAR.WYM_JEST;
+_ret.WYM_DOST:=O_DPAR.WYM_DOST;
+_ret.FML_BL:=O_DPAR.memo_txt(,1,'FML_BL');
+_ret.FML_AE:=O_DPAR.memo_txt(,1,'FML_AE');
+
+_ret
+
+
+\szukaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Ustala definicję parametru listy.
+::   WE: _a STRING - symbol parametru
+::       _b [INTEGER] - typ zwracanego wyniku: różny od zera - wskazanie tablicy nazwanej, wpp referencja
+::       _c [INTEGER] - zachowanie kontekstu: różny od zera - pomiń zachowanie i odtworzenie konteksu, wpp zachowuj
+::   WY: dla _a:
+::       - różnego od zera wskazanie tablicy nazwanej (patrz buf_utworz)
+::       - wpp wskazanie wiersza w tabeli O_DPAR lub null
+::       - ~~ w przypadku błędnego wywołania
+::----------------------------------------------------------------------------------------------------------------------
+:: kontrola wywołania
+{? var_pres('_a')<>type_of('') | _a=''
+:: _a typu innego niż napis lub ''
+|| return()
+?};
+:: mapa argumentów
+_sym:=_a;
+_ext:=(var_pres('_b')=type_of(0) & _b<>0);
+_ctx:=(var_pres('_c')<>type_of(0) | _c=0);
+
+:: wartość zwracana
+_ret:=null;
+{? _ext<>0
+:: rozszerzona
+|| _ret:=exec('buf_utwórz','o_dpar')
+?};
+
+{? _ctx<>0
+|| O_DPAR.cntx_psh()
+?};
+:: szukaj według symbolu
+O_DPAR.index('SYMBOL');
+O_DPAR.prefix();
+{? O_DPAR.find_key(_sym,)
+:: znaleziono
+|| {? _ext=0
+   || _ret:=O_DPAR.ref()
+   || exec('buf_ustaw','o_dpar',_ret)
+   ?}
+?};
+{? _ctx<>0
+|| O_DPAR.cntx_pop()
+?};
+
+_ret
+
+
+\dodaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Tworzy definicję parametru.
+::   WE: _a [INTEGER] - zachowanie kontekstu: różny od zera - pomiń zachowanie i odtworzenie konteksu, wpp zachowuj
+::       _b [STRING] - SYSTEM (domyślnie 'T')
+::       _c [STRING] - KOD (wymagany)
+::       _d [STRING] - SYMBOL (KOD jeśli SYSTEM='T')
+::       _e [STRING] - NAZWA (wymagany)
+::       _f [STRING] - OPIS
+::       _g [STRING] - TYP (domyślnie 'Z')
+::       _h [STRING] - WYM_JEST (domyślnie 'T')
+::       _i [STRING] - WYM_DOST (domyślnie 'N')
+::       _j [STRING] - FML_BL (domyślnie '\'N\'' dla TYP='Z', '0.00' dla TYP='R')
+::       _k [STRING] - FML_AE
+::   WY: ref/~~ - wskazanie dodanego/istniejącego wiersza lub błąd
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_ctx:=(var_pres('_a')<>type_of(0) | _a=0);
+
+_str:=type_of('');
+_buf:=exec('buf_utwórz','o_dpar');
+_buf.SYSTEM:={? var_pres('_b')=_str || _b || 'T' ?};
+_buf.KOD:={? var_pres('_c')=_str || _c || '' ?};
+_buf.SYMBOL:={? var_pres('_d')=_str || _d || {? _buf.SYSTEM='T' || _buf.KOD || '' ?} ?};
+_buf.NAZWA:={? var_pres('_e')=_str || _e || '' ?};
+_buf.OPIS:={? var_pres('_f')=_str || _f || '' ?};
+_buf.TYP:={? var_pres('_g')=_str || _g || 'Z' ?};
+_buf.WYM_JEST:={? var_pres('_h')=_str || _h || 'T' ?};
+_buf.WYM_DOST:={? var_pres('_i')=_str || _i || 'N' ?};
+_buf.FML_BL:={? var_pres('_j')=_str || _j || exec('def_fml_bl','o_dpar',_buf.TYP) ?};
+_buf.FML_AE:={? var_pres('_k')=_str || _k || '' ?};
+
+exec('dodaj_buf','o_dpar',_buf,_ctx)
+
+
+\dodaj_buf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Tworzy wiersz na podstawie danych zawartych w tablicy nazwanej.
+::   WE: _a OBJECT - wskazanie tablicy nazwanej bufora (patrz buf_utwórz)
+::       _b [INTEGER] - zachowanie kontekstu: różny od zera - pomiń zachowanie i odtworzenie konteksu, wpp zachowuj
+::   WY: ref/~~ - wskazanie dodanego/istniejącego wiersza lub błąd
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_buf:=_a;
+_ctx:=(var_pres('_b')<>type_of(0) | _b=0);
+
+{? _ctx<>0
+|| O_DPAR.cntx_psh()
+?};
+{? (_ret:=exec('szukaj','o_dpar',_buf.SYMBOL,,1))=null
+|| O_DPAR.blank(1);
+   O_DPAR.SYSTEM:=_buf.SYSTEM;
+   O_DPAR.KOD:=_buf.KOD;
+   O_DPAR.SYMBOL:=_buf.SYMBOL;
+   O_DPAR.NAZWA:=_buf.NAZWA;
+   O_DPAR.memo_set(_buf.OPIS,'OPIS');
+   O_DPAR.TYP:=_buf.TYP;
+   O_DPAR.WYM_JEST:=_buf.WYM_JEST;
+   O_DPAR.WYM_DOST:=_buf.WYM_DOST;
+   O_DPAR.memo_set(_buf.FML_BL,'FML_BL');
+   O_DPAR.memo_set(_buf.FML_AE,'FML_AE');
+   {? O_DPAR.add() &
+      O_DPAR.memo_put(,'OPIS') &
+      O_DPAR.memo_put(,'FML_BL') &
+      O_DPAR.memo_put(,'FML_AE')
+   || _ret:=O_DPAR.ref()
+   || _ret:=~~
+   ?}
+?};
+{? _ctx<>0
+|| O_DPAR.cntx_pop()
+?};
+
+_ret
+
+
+\usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Usuwa wiersz identyfikowany symbolem.
+::   WE: _a STRING - symbol parametru
+::   WY: 0/1/~~ - wiersz nie istnieje/usunięto/błąd
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_sym:=_a;
+
+_ret:=0;
+O_DPAR.cntx_psh();
+{? exec('szukaj','o_dpar',_sym,,1)<>null
+|| _ret:={? O_DPAR.del(,1) || 1 || ~~ ?}
+?};
+O_DPAR.cntx_pop();
+_ret
+
+
+\system_n
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Sprawdza, czy wiersz tabeli O_DPAR nie jest zapisem systemowym.
+::   WE:
+::   WY: 0/1 - zapis nie może być modyfikowany/można zmieniać dane
+::----------------------------------------------------------------------------------------------------------------------
+exec('isEqual','#field',O_DPAR,'SYSTEM','N')
+
+
+\fld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Ustawie opcje pól aktualnego okienka wertowania tabeli O_DPAR.
+::   WE: _a [INTEGER] - <>0/0* - ustaw/wycofaj opcej
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_set:=(var_pres('_a')=type_of(0) & _a<>0);
+_wnd:=O_DPAR.win_edit('?');
+O_DPAR.efld_opt(_wnd,'enable=%1'[${? _set || O_DPAR.TYP<>'Z' || 1 ?}],,'FML_AE');
+~~
+
+
+\symbol_pt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wzorzec edycji pola SYMBOL tabeli O_DPAR. Dla definicji użytkownika symbol musi zaczynać się do litery 'Q'.
+::       Działanie zgodne z funkcjonalnością MacroBuidera.
+::   WE:
+::   WY: ciąg znaków określający wzorzec edycji pola
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('system_n','o_dpar')
+|| '\\QUu!'
+|| ''
+?}
+
+
+\system_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją pola SYSTEM tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - edycja zablokowana/możliwa
+::----------------------------------------------------------------------------------------------------------------------
+exec('runtime_dro','#system')
+
+
+\system_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Po edycji pola SYSTEM tabeli O_DPAR.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('mod_uid','#symsys',O_DPAR,'SYSTEM','KOD');
+
+{? exec('system_n','o_dpar')
+|| {? O_DPAR.SYMBOL<>'' & 1+O_DPAR.SYMBOL<>'Q'
+   || O_DPAR.SYMBOL:='Q'+O_DPAR.SYMBOL
+   ?}
+|| {? O_DPAR.SYMBOL<>'' & 1+O_DPAR.SYMBOL='Q'
+   || O_DPAR.SYMBOL:=1-O_DPAR.SYMBOL;
+      exec('symbol_ae','o_dpar')
+   ?}
+?};
+1
+
+
+\kod_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją pola KOD tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - edycja zablokowana/możliwa
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.SYSTEM='T' & exec('runtime_dro','#system')
+
+
+\kod_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Po edycji pola KOD tabeli O_DPAR.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+{? O_DPAR.SYSTEM='T' & O_DPAR.KOD<>'' & O_DPAR.SYMBOL=''
+|| O_DPAR.SYMBOL:=O_DPAR.KOD
+?};
+1
+
+
+\symbol_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją pola SYMBOL tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - edycja zablokowana/możliwa
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.SYSTEM='N' | exec('runtime_dro','#system')
+
+
+\symbol_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Po edycji pola SYMBOL tabeli O_DPAR.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+{? O_DPAR.SYSTEM='T' & O_DPAR.SYMBOL<>'' & O_DPAR.KOD=''
+|| O_DPAR.KOD:=O_DPAR.SYMBOL
+?};
+1
+
+
+\typ_opis
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Zwraca opis typu parametru.
+::   WE: _a STRING - symbol typu parametru
+::   WY: opis typu
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of('') | _a=''
+|| ''
+|? _a='Z' || 'Znacznik sterujący'
+|? _a='R' || 'Wartość liczbowa'
+|| ''
+?}
+
+
+\typ_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją pola TYP tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - edycja zablokowana/możliwa
+::----------------------------------------------------------------------------------------------------------------------
+{? O_DPAR.idadd_value()<>''
+|| {? ~exec('jest','o_xpar',O_DPAR.ref())
+   || O_DPAR.SYSTEM='N' | exec('runtime_dro','#system')
+   ?}
+|| 1
+?}
+
+
+\typ_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Po edycji pola TYP tabeli O_DPAR.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+exec('fld_opt','o_dpar',1);
+
+_z_bl:=exec('def_z_fml_bl','o_dpar');
+_r_bl:=exec('def_r_fml_bl','o_dpar');
+
+_fml:=O_DPAR.memo_txt(,0,'FML_BL');
+{? O_DPAR.TYP='Z' & (_fml='' | _fml=_r_bl)
+|| O_DPAR.memo_set(_z_bl,'FML_BL')
+
+|? O_DPAR.TYP='R' & (_fml='' | _fml=_z_bl)
+|| O_DPAR.memo_set(_r_bl,'FML_BL')
+?};
+1
+
+
+\wym_jest_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją pola WYM_JEST tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - edycja zablokowana/możliwa
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.SYSTEM='N' | exec('runtime_dro','#system')
+
+
+\wym_dost_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją pola WYM_DOST tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - edycja zablokowana/możliwa
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.SYSTEM='N' | exec('runtime_dro','#system')
+
+
+\fml_bl_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją pola FML_BE tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - edycja zablokowana/możliwa
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.SYSTEM='N' | exec('runtime_dro','#system')
+
+
+\fml_ae_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją pola FML_AE tabeli O_DPAR.
+::   WE:
+::   WY: 0/1 - edycja zablokowana/możliwa
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.SYSTEM='N' | exec('runtime_dro','#system')
+
+
+\mk_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Dla wersji pracowniczej narzędzi tworzy okienko z edycją danych wzorcowych.
+::   WE:
+::   WY: akronim okienka lub ~~ dla standardowej wersji narzędzi
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('runtime_dro','#system')
+|| return()
+?};
+
+:: utwórz okienko z częścią dla edycji danych wzorcowych
+_wnd:=O_DPAR.mk_edit('Definicja parametru'@,,'#red',,,'html_maximized');
+O_DPAR.win_ewin(_wnd,,'DRO');
+O_DPAR.win_ewin(_wnd,,'RED');
+:: dodaj standardowe przyciski
+exec('ok_esc','#window',O_DPAR,_wnd,,,,,,,exec('text_red_ok','#window'));
+
+_wnd
+
+
+\edytuj_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed edycją wiersza tabeli O_DPAR.
+::   WE:
+::   WY: akronim okienka tabeli O_DPAR lub ~~ dla narzędzi innych niż wersja dla DRO.
+::----------------------------------------------------------------------------------------------------------------------
+:: możliwa edycja w okienku dla danych wzorcowych
+_wnd:=exec('mk_edit','o_dpar');
+O_DPAR.cntx_psh();
+{? type_of(_wnd)<>type_of('')
+|| O_DPAR.win_edit('RED')
+|| O_DPAR.win_edit(_wnd)
+?};
+exec('fld_opt','o_dpar',1);
+_wnd
+
+
+\edytuj_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Po edycji wiersza tabeli O_DPAR.
+::   WE: _a ~~/STRING - akronim okienka lub wartość pusta
+::       _b _O_DPAR - wskazanie wiersza tabeli O_DPAR
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_wnd:=_a;
+_ref:=_b;
+
+O_DPAR.cntx_pop();
+exec('fld_opt','o_dpar');
+{? type_of(_wnd)=type_of('')
+|| O_DPAR.win_edel(_wnd)
+?};
+{? _ref<>null & _ref<>O_DPAR.ref()
+:: ustaw pozycję kursora
+|| O_DPAR.seek(_ref,,1)
+?};
+~~
+
+
+\dolacz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed dołączeniem zapisu w okienkach tabeli O_DPAR.
+::   WE:
+::   WY: wynik sprawdzenia warunku wykonania zasadniczej akcji
+::----------------------------------------------------------------------------------------------------------------------
+1
+
+
+\dolacz_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Dołączenie zapisu w okienkach tabeli O_DPAR.
+::   WE:
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.blank();
+O_DPAR.memo_set('','OPIS');
+O_DPAR.memo_set('\'N\'','FML_BL');
+O_DPAR.memo_set('','FML_AE');
+exec('_modb','o_dpar');
+
+_ref:=O_DPAR.ref();
+_wnd:=exec('edytuj_b','o_dpar');
+{? O_DPAR.edit("exec('_chk','o_dpar',0)")
+:: wprowadzono poprawne informacje, dołącz wiersz do tabeli
+|| {? O_DPAR.add() &
+      O_DPAR.memo_put(,'OPIS') &
+      O_DPAR.memo_put(,'FML_BL') &
+      O_DPAR.memo_put(,'FML_AE')
+::    udało się zapisać dane
+   || _ref:=O_DPAR.ref()
+   ?}
+?};
+exec('edytuj_a','o_dpar',_wnd,_ref);
+~~
+
+
+\popraw_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed poprawieniem zapisu w okienkach tabeli O_DPAR.
+::   WE:
+::   WY: wynik sprawdzenia warunku wykonania zasadniczej akcji
+::----------------------------------------------------------------------------------------------------------------------
+1
+
+
+\popraw_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Poprawienie zapisu w okienkach tabeli O_DPAR.
+::   WE:
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.get();
+O_DPAR.memo_get(,'OPIS');
+O_DPAR.memo_get(,'FML_BL');
+O_DPAR.memo_get(,'FML_AE');
+exec('_modb','o_dpar');
+
+_wnd:=exec('edytuj_b','o_dpar');
+{? O_DPAR.edit("exec('_chk','o_dpar',1)")
+:: wprowadzono poprawne informacje, modyfikuj wiersz do tabeli
+|| O_DPAR.put() &
+   O_DPAR.memo_put(,'OPIS') &
+   O_DPAR.memo_put(,'FML_BL') &
+   O_DPAR.memo_put(,'FML_AE')
+?};
+exec('edytuj_a','o_dpar',_wnd,null);
+~~
+
+
+\usun_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Przed usunięciem zapisu w okienkach tabeli O_DPAR.
+::   WE:
+::   WY: wynik sprawdzenia warunku wykonania zasadniczej akcji
+::----------------------------------------------------------------------------------------------------------------------
+exec('system_n','o_dpar') | exec('runtime_dro','#system')
+
+
+\usun_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Usunięcie zapisu w okienkach tabeli O_DPAR.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\wyswietl_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wyświetlenie szczegółowych informacji w oknach O_DPAR.
+::   WE:
+::   WY: ''
+::----------------------------------------------------------------------------------------------------------------------
+O_DPAR.get();
+_wnd:=exec('edytuj_b','o_dpar');
+O_DPAR.display();
+exec('edytuj_a','o_dpar',_wnd,null);
+''
+
+
+\rekord_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: "Rekord przed" w okienkach tabeli O_DPAR.
+::   WE: _a INTEGER - zgodny ze specyfikacją narzędzi
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+POLA_GRP.TXT_1:=exec('typ_opis','o_dpar',O_DPAR.TYP);
+{? _a=0 || return() ?};
+
+_aid:='';
+{? ~exec('dolacz_b','o_dpar')
+:: zablokuj "dołącz"
+|| _aid+='D'
+?};
+{? ~exec('popraw_b','o_dpar')
+:: zablokuj "popraw"
+|| _aid+='P'
+?};
+{? O_DPAR.sel_size()=0 & ~exec('usun_b','o_dpar')
+:: zablokuj "usuń"
+|| _aid+='U'
+?};
+
+O_DPAR.actions_grayed(cur_win(1,1),_aid);
+~~
+
+
+\wskazowki_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [21.14]
+:: OPIS: Wyświetla wskazówki programistyczne.
+::   WE:
+::   WY: ''
+::----------------------------------------------------------------------------------------------------------------------
+exec('show_tips','#edit',
+   'Formuła "Wartość początkowa" wykonywana jest w momencie przypisywania parametru do nagłówka lub typu listy płac.\n'
+   'Do formuły nie jest przekazywany żaden argument.\n'
+   'Wartość zwrócona przez formułę powinna być napisem "T" lub "N".\n\n'
+   'Formuła "Weryfikacja wartości" wykonywana jest po edycji parametru przypisanego do nagłówka lub typu listy płac.\n'
+   'Do formuły jest przekazywany jeden argument (_a) równy podanej podczas edycji wartości parametru.\n'
+   'Wartością zwróconą może być:\n'
+   '\tliczba różna od 0 - co oznacza, że podana wartość została uznana za poprawną;\n'
+   '\t0 - w przypadku, gdy podana wartość jest błędna (wyświetlony zostanie uproszczony komunikat);\n'
+   '\tnapis - również dla błędnej wartości parametru (w treści komunikatu uwzględniony zostanie zwrócony tekst).\n\n'
+   'Przykład:\n'
+   '\t_a<1 | _a>12\n'
+   'Jeśli podano wartość -1, to nie będzie ona zapisana a wyświetlony komunikat będzie miał treść:\n'
+   'Podano nieprawidłową wartość -1.\n\n'
+   'Przykład:\n'
+   '\t{? _a<1 | _a>12\n'
+   '\t|| \'Należy podać liczbę z zakresu od 1 do 12.\'\n'
+   '\t|| 1\n'
+   '\t?}\n'
+   'Jeśli podano wartość 22, to nie będzie ona zapisana a wyświetlony komunikat będzie miał treść:\n'
+   '22 nie jest prawidłową wartością.\n'
+   'Należy podać liczbę z zakresu od 1 do 12.\n\n'
+   'Treści formuł mogą być zapisane w bibliotece FML.',
+   O_DPAR.comment()
+);
+''
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:36 44dd9fc2aa0a7fd6d303a1ad3a2648e1ae6a58ea34b672cffc9d2a5a18ace1ebfdc5bf1126ebe4851d3331773eebd26b6b8e7b3ed21bdf3436c5e8f2d1f0a9b502de361eb3b0a0102ba07674722af817c0cacf3751825b58a1546f7bef5fb773dc29e0694911b04e8378732cdcccd14c0c566246314622d5075aec9026a5aad9

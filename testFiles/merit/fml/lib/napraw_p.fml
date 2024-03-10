@@ -1,0 +1,3256 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: napraw_p.fml
+:: Utworzony: 27.10.2014
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi emitowanych formuł naprawczych.
+::     Uwaga: Nowe procedury naprawcze zapisujemy jako pierwsze (od góry).
+::            Formuły, które mają być wywoływane automatycznie przez aktualizator MUSZĄ zwracać 1.
+::======================================================================================================================
+
+\rozliczenie_godzinowe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: ER/WRT/XP/12.51/2010/0035 - modyfikuje wartość pola KAL_OPIS.RODZAJ, KAL_DEF.RODZAJ i KAL_BUFF.RODZAJ na 'G'
+::       Obecnie jedynie wartość 'G' jest poprawnie kwalifikowana w systemie.
+::   WE:
+::   WY: obiekt _res.ok - wynik przetwarzania oraz _res.data - wybrana data od której nastąpiła aktualizacja
+::----------------------------------------------------------------------------------------------------------------------
+_res:=obj_new('ok','data');
+_res.ok:=-1;
+_res.data:=#0;
+
+_wyb:=FUN.choice(
+      'Aktualizacja kalendarzy i buforów planowania (tabele: KAL_OPIS, KAL_DEF, KAL_BUFF)'+'\n'+
+      'ustawia pole RODZAJ na wartość "G - rozliczane godzinowo"'+'\n\n'+
+      'Zaleca się wykonanie tej aktualizacji tylko dla dni(miesięcy) jeszcze nie rozliczonych na listach płac.'+'\n\n'+
+      'Ze względu na ilość danych koniecznych do przetworzenia operacja ta może być czasochłonna.'
+      ,,'dla Wszystkich zapisów','od wskazanej Daty');
+
+{? _wyb=0 || return(_res) ?};
+
+__DPOCZ:=#0;
+
+{? _wyb=2
+|| undefine();
+   define('HD2',~~,'Data początkowa');
+   define('OD',date,'Od');
+   {? def_edit("
+            {? DEFINE.OD=date(0,0,0)
+            || FUN.ask('Nie wprowadzono daty początkowej.'+'\n'+
+                       'Spowoduje to aktualizację dla wszystkich dni wszystkich kalendarzy.'+'\n'+
+                       'Operacja może być czasochłonna.\nCzy kontynuować?')
+            || 1
+            ?}
+         ",'Podaj dane...')
+   ||
+      _res.data:=__DPOCZ:=DEFINE.OD
+   || undefine();
+      return(_res)
+   ?};
+   undefine()
+?};
+
+no_msg(1);
+errno();
+_res.ok:=0;
+:: we wzorcach zmieniamy wszystkie zapisy
+KAL_OPIS.cntx_psh();
+KAL_OPIS.prefix();
+KAL_OPIS.for_each("
+   {? KAL_OPIS.RODZAJ='W'
+   || KAL_OPIS.RODZAJ:='G';
+      KAL_OPIS.put()
+   ?}
+",1);
+KAL_OPIS.cntx_pop();
+
+:: w kalendarzach zmieniamy tylko zapisy od wskazanej daty
+KAL_DEF.cntx_psh();
+KAL_DEF.prefix();
+KAL_DEF.for_each("
+   {? KAL_DEF.DATA>=__DPOCZ & KAL_DEF.RODZAJ='W'
+   || KAL_DEF.RODZAJ:='G';
+      KAL_DEF.put()
+   ?}
+",1);
+KAL_DEF.cntx_pop();
+
+:: w buforach zmieniamy tylko zapisy od wskazanej daty
+KAL_BUFF.cntx_psh();
+KAL_BUFF.prefix();
+KAL_BUFF.for_each("
+   {? KAL_BUFF.DATA>=__DPOCZ & KAL_BUFF.RODZAJ='W'
+   || KAL_BUFF.RODZAJ:='G';
+      KAL_BUFF.put()
+   ?}
+",1);
+KAL_BUFF.cntx_pop();
+
+&__DPOCZ;
+_res.ok:=~errno();
+_res
+
+
+\korekta_ZP_2020
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: pk [19.42]
+:: OPIS: Aktualizacja "Zmiana w sposobie obliczania podatku od osób fizycznych - dogrywka" - rok 2020
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~FUN.ask('Zadaniem procedury jest weryfikacja danych dla naliczonego w poprzednich okresach zwolnionego przychodu'+
+      ' dla pracowników, którzy nie ukończyli 26 roku życia. Jeżeli naliczenie zwolnionego przychodu było niepoprawne'+
+      ' zostanie wyliczona korekta. Wartości korekty zostaną odpisane na specjalnej liście technicznej „ZXX”.'+
+      ' Lista „ZXX” zostanie założona tylko w przypadku, gdy istnieje w każdym miesiącu korekty lista typu „SUM”.\n'+
+      ' System dokona również zapisów korygujących dla rozliczonych rachunków umów zleceń.'+
+      ' W tym celu dla każdej naliczonej wypłaty umowy zlecenia zostanie założony kolejny rachunek korekcyjny'+
+      ' z odpowiednimi wartościami. Przeliczone dane będą dostępne podczas automatycznego sporządzenia'+
+      ' informacji podatkowej PIT 11.\n'+
+      'Jeżeli wystąpi potrzeba skorygowania zaliczki na podatek dochodowy,'+
+      'odpowiednie wartości pojawią się w stałych składnikach listy płac do rozliczenia.'+
+      'Rozliczenie nastąpi na liście podstawowej w miesiącu wskazanym jako rozliczeniowy.'+
+      'Dla umów zleceń będzie to pierwszy wyliczony rachunek w miesiącu rozliczenia.\n\n'+
+      'Czy rozpocząć procedurę?')
+|| return(0)
+?};
+
+exec('czytaj','#stalesys',date(2020,1,1),KST,KST_PAR,XINFO);
+exec('RAPLS','object');
+exec('__F_ZATR','object');
+exec('__KAL','object');
+exec('myDIALOG','object');
+
+
+exec('__STALE','object');
+exec('FUNKCJE','object');
+exec('BIT','#object');
+exec('__RUB','object');
+__RUB.fill();
+exec('dekl','lista_plac');
+:: Weryfikacja czy istnieje odpowiednia rubryka
+:: Ustalenie numerów rubryk biorących udział w wyliczeniach
+_ZP_SKL:=__RUB.sys_rub(9026).RN;
+_ZP_POD:=__RUB.sys_rub(9022).RN;
+_PRZ:=__RUB.sys_rub(92).RN;
+_ZP_ZDR:=__RUB.sys_rub(9027).RN;
+
+{? ~_ZP_SKL | ~_ZP_POD  | ~_PRZ | ~_ZP_ZDR
+|| FUN.error('Brak składników płacowych wymaganych do aktualizacji.\nNie można kontynuować procedury.');
+   return(0)
+?};
+
+LS.cntx_psh();
+P.cntx_psh();
+OSOBA.cntx_psh();
+KT.cntx_psh();
+O.cntx_psh();
+RH.cntx_psh();
+
+_c_pop:="
+   LS.cntx_pop();
+   P.cntx_pop();
+   OSOBA.cntx_pop();
+   KT.cntx_pop();
+   O.cntx_pop();
+   RH.cntx_pop()";
+_licz:=0;
+exec('czytaj','#stalesys',date(2020,1,1),KST,'ZWPOD');
+:: Weryfikacja miesięcy, dla których należy wykonać zmiany
+
+FUN.info('Prosze podać miesiąc na którym nastąpi ewentualne rozliczenie korekty zaliczki na podatek.'+
+   '\nRozliczenie z Urzędem Skarbowym nastąpi we wskazanym miesiącu.'+
+   '\nRozliczenie z pracownikiem zostanie zrealizowane na liście podstawowej\n'+
+   'z miesiącem podatkowym zgodnym z podanym miesiącem rozliczenia.\n'+
+   'Rozliczenie ze zleceniobiorcą nastąpi na pierwszym rachunku stworzonym w miesiącu rozliczenia.' );
+
+undefine();
+define('MC',date~2,'Miesiąc rozliczenia w roku 2020');
+define('START',1,'Miesiąc startowy, od którego nastąpi przeliczenie');
+define('KONIEC',1,'Miesiąc końcowy, do którego nastąpi przeliczenie');
+define('LSS','N','Korygowanie zaliczki na podatek poprzez stałe składniki listy płac [T/N]');
+{? def_edit("
+         {? DEFINE.MC<1 | DEFINE.MC>12
+         || FUN.info('Dopuszczalny zakres dla miesiąca rozliczenia: 1 - 12'); 0
+         |? DEFINE.START<1 | DEFINE.START>12
+         || FUN.info('Dopuszczalny zakres dla miesiąca startowego: 1 - 12'); 0
+         |? DEFINE.START > DEFINE.MC
+         || FUN.info('Miesiąc startowy korekt nie może być większy od miesiąca rozliczenia.'); 0
+         |? DEFINE.START>DEFINE.KONIEC | DEFINE.KONIEC>DEFINE.MC
+         || FUN.info('Błednie wprowadzony miesiac końcowy'); 0
+         |? -DEFINE.LSS<>'t' & -DEFINE.LSS<>'n'
+         || FUN.info('Dla informacji o korekcie zaliczki na podatek możliwe są wartości: T,t lub N,n'); 0
+         || 1
+         ?}
+      ",'Podaj dane...')
+|| _rozlicz:=DEFINE.MC;
+   _start:=DEFINE.START;
+   _koniec:=DEFINE.KONIEC;
+   _LSS:=(-DEFINE.LSS='t')
+|| undefine();
+   _c_pop();
+   return()
+?};
+undefine();
+
+_TAB:=tab_tmp(1,
+   'MC','INTEGER','Miesiąc',
+   'LICZ','INTEGER','do przeliczenia',
+   'UZP','INTEGER','Ref pracownika'
+);
+
+{! _ind:=_start.._koniec
+|! _TAB.blank(1);
+   _TAB.MC:=_ind;
+   _TAB.add()
+!};
+
+_Firma:=exec('ref_firma','ustawienia');
+
+:: Ustalenie listy ZXX
+KT.index('KRYTERIA');
+KT.prefix(_Firma);
+{? ~KT.find_key('ZXX')
+|| FUN.error('Brak typu listy \'ZXX\' (rozliczenie z ZUS).\nProcedura zostaje przerwana.');
+   _c_pop();
+   return(0)
+?};
+
+:: Zapis korekt zostanie naniesiony na listę ZXX - jeżeli nie istnieje zostanie założona na podstawie listy SUM
+_msg:='';
+O.index('LISTYPOD');
+{! _ind:=_start.._koniec
+|! O.prefix(_Firma,2020,_ind);
+   {? ~O.find_key('ZXX') & ~O.find_key('SUM')
+   || _msg+='\nBrak listy "SUM" dla okresu: '+date(2020,_ind,1)$8
+   ?}
+!};
+{? +_msg>1
+|| FUN.emsg(_msg+'\nNależy założyć odpowiednie zapisy w kartotece nagłówków list płac.'+
+      '\nProcedury nie można kontynuować.');
+      _c_pop();
+      return(0)
+?};
+{? VAR.JESTLIST || FUNKCJE.ZAMKLIST() ?};
+
+{! _ind:=_start.._koniec
+|! O.prefix(_Firma,2020,_ind);
+   {? ~O.find_key('ZXX')
+   || {? O.find_key('SUM')
+      || O.T:=KT.ref;
+         O.F:=KT.F;
+         O.M:=O.MP:=O.MU:=_ind;
+         O.R:=O.RP:=O.RU:=2020;
+         O.LT:=-('L20'+('0'+$_ind+2)+KT.T);
+         O.F_ZATR:=KT.F_ZATR;
+         O.Z:='N';
+         {? O.add(1)
+         || exec('put_stat','lista_plac',O.ref,'LSLP_AKT',1);
+            exec('put_stat','lista_plac',O.ref,'ZBLP_AKT',1)
+         ?}
+      ?}
+   || {? O.Z='T' || O.Z:='N'; O.put(1) ?}
+   ?}
+!};
+_f_zatr:=__F_ZATR.P;
+P.prefix;
+RH.prefix;
+ZC.prefix;
+
+_nr:=obj_new(17);
+{! _ind:=1..obj_len(_nr) |! _nr[_ind]:=obj_new(5) !};
+:: atrybuty
+_nr[1][1]:=94;
+::785 - Ulga podatkowa
+_nr[2][1]:=9025;
+::7097 - ZP: Ulga podatkowa
+_nr[3][1]:=931;
+::784 - Koszty uzyskania
+_nr[4][1]:=9024;
+::7096 - ZP: Koszty uzyskania
+_nr[5][1]:=95;
+::790 - Podatek nominalny
+_nr[6][1]:=9023;
+::7095 - ZP: Podatek nomin.
+_nr[7][1]:=57411;
+::792 - Skł. zdrow. - pobr.
+_nr[8][1]:=57412;
+::793 - Skł. zdrow. - odl.
+_nr[9][1]:=9611;
+::797 - Zal. pod. doch.
+_nr[10][1]:=9022;
+::7094 - ZP: Przychód
+_nr[11][1]:=9026;
+::7098 - ZP: Skł. prz. zwol.
+_nr[12][1]:=92;
+::780 - Przychód
+_nr[13][1]:=9027;
+::7108 - ZP:Skł. zdr. pobr.
+_nr[14][1]:=0;
+_nr[15][1]:=0;
+_nr[16][1]:=0;
+_nr[17][1]:=91;
+::71 - % podatku
+:: numery rubryk
+{! _ind:=1..obj_len(_nr)
+|! _nr[_ind][3]:=__RUB.sys_rub(_nr[_ind][1]).RN
+!};
+_nr[14][3]:=7002;
+_nr[15][3]:=7003;
+_nr[16][3]:=7004;
+:: korekta zaliczki na podatek
+_kor_zal:=__RUB.sys_rub(9612).RN;
+:: Dane istotne do przepisania na rozliczenie
+{! _ind:=1..obj_len(_nr)
+|!  _nr[_ind][4]:=0
+!};
+_nr[9][4]:=1;
+_LHS_add:="
+   {? R.seek(__RUB.ref(_a))
+   || LS.prefix(RH.ref,_a);
+      {? LS.first() || LS.del() ?};
+      {? _b
+      || LS.prefix();
+         LS.blank(1);
+         LS.KK:=RH.KK;
+         LS.RH:=RH.ref;
+         LS.P:=P.ref;
+         LS.O:=O.ref;
+         LS.RB:=R.ref;
+         LS.LP:=R.LP;
+         LS.KW:=_b;
+         LS.add()
+      ?}
+   ?}";
+_end:="
+     USERS.cntx_psh();
+     {? LS.first()
+      || {!
+         |? LS.del(,1)=2
+         !}
+      ?};
+      R.prefix();
+      KK.prefix;
+      USERS.prefix();
+      {? _a.first
+      || LS.trig_off('*','*');
+         {!
+         |? LS.blank(1);
+            {? P.seek(BIT.sqlint(_a.P),) || LS.P:=P.ref ?};
+            {? O.seek(BIT.sqlint(_a.O),) || LS.O:=O.ref ?};
+            {? R.seek(BIT.sqlint(_a.RB),) || LS.RB:=R.ref ?};
+            {? KK.seek(BIT.sqlint(_a.KK),) || LS.KK:=KK.ref ?};
+            {? RH.seek(BIT.sqlint(_a.RH),) || LS.RH:=RH.ref ?};
+            {? USERS.seek(BIT.sqlint(_a.MOD_KTO),) || LS.MOD_KTO:=USERS.ref ?};
+            LS.LP:=_a.LP;
+            LS.KW:=_a.KW;
+            LS.MOD_DATA:=_a.MOD_DATA;
+            LS.MOD_CZAS:=_a.MOD_CZAS;
+            LS.add(1);
+            _a.next()
+         !};
+         LS.trig_on('*','*')
+      ?};
+      USERS.cntx_pop()";
+_find_ls:=" _wyn:=0;
+   {? R.seek(__RUB.ref(_a))
+   || LS.index('ZLEC');
+      LS.prefix(RH.ref,_a);
+      {? LS.first
+      || {! |? _wyn+=LS.KW; LS.next !}
+      ?}
+   ?}; _wyn";
+_TAB_RH:=sql('select 0 P, 0 REF from SYSLOG where 1=2 order by 1,2');
+_TAB_WYN:=sql('
+   select NAZWISKO, PIERWSZE, PESEL, 0 PRAC, \'        \' LISTA, OSOBA.UR_DATA as DWY,
+      \'                              \' ID, 0.01 as KW, 0 as ZUS
+   from  OSOBA where 1=2 order by 1,2,3,4
+');
+_TAB_LS:=sql('
+   select NAZWISKO, PIERWSZE, PESEL, 0 PRAC, \'        \' LISTA, OSOBA.UR_DATA as DWY,
+      \'                              \' ID, \'                \' RH_REF,
+      0 as MC, 0 as LP, 0 as RN, \'                    \' as RT, 0.01 as KW1, 0.01 as KW2,
+      0.01 as KOR
+   from  OSOBA where 1=2 order by 1,2,3,4,5,6,7,8,9,10
+');
+
+_OS_ZW:=tab_tmp(2,
+      'NAZWISKO','STRING[30]','Nazwisko',
+      'PIERWSZE','STRING[30]','Imię',
+      'PESEL','STRING[11]','Pesel',
+      'REF','INTEGER','Ref osoby'
+      );
+
+OSOBA.prefix();
+{? OSOBA.first
+|| {!
+   |? {? exec('czy_ulga_U26','napraw_p',date(2020,_start,1),OSOBA.ref)
+      || _OS_ZW.blank(1);
+         _OS_ZW.NAZWISKO:=OSOBA.NAZWISKO;
+         _OS_ZW.PIERWSZE:=OSOBA.PIERWSZE;
+         _OS_ZW.PESEL:=OSOBA.PESEL;
+         _OS_ZW.REF:=#OSOBA.ref;
+         _OS_ZW.add(1)
+      ?};
+      OSOBA.next
+   !}
+?};
+
+LSS.index('PROPOZYC');
+
+{? _OS_ZW.first()
+|| __LP_kor:=1;
+   {!
+   |? {? OSOBA.seek(_OS_ZW.REF,)
+      || _OSOBA:=OSOBA.ref;
+:: kasowanie danych z poprzedniego uruchomienia
+         {? _TAB.first()
+         || {!
+            |? O.index('LISTYPOD');
+               O.prefix(_Firma);
+               {? O.find_key(2020,_TAB.MC,'ZXX')
+               || {? LS.use(O.LT)
+                  || LS.index('OSOBAKOD');
+                     LS.prefix(_Firma,_OSOBA);
+                     {? LS.first()
+                     || {! _ind:=1..obj_len(_nr)
+                        |! {? LS.find_key(_nr[_ind][3])
+                           || LS.del()
+                           ?}
+                        !}
+                     ?}
+                  ?}
+               ?};
+               RH.index('RACHDATA');
+               RH.prefix(_Firma,_OSOBA,2020,_TAB.MC);
+               {? RH.first
+               || {!
+                  |? _ok:=0;
+                     {? RH.KOR='T' & RH.BL='T' & RH.Z='T' & RH.DWY>date(2020,_start,1)
+                     || LS.use(RH.O().LT);
+                        LS.index('ZLEC');
+                        LS.prefix(RH.ref());
+                        {? LS.first()
+                        || {!
+                           |? LS.del
+                           !}
+                        ?};
+                        _ok:=RH.del(,1)=2
+                     ?};
+                     {? ~_ok || RH.next() || 1 ?}
+                  !}
+               ?};
+               _TAB.next
+            !}
+         ?};
+         P.cntx_psh();
+         P.index('OSOBA');
+         P.prefix(_OSOBA,_Firma);
+         LSS.index('PROPOZYC');
+         {? P.first
+         || {!
+            |? LSS.prefix(P.ref,_kor_zal);
+               {? LSS.first
+               || LSS.del
+               ?};
+               P.next
+            !}
+         ?};
+         P.cntx_pop();
+         _limit:=0;
+         {! _ind:=1..obj_len(_nr)
+         |!  _nr[_ind][2]:=_nr[_ind][5]:=0
+         !};
+
+         _TAB_RH.erase();
+         _TAB_RH.prefix();
+         {? _TAB.first()
+         || {!
+            |? O.index('LISTYPOD');
+               O.prefix(_Firma);
+               _TAB.UZP:=0;
+               _TAB.put;
+               __F_ZATR.mod('P');
+               {? O.find_key(2020,_TAB.MC,'ZXX')
+               || O.Z:='N';
+                  O.put();
+                  __KAL.set_cal(O.T().KA);
+                  FUNKCJE.OTWOLIST();
+                  LICZ.Build(); FUNKCJE.USTAW('P');
+                  exec('dla_listy','stalesys');
+                  LS.index('PRACNRRU');
+                  exec('czy_prac','osoba',_OSOBA,date(2020,_TAB.MC,0));
+                  {? ~UZ.P
+                  || O.cntx_psh();
+                     LS.cntx_psh();
+                     O.index('LISTYPLP');
+                     O.prefix(_Firma,'P',2020,_TAB.MC);
+                     {? O.first
+                     || {!
+                        |? LS.use(O.LT);
+                           LS.index('OSOBAKOD');
+                           LS.prefix(_Firma,_OSOBA);
+                           {? LS.first()
+                           || UZ.P:=LS.P
+                           ?};
+                           ~UZ.P & O.next
+                        !}
+                     ?};
+                     LS.cntx_pop();
+                     O.cntx_pop()
+                  ?};
+                  _TAB.UZP:=#UZ.P;
+                  _TAB.put;
+                  {? P.seek(#UZ.P,)
+                  ||
+                     {? exec('czy_ulga_U26','napraw_p',date(2020,_TAB.MC,1),_OSOBA)
+::   Zerowanie wartości
+                     || LS.index('PRACNRRU');
+                        LS.prefix(P.ref());
+::   Przychód ZP 7094
+                        _przych:=_wyn:=exec('przychod_U26','napraw_p',_limit);
+                        {? _wyn || FUNKCJE.LK_SYS(9022,,_wyn) ?};
+::   Składki ZUS ZP 7098
+                        _wyn:=exec('zp_skl_U26','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(9026,,_wyn) ?};
+::   Przychód 780
+                         _wyn:=exec('przychod_780','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(92,,_wyn) ?};
+:: PA_7002
+                        _wyn:=exec('PA_7002','napraw_p');
+                        {? _wyn || FUNKCJE.LK(7002,,_wyn) ?};
+:: PA_7003
+                        _wyn:=exec('PA_7003','napraw_p');
+                        {? _wyn || FUNKCJE.LK(7003,,_wyn) ?};
+:: PA_7004
+                        _wyn:=exec('PA_7004','napraw_p');
+                        {? _wyn || FUNKCJE.LK(7004,,_wyn) ?};
+::   Koszty uzyskania
+                        _wyn:=exec('KU','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(931,,_wyn) ?};
+::   Koszty uzyskania ZP
+                        _wyn:=exec('KU_U26','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(9024,,_wyn) ?};
+::   Podatek nominalny
+                        _wyn:=exec('oblicz_podatek','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(95,,_wyn) ?};
+::   Podatek nominalny ZP
+                        {? _przych
+                        || _wyn:=exec('oblicz_U26','napraw_p');
+                           {? _wyn || FUNKCJE.LK_SYS(9023,,_wyn) ?}
+                        ?};
+::   kasa chorych pobrana
+                        _wyn:=exec('skl_zdr','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(57411,,_wyn) ?};
+::   kasa chorych pobrana ZP
+                        _wyn:=&kc3;
+                        {? _wyn || FUNKCJE.LK_SYS(9027,,_wyn) ?};
+::   kasa chorych odliczona
+                        _wyn:=&kc2+FUNKCJE.LP(7079);
+                        {? _wyn || FUNKCJE.LK_SYS(57412,,_wyn) ?};
+::   Zaliczka na podatek dochodowy
+                        _wyn:=exec('zaliczka_pdf','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(9611,,_wyn) ?};
+::   Weryfikacja wartości:
+                        _zapis:=1;
+                        {! _ind:=1..obj_len(_nr)
+                        |! _kw_ls:=_kw_lp:=0;
+                           {? _ind=9
+                           || _kw_ls:=FUNKCJE.L(_nr[_ind][3]);
+                              _kw_lp:=FUNKCJE.LP_SYS(961);
+                              _wyn:=_kw_ls-_kw_lp
+                           || _kw_ls:=FUNKCJE.L(_nr[_ind][3]);
+                              _kw_lp:=FUNKCJE.LP(_nr[_ind][3]);
+                              _wyn:=_kw_ls-_kw_lp
+                           ?};
+                           {? _wyn & _ind<obj_len(_nr)
+                           || {? _zapis
+                              || _TAB_WYN.blank(1);
+                                 _TAB_WYN.NAZWISKO:=_OS_ZW.NAZWISKO;
+                                 _TAB_WYN.PIERWSZE:=_OS_ZW.PIERWSZE;
+                                 _TAB_WYN.PESEL:=_OS_ZW.PESEL;
+                                 _TAB_WYN.PRAC:=1;
+                                 _TAB_WYN.LISTA:=~-O.LT;
+                                 _TAB_WYN.DWY:=date(2020,_TAB.MC,1);
+                                 _TAB_WYN.add(1);
+                                 _zapis:=0;
+
+                                 _TAB_LS.blank(1);
+                                 _TAB_LS.NAZWISKO:=_OS_ZW.NAZWISKO;
+                                 _TAB_LS.PIERWSZE:=_OS_ZW.PIERWSZE;
+                                 _TAB_LS.PESEL:=_OS_ZW.PESEL;
+                                 _TAB_LS.PRAC:=1;
+                                 _TAB_LS.LISTA:=~-O.LT;
+                                 _TAB_LS.DWY:=date(2020,_TAB.MC,1);
+                                 _TAB_LS.MC:=_TAB.MC
+                              ?};
+                              {? ~_zapis & _ind=7
+                              || _TAB_WYN.ZUS:=_wyn;
+                                 _TAB_WYN.put(1)
+                              ?};
+
+                              _TAB_LS.LP:=__RUB.MAP[_nr[_ind][3]];
+                              _TAB_LS.RN:=_nr[_ind][3];
+                              _TAB_LS.RT:=__RUB.RT[_nr[_ind][3]];
+                              _TAB_LS.KW1:=_kw_lp;
+                              _TAB_LS.KW2:=_kw_ls;
+                              _TAB_LS.KOR:=_wyn;
+                              _TAB_LS.add();
+
+                              FUNKCJE.LK(_nr[_ind][3],,_wyn);
+                              {? _nr[_ind][4] || _nr[_ind][5]+=_wyn ?}
+                           || LS.index('PRACNRRU');
+                              LS.prefix(P.ref());
+                              {? LS.find_key(_nr[_ind][3])
+                              || LS.del()
+                              ?}
+                           ?}
+                        !};
+                        LS.index('PRACNRRU');
+                        LS.prefix(P.ref());
+                        {? ~LS.size()
+                        || {? exec('o_p_jest','ppl',O.ref(),P.ref())
+                           || O_P.del()
+                           ?}
+                        ?}
+                     ?}
+                  ?};
+                  FUNKCJE.ZAMKLIST()
+               ?};
+               __F_ZATR.mod('Z');
+               RH.index('RACHDATA');
+               RH.prefix(_Firma,_OSOBA,2020,_TAB.MC);
+
+               {? RH.first()
+               || {!
+                  |? {? RH.KOR='T' & RH.Z='T'
+                     || LS.use(RH.O().LT);
+                        LS.index('ZLEC');
+                        LS.prefix(RH.ref());
+                        {? LS.first()
+                        || {! _ind:=1..(obj_len(_nr)-1)
+                           |! {? LS.find_key(_nr[_ind][3])
+                              || LS.del()
+                              ?}
+                           !}
+                        ?}
+                     ?};
+                     RH.next()
+                  !}
+               ?};
+
+               {? RH.first()
+               || {!
+                  |? RH.ZLE().P().OSOBA();
+                     {? exec('czy_ulga_U26','napraw_p',RH.DWY,_OSOBA) & RH.KOR<>'T' &
+                        ~(RH.ZAS='T' | FUNKCJE.Z(31)) &  RH.ZLE().RU().ZWPOD='T'
+                     || LS.use(RH.O().LT);
+                        LS.index('ZLEC');
+                        LS.prefix(RH.ref());
+                        {? LS.first
+                        || O.Z:='N';
+                           O.put();
+                           _blokada:=RH.BL;
+                           RH.BL:='N';
+                           RH.put(1);
+                           RH.ZLE().P();
+                           RH.ZLE().OSOBA();
+                           {? var_pres('_tab_ls')>100 || obj_del(_tab_ls) ?};
+                           _tab_ls:=sql('select * from LS where RH=:_a',RH.ref);
+                           _file:='rach_'+$(#RH.ref)+'.exp';
+                           _tab_ls.export(_file,0,,,,
+                              'P',,1,,
+                              'O',,2,,
+                              'RB',,3,,
+                              'KK',,4,,
+                              'RH',,5,,
+                              'MOD_KTO',,6,,
+                              'LP',,7,0,
+                              'KW',,8,2,
+                              'MOD_DATA',,9,1,
+                              'MOD_CZAS',,10,1
+                           );
+                           LICZRHS.Build();
+                           FUNKCJE.OTWOLTRH(); __FOLP.fill(O.F); FUNKCJE.USTAW('Z');
+                           FUNKCJE.OBLICZ(1);
+                           {! _ind:=1..(obj_len(_nr)-1)
+                           |! _nr[_ind][2]:=_find_ls(_nr[_ind][3])
+                           !};
+                           LS.index('ZLEC');
+                           LS.prefix(RH.ref());
+                           {? LS.first
+                           || _end(_tab_ls)
+                           ?};
+                           RH.BL:=_blokada;
+                           RH.put(1);
+                           ferase(_file,1);
+
+                           'zapis do korekty RH';
+                           _wyn:=0;
+                           {! _ind:=1..(obj_len(_nr)-1)
+                           |! _wyn+=((_nr[_ind][2]-=_find_ls(_nr[_ind][3]))<>0)
+                           !};
+                           {? _wyn
+                           ||
+                              RH.cntx_psh();
+                              RH.index('RACHUNKI');
+                              _ref_RH:=RH.ref;
+                              RH.prefix(RH.ZLE,RH.DRA);
+                              _RH_KOR:=0;
+                              _rok:=RH.R;
+                              _mc:=RH.M;
+                              _lista:=RH.O;
+
+                              {? ~_RH_KOR
+                              || RH.cntx_pop();
+                                 RH.cntx_psh();
+                                 RH.BL:='T';
+                                 RH.Z:='T';
+                                 RH.KOR:='T';
+                                 {? RH.add(1)
+                                 || LS.index('ZLEC');
+                                    LS.prefix();
+                                    R.prefix;
+                                    {! _ind:=1..(obj_len(_nr)-1)
+                                    |! {? _nr[_ind][2] || _LHS_add(_nr[_ind][3],_nr[_ind][2]) ?}
+                                    !}
+                                 ?}
+
+                              || LS.use(RH.O().LT);
+                                 LS.index('ZLEC');
+                                 LS.prefix(RH.ref());
+
+                                 {? LS.first()
+                                 || {! _ind:=1..(obj_len(_nr)-1)
+                                    |! {? LS.find_key(_nr[_ind][3])
+                                       || LS.del()
+                                       ?}
+                                    !}
+                                 ?};
+                                 RH.R:=_rok;
+                                 RH.M:=_mc;
+                                 RH.O:=_lista;
+                                 RH.put(1);
+                                 LS.use(RH.O().LT);
+                                 LS.index('ZLEC');
+                                 LS.prefix();
+                                 R.prefix;
+                                 {! _ind:=1..(obj_len(_nr)-1)
+                                 |! {? _nr[_ind][2] || _LHS_add(_nr[_ind][3],_nr[_ind][2]) ?}
+                                 !}
+
+                              ?};
+                              _TAB_RH.REF:=#RH.ref;
+                              _TAB_RH.P:=#RH.ZLE().P;
+                              _TAB_RH.add();
+                              {? RH.seek(_ref_RH)
+                              || 'powrót na oryginalny rachunek';
+                                 _TAB_LS.blank(1);
+                                 _TAB_LS.NAZWISKO:=_OS_ZW.NAZWISKO;
+                                 _TAB_LS.PIERWSZE:=_OS_ZW.PIERWSZE;
+                                 _TAB_LS.PESEL:=_OS_ZW.PESEL;
+                                 _TAB_LS.PRAC:=0;
+                                 _TAB_LS.DWY:=RH.DWY;
+                                 _TAB_LS.LISTA:=~-RH.O().LT;
+                                 _TAB_LS.ID:=RH.ZLE().NU;
+                                 _TAB_LS.RH_REF:=$RH.ref;
+                                 _TAB_LS.MC:=_TAB.MC;
+                                 {! _ind:=1..(obj_len(_nr)-1)
+                                 |! {? _nr[_ind][2]
+                                    ||
+                                       _kw_rh:=_find_ls(_nr[_ind][3]);
+                                       _TAB_LS.LP:=__RUB.MAP[_nr[_ind][3]];
+                                       _TAB_LS.RN:=_nr[_ind][3];
+                                       _TAB_LS.RT:=__RUB.RT[_nr[_ind][3]];
+                                       _TAB_LS.KW1:=_kw_rh;
+                                       _TAB_LS.KW2:=_kw_rh+_nr[_ind][2];
+                                       _TAB_LS.KOR:=_nr[_ind][2];
+                                       _TAB_LS.add()
+                                    ?}
+                                 !}
+                              ?};
+                              RH.cntx_pop()
+                           ?}
+                        ?}
+                     ?};
+                     RH.next()
+                  !}
+               ?};
+               _TAB.next()
+            !}
+         ?};
+::  Wykasowanie ewentualnych danych o zaliczce skorygowanej w miesiącu korekty
+         P.prefix();
+         {? _TAB.first()
+         || {!
+            |? O.index('LISTYPOD');
+               O.prefix(_Firma);
+               {? O.find_key(2020,_TAB.MC,'ZXX') & P.seek(_TAB.UZP,)
+               || LS.use(O.LT);
+                  LS.index('PRACNRRU');
+                  LS.prefix();
+                  R.prefix;
+                  {? _nr[9][4] & R.seek(__RUB.ref(_nr[9][3]))
+                  || LS.prefix(P.ref,_nr[9][3]);
+                     {? LS.first() || LS.del() ?}
+                  ?};
+                  LS.next
+               ?};
+               _TAB.next
+            !}
+         ?};
+
+         exec('czy_prac','osoba',_OSOBA,date(2020,_rozlicz,0));
+         _UZP:={? UZ.P || #UZ.P || _TAB.UZP ?};
+         {? P.seek(_UZP,)
+         || LSS.prefix(P.ref,_kor_zal);
+            _licz:=1;
+            {? LSS.first
+            || {? LSS.OD=date(2020,_rozlicz,1)
+               || _licz:=LSS.del
+               ?}
+            ?};
+            {? _licz & _nr[9][5]
+            || _TAB_WYN.blank(1);
+               _TAB_WYN.NAZWISKO:=_OS_ZW.NAZWISKO;
+               _TAB_WYN.PIERWSZE:=_OS_ZW.PIERWSZE;
+               _TAB_WYN.PESEL:=_OS_ZW.PESEL;
+               _TAB_WYN.PRAC:=1;
+               _TAB_WYN.DWY:=date(2020,_rozlicz,1);
+               _TAB_WYN.KW:=_nr[9][5];
+               _TAB_WYN.ID:='';
+               _TAB_WYN.LISTA:='';
+               _TAB_WYN.add(1);
+               {? _LSS
+               || LSS.blank();
+                  LSS.OD:=date(2020,_rozlicz,1);
+                  LSS.DO:=date(2020,_rozlicz,0);
+                  LSS.KW:=_nr[9][5];
+                  LSS.S:=__RUB.ref(_kor_zal);
+                  LSS.add(1)
+               ?}
+            ?}
+         ?};
+
+::  Przepisanie korekt RH na miesiąc rozliczenia
+
+         RH.prefix();
+         {? var_pres('_TAB_P')>100 || obj_del(_TAB_P) ?};
+         _TAB_P:=sql('select distinct P from :_a order by 1',_TAB_RH);
+
+         {? _TAB_P.first()
+         || {!
+            |? {? P.seek(_TAB_P.P,)
+               || _zaliczka:=0;
+                  LSS.prefix(P.ref,_kor_zal);
+                  _licz:=1;
+                  {? LSS.first
+                  || {? LSS.OD=date(2020,_rozlicz,1)
+                     || _licz:=LSS.del
+                     ?}
+                  ?};
+                  _TAB_RH.prefix(_TAB_P.P);
+                  {? _TAB_RH.first()
+                  ||
+                     {!
+                     |? {? RH.seek(_TAB_RH.REF,)
+                        || LS.use(RH.O().LT);
+                           LS.index('ZLEC');
+                           LS.prefix(RH.ref());
+                           _TAB_WYN.blank(1);
+                           _TAB_WYN.NAZWISKO:=_OS_ZW.NAZWISKO;
+                           _TAB_WYN.PIERWSZE:=_OS_ZW.PIERWSZE;
+                           _TAB_WYN.PESEL:=_OS_ZW.PESEL;
+                           _TAB_WYN.PRAC:=0;
+                           _TAB_WYN.DWY:=RH.DWY;
+                           _TAB_WYN.ID:=RH.ZLE().NU;
+                           _TAB_WYN.LISTA:=~-RH.O().LT;
+                           {! _ind:=1..(obj_len(_nr)-1)
+                           |! _nr[_ind][5]:=0
+                           !};
+                           {? LS.first()
+                           || {? LS.find_key(_nr[9][3])
+                              || _zaliczka+=LS.KW;
+                                 LS.del()
+                              ?};
+                              {? LS.find_key(_nr[7][3])
+                              || _TAB_WYN.ZUS:=LS.KW
+                              ?}
+                           ?};
+                           _TAB_WYN.add(1)
+                        ?};
+                        _TAB_RH.next()
+                     !};
+
+                     {? _licz & _zaliczka
+                     || {? _LSS
+                        || LSS.blank();
+                           LSS.OD:=date(2020,_rozlicz,1);
+                           LSS.DO:=date(2020,_rozlicz,0);
+                           LSS.KW:=_zaliczka;
+                           LSS.S:=__RUB.ref(_kor_zal);
+                           LSS.add(1)
+                        ?};
+                        _TAB_WYN.blank(1);
+                        _TAB_WYN.NAZWISKO:=_OS_ZW.NAZWISKO;
+                        _TAB_WYN.PIERWSZE:=_OS_ZW.PIERWSZE;
+                        _TAB_WYN.PESEL:=_OS_ZW.PESEL;
+                        _TAB_WYN.PRAC:=0;
+                        _TAB_WYN.DWY:=date(2020,_rozlicz,1);
+                        _TAB_WYN.KW:=_zaliczka;
+                        _TAB_WYN.ID:=RH.ZLE().NU;
+                        _TAB_WYN.add(1)
+                     ?}
+                  ?}
+               ?};
+               _TAB_P.next()
+            !}
+         ?}
+      ?};
+      _OS_ZW.next()
+   !};
+   __LP_kor:=0
+?};
+_c_pop();
+__F_ZATR.mod(_f_zatr);
+:: Komunikaty
+_var:=VAR_DEL.new(,"obj_new(@.CLASS.JCQ)");
+{? var_pres('Komm') || VAR_DEL.delete('Komm') ?};
+Komm:=($_var)();
+Komm.init(150,,'Informacje o danych korekty','');
+_TAB_WYP:=sql('select distinct NAZWISKO, PIERWSZE, PESEL from :_a order by 1,2,3',_TAB_WYN);
+{? _TAB_WYP.first()
+|| {!
+   |? _K_p:=Komm.sect_beg(' '+_TAB_WYP.NAZWISKO+' ' +_TAB_WYP.PIERWSZE+' ' +_TAB_WYP.PESEL,'__sysusr.png:5');
+     Komm.sect_end();
+      _TAB_WYN.prefix(_TAB_WYP.NAZWISKO,_TAB_WYP.PIERWSZE,_TAB_WYP.PESEL);
+      {? _TAB_WYN.first()
+      || {!
+         |?
+            {? _TAB_WYN.PRAC
+            || {? _TAB_WYN.KW
+               || _icon:='xdom_b16.png:7';
+                  {? _LSS
+                  || _komm:='Korekta zaliczki na podatek w kwocie: '+$_TAB_WYN.KW+' zł, rozliczenie na podstawowej liście płac w miesiącu: '+_TAB_WYN.DWY$8
+                  || _komm:='Korekta zaliczki na podatek w kwocie: '+$_TAB_WYN.KW+' zł'
+                  ?}
+               || _icon:='xwin16.png:47';
+                  _komm:='Lista '+_TAB_WYN.LISTA+' - korygująca: '+_TAB_WYN.DWY$8
+               ?}
+            || {? _TAB_WYN.KW
+               || _icon:='xare_b16.png:87';
+                  {? _LSS
+                  || _komm:='Korekta zaliczki na podatek w kwocie: '+$_TAB_WYN.KW+' zł, rozliczenie na rachunku UZ w miesiącu: '+_TAB_WYN.DWY$8
+                  || _komm:='Korekta zaliczki na podatek w kwocie: '+$_TAB_WYN.KW+' zł'
+                  ?}
+               || _icon:='xwin16.png:47';
+                  _komm:='Nr umowy: '+(|_TAB_WYN.ID)+', Korekta rachunku z datą wypłaty: '+$_TAB_WYN.DWY
+               ?}
+            ?};
+            _K_tab:=Komm.sect_beg(_komm,_icon);
+            Komm.chngroot(_K_tab,_K_p);
+            Komm.sect_end();
+            {? ~_TAB_WYN.KW & _TAB_WYN.ZUS
+            || _icon:='xwin16.png:66';
+               _komm:='Wymagane jest skorygowanie raportów ZUS gdyż wyliczono korektę składki zdrowotnej pobranej w kwocie: '+$_TAB_WYN.ZUS+'.';
+               _K_KW:=Komm.add(_komm,_icon,,,"0");
+               Komm.chngroot(_K_KW,_K_tab)
+            ?};
+            _TAB_WYN.next()
+         !}
+      ?};
+      _TAB_WYP.next()
+   !}
+?};
+filekor:='kor'+form(date()~1-2000,-2,0,'99')+form(date()~2,-2,0,'99')+form(date()~3,-2,0,'99')
+   +form(time()~1,-2,0,'99')+form(time()~2,-2,0,'99')+form(time()~3,-2,0,'99')
+   +'.log';
+ {? var_pres('STR',@)<=0 || STR:=obj_new(@.CLASS.STRING) ?};
+ _wyn:='\'Zapisano plik: ['+pth_dir(filekor)+'\\'+filekor+']\'';
+ _wyn:={? sys_name(1)='WINDOWS'
+       || STR.gsub(_wyn,'\\','\\\\')
+       || STR.gsub(_wyn,'\\','/')
+       ?};
+ _formula:='{? Komm.save(filekor) || FUN.info('+_wyn+') ?};1';
+ _formula:=$_formula;
+ Komm.select(,,_formula,,{? _>0 & type_of(_a)=2 || _a || ''?});
+{? FUN.ask('Czy wygenerować tabelkę z informacjami szczegółowymi?\n'+
+   'Dane szczegółowe zostaną odpisane również w pliku: kor_ex'+(3-filekor))
+|| _TAB_LS.win_edit(_TAB_LS.mk_edit(,1));
+   _TAB_LS.win_sel(_TAB_LS.mk_sel(,,1)); _TAB_LS.select;
+   _TAB_LS.export('kor_ex'+(3-filekor),,,'UTF-8',
+      ,'NAZWISKO',,1,
+      ,'PIERWSZE',,2,
+      ,'PESEL',,3,
+      ,'PRAC',,4,
+      ,'LISTA',,5,
+      ,'DWY',,6,1
+      ,'ID',,7,
+      ,'RH_REF',,8,
+      ,'MC',,9,
+      ,'LP',,10,
+      ,'RN',,11,
+      ,'RT',,12,
+      ,'KW1',,13,'9,2'
+      ,'KW2',,14,'9,2'
+      ,'KOR',,15,'9,2'
+      )
+?};
+VAR_DEL.delete('Komm','filekor');
+1
+
+
+\korekta_ZP
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: pk [19.22]
+:: OPIS: Aktualizacja "Zmiana w sposobie obliczania podatku od osób fizycznych - dogrywka"
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~FUN.ask('Zadaniem procedury jest weryfikacja danych dla naliczonego w poprzednich okresach zwolnionego przychodu'+
+      ' dla pracowników, którzy nie ukończyli 26 roku życia. Jeżeli naliczenie zwolnionego przychodu było niepoprawne'+
+      ' zostanie wyliczona korekta. Wartości korekty zostaną odpisane na specjalnej liście technicznej „ZXX”.'+
+      ' Lista „ZXX” zostanie założona tylko w przypadku, gdy istnieje w każdym miesiącu korekty lista typu „SUM”.\n'+
+      ' System dokona również zapisów korygujących dla rozliczonych rachunków umów zleceń.'+
+      ' W tym celu dla każdej naliczonej wypłaty umowy zlecenia zostanie założony kolejny rachunek korekcyjny'+
+      ' z odpowiednimi wartościami. Przeliczone dane będą dostępne podczas automatycznego sporządzenia'+
+      ' informacji podatkowej PIT 11.\n'+
+      'Jeżeli wystąpi potrzeba skorygowania zaliczki na podatek dochodowy,'+
+      'odpowiednie wartości pojawią się w stałych składnikach listy płac do rozliczenia.'+
+      'Rozliczenie nastąpi na liście podstawowej w miesiącu wskazanym jako rozliczeniowy.'+
+      'Dla umów zleceń będzie to pierwszy wyliczony rachunek w miesiącu rozliczenia.\n\n'+
+      'Czy rozpocząć procedurę?')
+|| return(0)
+?};
+
+exec('czytaj','#stalesys',,KST,KST_PAR,XINFO);
+exec('RAPLS','object');
+exec('__F_ZATR','object');
+exec('__KAL','object');
+exec('myDIALOG','object');
+
+
+exec('__STALE','object');
+exec('FUNKCJE','object');
+exec('BIT','#object');
+exec('__RUB','object');
+__RUB.fill();
+exec('dekl','lista_plac');
+:: Weryfikacja czy istnieje odpowiednia rubryka
+:: Ustalenie numerów rubryk biorących udział w wyliczeniach
+_ZP_SKL:=__RUB.sys_rub(9026).RN;
+_ZP_POD:=__RUB.sys_rub(9022).RN;
+_PRZ:=__RUB.sys_rub(92).RN;
+_ZP_ZDR:=__RUB.sys_rub(9027).RN;
+
+{? ~_ZP_SKL | ~_ZP_POD  | ~_PRZ | ~_ZP_ZDR
+|| FUN.error('Brak składników płacowych wymaganych do aktualizacji.\nNie można kontynuować procedury.');
+   return(0)
+?};
+
+LS.cntx_psh();
+P.cntx_psh();
+OSOBA.cntx_psh();
+KT.cntx_psh();
+O.cntx_psh();
+RH.cntx_psh();
+
+_c_pop:="
+   LS.cntx_pop();
+   P.cntx_pop();
+   OSOBA.cntx_pop();
+   KT.cntx_pop();
+   O.cntx_pop();
+   RH.cntx_pop()";
+_licz:=0;
+exec('czytaj','#stalesys',date(2019,12,1),KST,'ZWPOD');
+:: Weryfikacja miesięcy, dla których należy wykonać zmiany
+
+FUN.info('Prosze podać miesiąc na którym nastąpi ewentualne rozliczenie korekty zaliczki na podatek.'+
+   '\nRozliczenie z Urzędem Skarbowym nastąpi we wskazanym miesiącu.'+
+   '\nRozliczenie z pracownikiem zostanie zrealizowane na liście podstawowej\n'+
+   'z miesiącem podatkowym zgodnym z podanym miesiącem rozliczenia.\n'+
+   'Rozliczenie ze zleceniobiorcą nastąpi na pierwszym rachunku stworzonym w miesiącu rozliczenia.' );
+
+undefine();
+define('MC',date~2,'Miesiąc rozliczenia w roku 2019');
+define('START',8,'Miesiąc startowy, od którego nastąpi przeliczenie');
+{? def_edit("
+         {? DEFINE.MC<8 | DEFINE.MC>12
+         || FUN.info('Dopuszczalny zakres dla miesiąca rozliczenia: 9 - 12'); 0
+         |? DEFINE.START<8 | DEFINE.START>12
+         || FUN.info('Dopuszczalny zakres dla miesiąca startowego: 8 - 12'); 0
+         |? DEFINE.START > DEFINE.MC
+         || FUN.info('Miesiąc startowy korekt nie może być większy od miesiąca rozliczenia.'); 0
+         || 1
+         ?}
+      ",'Podaj dane...')
+|| _rozlicz:=DEFINE.MC;
+   _start:=DEFINE.START
+|| undefine();
+   _c_pop();
+   return()
+?};
+undefine();
+
+_TAB:=tab_tmp(1,
+   'MC','INTEGER','Miesiąc',
+   'LICZ','INTEGER','do przeliczenia',
+   'UZP','INTEGER','Ref pracownika'
+);
+
+{! _ind:=_start.._rozlicz
+|! _TAB.blank(1);
+   _TAB.MC:=_ind;
+   _TAB.add()
+!};
+
+_Firma:=exec('ref_firma','ustawienia');
+
+:: Ustalenie listy ZXX
+KT.index('KRYTERIA');
+KT.prefix(_Firma);
+{? ~KT.find_key('ZXX')
+|| FUN.error('Brak typu listy \'ZXX\' (rozliczenie z ZUS).\nProcedura zostaje przerwana.');
+   _c_pop();
+   return(0)
+?};
+
+:: Zapis korekt zostanie naniesiony na listę ZXX - jeżeli nie istnieje zostanie założona na podstawie listy SUM
+_msg:='';
+O.index('LISTYPOD');
+{! _ind:=_start.._rozlicz
+|! O.prefix(_Firma,2019,_ind);
+   {? ~O.find_key('ZXX') & ~O.find_key('SUM')
+   || _msg+='\nBrak listy "SUM" dla okresu: '+date(2019,_ind,1)$8
+   ?}
+!};
+{? +_msg>1
+|| FUN.emsg(_msg+'\nNależy założyć odpowiednie zapisy w kartotece nagłówków list płac.'+
+      '\nProcedury nie można kontynuować.');
+      _c_pop();
+      return(0)
+?};
+{? VAR.JESTLIST || FUNKCJE.ZAMKLIST() ?};
+
+{! _ind:=_start.._rozlicz
+|! O.prefix(_Firma,2019,_ind);
+   {? ~O.find_key('ZXX')
+   || {? O.find_key('SUM')
+      || O.T:=KT.ref;
+         O.F:=KT.F;
+         O.M:=O.MP:=O.MU:=_ind;
+         O.R:=O.RP:=O.RU:=2019;
+         O.LT:=-('L19'+('0'+$_ind+2)+KT.T);
+         O.F_ZATR:=KT.F_ZATR;
+         O.Z:='N';
+         {? O.add(1)
+         || exec('put_stat','lista_plac',O.ref,'LSLP_AKT',1);
+            exec('put_stat','lista_plac',O.ref,'ZBLP_AKT',1)
+         ?}
+      ?}
+   || {? O.Z='T' || O.Z:='N'; O.put(1) ?}
+   ?}
+!};
+_f_zatr:=__F_ZATR.P;
+P.prefix;
+RH.prefix;
+ZC.prefix;
+
+_nr:=obj_new(17);
+{! _ind:=1..obj_len(_nr) |! _nr[_ind]:=obj_new(5) !};
+:: atrybuty
+_nr[1][1]:=94;
+::785 - Ulga podatkowa
+_nr[2][1]:=9025;
+::7097 - ZP: Ulga podatkowa
+_nr[3][1]:=931;
+::784 - Koszty uzyskania
+_nr[4][1]:=9024;
+::7096 - ZP: Koszty uzyskania
+_nr[5][1]:=95;
+::790 - Podatek nominalny
+_nr[6][1]:=9023;
+::7095 - ZP: Podatek nomin.
+_nr[7][1]:=57411;
+::792 - Skł. zdrow. - pobr.
+_nr[8][1]:=57412;
+::793 - Skł. zdrow. - odl.
+_nr[9][1]:=9611;
+::797 - Zal. pod. doch.
+_nr[10][1]:=9022;
+::7094 - ZP: Przychód
+_nr[11][1]:=9026;
+::7098 - ZP: Skł. prz. zwol.
+_nr[12][1]:=92;
+::780 - Przychód
+_nr[13][1]:=9027;
+::7108 - ZP:Skł. zdr. pobr.
+_nr[14][1]:=0;
+_nr[15][1]:=0;
+_nr[16][1]:=0;
+_nr[17][1]:=91;
+::71 - % podatku
+:: numery rubryk
+{! _ind:=1..obj_len(_nr)
+|! _nr[_ind][3]:=__RUB.sys_rub(_nr[_ind][1]).RN
+!};
+_nr[14][3]:=7002;
+_nr[15][3]:=7003;
+_nr[16][3]:=7004;
+:: korekta zaliczki na podatek
+_kor_zal:=__RUB.sys_rub(9612).RN;
+:: Dane istotne do przepisania na rozliczenie
+{! _ind:=1..obj_len(_nr)
+|!  _nr[_ind][4]:=0
+!};
+_nr[9][4]:=1;
+_LHS_add:="
+   {? R.seek(__RUB.ref(_a))
+   || LS.prefix(RH.ref,_a);
+      {? LS.first() || LS.del() ?};
+      {? _b
+      || LS.prefix();
+         LS.blank(1);
+         LS.KK:=RH.KK;
+         LS.RH:=RH.ref;
+         LS.P:=P.ref;
+         LS.O:=O.ref;
+         LS.RB:=R.ref;
+         LS.LP:=R.LP;
+         LS.KW:=_b;
+         LS.add()
+      ?}
+   ?}";
+_LS_add:="
+   {? R.seek(__RUB.ref(_a))
+   || LS.prefix(P.ref,_a);
+      {? LS.first() || LS.del() ?};
+      {? _b
+      || LS.prefix();
+         LS.blank(1);
+         LS.P:=P.ref;
+         LS.KK:=exec('kk_hist','pracownik',LS.P,date(O.RP,O.MP,0));
+         LS.O:=O.ref;
+         LS.RB:=R.ref;
+         LS.LP:=R.LP;
+         LS.KW:=_b;
+         LS.LP:=LS.RB().LP;
+         LS.add()
+      ?}
+   ?}";
+_end:="
+     USERS.cntx_psh();
+     {? LS.first()
+      || {!
+         |? LS.del(,1)=2
+         !}
+      ?};
+      R.prefix();
+      KK.prefix;
+      USERS.prefix();
+      {? _a.first
+      || LS.trig_off('*','*');
+         {!
+         |? LS.blank(1);
+            {? P.seek(BIT.sqlint(_a.P),) || LS.P:=P.ref ?};
+            {? O.seek(BIT.sqlint(_a.O),) || LS.O:=O.ref ?};
+            {? R.seek(BIT.sqlint(_a.RB),) || LS.RB:=R.ref ?};
+            {? KK.seek(BIT.sqlint(_a.KK),) || LS.KK:=KK.ref ?};
+            {? RH.seek(BIT.sqlint(_a.RH),) || LS.RH:=RH.ref ?};
+            {? USERS.seek(BIT.sqlint(_a.MOD_KTO),) || LS.MOD_KTO:=USERS.ref ?};
+            LS.LP:=_a.LP;
+            LS.KW:=_a.KW;
+            LS.MOD_DATA:=_a.MOD_DATA;
+            LS.MOD_CZAS:=_a.MOD_CZAS;
+            LS.add(1);
+            _a.next()
+         !};
+         LS.trig_on('*','*')
+      ?};
+      USERS.cntx_pop()";
+_find_ls:=" _wyn:=0;
+   {? R.seek(__RUB.ref(_a))
+   || LS.index('ZLEC');
+      LS.prefix(RH.ref,_a);
+      {? LS.first
+      || {! |? _wyn+=LS.KW; LS.next !}
+      ?}
+   ?}; _wyn";
+_TAB_RH:=sql('select 0 P, 0 REF from SYSLOG where 1=2 order by 1,2');
+_TAB_WYN:=sql('
+   select NAZWISKO, PIERWSZE, 0 PRAC, \'        \' LISTA, OSOBA.UR_DATA as DWY,\'            \' ID, 0.01 as KW
+   from  OSOBA where 1=2 order by 1,2,3
+');
+
+LSS.index('PROPOZYC');
+OS_ZWPOD.index('OS_ZWPOD');
+OS_ZWPOD.prefix(_Firma);
+{? OS_ZWPOD.first()
+|| __LP_kor:=1;
+   {!
+   |? {? OS_ZWPOD.ROK=2019
+      || OS_ZWPOD.OSOBA();
+:: kasowanie danych z poprzedniego uruchomienia
+         {? _TAB.first()
+         || {!
+            |? O.index('LISTYPOD');
+               O.prefix(_Firma);
+               {? O.find_key(2019,_TAB.MC,'ZXX')
+               || {? LS.use(O.LT)
+                  || LS.index('OSOBAKOD');
+                     LS.prefix(_Firma,OS_ZWPOD.OSOBA);
+                     {? LS.first()
+                     || {! _ind:=1..obj_len(_nr)
+                        |! {? LS.find_key(_nr[_ind][3])
+                           || LS.del()
+                           ?}
+                        !}
+                     ?}
+                  ?}
+               ?};
+               RH.index('RACHDATA');
+               RH.prefix(_Firma,OS_ZWPOD.OSOBA,2019,_TAB.MC);
+               {? RH.first
+               || {!
+                  |? _ok:=0;
+                     {? RH.KOR='T' & RH.BL='T' & RH.Z='T' & RH.DWY>date(2019,8,1)
+                     || LS.use(RH.O().LT);
+                        LS.index('ZLEC');
+                        LS.prefix(RH.ref());
+                        {? LS.first()
+                        || {!
+                           |? LS.del
+                           !}
+                        ?};
+                        _ok:=RH.del(,1)=2
+                     ?};
+                     {? ~_ok || RH.next() || 1 ?}
+                  !}
+               ?};
+               _TAB.next
+            !}
+         ?};
+         P.cntx_psh();
+         P.index('OSOBA');
+         P.prefix(OS_ZWPOD.OSOBA,_Firma);
+         LSS.index('PROPOZYC');
+         {? P.first
+         || {!
+            |? LSS.prefix(P.ref,_kor_zal);
+               {? LSS.first
+               || LSS.del
+               ?};
+               P.next
+            !}
+         ?};
+         P.cntx_pop();
+         _limit:=0;
+         {! _ind:=1..obj_len(_nr)
+         |!  _nr[_ind][2]:=_nr[_ind][5]:=0
+         !};
+         OS_ZWPOD.cntx_psh();
+         _TAB_RH.erase();
+         _TAB_RH.prefix();
+         OS_ZWPOD.OSOBA();
+         {? _TAB.first()
+         || {!
+            |? O.index('LISTYPOD');
+               O.prefix(_Firma);
+               _TAB.UZP:=0;
+               _TAB.put;
+               __F_ZATR.mod('P');
+               {? O.find_key(2019,_TAB.MC,'ZXX')
+               || O.Z:='N';
+                  O.put();
+                  __KAL.set_cal(O.T().KA);
+                  FUNKCJE.OTWOLIST();
+                  LICZ.Build(); FUNKCJE.USTAW('P');
+                  exec('dla_listy','stalesys');
+                  LS.index('PRACNRRU');
+                  exec('czy_prac','osoba',OS_ZWPOD.OSOBA,date(2019,_TAB.MC,0));
+                  {? ~UZ.P
+                  || O.cntx_psh();
+                     LS.cntx_psh();
+                     O.index('LISTYPLP');
+                     O.prefix(_Firma,'P',2019,_TAB.MC);
+                     {? O.first
+                     || {!
+                        |? LS.use(O.LT);
+                           LS.index('OSOBAKOD');
+                           LS.prefix(_Firma,OS_ZWPOD.OSOBA);
+                           {? LS.first()
+                           || UZ.P:=LS.P
+                           ?};
+                           ~UZ.P & O.next
+                        !}
+                     ?};
+                     LS.cntx_pop();
+                     O.cntx_pop()
+                  ?};
+                  _TAB.UZP:=#UZ.P;
+                  _TAB.put;
+                  {? P.seek(#UZ.P,)
+                  ||
+                     {? exec('czy_ulga_U26','napraw_p',date(2019,_TAB.MC,1))
+::   Zerowanie wartości
+                     || LS.index('PRACNRRU');
+                        LS.prefix(P.ref());
+::   Przychód ZP 7094
+                        _wyn:=exec('przychod_U26','napraw_p',_limit);
+                        {? _wyn || FUNKCJE.LK_SYS(9022,,_wyn) ?};
+::   Składki ZUS ZP 7098
+                        _wyn:=exec('zp_skl_U26','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(9026,,_wyn) ?};
+::   Przychód 780
+                         _wyn:=exec('przychod_780','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(92,,_wyn) ?};
+:: PA_7002
+                        _wyn:=exec('PA_7002','napraw_p');
+                        {? _wyn || FUNKCJE.LK(7002,,_wyn) ?};
+:: PA_7003
+                        _wyn:=exec('PA_7003','napraw_p');
+                        {? _wyn || FUNKCJE.LK(7003,,_wyn) ?};
+:: PA_7004
+                        _wyn:=exec('PA_7004','napraw_p');
+                        {? _wyn || FUNKCJE.LK(7004,,_wyn) ?};
+::   Koszty uzyskania
+                        _wyn:=exec('KU','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(931,,_wyn) ?};
+::   Koszty uzyskania ZP
+                        _wyn:=exec('KU_U26','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(9024,,_wyn) ?};
+::   Podatek nominalny
+                        _wyn:=exec('oblicz_podatek','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(95,,_wyn) ?};
+::   Podatek nominalny ZP
+                        _wyn:=exec('oblicz_U26','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(9023,,_wyn) ?};
+::   kasa chorych pobrana
+                        _wyn:=exec('skl_zdr','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(57411,,_wyn) ?};
+::   kasa chorych pobrana ZP
+                        _wyn:=&kc3;
+                        {? _wyn || FUNKCJE.LK_SYS(9027,,_wyn) ?};
+::   kasa chorych odliczona
+                        _wyn:=&kc2+FUNKCJE.LP(7079);
+                        {? _wyn || FUNKCJE.LK_SYS(57412,,_wyn) ?};
+::   Zaliczka na podatek dochodowy
+                        _wyn:=exec('zaliczka_pdf','napraw_p');
+                        {? _wyn || FUNKCJE.LK_SYS(9611,,_wyn) ?};
+::   Weryfikacja wartości:
+                        _zapis:=1;
+                        {! _ind:=1..obj_len(_nr)
+                        |! {? _ind=9
+                           || _wyn:=FUNKCJE.L(_nr[_ind][3])-FUNKCJE.LP_SYS(961)
+                           || _wyn:=FUNKCJE.L(_nr[_ind][3])-FUNKCJE.LP(_nr[_ind][3])
+                           ?};
+                           {? _wyn & _ind<obj_len(_nr)
+                           || {? _zapis
+                              || _TAB_WYN.blank(1);
+                                 _TAB_WYN.NAZWISKO:=OS_ZWPOD.OSOBA().NAZWISKO;
+                                 _TAB_WYN.PIERWSZE:=OS_ZWPOD.OSOBA().PIERWSZE;
+                                 _TAB_WYN.PRAC:=1;
+                                 _TAB_WYN.LISTA:=~-O.LT;
+                                 _TAB_WYN.DWY:=date(2019,_TAB.MC,1);
+                                 _TAB_WYN.add(1);
+                                 _zapis:=0;
+                                 exec('o_p_add','ppl',O.ref(),P.ref(),'N','T')
+                              ?};
+                              FUNKCJE.LK(_nr[_ind][3],,_wyn);
+                              {? _nr[_ind][4] || _nr[_ind][5]+=_wyn ?}
+                           || LS.index('PRACNRRU');
+                              LS.prefix(P.ref());
+                              {? LS.find_key(_nr[_ind][3])
+                              || LS.del()
+                              ?}
+                           ?}
+                        !};
+                        LS.index('PRACNRRU');
+                        LS.prefix(P.ref());
+                        {? ~LS.size()
+                        || {? exec('o_p_jest','ppl',O.ref(),P.ref())
+                           || O_P.del()
+                           ?}
+                        ?}
+                     ?}
+                  ?};
+                  FUNKCJE.ZAMKLIST()
+               ?};
+               __F_ZATR.mod('Z');
+               RH.index('RACHDATA');
+               RH.prefix(_Firma,OS_ZWPOD.OSOBA,2019,_TAB.MC);
+
+               {? RH.first()
+               || {!
+                  |? {? RH.KOR='T' & RH.Z='T'
+                     || LS.use(RH.O().LT);
+                        LS.index('ZLEC');
+                        LS.prefix(RH.ref());
+                        {? LS.first()
+                        || {! _ind:=1..(obj_len(_nr)-1)
+                           |! {? LS.find_key(_nr[_ind][3])
+                              || LS.del()
+                              ?}
+                           !}
+                        ?}
+                     ?};
+                     RH.next()
+                  !}
+               ?};
+
+               {? RH.first()
+               || {!
+                  |? RH.ZLE().P().OSOBA();
+                     {? exec('czy_ulga_U26','lista_licz',RH.DWY) & RH.KOR<>'T' &
+                        ~(RH.ZAS='T' | FUNKCJE.Z(31)) &  RH.ZLE().RU().ZWPOD='T'
+                     || LS.use(RH.O().LT);
+                        LS.index('ZLEC');
+                        LS.prefix(RH.ref());
+                        {? LS.first
+                        || O.Z:='N';
+                           O.put();
+                           _blokada:=RH.BL;
+                           RH.BL:='N';
+                           RH.put(1);
+                           RH.ZLE().P();
+                           RH.ZLE().OSOBA();
+                           {? var_pres('_tab_ls')>100 || obj_del(_tab_ls) ?};
+                           _tab_ls:=sql('select * from LS where RH=:_a',RH.ref);
+                           _file:='rach_'+$(#RH.ref)+'.exp';
+                           _tab_ls.export(_file,0,,,,
+                              'P',,1,,
+                              'O',,2,,
+                              'RB',,3,,
+                              'KK',,4,,
+                              'RH',,5,,
+                              'MOD_KTO',,6,,
+                              'LP',,7,0,
+                              'KW',,8,2,
+                              'MOD_DATA',,9,1,
+                              'MOD_CZAS',,10,1
+                           );
+                           LICZRHS.Build();
+                           FUNKCJE.OTWOLTRH(); __FOLP.fill(O.F); FUNKCJE.USTAW('Z');
+                           FUNKCJE.OBLICZ(1);
+                           {! _ind:=1..(obj_len(_nr)-1)
+                           |! _nr[_ind][2]:=_find_ls(_nr[_ind][3])
+                           !};
+                           LS.index('ZLEC');
+                           LS.prefix(RH.ref());
+                           {? LS.first
+                           || _end(_tab_ls)
+                           ?};
+                           RH.BL:=_blokada;
+                           RH.put(1);
+                           ferase(_file,1);
+
+                           'zapis do korekty RH';
+                           _wyn:=0;
+                           {! _ind:=1..(obj_len(_nr)-1)
+                           |! _wyn+=((_nr[_ind][2]-=_find_ls(_nr[_ind][3]))<>0)
+                           !};
+                           {? _wyn
+                           ||
+                              RH.cntx_psh();
+                              RH.index('RACHUNKI');
+                              RH.prefix(RH.ZLE,RH.DRA);
+                              _RH_KOR:=0;
+                              _rok:=RH.R;
+                              _mc:=RH.M;
+                              _lista:=RH.O;
+
+                              {? ~_RH_KOR
+                              || RH.cntx_pop();
+                                 RH.cntx_psh();
+                                 RH.BL:='T';
+                                 RH.Z:='T';
+                                 RH.KOR:='T';
+                                 {? RH.add(1)
+                                 || LS.index('ZLEC');
+                                    LS.prefix();
+                                    R.prefix;
+                                    {! _ind:=1..(obj_len(_nr)-1)
+                                    |! {? _nr[_ind][2] || _LHS_add(_nr[_ind][3],_nr[_ind][2]) ?}
+                                    !}
+                                 ?}
+
+                              || LS.use(RH.O().LT);
+                                 LS.index('ZLEC');
+                                 LS.prefix(RH.ref());
+
+                                 {? LS.first()
+                                 || {! _ind:=1..(obj_len(_nr)-1)
+                                    |! {? LS.find_key(_nr[_ind][3])
+                                       || LS.del()
+                                       ?}
+                                    !}
+                                 ?};
+                                 RH.R:=_rok;
+                                 RH.M:=_mc;
+                                 RH.O:=_lista;
+                                 RH.put(1);
+                                 LS.use(RH.O().LT);
+                                 LS.index('ZLEC');
+                                 LS.prefix();
+                                 R.prefix;
+                                 {! _ind:=1..(obj_len(_nr)-1)
+                                 |! {? _nr[_ind][2] || _LHS_add(_nr[_ind][3],_nr[_ind][2]) ?}
+                                 !}
+
+                              ?};
+                              _TAB_RH.REF:=#RH.ref;
+                              _TAB_RH.P:=#RH.ZLE().P;
+                              _TAB_RH.add();
+                              RH.cntx_pop()
+                           ?}
+                        ?}
+                     ?};
+                     RH.next()
+                  !}
+               ?};
+               _TAB.next()
+            !}
+         ?};
+::  Wykasowanie ewentualnych danych o zaliczce skorygowanej w miesiącu korekty
+         P.prefix();
+         {? _TAB.first()
+         || {!
+            |? O.index('LISTYPOD');
+               O.prefix(_Firma);
+               {? O.find_key(2019,_TAB.MC,'ZXX') & P.seek(_TAB.UZP,)
+               || LS.use(O.LT);
+                  LS.index('PRACNRRU');
+                  LS.prefix();
+                  R.prefix;
+                  {? _nr[9][4] & R.seek(__RUB.ref(_nr[9][3]))
+                  || LS.prefix(P.ref,_nr[9][3]);
+                     {? LS.first() || LS.del() ?}
+                  ?};
+                  LS.next
+               ?};
+               _TAB.next
+            !}
+         ?};
+
+         exec('czy_prac','osoba',OS_ZWPOD.OSOBA,date(2019,_rozlicz,0));
+         _UZP:={? UZ.P || #UZ.P || _TAB.UZP ?};
+         {? P.seek(_UZP,)
+         || LSS.prefix(P.ref,_kor_zal);
+            _licz:=1;
+            {? LSS.first
+            || {? LSS.OD=date(2019,_rozlicz,1)
+               || _licz:=LSS.del
+               ?}
+            ?};
+            {? _licz & _nr[9][5]
+            || _TAB_WYN.blank(1);
+               _TAB_WYN.NAZWISKO:=OS_ZWPOD.OSOBA().NAZWISKO;
+               _TAB_WYN.PIERWSZE:=OS_ZWPOD.OSOBA().PIERWSZE;
+               _TAB_WYN.PRAC:=1;
+               _TAB_WYN.DWY:=date(2019,_rozlicz,1);
+               _TAB_WYN.KW:=_nr[9][5];
+               _TAB_WYN.ID:=RH.ZLE().NU;
+               _TAB_WYN.add(1);
+               LSS.blank();
+               LSS.OD:=date(2019,_rozlicz,1);
+               LSS.DO:=date(2019,_rozlicz,0);
+               LSS.KW:=_nr[9][5];
+               LSS.S:=__RUB.ref(_kor_zal);
+               LSS.add(1)
+            ?}
+         ?};
+
+
+::  Przepisanie korekt RH na miesiąc rozliczenia
+
+         RH.prefix();
+         {? var_pres('_TAB_P')>100 || obj_del(_TAB_P) ?};
+         _TAB_P:=sql('select distinct P from :_a order by 1',_TAB_RH);
+
+         {? _TAB_P.first()
+         || {!
+            |? {? P.seek(_TAB_P.P,)
+               || _zaliczka:=0;
+                  LSS.prefix(P.ref,_kor_zal);
+                  _licz:=1;
+                  {? LSS.first
+                  || {? LSS.OD=date(2019,_rozlicz,1)
+                     || _licz:=LSS.del
+                     ?}
+                  ?};
+                  _TAB_RH.prefix(_TAB_P.P);
+                  {? _TAB_RH.first()
+                  ||
+                     {!
+                     |? {? RH.seek(_TAB_RH.REF,)
+                        || LS.use(RH.O().LT);
+                           LS.index('ZLEC');
+                           LS.prefix(RH.ref());
+                           _TAB_WYN.blank(1);
+                           _TAB_WYN.NAZWISKO:=OS_ZWPOD.OSOBA().NAZWISKO;
+                           _TAB_WYN.PIERWSZE:=OS_ZWPOD.OSOBA().PIERWSZE;
+                           _TAB_WYN.PRAC:=0;
+                           _TAB_WYN.DWY:=RH.DWY;
+                           _TAB_WYN.ID:=RH.ZLE().NU;
+                           _TAB_WYN.add(1);
+                           {! _ind:=1..(obj_len(_nr)-1)
+                           |! _nr[_ind][5]:=0
+                           !};
+                           {? LS.first()
+                           || {? LS.find_key(_nr[9][3])
+                              || _zaliczka+=LS.KW;
+                                 LS.del()
+                              ?}
+                           ?}
+                        ?};
+                        _TAB_RH.next()
+                     !};
+
+                     {? _licz & _zaliczka
+                     || LSS.blank();
+                        LSS.OD:=date(2019,_rozlicz,1);
+                        LSS.DO:=date(2019,_rozlicz,0);
+                        LSS.KW:=_zaliczka;
+                        LSS.S:=__RUB.ref(_kor_zal);
+                        LSS.add(1);
+                        _TAB_WYN.blank(1);
+                        _TAB_WYN.NAZWISKO:=OS_ZWPOD.OSOBA().NAZWISKO;
+                        _TAB_WYN.PIERWSZE:=OS_ZWPOD.OSOBA().PIERWSZE;
+                        _TAB_WYN.PRAC:=0;
+                        _TAB_WYN.DWY:=date(2019,_rozlicz,1);
+                        _TAB_WYN.KW:=_zaliczka;
+                        _TAB_WYN.ID:=RH.ZLE().NU;
+                        _TAB_WYN.add(1)
+                     ?}
+                  ?}
+               ?};
+               _TAB_P.next()
+            !}
+         ?};
+         OS_ZWPOD.cntx_pop()
+      ?};
+      OS_ZWPOD.next()
+   !};
+   __LP_kor:=0
+?};
+_c_pop();
+__F_ZATR.mod(_f_zatr);
+:: Komunikaty
+_var:=VAR_DEL.new(,"obj_new(@.CLASS.JCQ)");
+{? var_pres('Komm') || VAR_DEL.delete('Komm') ?};
+Komm:=($_var)();
+Komm.init(150,,'Informacje o danych korekty','');
+_TAB_WYP:=sql('select distinct NAZWISKO, PIERWSZE from :_a order by 1,2',_TAB_WYN);
+{? _TAB_WYP.first()
+|| {!
+   |? _K_p:=Komm.sect_beg(' '+_TAB_WYP.NAZWISKO+' ' +_TAB_WYP.PIERWSZE,'__sysusr.png:5');
+     Komm.sect_end();
+      _TAB_WYN.prefix(_TAB_WYP.NAZWISKO, _TAB_WYP.PIERWSZE);
+      {? _TAB_WYN.first()
+      || {!
+         |?
+            {? _TAB_WYN.PRAC
+            || {? _TAB_WYN.KW
+               || _icon:='xdom_b16.png:7';
+                  _komm:='Korekta zaliczki na podatek w kwocie: '+$_TAB_WYN.KW+'zł, rozliczenie na podstawowej liście płac w miesiącu: '+_TAB_WYN.DWY$8
+               || _icon:='xwin16.png:47';
+                  _komm:='Lista '+_TAB_WYN.LISTA+' - korygująca: '+_TAB_WYN.DWY$8
+               ?}
+            || {? _TAB_WYN.KW
+               || _icon:='xare_b16.png:87';
+                  _komm:='Korekta zaliczki na podatek w kwocie: '+$_TAB_WYN.KW+'zł, rozliczenie na rachunku UZ w miesiącu: '+_TAB_WYN.DWY$8
+               || _icon:='xwin16.png:47';
+                  _komm:='Nr umowy: '+(|_TAB_WYN.ID)+', Korekta rachunku z datą wypłaty: '+$_TAB_WYN.DWY
+               ?}
+            ?};
+            _K_tab:=Komm.sect_beg(_komm,_icon);
+            Komm.chngroot(_K_tab,_K_p);
+            Komm.sect_end();
+            _TAB_WYN.next()
+         !}
+      ?};
+      _TAB_WYP.next()
+   !}
+?};
+filekor:='kor'+form(date()~1-2000,-2,0,'99')+form(date()~2,-2,0,'99')+form(date()~3,-2,0,'99')
+   +form(time()~1,-2,0,'99')+form(time()~2,-2,0,'99')+form(time()~3,-2,0,'99')
+   +'.log';
+ {? var_pres('STR',@)<=0 || STR:=obj_new(@.CLASS.STRING) ?};
+ _wyn:='\'Zapisano plik: ['+pth_dir(filekor)+'\\'+filekor+']\'';
+ _wyn:={? sys_name(1)='WINDOWS'
+       || STR.gsub(_wyn,'\\','\\\\')
+       || STR.gsub(_wyn,'\\','/')
+       ?};
+ _formula:='{? Komm.save(filekor) || FUN.info('+_wyn+') ?};1';
+ _formula:=$_formula;
+ Komm.select(,,_formula,,{? _>0 & type_of(_a)=2 || _a || ''?});
+VAR_DEL.delete('Komm','filekor');
+1
+
+
+\czy_ulga_U26
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [12.51]
+:: OPIS: Weryfikacja czy należy uznać ulgę z art. 21 ust. 1 pkt 148 dla pracownika. Bufor pracownika musi być ustalony.
+::   WE: _a - data badania
+::      [_b] - OSOBA.ref
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_data:=_a;
+{? var_pres('_b')=type_of(null) & _b<>null()
+|| _osoba:=_b;
+   {? ~OSOBA.seek(_b) || return(0) ?}
+|| _osoba:=P.OSOBA; P.OSOBA()
+?};
+_rok:=_data~1;
+_mc:=_data~2;
+_wynik:=0;
+{? var_pres('ZWPODW',KST)>0 & var_pres('ZWPOD',KST)>0
+|| exec('czytaj','#stalesys',_data,KST,'ZWPODW','ZWPOD');
+   OS_ZWPOD.cntx_psh();
+   OS_ZWPOD.index('OS_ZWPOD');
+   OS_ZWPOD.prefix(exec('ref_firma','ustawienia'),_osoba,_rok);
+   {? OSOBA.UR_DATA>=(date(_rok-KST.ZWPODW,_mc,1))
+   || {? (_rok=2019 & _mc>=8)
+      || {? OS_ZWPOD.first() & OS_ZWPOD.D_OB<=date(_rok,_mc,0)
+         || {? OS_ZWPOD.REZYGN<>'T'
+            || _wynik:=1
+            ?}
+         ?}
+      |? _rok>2019
+      || {? OS_ZWPOD.first() & OS_ZWPOD.D_OB<=_data
+         || {? OS_ZWPOD.REZYGN<>'T'
+            || _wynik:=1
+            ?}
+         || _wynik:=1
+         ?}
+      ?}
+   ?};
+   OS_ZWPOD.cntx_pop()
+?};
+_wynik
+
+
+
+\wyk_ul_U26
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Formuła wyliczająca wykorzystane ulgi art. 148
+::       uwaga na czwarty argument wywołania - jeśli jest 1 to uwzględniana będzie
+::       również bieżąca lista płac (wywołanie z zlecenia\rachunki)
+::   WE: _a [int] - rok
+::       _b [int] - miesiąc
+::       [_c] [null] - OSOBA.ref
+::       [_d] [int] - numer ref RH - uruchomione przez procedury obliczajace rachunki ze zleceń
+::       [_e] [int] - 1 bez list płac dla biezącego miesiąca
+::   WY: real - kwota wykorzystanej ulgi
+::----------------------------------------------------------------------------------------------------------------------
+_osoba:={? var_pres('_c')=type_of(null) || _c || OSOBA.ref ?};
+_akt_list:={? var_pres('_d')=type_of(0) & _d || _d ?};
+_bez_list:={? var_pres('_e')=type_of(0) & _e || _e ?};
+_rok:=_a;
+_mc:=_b;
+_wynik:=0;
+_od:={? _rok=2019 || 8 || 1 ?};
+RH.cntx_psh;
+RH.index('RACHDATA');
+RH.prefix(exec('ref_firma','ustawienia'),P.OSOBA,_rok);
+O.cntx_psh();
+LS.cntx_psh();
+KT.cntx_psh;
+{? RH.first
+|| _zlicz:="
+      _wyn:=0;
+      _tab:=__RUB.sys_rub(_a);
+      {? _tab.first()
+      || {!
+         |? LS.prefix(RH.ref(),_tab.RN);
+            {? LS.first() || {! |? _wyn+=LS.KW; LS.next() !} ?};
+            _tab.next()
+         !}
+      ?};
+      _wyn
+   ";
+   {!
+   |? {? RH.M<=_mc & LS.use(RH.O().LT)
+      || {? #RH.ref()<>_akt_list
+      || LS.index('ZLEC');
+         RH.ZC_INFO();
+            _wynik+=_zlicz(9022)
+         ?}
+      ?};
+      RH.next()
+   !}
+?};
+RH.cntx_pop();
+
+_suma:="
+   _wyn:=0;
+   _tab:=__RUB.sys_rub(_a);
+   {? _tab.first()
+   || {!
+      |? LS.prefix(exec('ref_firma','ustawienia'),_b,_tab.RN);
+         {? LS.first() || {! |? _wyn+=LS.KW; LS.next() !} ?};
+         _tab.next()
+      !}
+   ?};
+   _wyn
+";
+
+O.index('LISTYPLP');
+{! _ind:=_od..(_mc-1)
+|! O.prefix(exec('ref_firma','ustawienia'),'P',_rok,_ind);
+   {? O.first
+   || {!
+      |? _lista:='l'+($O.R+2)+('0'+$O.M+2)+(-O.T().T);
+         {? LS.use(_lista)
+         || LS.index('OSOBAKOD');
+            _wynik+=_suma(9022,_osoba)
+         ?};
+         O.next
+      !}
+   ?}
+!};
+
+{? _akt_list
+|| O.prefix(exec('ref_firma','ustawienia'),'P',_rok,_mc);
+   {? O.first
+   || {!
+      |? _lista:='l'+($O.R+2)+('0'+$O.M+2)+(-O.T().T);
+         {? LS.use(_lista)
+         || LS.index('OSOBAKOD');
+            _wynik+=_suma(9022,_osoba)
+         ?};
+         O.next
+      !}
+   ?}
+?};
+O.cntx_pop;
+LS.cntx_pop;
+KT.cntx_pop;
+_wynik
+
+
+\limit_U26
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [12.51]
+:: OPIS: Wyliczenie wartości ulgi jaka pozostała dla podatnika w roku podatkowym.
+::   WE: _a - rok podatkowy
+::       _b - miesiąc końcowy
+::       _c - #RH.ref numer RH przy uruchomieniu ze zleceń
+::   WY: real - wartość pozostałej ulgi
+::----------------------------------------------------------------------------------------------------------------------
+_rok:=_a;
+_mc:=_b;
+_zlec:={? var_pres('_c')=type_of(0) & _c || _c ?};
+_limit:=KST.ZWPOD;
+{? _limit=0 || return(0) ?};
+: wyliczenie wykorzystanych ulg i dochodu narastająco od początku roku
+_wyk:=exec('wyk_ul_U26','napraw_p',_rok,_mc,P.OSOBA,_zlec);
+OS_ZWPOD.cntx_psh();
+OS_ZWPOD.index('OS_ZWPOD');
+OS_ZWPOD.prefix(exec('ref_firma','ustawienia'),P.OSOBA,_rok);
+{? OS_ZWPOD.first
+|| _wyk+=OS_ZWPOD.PRZYCHOD
+?};
+OS_ZWPOD.cntx_pop();
+_wynik:=_limit-_wyk;
+{? _wynik<0 || _wynik:=0 ?};
+_wynik
+
+
+\przychod_U26
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [12.51]
+:: OPIS: Naliczenie przychodu podlegającemu uldze na podstawie art. 148 ustawy. Dla pracowników poniżej 26 rż.
+::   WE: _a [real] - wyliczona róznica do limitu
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_wynik:=0;
+_limit_p:=exec('limit_U26','napraw_p',O.RP,O.MP);
+_limit_p-=_a;
+{? _limit_p>0
+|| _wynik:=LICZ.Wylicz(,'.POD_P')+FUNKCJE.LP(779)-FUNKCJE.LP_SYS(9021);
+   {? _wynik>_limit_p || _wynik:=_limit_p ?}
+?};
+_wynik
+
+
+\zp_skl_U26
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DAROKR [12.51]
+:: OPIS: Wyliczenie składek społecznych od zwolnionego przychodu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_zp_prz:=FUNKCJE.L_SYS(9022);
+{? _zp_prz
+|| _kw_zw:=0;
+   {? __RUB.sys_attr(650,9021)
+   || _kw_zw:=FUNKCJE.LP(650)-FUNKCJE.LP(7018)-FUNKCJE.LP(7071)
+   ?};
+   _zw_prz:=exec('skl_bez_odlicz','napraw_p');
+   R.cntx_psh();
+   R.prefix();
+   _rub_zw:=__RUB.sys_rub(9021);
+   {? _rub_zw.first
+   || {!
+      |? {? R.seek(_rub_zw.R,)
+         || {? R.POD='T' & R.ZUS='N'
+            || _kw_zw+=FUNKCJE.LP(_rub_zw.RN)
+            ?}
+         ?};
+         _rub_zw.next
+      !}
+   ?};
+   R.cntx_pop();
+   _skl:=FUNKCJE.LP_SYS(512)+FUNKCJE.LP_SYS(522)+FUNKCJE.LP_SYS(532);
+   _prz_pod:=LICZ.Wylicz(,'.POD_P')+FUNKCJE.LP(779)-_kw_zw;
+   _zp_skl:=0;
+   {? _zp_prz=_prz_pod
+   || _zp_skl:=_skl-_zw_prz
+   || _pod_e_r:=FUNKCJE.LP_SYS(511);
+      _pod_chw:=FUNKCJE.LP_SYS(531);
+      _blokada:=_pod_chw>_pod_e_r;
+      R.cntx_psh();
+      R.prefix();
+      _rub_br:=__RUB.sys_rub(48);
+      _ZUS_np:=_POD_nz:=0;
+      {? R.first
+      || {!
+         |? {? R.RN>500 & R.ZUS='T' & R.POD='N' & ~_rub_br.find_key(R.RN)
+            || _ZUS_np+=FUNKCJE.LP(R.RN)
+            ?};
+            R.next
+         !}
+      ?};
+      R.cntx_pop();
+      _P_CHW:=FUNKCJE.LP_SYS(531)-_ZUS_np;
+      _P_POD:=_prz_pod;
+      _wsp_ZP:={? _P_POD || _P_CHW/_P_POD || 1 ?};
+      {? _wsp_ZP>1 || _wsp_ZP:=1 ?};
+      _Pzus_ZP:=_zp_prz*_wsp_ZP$2;
+      _zp_skl:=(_Pzus_ZP*KST.PRFC/100)$2;
+      {? _blokada
+      || {? _pod_e_r
+         || {? _Pzus_ZP>_pod_e_r || _Pzus_ZP:=_pod_e_r ?};
+            _zp_skl+=(_Pzus_ZP*KST.PRFRP/100)$2;
+            _zp_skl+=(_Pzus_ZP*KST.PRFE/2/100)$2
+         ?}
+      || _zp_skl+=(_Pzus_ZP*KST.PRFRP/100)$2;
+         _zp_skl+=(_Pzus_ZP*KST.PRFE/2/100)$2
+      ?}
+   ?};
+   {? _zp_skl>_skl
+   || _skl
+   || _zp_skl
+   ?}
+?}
+
+
+\przychod_780
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Wylicza przychód
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_zw_prz:=exec('skl_bez_odlicz','napraw_p');
+exec('p_ipod_podatek','napraw_p');
+_zp_prz:=FUNKCJE.L_SYS(9022);
+{? _zp_prz
+|| _zp_skl:=FUNKCJE.LP(765,767)-FUNKCJE.L_SYS(9026);
+   {? _zw_prz>_zp_skl || _zw_prz:=_zp_skl ?}
+|| _zp_skl:=FUNKCJE.LP(765,767)
+?};
+LICZ.Wylicz(,'.POD_P')+FUNKCJE.LP(779)+_zw_prz-FUNKCJE.L_SYS(9022)-_zp_skl
+
+
+\p_ipod_podatek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK
+:: OPIS: ustawienie bufora P_IPOD
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=1;
+_proc:=_przy:=0;
+_up:=_op:='';
+{? {? exec('szukaj_p_ipod','pracownik',date(O.RP,O.MP,0))
+   || _up:=P_IPOD.UP; _op:=P_IPOD.OP;
+      _proc:=P_IPOD.PROC; _przy:=P_IPOD.PRZYCH;
+      P_IPOD.OD~1<>O.RP
+   || 1
+   ?}
+|| P_IPOD.cntx_psh();
+   P_IPOD.fld_fml('OD','BLANK',"");
+   P_IPOD.blank();
+   P_IPOD.fld_fml('OD','BLANK',"*");
+   P_IPOD.OD:=P.DZA;
+   _ku:=P_IPOD.KU;
+   _up:=P_IPOD.UP;
+   _op:=P_IPOD.OP;
+   _proc:=P_IPOD.PROC;
+   _przy:=P_IPOD.PRZYCH;
+   {? exec('szukaj_p_ipod','pracownik',date(O.RP,O.MP,1))
+   || _ku:=P_IPOD.KU;
+      {? P_IPOD.UP<>'Z'
+      || _up:=P_IPOD.UP
+      ?}
+   ?};
+   P_IPOD.cntx_pop();
+   P_IPOD.P:=P.ref();
+   P_IPOD.KU:=_ku;
+   P_IPOD.UP:=_up;
+   P_IPOD.OP:=_op;
+   P_IPOD.PROC:=_proc;
+   P_IPOD.PRZYCH:=_przy;
+   P_IPOD.ST:='A';
+   {? _up<>P_IPOD.UP | _op<>P_IPOD.OP | _proc<>P_IPOD.PROC | _przy<>P_IPOD.PRZYCH
+   || P_IPOD.OD:=date(O.RP,O.MP,1)
+   ?}
+?};
+_ok
+
+
+\skl_bez_odlicz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Wyliczenie skladek zus, ktore nie podlegaja odliczeniom od podstawy podatku.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+DoList.k[17]:=DoList.k[18]:=0;
+{? ~FUNKCJE.LP(750) || return(0) ?};
+_Kwota:=0;
+IS_WYPL.index('LISTA');
+IS_WYPL.prefix(P.OSOBA,'L'+(4+FUNKCJE.ZNLISTY()));
+{? IS_WYPL.first
+|| {!
+   |? {? IS_WYPL.POD_U>IS_WYPL.POD_P
+      || _Kwota+=IS_WYPL.POD_U-IS_WYPL.POD_P
+      ?};
+      IS_WYPL.next()
+   !}
+?};
+_index:=IS_ROZL.ndx_tmp(,1,'P',,,'LT',,);
+IS_ROZL.index(_index);
+IS_ROZL.prefix(P.ref(),'L'+(4+FUNKCJE.ZNLISTY()));
+{? IS_ROZL.first
+|| {!
+   |? {? IS_ROZL.POD_U>IS_ROZL.POD_P
+      || _Kwota+=IS_ROZL.POD_U-IS_ROZL.POD_P
+      ?};
+      IS_ROZL.next()
+   !}
+?};
+IS_ROZL.ndx_drop(_index);
+
+{? _Kwota<=0 || return(0) ?};
+DoList.k[17]:=_Kwota;
+_wynik:=0;
+_year:=O.RU;
+_month:=O.MU;
+_blokada:=exec('czy_blokada_wynchor','lista_licz',_year,_month);
+_pod_e_r:=exec('kor_prac_zus','korekty_zus',P.ref,_year,_month);
+{? _pod_e_r<0 || _pod_e_r:=FUNKCJE.LP_SYS(511)$2 ?};
+_pod_ch_w:=FUNKCJE.LP_SYS(531)$2;
+_proc:=
+   {? _pod_e_r=_pod_ch_w & _year>=1999 & ~_blokada
+   || KST.WSODBR
+   |? _year>=1999
+   || {? _pod_ch_w || (KST.PRFE/2+KST.PRFRP)*_pod_e_r/_pod_ch_w ?}+KST.PRFC
+   ?}$2;
+{? _proc>0
+|| DoList.k[18]:=(_Kwota*_proc/100)$2
+?};
+DoList.k[18]
+
+
+\KU
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Wyliczenie KU
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+_skl_prac:=FUNKCJE.LP(765,767)-FUNKCJE.LP_SYS(9026);
+_l:=FUNKCJE.L(780)-FUNKCJE.L_SYS(9041);
+{? _l>0
+|| _l+=_skl_prac
+?};
+{? FUNKCJE.L_SYS(9022)
+|| {? _l>0
+    || _l-=(FUNKCJE.L_SYS(551)+FUNKCJE.L_SYS(32))
+    || _l:=0
+    ?}
+|| _l:=FUNKCJE.L(780)-FUNKCJE.L_SYS(9041)-FUNKCJE.LP(650)-FUNKCJE.L_SYS(32)+_skl_prac
+?};
+{? _l>0 & P_IPOD.KU<>'B'
+|| _ku:={? P_IPOD.KU='Z'
+          || KST.KUZ
+          || KST.KU
+          ?};
+   _n_zysk:=FUNKCJE.LP_SYS(73);
+   {? _n_zysk>0
+   || _brutto:=FUNKCJE.LP(500);
+      {? FUNKCJE.LP_SYS(710) & _brutto>0
+      || _l-=_n_zysk/_brutto*FUNKCJE.LP_SYS(724)$2
+      ?}
+   ?};
+   {? _l>0
+   || {? _ku<0 || _ku:=0 ?};
+      _wyn:=
+         {? _l<_ku
+         || _l
+         || _ku
+         ?}
+   ?}
+?};
+_wyn
+
+
+\KU_U26
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Wyliczenie prawdopodobnych KU dla pracowników poniżej 26 roku życia.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+_9022:=FUNKCJE.L_SYS(9022);
+{? _9022
+|| _skl_prac:=FUNKCJE.LP(765,767);
+   _l:=FUNKCJE.L(780)-FUNKCJE.LP_SYS(551)-FUNKCJE.L_SYS(32)+_skl_prac+_9022-FUNKCJE.L_SYS(9026);
+   {? _l>0 & P_IPOD.KU<>'B'
+   || _ku:={? P_IPOD.KU='Z'
+                || KST.KUZ
+                || KST.KU
+                ?};
+      _n_zysk:=FUNKCJE.LP_SYS(73);
+      {? _n_zysk>0
+      || _brutto:=FUNKCJE.LP(500);
+         {? FUNKCJE.LP_SYS(710) & _brutto>0
+         || _l-=_n_zysk/_brutto*FUNKCJE.LP_SYS(724)$2
+         ?}
+      ?};
+      {? _l>0
+      || {? _ku<0 || _ku:=0 ?};
+         _wyn:=
+            {? _l<_ku
+            || _l
+            || _ku
+            ?}
+      ?}
+   ?}
+?};
+_wyn
+
+
+\oblicz_podatek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Obliczenia podatku nominalnego
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+DoList.d[1]:=DoList.d[2]:=DoList.d[3]:=0;
+DoList.p[1]:=DoList.p[2]:=DoList.p[3]:=0;
+DoList.p[4]:=DoList.p[5]:=DoList.p[6]:=0;
+DoList.p[7]:=DoList.p[8]:=0;
+
+: wyliczenie wykorzystanych ulg i dochodu narastająco od początku roku
+exec('wyk_ul_podatek','lista_licz',O.RP,O.MP,P.OSOBA);
+exec('rachunki_podst_sk','lista_licz',P.OSOBA,O.RU,O.MU);
+: DoList.p[11] i DoList.p[12] wyliczone w podst_sk jako suma zwolnionego
+: dochodu i zaniechanego podatku z umów zleceń
+DoList.p[6]+=DoList.p[11];  DoList.p[7]+=DoList.p[12];
+
+: *** dochód do obliczenia procentu zaliczki ***
+DoList.d[1]:={? DoList.p[8]-DoList.p[4]>=0 || DoList.p[8]-DoList.p[4] || 0 ?};
+
+: *** dochód do obliczenia zaliczki ***
+DoList.d[3]:=(FUNKCJE.L_SYS(92))-FUNKCJE.L_SYS(93)$2;
+
+: *** dochód zwolniony ***
+DoList.d[2]:={? DoList.p[4]=0 || 0
+             |? (DoList.p[4]-DoList.p[6])>=DoList.d[3] || DoList.d[3]
+             |? (DoList.p[4]-DoList.p[6])>0 || DoList.p[4]-DoList.p[6]
+             || 0
+             ?}$2;
+_p:=0;
+{? P_IPOD.PROC>0 & DoList.d[3]>0
+|| FUNKCJE.LK_SYS(91,,P_IPOD.PROC)
+|| DoList.d[1]+=P_IPOD.PRZYCH
+?};
+
+{? (_p:=FUNKCJE.L_SYS(91))=0 & DoList.d[3]+FUNKCJE.L_SYS(9022)>0
+|| TP.index('TABPODAT');
+   TP.prefix(O.RP);
+   {? TP.first()
+   || _p0:=TP.PR;
+      _p:={? TP.find_le(DoList.d[1]) || TP.PR || _p0 ?};
+      {? P_IPOD.OP='T' & _p>_p0
+      || TP.prev();
+         _p:=TP.PR
+      ?};
+:: 17 procent podatku od października do grudnia 2019.
+      {? O.RP=2019 & (_p=18 | _p=17)
+      || {? date(O.RP,O.MP,1)>=date(2019,10,1)
+         || _p:=17
+         || _p:=18
+         ?}
+      ?}
+   || _p:=
+         {? date(O.RP,O.MP,1)>=date(2019,10,1)
+         || 17
+         |? O.RP>2008
+         || 18
+         || 19
+         ?}
+   ?};
+   FUNKCJE.LK_SYS(91,,_p)
+?};
+
+DoList.p[1]:=(((DoList.d[3]-DoList.d[2])$0)*_p*0.01)$2;
+{? DoList.p[1]<0 || DoList.p[1]:=0 ?};
+
+{? DoList.p[1] & exec('czy_ulga_podatkowa','lista_licz',O.RP,O.MP,P.OSOBA)
+|| _ulga_pod:=
+      {? DoList.p[1]>0 & P_IPOD.UP<>'B'
+      || {? P_IPOD.UP='Z'
+         || exec('oblicz_wsprozl','lista_licz')
+         || 1
+         ?}*KST.UL
+      ?};
+
+   {? _ulga_pod<0 | O.T().T='OTK' || _ulga_pod:=0 ?};
+   {? DoList.p[1]
+   || {? _ulga_pod<DoList.p[1]
+      || DoList.p[1]-=_ulga_pod
+      || _ulga_pod:=DoList.p[1]; DoList.p[1]:=0
+      ?}
+   ?}
+|| _ulga_pod:=0
+?};
+FUNKCJE.LK_SYS(94,,_ulga_pod);
+
+DoList.d[5]:={? DoList.d[2]>0 || ((DoList.d[3]$0)*_p*0.01)-_ulga_pod ?}$2;
+
+{? DoList.d[5]<0 || DoList.d[5]:=0 ?};
+
+DoList.p[5]-=DoList.p[7];
+DoList.p[2]:={? DoList.p[5]<=0 || DoList.p[1]
+             |? DoList.p[1]>DoList.p[5] || DoList.p[1]-DoList.p[5]
+             || 0
+             ?}$2;
+DoList.p[3]:=(DoList.p[1]-DoList.p[2])$2;
+
+DoList.p[1]$2
+
+
+\oblicz_U26
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Obliczenie podatku od pełnego przychodu - bez ulgi. Potrzebny do naliczenia składki na kasę chorych.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('Do_List')>100 || obj_del(Do_List) ?};
+Do_List:=obj_new('d1','d2','d3','d5','p1','p2','p3','p4','p5','p6','p7','p8','p14','p15','p16','p17');
+{! _ind:=1..obj_len(Do_List)
+|! Do_List[_ind]:=0
+!};
+
+: wyliczenie wykorzystanych ulg i dochodu narastająco od początku roku
+: DoList.p[4],DoList.p[5],DoList.p[6],DoList.p[7] - wyliczone w procedurze "wyk_ul"
+Do_List.p14:=DoList.p[4];Do_List.p15:=DoList.p[5];Do_List.p16:=DoList.p[6];Do_List.p17:=DoList.p[7];
+exec('wyk_ul_podatek','lista_licz',O.RP,O.MP,P.OSOBA);
+Do_List.p4:=DoList.p[4];Do_List.p5:=DoList.p[5];Do_List.p6:=DoList.p[6];Do_List.p7:=DoList.p[7];
+: DoList.p[11] i DoList.p[12] wyliczone w podst_sk jako suma zwolnionego
+: dochodu i zaniechanego podatku z umów zleceń
+Do_List.p6+=DoList.p[11];  Do_List.p7+=DoList.p[12];
+: *** dochód do obliczenia procentu zaliczki ***
+Do_List.d1:={? DoList.p[8]-Do_List.p4>=0 || DoList.p[8]-Do_List.p4 || 0 ?};
+
+: *** dochód do obliczenia zaliczki ***
+Do_List.d3:=(FUNKCJE.L_SYS(9022)+FUNKCJE.L_SYS(92)-FUNKCJE.L_SYS(9024)-FUNKCJE.L_SYS(9026))$2;
+
+: *** dochód zwolniony ***
+Do_List.d2:=
+   {? Do_List.p4=0 || 0
+   |? (Do_List.p4-Do_List.p6)>=Do_List.d3 || Do_List.d3
+   |? (Do_List.p4-Do_List.p6)>0 || Do_List.p4-Do_List.p6
+   || 0
+   ?}$2;
+_odl_2:=FUNKCJE.LP_SYS(98);
+
+_dochod_2:=0;
+
+{? (_p:=FUNKCJE.L_SYS(91))=0
+|| TP.index('TABPODAT');
+   TP.prefix(O.RP);
+   {? TP.first()
+   || _p0:=TP.PR;
+      _p:={? TP.find_le(DoList.d[1]) || TP.PR || _p0 ?};
+      {? P_IPOD.OP='T' & _p>_p0
+      || TP.prev();
+         _p:=TP.PR
+      ?};
+:: 17 procent podatku od października do grudnia 2019.
+      {? O.RP=2019 & (_p=18 | _p=17)
+      || {? date(O.RP,O.MP,1)>=date(2019,10,1)
+         || _p:=17
+         || _p:=18
+         ?}
+      ?}
+   || _p:=
+         {? date(O.RP,O.MP,1)>=date(2019,10,1)
+         || 17
+         |? O.RP>2008
+         || 18
+         || 19
+         ?}
+   ?}
+?};
+
+Do_List.p1:=(((Do_List.d3+_dochod_2-Do_List.d2-_odl_2)$0)*_p*0.01)$2;
+{? Do_List.p1<0 || Do_List.p1:=0 ?};
+
+{? Do_List.p1 & exec('czy_ulga_podatkowa','lista_licz',O.RP,O.MP,P.OSOBA)
+|| _ulga_pod:=
+      {? Do_List.p1>0 & P_IPOD.UP<>'B'
+      || {? P_IPOD.UP='Z'
+         || exec('oblicz_wsprozl','lista_licz')
+         || 1
+         ?}*KST.UL
+      ?};
+   {? _ulga_pod<0 | O.T().T='OTK' || _ulga_pod:=0 ?};
+   {? Do_List.p1
+   || {? _ulga_pod<Do_List.p1
+      || Do_List.p1-=_ulga_pod
+      || _ulga_pod:=Do_List.p1; Do_List.p1:=0
+      ?}
+   ?}
+|| _ulga_pod:=0
+?};
+FUNKCJE.LK_SYS(9025,,_ulga_pod);
+:: Przywrócenie wartości tablicy dla prawidłowo wyliczonych ulg
+DoList.p[4]:=Do_List.p14;
+DoList.p[5]:=Do_List.p15;
+DoList.p[6]:=Do_List.p16;
+DoList.p[7]:=Do_List.p17;
+_wynik:=Do_List.p1$2;
+obj_del(Do_List);
+{? _wynik>0 || _wynik ?}
+
+
+\skl_zdr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Wyliczenie składek ub. zdrowotnego
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_dt:=date(O.RP,O.MP,1);_kc1:=0;kc2:=kc3:=0;
+_POZ_ONE:=FUNKCJE.L_SYS(9023);
+_POZ_ASK:=_POZ_ONE>0;
+_kcp:=_kcpo:=FUNKCJE.LP(791);
+exec('skl_zlec_podst_sk','!ppl_pll_nals');
+_kcpop:=FUNKCJE.LP(7020)-FUNKCJE.LP(7021);
+_kcbiez:=_kcpo-FUNKCJE.LP(7020)+FUNKCJE.LP(7021);
+{? _kcp<>0
+|| _kc_k_p:=exec('kor_ikor_kor_zus','lista_licz',792,1,O.MU,'L'+FUNKCJE.ZNLISTY(),O.RU,1);
+   _kc_k_s:=exec('kor_ikor_kor_zus','lista_licz',792,2,O.MU,'L'+FUNKCJE.ZNLISTY(),O.RU,1);
+   _kc1:=(((_kcp+_kc_k_p)*KST.PRKC*0.01)$2-_kc_k_s)$2;
+   {? _kc1
+   || _kcpo-=_kcpop;
+      {? _POZ_ASK
+      || _KU:=FUNKCJE.LP_SYS(9024);
+         {? ~_KU || _KU:=FUNKCJE.LP_SYS(93) ?};
+         _UP:=FUNKCJE.LP_SYS(9025);
+         {? ~_UP || _UP:=FUNKCJE.LP_SYS(94) ?};
+         _podobn:=(((_kcpo-_KU)$0)*FUNKCJE.L_SYS(91)/100-_UP)$2;
+         _podobn:={? _podobn<0 || 0 || _podobn ?};
+         _kc1:={? _podobn<_kc1 || _podobn || _kc1 ?};
+         {? _POZ_ONE=0
+         || _POZ_ONE:=FUNKCJE.L(790)
+         ?};
+         {? _POZ_ONE<_kc1
+         || _kc1:=_POZ_ONE
+         ?};
+:: wyliczenie składek na ubzp. zdrowotne od zwolnionego przychodu
+         _zw_prz:=exec('skl_bez_odlicz','napraw_p');
+         _do_ulg:=FUNKCJE.L_SYS(9022)-FUNKCJE.L_SYS(9026)+FUNKCJE.L_SYS(92)+FUNKCJE.LP_SYS(5711)+FUNKCJE.LP_SYS(57210);
+         _do_ulg-=(FUNKCJE.LP_SYS(9021)+_zw_prz);
+
+:: ustalenie udziału podstawy kasy chorych w ZP: Przychod
+:: składki od zwolnionych przychodow nie podlegają odliczeniom
+
+         {? _do_ulg>FUNKCJE.L_SYS(9022)
+         || _ogranicz:=1
+         || _ogranicz:=0
+         ?};
+         {? _ogranicz
+         || _kc_zp:=FUNKCJE.L_SYS(9022);
+            _pom:=FUNKCJE.LP_SYS(56411);
+            _ubz:={? _pom<>0 || _pom+FUNKCJE.LP_SYS(5711)+FUNKCJE.LP_SYS(57210)-DoList.k[17] ?};
+            _wsp:={? _do_ulg || _ubz/_do_ulg ?};
+            _wsp:={? _wsp>1 || 1 |? _wsp<0 || 0 || _wsp ?};
+            _kc_zp-=FUNKCJE.L_SYS(9026);
+              _kc_zp:=(_kc_zp*_wsp)$2;
+             {? _kc_zp>_kcbiez || _kc_zp:=_kcbiez ?}
+         || _kc_zp:=_kcbiez
+         ?};
+
+         kc3:=(_kc_zp*KST.PRKO*0.01)$2;
+         kc3:={? _kc1<kc3 || _kc1 || kc3 ?};
+
+:: podatek naliczony w ujeciu miesiecznym po odjęciu odliczonych skladek, ktore  nie podlegających odliczeniu
+         _po_zp:=(((_kcpo-_KU)$0)*FUNKCJE.L_SYS(91)/100-_UP)$2;
+         _po_zp-=kc3;
+         _po_zp:={? _po_zp<0 || 0 || _po_zp ?};
+:: składki po odjeciu skladek niepodlgejacych odliczeniu pochodzących z podstawy z ZP: Przychod
+:: DoList.k[19] - zawiera składki od ZP: Przychod dla zlecen
+         _pom1:=((_kcpo)*KST.PRKO*0.01)$2;
+         _pom1-=kc3;
+         {? _pom1>_po_zp || _pom1:=_po_zp ?};
+
+:: odliczenie nie może przekroczyć 7,75 % procenta podstawy
+         _pom2:=((_kcpo)*KST.PRKO*0.01)$2;
+
+:: odliczenie nie może przekroczyć 7,75 % procenta podstawy
+         kc2:={? _pom1>_pom2 || _pom2 || _pom1 ?};
+:: odliczenie nie może byc wyższe nie podatek naliczony od podstawy
+         kc2:={? _po_zp<kc2 || _po_zp || kc2 ?};
+         {? kc2<0 || kc2:=0 ?}
+
+      || _podobn:=((_kcpo-FUNKCJE.LP_SYS(93))$0)*FUNKCJE.L_SYS(91)/100-FUNKCJE.L_SYS(94)$2;
+         _podobn:={? _podobn<0 || 0 || _podobn ?};
+         _kc1:={? _podobn<_kc1 || _podobn || _kc1 ?};
+         kc2:={? date(2003,1,1)<=_dt
+              || (_kcpo*KST.PRKO*0.01)$2
+              || _kc1
+              ?};
+         _podnom:=FUNKCJE.L_SYS(95);
+         {? _podnom<_kc1
+         || _kc1:=_podnom
+         ?};
+         kc2:={? _podobn<kc2 || _podobn || kc2 ?}
+      ?};
+      {? DoList.p[1]>=kc2
+      || DoList.p[1]-=kc2
+      || kc2:=DoList.p[1];
+         DoList.p[1]:=0
+      ?}
+   ?}
+?};
+_kc1+FUNKCJE.LP(7025)
+
+
+\zaliczka_pdf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Wyliczenie zaliczki na podatek
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_kw:=FUNKCJE.L(790);
+{? _kw>0
+|| _kw-=(FUNKCJE.L(793)+FUNKCJE.LP(795));
+   _kw:=_kw$(O.RP<2006);
+   {? _kw<0
+   || {? DoList.p[1]<=_kw || _kw
+      |? DoList.p[5] || 0
+      || DoList.p[1]$(O.RP<2006)
+      ?}
+   || _kw
+   ?}
+?}
+
+
+\PA_7002
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: Zwolnienie PA: Pzychod dla U26
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_wynik:=FUNKCJE.LP(7002);
+{? _wynik
+|| _POZ_ALL:=FUNKCJE.LP_SYS(9022);
+   _POZ_ONE:=FUNKCJE.L_SYS(9022);
+   _POZ_ASK:=_POZ_ALL+_POZ_ONE>0;
+   {? _POZ_ASK
+   || _ogranicz:=0;
+      _zw_prz:=exec('skl_bez_odlicz','napraw_p');
+      _do_ulg:=FUNKCJE.L_SYS(9022)-FUNKCJE.L_SYS(9026)+FUNKCJE.L_SYS(92)+FUNKCJE.LP_SYS(5711)+FUNKCJE.LP_SYS(57210)-_zw_prz;
+      _do_ulg-=FUNKCJE.LP_SYS(9021);
+      {? _do_ulg>FUNKCJE.L_SYS(9022)
+      || _ogranicz:=1
+      ?};
+      {? _ogranicz & _do_ulg>0
+      || _pa_zp:=FUNKCJE.L_SYS(9022);
+         _wsp:=_wynik/_do_ulg;
+         _wsp:={? _wsp>1 || 1 |? _wsp<0 || 0 || _wsp ?};
+         _pa_zp:=(_pa_zp*_wsp)$2
+      || _pa_zp:=_wynik
+      ?};
+      _wynik-=_pa_zp;
+      _wynik:={? _wynik<0 || 0 || _wynik ?}
+   ?}
+?};
+_wynik
+
+
+\PA_7003
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: PA: Podstawa KU
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_przych:=FUNKCJE.L(7002);
+{? _przych
+|| _podstER:=FUNKCJE.LP_SYS(511);
+   _podstCH:=FUNKCJE.LP_SYS(531);
+   _proc:=
+      {? _podstER=_podstCH
+      || KST.WSODBR
+      || {? _podstCH || (KST.PRFE/2+KST.PRFRP)*_podstER/_podstCH ?}+KST.PRFC
+      ?};
+   {? _proc>0
+   || (_przych-(_przych*_proc/100))$2
+   ?}
+?}
+
+
+\PA_7004
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [19.22]
+:: OPIS: PA: Koszty uzyskania
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_podst:=FUNKCJE.L(7003);
+{? _podst
+|| _ku:=_podst*0.5$2;
+   _blokada:=obj_new(2);
+   _blokada[1]:=_blokada[2]:=0;
+   exec('blok_koszt50_zlec_rh','lista_licz',P.ref(),date(O.RP,O.MP,0),O.ref(),_ku,_blokada);
+   {? _blokada[1]>0
+   || _ku:=0
+   |? ~_blokada[1] & _blokada[2]
+   || _ku:=_blokada[2]
+   ?};
+   obj_del(_blokada);
+   _ku
+?}
+
+
+
+\p_05
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51]
+:: OPIS: Funkcja naprawcza dla aktualizacji 12.51_27
+::       Funkcja dodająca 12 listopada 2018 r. jako święto do opisu wzorca
+::   WE: [_a] [NUMBER] - czy pokazywać log
+::----------------------------------------------------------------------------------------------------------------------
+_show_log:={? var_pres('_a')=type_of(0) || _a || 1 ?};
+
+exec('czytaj','#stalesys',,KST,KST_PAR,XINFO);
+exec('RAPLS','object');
+exec('__F_ZATR','object');
+exec('__KAL','object');
+exec('__HARM','object');
+exec('__RUB','object');
+exec('__WND','object');
+exec('__STALE','object');
+exec('FUNKCJE','object');
+exec('MASK','object');
+exec('myDIALOG','object');
+exec('KOMM','#object');
+exec('dekl_sarray','#array');
+exec('PROGRESS','#object');
+
+_sposob:=FUN.choice('UWAGA !!! - aktualizację należy uruchomić po wejściu w życie ustawy\n'+
+     'ustanawiającej 12 listopada 2018 r. dniem świątecznym.\n'+
+     'Po uruchomieniu aktualizacji nie ma możliwości powrotu do poprzedniego stanu w danych.\n\n'+
+     'Wybierz sposób naniesienia aktualizacji dodającej nowe święto:\n\n'+
+     'Uproszczony - dodanie święta tylko do wzorców kalendarzy oraz modyfikacja typu\n'+
+     'dnia we wszystkich kalendarzach.\n\n'+
+     'Pełny - dodanie święta oraz aktualizacja danych powiązanych\n'+
+     '(m.in. nieobecności, okresy rozliczeniowe...).\n\n'+
+     'Zakończ - formuła potransferowa zostanie uznana za zakończoną. Jej ponowne uruchomienie nie będzie możliwe.\n'+
+     'Anuluj - formuła potransferowa zostanie przerwana. Możliwe będzie jej ponowne uruchomienie.\n'
+     ,,'Uproszczony','Pełny','Zakończ');
+
+_log:=obj_new('TAB','add','show');
+
+_log.TAB:=tab_tmp(1,
+   'PARENT','TREE_REF','',
+   'SEL','STRING[1]','Wybrane',
+   'DONE','STRING[1]','Wykonane',
+   'WSEL','STRING[1]','Wybrane?',
+   'WDONE','STRING[1]','Wykonane?',
+   'TEXT','STRING[255]','Opis zadania'
+);
+
+_log.add:="
+   .TAB.SEL:=_a;
+   .TAB.DONE:=_b;
+   .TAB.TEXT:=_c;
+   .TAB.PARENT:={? var_pres('_d')=type_of(null()) || _d || null() ?};
+   {? .TAB.add(1) || .TAB.ref() || 0 ?}
+";
+
+{? _sposob=0 || return(_log.TAB) ?};
+{? _sposob=3
+|| _log.add('N','N','Aktualizacja związana z wprowadzeniem nowego święta na 12 listopada 2018 r.');
+   return(_log.TAB)
+?};
+
+_log.show:="
+   _win:=.TAB.mk_sel('Podsumowanie wykonanych działań','N',0,,,,,1);
+   .TAB.win_fld(_win,,'WSEL',,,-9);
+   .TAB.win_fld(_win,,'WDONE',,,-9);
+   .TAB.win_fld(_win,,'TEXT',,,-140);
+   .TAB.win_fml(_win,,'WSEL',,'ICON_BEFORE',\"
+      {? cur_tab().SEL='T'
+      || 'xwin16.png:13'
+      || 'xwin16.png:14'
+      ?}
+   \");
+   .TAB.win_fml(_win,,'WDONE',,'ICON_BEFORE',\"
+      {? cur_tab().DONE='T'
+      || 'xwin16.png:13'
+      || {? cur_tab().SEL='T'
+         || 'xwin16.png:38'
+         || 'xwin16.png:14'
+         ?}
+      ?}
+   \");
+   .TAB.fld_attr(,2);
+   .TAB.win_sel(_win);
+   .TAB.select()
+";
+
+:: modyfikacja pola OPIS w kalendarzach i buforach planowania
+_akt_opis:="
+   _tab:=_a;
+   _data:=_b;
+   _opis:=_c;
+   _jakoSW:=_d;
+   _kal_def:=(2-!_tab='KAL_DEF');
+   _kal_buff:=(2-!_tab='KAL_BUFF');
+   _tab.cntx_psh();
+   _ndx:=_tab.ndx_tmp('',1,'DATA',,);
+   _tab.index(_ndx);
+   _tab.prefix(_data);
+   KAL_ROK.cntx_psh();
+   KAL_NAZW.cntx_psh();
+   {? _tab.first()
+   || {!
+      |? _tab.OPIS:=_c;
+::       ustawiamy dzień jako święto zawsze dla kalendarza standard oraz ewentualnie dla kalendarzy globalnych
+::       ale nie dla kalendarzy indywidualnych lub buforów planowania
+         _setSW:=_kal_def & _tab.ROK().NAZWA().NAZWA='standard';
+         {? _jakoSW & _kal_def & ~_setSW
+         || _setSW:=((KAL_NAZW.CZESC='N') & (KAL_NAZW.GRAFIK='N'))
+         ?};
+::       aktualizujemy tylko kal_def-a i kal_bufa w zakresie planowania i grafików
+         {? _kal_def | (_kal_buff & ('PG'*_tab.GPW))
+         || {? _tab.TYP='R' & ~_setSW
+            || _tab.TYPWS:='S'
+            || _tab.TYP:='S';
+               _tab.TYPWS:='W';
+               _tab.DATAW:=_tab.DATA;
+               _tab.POCZATEK:=_tab.KONIEC:=_tab.CZAS:=time(0,0,0)
+            ?};
+            _tab.put(1)
+         ?};
+         _tab.next()
+      !}
+   ?};
+   KAL_NAZW.cntx_pop();
+   KAL_ROK.cntx_pop();
+   _tab.cntx_pop();
+   _tab.ndx_drop(_ndx);
+   1
+";
+
+OSOBA.cntx_psh();
+P.cntx_psh();
+_rok:=2018;
+_list_12:=date(_rok,11,12);
+_jakoSW:=0;
+
+{? _sposob=2
+|| _jakoSW:=FUN.ask('Czy ustawić dzień '+_list_12$6+' jako dzień wolny świąteczny we wszystkich kalendarzach globalnych?\n'+
+                 '(dane w kalendarzu "standard" oraz wzorce we wszystkich kalendarzach\n'+
+                 'zostanią zmienione niezależnie od odpowiedzi)')
+?};
+
+_a2std:=0;
+_l_wz:=_l_wza:=0;
+KAL_OPIS.cntx_psh();
+KAL_WZOR.cntx_psh();
+KAL_WZOR.prefix(REF.FIRMA);
+{? KAL_WZOR.first()
+|| PROGRESS.set(KAL_WZOR.size(),'Trwa aktualizacja kalendarzy 1/2...');
+   {!
+   |? KAL_OPIS.prefix(KAL_WZOR.ref(),_rok);
+      {? KAL_OPIS.last()
+      || _l_wz+=1;
+::       sprawdzenie czy było już to święto w danych
+         _brak_sw:=1;
+         {!
+         |? _data:=exec('str2date','#convert',form(KAL_OPIS.DATA));
+            {? KAL_OPIS.NUMER>7 & _data=_list_12
+::             jest już w KAL_OPISie zdefiniowane to święto (ktoś je tam dodał poza standardem)
+            || _l_wza+=1;
+               _brak_sw:=0
+            ?};
+            _brak_sw & KAL_OPIS.prev()
+         !};
+
+         _opis:='100-lecie Odzyskania Niepodległości';
+
+::       dodaj święto jeśli nie było go we wzorcu
+         {? _brak_sw
+         || _mydo:=do_state()=0;
+::          zalozenie transakcji
+            {? _mydo || do() ?};
+
+            KAL_OPIS.last();
+            {!
+            |? _data:=exec('str2date','#convert',form(KAL_OPIS.DATA));
+               {? KAL_OPIS.NUMER>7 & _data>_list_12
+::                święta przypadające po - trzeba zrobić miejsce i przesunąć numerację
+               || KAL_OPIS.NUMER:=KAL_OPIS.NUMER+1;
+                  KAL_OPIS.put()
+               |? KAL_OPIS.NUMER>=7 & _data<_list_12
+               || _nr:=KAL_OPIS.NUMER;
+                  KAL_OPIS.blank(1);
+                  KAL_OPIS.DZIEŃ:='12 Listopada';
+                  KAL_OPIS.OPIS:=_opis;
+                  KAL_OPIS.DATA:=$_list_12;
+                  KAL_OPIS.TYP:='S';
+                  KAL_OPIS.RODZAJ:='G';
+                  KAL_OPIS.WZORZEC:=KAL_WZOR.ref();
+                  KAL_OPIS.ROK:=_rok;
+                  KAL_OPIS.NUMER:=_nr+1;
+                  {? KAL_OPIS.add(1)
+                  || _l_wza+=1;
+                     _brak_sw:=0
+                  ?}
+               ?};
+               _brak_sw & KAL_OPIS.prev()
+            !};
+
+            {? _mydo || end() ?}
+         ?};
+         {? ~_brak_sw & KAL_OPIS.WZORZEC().NAZWA='standard' || _a2std:=1 ?}
+      ?};
+      PROGRESS.next();
+      KAL_WZOR.next()
+   !};
+   {? _a2std
+   || _akt_opis(KAL_DEF,_list_12,_opis,_jakoSW);
+      _akt_opis(KAL_BUFF,_list_12,_opis,0)
+   ?};
+   PROGRESS.close()
+?};
+KAL_WZOR.cntx_pop();
+KAL_OPIS.cntx_pop();
+__KAL.ws.init();
+
+_log.add('T',{? _l_wz=_l_wza || 'T' || 'N' ?},'Dodanie nowego święta we wszystkich wzorcach kalendarzy.');
+_log.add('T',{? _a2std || 'T' || 'N' ?},'Ustawienie nowego święta w kalendarzu "standard".');
+
+:: aktualizacja pól w KAL_DEF z wartosciami narastajacymi kalendarza.
+_kal_std:=exec('standard_ref','kalendarz');
+KAL_ROK.cntx_psh();
+_ndx:=KAL_ROK.ndx_tmp('',1,'NAZWA','FIRMA',0,'ROK',,0);
+KAL_ROK.index(_ndx);
+KAL_ROK.prefix(REF.FIRMA,_rok);
+{? KAL_ROK.first()
+|| PROGRESS.set(KAL_ROK.size(),'Trwa aktualizacja kalendarzy 2/2...');
+   {!
+   |? {? (KAL_ROK.NAZWA=_kal_std | _jakoSW) & KAL_ROK.NAZWA().CZESC='N' & KAL_ROK.NAZWA().GRAFIK='N'
+      || exec('akt_rok','kaledit',KAL_ROK.NAZWA,KAL_ROK.ROK)
+      ?};
+      PROGRESS.next();
+      KAL_ROK.next()
+   !};
+   PROGRESS.close()
+?};
+KAL_ROK.cntx_pop();
+KAL_ROK.ndx_drop(_ndx);
+
+:: kończymy dla uproszczonego sposobu
+{? _sposob=1
+|| {? _show_log || _log.show() ?};
+   P.cntx_pop();
+   OSOBA.cntx_pop();
+   return(_log.TAB)
+?};
+
+_log.add({? _jakoSW || 'T' || 'N' ?},{? _jakoSW || 'T' || 'N' ?},
+        'Ustawienie nowego święta we wszystkich kalendarzach globalnych.');
+
+:: aktualizacja nieobecności
+_nieob:='N';
+_url_plan:=0;
+{? FUN.ask('Czy aktualizować nieobecności, wnioski urlopowe oraz plany urlopowe na podstawie zmienionych kalendarzy?\n'+
+            '(zaktualizowane zostaną nieobecności bez przypisanej listy płac lub przypisane do otwartych list płac\n'+
+             'oraz niebędące nieobecnościami na część dnia)')
+|| _nieob:='T';
+   _sql:=''+"select N.REFERENCE as REF, N.P, N.OD, N.DO, N.NB, N.LT, OSOBA.NAZWISKO
+             from N join P join OSOBA where N.FIRMA=:_c and N.KOR='N' and N.DO>=to_date(:_a) and N.OD<=to_date(:_b)
+             order by OSOBA.NAZWISKO";
+
+   _tabN:=sql(_sql,_list_12,_list_12,REF.FIRMA);
+
+   _is_open:="
+      _result:=0;
+      O.prefix(REF.FIRMA,-_a,);
+      {? O.first()
+      || _result:=O.Z<>'T'
+      ?};
+      _result
+   ";
+
+   _kal_nazw:=__KAL.kal_nazw;
+   _parent:=_log.add(_nieob,{? _nieob='T' & _tabN.size()>0 || 'T' || 'N' ?},
+            'Aktualizacja liczby dni i godzin roboczych nieobecności pracowników'+
+            ' (nieobecności bez przypisanej listy płac lub przypisane do otwartych list płac'+
+            ' oraz nie będące nieobecnością na część dnia).');
+   O.cntx_psh();
+   O.index('LISTYPZN');
+   N.cntx_psh();
+   N.prefix();
+   {? _tabN.first()
+   || PROGRESS.set(_tabN.size(),'Trwa aktualizacja nieobecności...');
+      _org:=exec('n_params','nieobecnosc');
+      {!
+      |? {? N.seek(_tabN.REF)
+         || _part:={? var_pres('PARTDAY',N)>0 || N.PARTDAY='T' || 0 ?};
+            _opisN:='     '+N.P().OSOBA().NAZWISKO+' '+OSOBA.PIERWSZE+' ('+form(P.T)+')'+
+                    ' - '+$N.OD+' do '+$N.DO+'   ('+$N.NB().RN+' - '+N.NB().RT+')';
+            {? (N.LT='' | _is_open(N.LT)) & (~_part) & N.NRG_AUTO='T'
+            || _org.NB:=N.NB;
+               _org.OD:=N.OD;
+               _org.DO:=N.DO;
+               _nr:=N.NR;
+               _ng:=N.NG;
+               __KAL.set_cal(N.P().KAL);
+               N.NR:=__KAL.w_days(N.OD,N.DO);
+               N.NG:=exec('nominal','godziny',N.OD,N.DO);
+               {? (_nr<>N.NR | _ng<>N.NG) & N.put(1)
+               || NieoRok:=N.OD~1;
+                  NieoKod:=N.NB;
+                  exec('kart_url_update_put_n','kart_url',_org);
+                  _log.add('T','T',_opisN,_parent)
+               || _log.add('T','N',_opisN,_parent)
+               ?};
+               FUNKCJE.OBLICZDS(N.OD~1)
+            ?}
+         ?};
+         PROGRESS.next();
+         _tabN.next()
+      !};
+      PROGRESS.close()
+   ?};
+   N.cntx_pop();
+   O.cntx_pop();
+   {? var_pres('_kal_nazw')=type_of(null())
+   || __KAL.set_cal(_kal_nazw)
+   ?};
+
+
+:: aktualizacja nieobecności dla zleceniobiorców
+   &_sql;
+   _sql:=''+"select OS_N.REFERENCE as REF, OSOBA.NAZWISKO from OS_N join OSOBA
+             where OS_N.FIRMA=:_c and OS_N.DO>=to_date(:_a) and OS_N.OD<=to_date(:_b)
+             order by OSOBA.NAZWISKO";
+   _OS_N:=sql(_sql,_list_12,_list_12,REF.FIRMA);
+
+   _parent:=_log.add(_nieob,{? _nieob='T' & _OS_N.size()>0 || 'T' || 'N' ?},
+                     'Aktualizacja liczby dni i godzin roboczych nieobecności zleceniobiorców.');
+   OS_N.cntx_psh();
+   OS_N.prefix();
+   {? _OS_N.first()
+   || PROGRESS.set(_OS_N.size(),'Trwa aktualizacja nieobecności zleceniobiorców...');
+      {!
+      |? {? OS_N.seek(_OS_N.REF)
+         || __KAL.set_cal('standard');
+            _nr:=OS_N.NR;
+            _ng:=OS_N.NG;
+            OS_N.NR:=__KAL.w_days(OS_N.OD,OS_N.DO);
+            OS_N.NG:=__KAL.w_hours(OS_N.OD,OS_N.DO);
+            _opisN:='     '+OS_N.OSOBA().NAZWISKO+' '+OSOBA.PIERWSZE+
+                    ' - '+$OS_N.OD+' do '+$OS_N.DO+'   ('+$OS_N.R().RN+' - '+OS_N.R().RT+')';
+            _log.add('T',{? (_nr<>OS_N.NR | _ng<>OS_N.NG) & OS_N.put(1) || 'T' || 'N' ?},_opisN,_parent)
+         ?};
+         PROGRESS.next();
+         _OS_N.next()
+      !};
+      PROGRESS.close()
+   ?};
+   OS_N.cntx_pop();
+   &_sql;
+   _sql:=''+"select ZC_N.REFERENCE as REF, OSOBA.NAZWISKO from ZC_N join OS_N join OSOBA
+             where OS_N.FIRMA=:_c and ZC_N.DO>=to_date(:_a) and ZC_N.OD<=to_date(:_b) and ZC_N.RH is null
+             order by OSOBA.NAZWISKO";
+   _ZC_N:=sql(_sql,_list_12,_list_12,REF.FIRMA);
+   _parent:=_log.add(_nieob,{? _nieob='T' & _ZC_N.size()>0 || 'T' || 'N' ?},
+                     'Aktualizacja liczby dni i godzin roboczych dla realizacji wypłat zasiłków zleceniobiorców.');
+   ZC_N.cntx_psh();
+   ZC_N.prefix();
+   P.prefix();
+   {? _ZC_N.first()
+   || PROGRESS.set(_ZC_N.size(),'Trwa aktualizacja realizacji wypłat zasiłków dla umów-zleceń...');
+      {!
+      |? {? ZC_N.seek(_ZC_N.REF)
+         || __KAL.set_cal({? ZC_N.ZC().P().KAL || ZC_N.ZC().P().KAL().NAZWA || 'standard' ?});
+            _nr:=ZC_N.NR;
+            _ng:=ZC_N.NG;
+            ZC_N.NR:=__KAL.w_days(ZC_N.OD,ZC_N.DO);
+            ZC_N.NG:=__KAL.w_hours(ZC_N.OD,ZC_N.DO);
+            _opisN:='     '+ZC_N.OS_N().OSOBA().NAZWISKO+' '+OSOBA.PIERWSZE+
+                    ' - '+$ZC_N.OD+' do '+$ZC_N.DO+'   ('+$ZC_N.R().RN+' - '+ZC_N.R().RT+')';
+            _log.add('T',{? (_nr<>ZC_N.NR | _ng<>ZC_N.NG) & ZC_N.put(1) || 'T' || 'N' ?},_opisN,_parent)
+         ?};
+         PROGRESS.next();
+         _ZC_N.next()
+      !};
+      PROGRESS.close()
+   ?};
+   ZC_N.cntx_pop();
+
+:: Wnioski urlopowe
+   &_sql;
+   _sql:=''+"select NWU.REFERENCE as REF, OSOBA.NAZWISKO
+             from NWU join P using(P.REFERENCE, NWU.P) join OSOBA using(OSOBA.REFERENCE, P.OSOBA)
+             where P.FIRMA=:_c and NWU.DO>=to_date(:_a) and NWU.OD<=to_date(:_b)
+             order by OSOBA.NAZWISKO";
+   _NWU:=sql(_sql,_list_12,_list_12,REF.FIRMA);
+   _parent:=_log.add(_nieob,{? _nieob='T' & _NWU.size()>0 || 'T' || 'N' ?},
+                     'Aktualizacja liczby dni i godzin roboczych wniosków urlopowych.');
+   NWU.cntx_psh();
+   NWU.prefix();
+   P.prefix();
+   {? _NWU.first()
+   || PROGRESS.set(_NWU.size(),'Trwa aktualizacja wniosków urlopowych...');
+      {!
+      |? {? NWU.seek(_NWU.REF) & NWU.PARTDAY<>'T'
+         || __KAL.set_cal({? NWU.P().KAL || NWU.P().KAL().NAZWA || 'standard' ?});
+            _godz:=NWU.G;
+            NWU.G:=NWU.NG:=__KAL.w_hours(NWU.OD,NWU.DO);
+            NWU.NR:=__KAL.w_days(NWU.OD,NWU.DO);
+            _opisN:='     '+NWU.P().OSOBA().NAZWISKO+' '+OSOBA.PIERWSZE+
+                    ' - '+$NWU.OD+' do '+$NWU.DO+'   ('+$NWU.R().RN+' - '+NWU.R().RT+')';
+            _log.add('T',{? (_godz<>NWU.G) & NWU.put(1) || 'T' || 'N' ?},_opisN,_parent)
+         ?};
+         PROGRESS.next();
+         _NWU.next()
+      !};
+      PROGRESS.close()
+   ?};
+   NWU.cntx_pop();
+
+:: Plany urlopowe
+   _sql:=''+"select URL_POZ.REFERENCE as REF, OSOBA.NAZWISKO
+             from URL_POZ join URL_PLAN join P using(P.REFERENCE, URL_PLAN.P) join OSOBA using(OSOBA.REFERENCE, P.OSOBA)
+             where P.FIRMA=:_c and URL_POZ.DO>=to_date(:_a) and URL_POZ.OD<=to_date(:_b)
+             order by OSOBA.NAZWISKO";
+   _tabUP:=sql(_sql,_list_12,_list_12,REF.FIRMA);
+   _parent:=_log.add(_nieob,{? _tabUP.size()>0 || 'T' || 'N' ?},
+                     'Aktualizacja liczby dni i godzin roboczych planów urlopowych.');
+
+   {? _tabUP.first()
+   || URL_PLAN.cntx_psh();
+      URL_POZ.cntx_psh();
+      URL_POZ.index('URL_POZ');
+      URL_POZ.prefix();
+      PROGRESS.set(_tabUP.size(),'Trwa aktualizacja planów urlopowych...');
+      {!
+      |? {? URL_POZ.seek(_tabUP.REF)
+         || {? __KAL.set_cal(URL_POZ.URL_PLAN().P().KAL,_list_12~1)
+            || {? URL_PLAN.ST='A' | URL_PLAN.ST='K' | URL_PLAN.ST='U'
+               || _nr:=URL_POZ.NR;
+                  _ng:=URL_POZ.NG;
+                  URL_POZ.NR:=__KAL.w_days(URL_POZ.OD,URL_POZ.DO);
+                  URL_POZ.NG:=exec('nominal','godziny',URL_POZ.OD,URL_POZ.DO);
+                  _opisN:='     '+P.OSOBA().NAZWISKO+' '+OSOBA.PIERWSZE+' - '+$URL_POZ.OD+' do '+$URL_POZ.DO;
+                  _log.add('T',{? (_nr<>URL_POZ.NR | _ng<>URL_POZ.NG) & URL_POZ.put(1) || 'T' || 'N' ?},_opisN,_parent)
+               ?}
+            ?}
+         ?};
+         PROGRESS.next();
+         _tabUP.next()
+      !};
+      PROGRESS.close();
+      URL_POZ.cntx_pop();
+      URL_PLAN.cntx_pop()
+   ?}
+||
+_log.add(_nieob,{? _nieob='T' & _tabN.size()>0 || 'T' || 'N' ?},
+      'Aktualizacja liczby dni i godzin roboczych nieobecności pracowników'+
+      ' (nieobecności bez przypisanej listy płac lub przypisane do otwartych list płac'+
+      ' oraz nie będące nieobecnością na część dnia).');
+_log.add(_nieob,{? _nieob='T' & _OS_N.size()>0 || 'T' || 'N' ?},
+      'Aktualizacja liczby dni i godzin roboczych nieobecności zleceniobiorców.');
+_log.add(_nieob,{? _nieob='T' & _ZC_N.size()>0 || 'T' || 'N' ?},
+      'Aktualizacja liczby dni i godzin roboczych dla realizacji wypłat zasiłków zleceniobiorców.');
+_log.add(_nieob,{? _nieob='T' & _NWU.size()>0 || 'T' || 'N' ?},
+      'Aktualizacja liczby dni i godzin roboczych wniosków urlopowych.');
+_log.add(_nieob,{? _url_plan || 'T' || 'N' ?},
+      'Aktualizacja liczby dni i godzin roboczych planów urlopowych.')
+?};
+
+:: Wyszukujemy otwarte okresy rozliczeniowe, które zawierają badaną datę
+_okr:='N';
+_okrp:='N';
+A_OKR.cntx_psh();
+A_OKR.index('A_OKRZ');
+A_OKRP.cntx_psh();
+A_OKRP.use('x_okrpi');
+A_OKRP.index('A_OKPP');
+A_OKR.prefix('O');
+{? A_OKR.first()
+|| PROGRESS.set(A_OKR.size(),'Trwa aktualizacja otwartych okresów rozliczeniowych...');
+   {!
+   |? {? A_OKR.OD<=_list_12 & A_OKR.DO>=_list_12
+      || exec('wymiar','okres');
+         _okr:='T';
+         A_OKRP.prefix(A_OKR.ref());
+         {? A_OKRP.first()
+         || {!
+            |? exec('oblicz','okres');
+               _okrp:='T';
+               A_OKRP.next()
+            !}
+         ?}
+      ?};
+      PROGRESS.next();
+      A_OKR.next()
+   !};
+   PROGRESS.close()
+?};
+A_OKRP.cntx_pop();
+A_OKR.cntx_pop();
+
+_log.add('T',_okr,
+   'Aktualizacja wymiaru czasu pracy dla okresów rozliczeniowych obejmujących datę święta.');
+_log.add('T',_okrp,
+   'Aktualizacja wymiaru czasu pracy dla pracowników w okresach rozliczeniowych obejmujących datę święta.');
+
+:: listy płac z listopada
+_listpl:='N';
+KAL_NAZW.cntx_psh();
+KT.cntx_psh();
+F_ZATR.cntx_psh();
+O.cntx_psh();
+O.index('LISTYMIE');
+O.prefix(REF.FIRMA,2018,11);
+{? O.first()
+|| PROGRESS.set(A_OKR.size(),'Trwa aktualizacja otwartych list płac...');
+   {!
+   |? {? O.Z<>'T'
+      || __KAL.set_cal(O.T().KA().NAZWA);
+         _od:=date(O.R,O.M,1);
+         _do:=date(O.R,O.M,0);
+         O.DK:=_do-_od+1;
+         O.DR:=__KAL.w_days(_od,_do);
+         O.GR:=__KAL.w_hours(_od,_do);
+         {? O.put()
+         || _listpl:='T'
+         ?}
+      ?};
+      PROGRESS.next();
+      O.next()
+   !};
+   PROGRESS.close()
+?};
+O.cntx_pop();
+F_ZATR.cntx_pop();
+KT.cntx_pop();
+KAL_NAZW.cntx_pop();
+P.cntx_pop();
+OSOBA.cntx_pop();
+_log.add('T',_listpl,'Aktualizacja liczby dni i godzin roboczych dla list płac.');
+{? _show_log
+|| _log.show()
+?};
+_log.TAB
+
+
+\p_04
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: ER/WRT/XP/18.22/1808/0002
+::       Nieprawidłowe nazwisko w słowniku
+::----------------------------------------------------------------------------------------------------------------------
+OSOBA.cntx_psh();
+OSOBA.for_each("
+   exec('pop_slo','slo_slu','OSOBA')
+",1);
+OSOBA.cntx_pop();
+1
+
+
+\p_03
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MKG [12.41]
+:: OPIS: KOD BŁĘDU: ER/WRT/XP/17.00/1702/0059.
+::       Na podst.: ER/WRT/XP/12.41/1610/0098.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('add_attr','rubatr',100,1003,'Godziny świadczące o pracy w dni wolne',1,
+     'Składniki, które powinny być uwzględnione przy ustalaniu pracy w dni wolne podczas wyliczenia ekwiwalentu.',,58);
+1
+
+
+\p_02
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MKG [12.41]
+:: OPIS: KOD BŁĘDU: ER/WRT/XP/12.41/1610/0061
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('import','rubryki','g','7060',1);
+1
+
+
+\p_01
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [12.41]
+:: OPIS: KOD BŁĘDU: ER/WRT/XP/17.00/1701/0002
+::       Na podst.: ER/WRT/XP/12.41/1611/0024.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+RA_DEF.cntx_psh();
+RA_USE.cntx_psh();
+RA_DEF.index('RODZAJ');
+RA_DEF.prefix('S');
+RA_USE.index('DEF_RN');
+{? ~RA_DEF.find_key(151)
+|| FUN.emsg('Nie znaleziono atrybutu o kodzie 151.'@)
+|| RA_USE.prefix(RA_DEF.RODZAJ,RA_DEF.SYMBOL,18);
+   {? RA_USE.first() || {! |? RA_USE.del() !} ?}
+?};
+RA_DEF.cntx_pop();
+RA_USE.cntx_pop();
+
+exec('add_use','rubatr',152,18);
+1
+
+:Sign Version 2.0 jowisz:1045 2021/09/17 15:17:08 1b779b2c6df70159abe93fe24344f5b5fa94793d341705ad5e741b8e2774f1a3590bd1f596e6ac922bd0b15ed0a448d51df414d47c9ec63d8f778b9dc889281b9fd1d41a6444b4ff03099cfdaf074456194d122d4d9bbdb060ea5442d09d82fd5a8c9ed4e647f7b9cc242f685922950220e18702b2da0b22ea49ca876d30fac4

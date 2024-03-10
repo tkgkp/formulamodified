@@ -1,0 +1,332 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_dgbr.fml
+:: Utworzony: 27.04.2016
+:: Autor: GZ
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_DGBR - Obsługa operacji naprawczych
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [17.00]
+:: OPIS: Główna formuła czynności obsługi operacji naprawczych (TTE_PZL_DGBR)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N, keyref=T
+{? var_pres('ZL',_in)<>type_of(~~) & var_pres('ZL',_in)<>type_of(null())
+|| _msg:='Błędny parametr wejściowy \'%1\' dla czynności %2.'@@['ZL','TTE_PZL_DGBR'];
+   FUN.error(_msg);
+   _mp.error(_msg);
+   return()
+?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N
+
+ZL.cntx_psh();
+ZL.clear();
+_zl:=null();
+_zgh:=null();
+
+_obj:=params_exec('clean','!tte_pzl_dgbr',_mp,_in);
+_can_continue:=_obj.RESULT;
+_zl:=_obj.ZL;
+
+{? _can_continue>0 & _zl=null() & _mp.pathProc()
+|| _msg:='Błąd konfiguracji procesu — nieobsługiwany kontekst wywołania czynności %1.'@@['TTE_PZL_DGBR'];
+   {? _dialog=1
+   || FUN.error(_msg)
+   |? _dialog=2
+   || KOMM.add(_msg)
+   ?};
+   _mp.error(_msg);
+   _can_continue:=0
+?};
+
+{? _can_continue>0 & _zl<>null()
+|| _can_continue:=ZL.seek(_zl)
+?};
+
+_dialog:=1;
+{? _mp.isGroup()
+|| _dialog:=2
+?};
+
+{? _can_continue>0
+||
+   _sel_exit:=0;
+   {? var_pres('_context')>100 & var_pres('sel_exit',_context)>0
+   || _sel_exit:=_context.sel_exit
+   ?};
+
+:: Sprawdzam czy zlecenie nie jest zakończone
+   {? ZL.STAN='Z'
+   || _msg:='Zlecenie zostało zakończone, czynność obsługi braków niedostępna.'@;
+      {? _dialog=1
+      || FUN.info(_msg)
+      |? _dialog=2
+      || KOMM.add(_msg)
+      ?};
+      _can_continue:=0;
+      ZL.STAT_B:='T';
+      {? ZL.put()
+      ||
+         _out.ZL:=ZL.ref();
+         _mp.save(,_out);
+         _mp.done()
+      ?}
+   ?};
+
+   {? _can_continue>0
+   ||
+      VAR.A_ZLEC:=ZL.ref();
+      {? _mp.akcja()='ZAKOŃCZ'
+      ||
+         __zlgdbrak.cntx_psh();
+         _i2:=__zlgdbrak.ndx_tmp('',1,'ZL_REF',,);
+         __zlgdbrak.index(_i2);
+         __zlgdbrak.prefix($ZL.ref());
+
+         _can_continue:=1;
+         {? _dialog=1
+         || _can_continue:=FUN.ask('Zakończyć rejestrację braków do zlecenia: %1? Liczba braków: %2'@[ZL.SYM,$__zlgdbrak.size()])
+         ?};
+
+         {? _can_continue>0
+         ||
+
+::          Sprawdzam czy wszystkie braki zostały zakwalifikowane
+            {? _can_continue>0
+            ||
+               {? __zlgdbrak.first()
+               || {!
+                  |? {? __zlgdbrak.IL_KWAL<__zlgdbrak.IL_BRAK
+                     || _can_continue:=0;
+                        _msg:='Nie wszystkie zarejestrowane braki zlecenia: %1 zostały zakwalifikowane. Zakończenie czynności niemożliwe.'@[__zlgdbrak.ZL_SYM];
+                        {? _dialog=1
+                        || FUN.info(_msg)
+                        |? _dialog=2
+                        || KOMM.add(_msg)
+                        ?}
+                     ?};
+                     __zlgdbrak.next() & _can_continue>0
+                  !}
+               ?}
+            ?};
+
+::          Sprawdzam czy wszystkie kwalifikacje mają wygenerowane operacje naprawcze
+::          na pełną ilość
+            {? _can_continue>0
+            ||
+               BRAKI_K.cntx_psh();
+               BRAKI_K.index('ZGP_SRC');
+               {? __zlgdbrak.first()
+               || {!
+                  |? _zgp:=exec('FindAndGet','#table',ZGP,__zlgdbrak.ZGPREF,,,null());
+                     BRAKI_K.prefix(_zgp);
+
+                     {? BRAKI_K.first()
+                     || {!
+                        |?
+                           _ile_napr:=exec('count_naprawcze','braki',BRAKI_K.ref());
+                           {? _ile_napr<BRAKI_K.IL
+                           || _can_continue:=0;
+                              _msg:='Nie wszystkie kwalifikacje braków do zlecenia: %1 mają utworzone operacje naprawcze. Zakończenie czynności niemożliwe.'@[__zlgdbrak.ZL_SYM];
+                              {? _dialog=1
+                              || FUN.info(_msg)
+                              |? _dialog=2
+                              || KOMM.add(_msg)
+                              ?}
+                           ?};
+                           BRAKI_K.next() & _can_continue>0
+                        !}
+                     ?};
+                     __zlgdbrak.next() & _can_continue>0
+                  !}
+               ?};
+               BRAKI_K.cntx_pop()
+            ?};
+            {? _can_continue>0
+            ||
+               ZLGD.cntx_psh();
+               {? __zlgdbrak.first()
+               || {!
+                  |? {? __zlgdbrak.ZLGDREF<>''
+                     || _can_continue:=exec('FindAndGet','#table',ZLGD,__zlgdbrak.ZLGDREF,,"ZLGD.STAT_B:=\'T\';ZLGD.put()",1)
+                     ?};
+                     __zlgdbrak.next() & _can_continue>0
+                  !}
+               ?};
+               ZLGD.cntx_pop()
+            ?};
+            {? _can_continue>0
+            || BRAKI_K.cntx_psh();
+               BRAKI_K.index('BRAKI');
+               {? __zlgdbrak.first()
+               || {!
+                  |? _zgp:=exec('FindAndGet','#table',ZGP,__zlgdbrak.ZGPREF,,,null());
+                     BRAKI_K.prefix('N',_zgp);
+                     {? BRAKI_K.first()
+                     || {!
+                        |? BRAKI_K.cntx_psh();
+                           BRAKI_K.prefix();
+                           BRAKI_K.STAT_B:='T';
+                           _can_continue:=BRAKI_K.put();
+                           BRAKI_K.cntx_pop();
+                           BRAKI_K.first() & _can_continue>0
+                        !}
+                     ?};
+                     __zlgdbrak.next()
+                  !}
+               ?};
+               BRAKI_K.cntx_pop()
+            ?};
+            {? _can_continue>0
+            ||
+               ZL.STAT_B:='T';
+               {? ZL.put()
+               || _out.ZL:=ZL.ref();
+                  _mp.save(,_out);
+                  _mp.done()
+               ?};
+               {? _sel_exit>0
+               || sel_exit()
+               ?}
+            ?}
+         ?};
+         __zlgdbrak.cntx_pop()
+      ||
+::       Zeby działało uruchomienie tej samej czynności z czynności potrzebny jest keep
+         _mp.keep();
+         _zakoncz:=1;
+         {? _mp.isMicro()
+         || _zakoncz:=0
+         ?};
+
+         _top_level:=exec('top_level','zl_link',VAR.A_ZLEC);
+         {? exec('zl_lock','zl_common',VAR.A_ZLEC,'B')
+         ||
+            _familyres:=exec('zl_lockfamily','zl_common',_top_level,'B');
+            {? _familyres.LOCKED>0
+            ||
+               {? exec('select','braki_k',_zakoncz)=0
+               || _mp.cancel()
+               ?}
+            ?};
+            exec('zl_unlockfamily','zl_common',_familyres.TAB,'B');
+            exec('zl_unlock','zl_common',VAR.A_ZLEC,'B')
+         ?}
+      ?}
+   ?}
+?};
+ZL.cntx_pop();
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Opis dla czynności obsługi operacji naprawczych (TTE_PZL_DGBR)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+_in:=_mp.load(exec('kind_in','#b_port'));
+_sym:='';
+_ile:=0;
+:: jest rekord kluczowy ZL, to ustawiam odpowiednie ZL
+{? var_pres('[1]',_keyRefs)>0 & ref_name(_keyRefs[1])=ZL.name()
+||
+   ZL.cntx_psh(); ZL.prefix();
+   {? ZL.seek(_keyRefs[1])
+   || _sym:=ZL.SYM;
+      _ile:=exec('count_kwal_none4zlgd','braki_k')
+   ?};
+   ZL.cntx_pop()
+
+:: jest parametr wejściowy ZL
+|? var_pres('ZL',_in)>0
+|| _sym:=exec('FindAndGet','#table',ZL,_in.ZL,,"SYM",'');
+   _ile:=exec('count_kwal_none4zlgd','braki_k',_in.ZL)
+?};
+{? _ile>0
+|| _desc:='Wygeneruj operacje naprawcze do zlecenia %1 (nowych braków: %2)'@@[_sym,$_ile]
+|| _desc:='Wygeneruj operacje naprawcze do zlecenia %1'@@[_sym]
+?};
+_desc
+
+
+\select_naprawcze
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Akcja w oknie zlecenia: Operacje naprawcze do braków
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_top_level:=exec('top_level','zl_link',VAR.A_ZLEC);
+_top_sym:=exec('FindAndGet','#table',ZL,_top_level,,"SYM",'');
+_top_rodzaj:=exec('FindAndGet','#table',ZL,_top_level,,"RODZAJ",'');
+{? exec('zl_lock','zl_common',VAR.A_ZLEC,'B')
+||
+   _familyres:=exec('zl_lockfamily','zl_common',_top_level,'B');
+   {? _familyres.LOCKED>0
+   ||
+      _args_mp:=exec('mp_run_a','#b__box');
+      _args_mp.AKCJA:='SELECT';
+      _args_mp.ACT_UID:='TTE_PZL_DGBR';
+      _args_mp.UIDREF:=exec('FindAndGet','#table',ZL,VAR.A_ZLEC,,"uidref()",null());
+      _args_mp.PROC_START:='T';
+      _args_mp.PORTS_IN:=exec('portsIn','#b__box',_args_mp.ACT_UID);
+      exec('portsInSet','#b__box',_args_mp.PORTS_IN,_args_mp.ACT_UID,'ZL',VAR.A_ZLEC);
+      exec('mp_run','#b__box',_args_mp)
+   || {? _top_rodzaj<>'P'
+      || FUN.emsg('Nie udało się zablokować wszystkich podzleceń zlecenia: %1. Obsługuje je inny użytkownik.'@[_top_sym])
+      ?}
+   ?};
+   exec('zl_unlockfamily','zl_common',_familyres.TAB,'B');
+   exec('zl_unlock','zl_common',VAR.A_ZLEC,'B')
+?};
+~~
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.22]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+params_exec('zl_clean','zl_common',_mp,_in,'ERROR')
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:22:54 428fe02f67d50a61a794617eeb037febc9b17d2589ebd7730bf1b7ff01dc48c5ec21a68bb97f2047a583156a7042822f6e5663a857a46ac3f912d856590b5a042f8b694f9545f7422559ad7cc5fe06c8b67b98942f222cdca040dc00e4822f826626d984ce5ffb5eea53d28a6573cc7a4d13a3e12019f2fb4f401942094bcc7c

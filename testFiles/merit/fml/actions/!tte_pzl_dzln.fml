@@ -1,0 +1,214 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_dzln.fml
+:: Utworzony: 13.07.2015
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_DZLN - Rejestracja zlecenia produkcyjnego złożonego niezależnie
+::            Uwaga: większość kodu jest wspólna z czynnościami:
+::                   - TTE_PZL_DWAR
+::                   - TTE_PZL_DZLE
+::                   - TTE_PZL_DZLP
+::            w przypadku zmian modyfikować wszystkie pliki
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła główna czynności rejestracji zlecenia produkcyjnego złożonego niezależnie (TTE_PZL_DZLN)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+::# permissions=ODDZ,LMG
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZTP, type=_ZTP, name=Typ zlecenia, required=N, fml_val="exec('ztp_select','zl_head','P',0)", fml_exp="exec('ztp_export','zl_head',_a)"
+{? var_pres('ZTP',_in)<>type_of(~~) & var_pres('ZTP',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZTP',_in)=type_of(~~) || _in.ZTP:=null() ?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N
+{? var_pres('ZL',_out)<>type_of(~~) & var_pres('ZL',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=TECH, type=STRING, name=Redagowanie technologii zlecenia, required=N
+{? var_pres('TECH',_out)<>type_of('') || _out.TECH:='N' ?};
+
+:: Sprawdzenie typu zlecenia
+{? _in.ZTP
+|| {? exec('FindAndGet','#table',ZTP,_in.ZTP,,"1+TYP",'')='~'
+   || _msg:='Niezgodność wywołania czynności.\nPrzekazany typ nie może być zastrzeżony.';
+      FUN.emsg(_msg);
+      _mp.error(_msg);
+      return()
+   |? exec('FindAndGet','#table',ZTP,_in.ZTP,,"WP",'')<>'P'
+   || _msg:='Niezgodność wywołania czynności.\nPrzekazany typ musi dotyczyć zleceń produkcyjnych.';
+      FUN.emsg(_msg);
+      _mp.error(_msg);
+      return()
+   ?}
+?};
+
+_mp.trigRef('ZL',1,1,1,exec('kind_out','#b_port'),'ZL');
+
+_keyRefs:=_mp.getRefs();
+{? var_pres('[1]',_keyRefs)
+|| ZL.cntx_psh();
+   ZL.clear();
+   {? ZL.seek(_keyRefs[1])
+   || _zl:=ZL.ref();
+      _zl_uid:=ZL.uidref()
+   || _zl:=null();
+      _zl_uid:=''
+   ?};
+   ZL.cntx_pop()
+|? _mp.akcja()='KOPIUJ' | _mp.akcja()='POPRAW' | _mp.akcja()='USUŃ' | _mp.akcja()='ZAKOŃCZ'
+|| _zl:=_context.ZL;
+   _zl_uid:=exec('FindAndGet','#table',ZL,_context.ZL,,"uidref()",'')
+|| _zl:=null();
+   _zl_uid:=''
+?};
+
+
+:: Wywołanie z listy ToDo, jest odpowiedni KeyRef, więc kontynuacja redagowania nagłówka
+{? _mp.pathTodo() & _zl<>null()
+|| {? exec('FindAndGet','#table',ZL,_zl,,"STAT_N",'N')='T'
+   || FUN.info('Zakończono rejestrację nagłówka zlecenia.'@);
+      _mp.save(exec('kind_out','#b_port'),'TECH',_out.TECH);
+      _mp.done()
+   || _ok:=exec('zl_popraw','zl_head',_zl,1);
+      {? _mp.isMicro()
+      || _mp.cancel()
+      |? _ok
+      || {? exec('FindAndGet','#table',ZL,_zl,,"STAT_N",'N')='T'
+         || _mp.save(exec('kind_out','#b_port'),'TECH',_out.TECH);
+            _mp.done()
+         ?}
+      ?}
+   ?}
+
+:: Poprawianie zlecenia (obszar roboczy - zlecenie przekazane kontekstem)
+|? _mp.akcja()='POPRAW'
+|| _ok:=exec('zl_popraw','zl_head',_zl,exec('FindAndGet','#table',ZL,_zl,,"STAT_N",'N')='N');
+   {? _mp.isMicro()
+   || _mp.cancel()
+   |? _ok
+   || {? exec('FindAndGet','#table',ZL,_zl,,"STAT_N",'N')='T'
+      || _mp.save(exec('kind_out','#b_port'),'TECH',_out.TECH);
+         _mp.done()
+      ?}
+   ?}
+
+:: Wywołanie z panelu czynności - nowy proces, więc nowe zlecenie
+:: Wywołanie z listy ToDo, nie ma KeyRef, więc nowe zlecenia
+:: Dołączanie nowego zlecenia (obszar roboczy)
+|? _mp.pathProc() | _mp.pathTodo() | _mp.akcja()='DOŁĄCZ'
+|| _zl:=exec('zl_dolacz','zl_head','P',_in.ZTP,'N');
+   {? _mp.isMicro()
+   || _mp.cancel()
+   |? _zl<>null()
+   || {? exec('FindAndGet','#table',ZL,_zl,,"STAT_N",'N')='T'
+      || _mp.save(exec('kind_out','#b_port'),'TECH',_out.TECH);
+         _mp.done()
+      ?}
+   || _mp.cancel()
+   ?}
+
+:: Usuwanie zlecenia (obszar roboczy - zlecenie przekazane kontekstem)
+|? _mp.akcja()='USUŃ'
+|| _context.RESULT:=exec('zl_usun','zl_head',_zl,_mp.isGroup());
+   {? _context.RESULT
+   || _mp.cancel()
+   ?}
+
+:: Kopiowanie na nowe zlecenie (obszar roboczy - źródłowe zlecenie przekazane kontekstem)
+|? _mp.akcja()='KOPIUJ'
+|| {? _in.ZTP<>null() & _in.ZTP<>exec('FindAndGet','#table',ZL,_zl,,"TYP",null())
+   || FUN.info('Nie można uruchomić procesu — niezgodność typu zlecenia.'@);
+      _mp.cancel()
+   || _zl:=exec('zl_kopiuj','zl_head',_zl);
+      {? _mp.isMicro()
+      || _mp.cancel()
+      |? _zl<>null()
+      || {? exec('FindAndGet','#table',ZL,_zl,,"STAT_N",'N')='T'
+         || _mp.save(exec('kind_out','#b_port'),'TECH',_out.TECH);
+            _mp.done()
+         ?}
+      || _mp.cancel()
+      ?}
+   ?}
+
+:: Zakończenie redagowania nagłówka (obszar roboczy - zlecenie przekazane kontekstem)
+|? _mp.akcja()='ZAKOŃCZ'
+|| ZL.cntx_psh();
+   ZL.clear();
+   {? ZL.seek(_zl)
+   || {? {? _mp.isGroup()
+         || 1
+         || FUN.ask('Czy zakończyć rejestrację nagłówka zlecenia?'@)
+         ?}
+      || ZL.STAT_N:='T';
+         {? ZL.put()
+         || {? _mp.isGroup() || KOMM.add('Zakończono rejestrację nagłówka zlecenia %1.'@[ZL.SYM]) ?};
+            _mp.save(exec('kind_out','#b_port'),'TECH',_out.TECH);
+            _mp.done()
+         ?}
+      ?}
+   || _mp.cancel()
+   ?};
+   ZL.cntx_pop()
+
+:: Tutaj nie powinno dojść, więc błąd
+|| _mp.error('Nieobsłużony kontekst wywołania czynności.')
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Opis dla czynności rejestracji nagłówka zlecenia produkcyjnego złożonego niezależnie (TTE_PZL_DZLN)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+
+:: jest rekord kluczowy to ustawiam odpowiednie ZL
+{? var_pres('[1]',_keyRefs)
+|| _tmp:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"SYM",'');
+   _desc:={? _tmp<>'' || 'Zredaguj zlecenie produkcyjne złożone niezależnie %1'@@[_tmp] || '' ?}
+::|| _desc:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"'Zredaguj zlecenie produkcyjne złożone niezależnie %1'[SYM]",'')
+|| _desc:='Zredaguj nowe zlecenie produkcyjne złożone niezależnie'@@
+?};
+_desc
+
+
+\action_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestracja nagłówka zlecenia produkcyjnego złożonego niezależnie
+::       - akcja Dołącz -> Złożone niezależnie
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='TTE_PZL_DZLN';
+_args.AKCJA:='DOŁĄCZ';
+_args.PROC_START:='T';
+
+exec('mp_run','#b__box',_args);
+~~
+
+:Sign Version 2.0 jowisz:1048 2020/10/16 15:19:21 42fe081c9004756724002a9bb7397200878820a1e75553b0c0d2821e1cb8d5c0fe18ca6f5ab75658ba871c543d3df8951fcfda5b052fa3d76536fb5a8cc0f13667fd3918869d8cc4052cdd7d23af2aaa818ff534dee56a253c6531edffc2ae7933c4935a1f0d08d389f25f56d8079003692191bc0d0312d4ee71db220f8461df

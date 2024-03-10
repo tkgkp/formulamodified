@@ -1,0 +1,5379 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku:  px_obj.fml [12.10]
+:: Utworzony: 2011-07-13
+:: Autor: WH
+::======================================================================================================================
+:: Zawartość: Zbiór funkcji do obsługi obiektów planowanych
+::======================================================================================================================
+
+
+\px_obj_init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.10]
+:: OPIS: Inicjuje/aktualizuje tabele obiektow do planowania na podstawie zamowien, zlecen i grup operacji
+::       DOST: PUBLIC
+::   WE: [_a] - 1 = z pytaniem, domyslnie bez pytania
+::   WY: 1 - ok, 0 - wystąpiły błędy i aktualizacja została przerwana
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of(0) || _ask:=0 || _ask:=_a ?};
+
+_can_continue:=1;
+
+{? ~_ask | FUN.ask('Inicjować tabelę obiektów do planowania?'@)
+||
+   {? ~exec('px_obj_init','px_prepq') || return(1) ?};
+
+   ZK_N.cntx_psh();
+   ZK_P.cntx_psh();
+   ZL.cntx_psh();
+
+   ZL.index('STAN');
+
+:: Zlecenia w przygotowaniu
+   {? _can_continue>0
+   || ZL.prefix('T','N',);
+      {? ZL.first()
+      || {!
+         |? _can_continue:=exec('zl2obj','px_obj');
+            ZL.next() & _can_continue>0
+         !}
+      ?}
+   ?};
+
+:: Zlecenia otwarte
+   {? _can_continue>0
+   || ZL.prefix('N','O',);
+      {? ZL.first()
+      || {!
+         |? _can_continue:=exec('zl2obj','px_obj');
+            ZL.next() & _can_continue>0
+         !}
+      ?}
+   ?};
+
+:: Zamowienia
+   {? _can_continue>0
+   || _names:=ZK_N.names();
+      {? _names.first()
+      ||
+         {!
+         |? ZK_N.use(_names.NAME);
+            ZK_P.use('zkpoz'+(_names.NAME+3));
+
+            ZK_N.index('AA');
+            ZK_N.prefix();
+            {? ZK_N.first()
+            || {!
+               |? exec('zkn2obj','px_obj',ZK_N.ref());
+                  ZK_N.next() & _can_continue>0
+               !}
+            ?};
+            _names.next() & _can_continue>0
+         !}
+      ?}
+   ?};
+
+   ZL.cntx_pop();
+   ZK_P.cntx_pop();
+   ZK_N.cntx_pop();
+
+:: Grupy operacji
+   {? _can_continue>0
+   || GROP.cntx_psh();
+      GROP.index('KOD');
+      GROP.clear();
+      {? GROP.first()
+      || {!
+         |? _can_continue:=exec('grop2obj','px_obj');
+            GROP.next() & _can_continue>0
+         !}
+      ?};
+      GROP.cntx_pop()
+   ?}
+?};
+
+{? _can_continue>0 || 1 || 0 ?}
+
+
+\zl2obj
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Tworzy ze zlecenia obiekt planowania o ile takiego jeszcze nie ma
+::       Kontekst pracy - zlecenie ktore bedzie przeksztalcane w obiekt
+::   WY: 0 / 1 - Sukces czy porazka
+::----------------------------------------------------------------------------------------------------------------------
+::ustalenie parametrow sterujacych dzialaniem formuly
+::czy przepis do zlecenia zintegrowany
+_zint:=ZL.RODZ_TEX='Z';
+
+::czy tworzyć obiekt (nie tworzyć tylko gdy przepis zintegrowany a zlecenie jest podzleceniem zlozonego)
+_create:=1;
+{? _zint>0 & ZL.RODZAJ='P'
+|| _create:=0
+?};
+
+::czy wykonywać aktualizację przepisu dla zlecenia
+_px_tex_update:=1;
+
+:: Optymalizacja: podczytanie rekordu ZTP
+ZL.TYP();
+
+{? ZTP.TECH='N' & ZL.RKTL=''
+||
+:: Zlecenie bez własnej technologii i nie podano technologii bazowej
+   _px_tex_update:=0
+?};
+{? ZTP.TECH='T' & ZL.STAT_T='N'
+||
+:: Zlecenie z własną technologią, ale technologia niezatwierdzona
+   _px_tex_update:=0
+?};
+{? ZL.RODZAJ='Z' & ZL.RODZ_TEX='P'
+||
+:: Zlecenie złożone, ale przepisy proste
+   _px_tex_update:=0
+?};
+
+{? _create>0
+||
+   _result:=0;
+   PX_OBJ.cntx_psh();
+   ZL.cntx_psh();
+
+   PX_OBJ.index('ZL');
+   PX_OBJ.prefix(ZL.ref());
+   {? PX_OBJ.first()
+   || _result:=exec('obj_upd','px_obj',exec('obj_sym_create','px_obj','ZL')
+                                      ,exec('obj_naz_create','px_obj','ZL')
+::       _c - M.ref() - Material
+                                      ,ZL.KTM
+::       _d - KH.ref() - kontrahent
+                                      ,ZL.KH
+::       _e - DATE - data realizacji
+                                      ,ZL.PL_DATA
+::       _f - TIME - godzina realizacji
+                                      ,ZL.PL_TIME
+::       _g - REAL - ilosc do wykonania
+                                      ,{? ZL.RODZAJ='Z'
+                                       || {? _zint || ZL.IL || 0 ?}
+                                       |? ZL.RODZAJ='N'
+                                       || 0
+                                       || {? ZTP.WP='P'
+                                          || ZL.IL
+                                          || 1
+                                          ?}
+                                       ?}
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                      ,ZL.ref()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                      ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                      ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                      ,ZL.KTM().J
+::       [_l] - STRING - kolor
+                                      ,
+::       [_m] - STRING - rodzaj
+                                      ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                      ,ZL.PL_DIR
+::       [_o] - DATE - data najwczesniej
+                                      ,
+::       [_p] - TIME - godzina najwczesniej
+                                      ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                      ,
+::       [_r] - STRING[1] - obiekt grupujacy
+                                      ,{? (ZL.RODZAJ='Z' & (_zint=0)) | ZL.RODZAJ='N' || 'T' || 'N' ?}
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                      ,
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                      ,ZL.PL_FORCE
+::       [_u] - INTEGER - czy pomijac generacje przepisu i powiazan z px_set
+                                      ,_px_tex_update
+                   )
+
+   || _result:=exec('obj_add','px_obj',exec('obj_sym_create','px_obj','ZL')
+                                      ,exec('obj_naz_create','px_obj','ZL')
+::       _c - M.ref() - Material
+                                      ,ZL.KTM
+::       _d - KH.ref() - kontrahent
+                                      ,ZL.KH
+::       _e - DATE - data realizacji
+                                      ,ZL.PL_DATA
+::       _f - TIME - godzina realizacji
+                                      ,ZL.PL_TIME
+::       _g - REAL - ilosc do wykonania
+                                      ,{? ZL.RODZAJ='Z'
+                                       || {? _zint || ZL.IL || 0 ?}
+                                       |? ZL.RODZAJ='N'
+                                       || 0
+                                       || {? ZTP.WP='P'
+                                          || ZL.IL
+                                          || 1
+                                          ?}
+                                       ?}
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                      ,ZL.ref()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                      ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                      ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                      ,ZL.KTM().J
+::       [_l] - STRING - kolor
+                                      ,
+::       [_m] - STRING - rodzaj
+                                      ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                      ,ZL.PL_DIR
+::       [_o] - DATE - data najwczesniej
+                                      ,
+::       [_p] - TIME - godzina najwczesniej
+                                      ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                      ,
+::       [_r] - STRING[1] - obiekt grupujacy
+                                      ,{? (ZL.RODZAJ='Z' & (_zint=0)) | ZL.RODZAJ='N' || 'T' || 'N' ?}
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                      ,'T'
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                      ,ZL.PL_FORCE
+::       [_u] - INTEGER - czy pomijac generacje przepisu i powiazan z px_set
+                                      ,_px_tex_update
+                   )
+   ?};
+
+   {? _result>0
+   || {? (ZL.NRNZL<>0) & (~_zint)
+      ||
+         _px_obj:=PX_OBJ.TREE;
+::    aktualizacja powiazan w drzewie obiektow (przypisanie do nad-zlecenia)
+         ZL.cntx_psh();
+         ZL.index('UNRZL');
+         ZL.prefix(ZL.NRNZL);
+         {? ZL.first()
+         || {? exec('zl2obj','px_obj')
+            || PX_OBJ.cntx_psh();
+               PX_OBJ.index('ZL');
+               PX_OBJ.prefix(ZL.ref());
+               {? PX_OBJ.first()
+               || _px_obj:=#PX_OBJ.ref()
+               ?};
+               PX_OBJ.cntx_pop()
+            ?}
+         ?};
+         ZL.cntx_pop();
+         PX_OBJ.TREE:=_px_obj;
+         PX_OBJ.put();
+         ~~
+      ?};
+
+:: Zmiana aktywnosci obiektow - nieaktywne tylko zamkniete zlecenia
+:: Operacja wykonywana tylko dla zlecenia nadrzednego
+      {? ZL.NRNZL=0
+      ||
+         _act:={? 1+ZL.STAN='Z' || 'N' || 'T' ?};
+         exec('obj_tree_update','px_obj',PX_OBJ.ref(),_act)
+      ?}
+   ?};
+
+   ZL.cntx_pop();
+
+:: Aktualizacja powiazan miedzy obiektami do kolejki
+   {? (_result>0) & (_zint=0) || exec('ZL_powiaz','px_con_o',ZL.ref()) ?};
+
+   PX_OBJ.cntx_pop()
+|| _result:=1
+?};
+_result
+
+
+\zkp2obj
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Tworzy z pozycji zamowienia obiekt planowania o ile takiego jeszcze nie ma
+::       Kontekst pracy - ZK_P ktory bedzie przeksztalcany w obiekt
+::   WY: 0 / 1 - Sukces czy porazka (np. gdy pozycja planu nie dotyczy produktu)
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+ZK_N.cntx_psh();
+ZK_P.cntx_psh();
+PX_OBJ.cntx_psh();
+
+{? 'PW'*ZK_P.M().R & M.RODZ='T'
+||
+:: Otwieram maske ZK_N odpowiadajaca aktualnie przetwarzanemu ZK_P
+   _mask_current:=ZK_N.name();
+   _mask_needed:='zknag'+(8+$ZK_P.ref()+3);
+   {? _mask_current<>_mask_needed
+   || ZK_N.use(_mask_needed)
+   ?};
+
+   PX_OBJ.index('ZK_P');
+   PX_OBJ.prefix(ZK_P.name(),ZK_P.ref());
+   {? PX_OBJ.first()
+   || _result:=exec('obj_upd','px_obj',exec('obj_sym_create','px_obj','ZK_P')
+                                      ,exec('obj_naz_create','px_obj','ZK_P')
+::       _c - M.ref() - Material
+                                      ,ZK_P.M
+::       _d - KH.ref() - kontrahent
+                                      ,ZK_P.N().KH
+::       _e - DATE - data realizacji
+                                      ,ZK_P.PL_DATA
+::       _f - TIME - godzina realizacji
+                                      ,ZK_P.PL_TIME
+::       _g - REAL - ilosc do wykonania
+                                      ,ZK_P.ILP-ZK_P.ILRB
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                      ,null()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                      ,ZK_P.ref()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                      ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                      ,ZK_P.JM
+::       [_l] - STRING - kolor
+                                      ,ZK_P.N().KOLOR
+::       [_m] - STRING - rodzaj
+                                      ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                      ,ZK_P.PL_DIR
+::       [_o] - DATE - data najwczesniej
+                                      ,
+::       [_p] - TIME - godzina najwczesniej
+                                      ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                      ,ZK_P.N
+::       [_r] - STRING[1] - obiekt grupujacy
+                                      ,
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                      ,
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                      ,ZK_P.PL_FORCE
+                    )
+
+   || _result:=exec('obj_add','px_obj',exec('obj_sym_create','px_obj','ZK_P')
+                                      ,exec('obj_naz_create','px_obj','ZK_P')
+::       _c - M.ref() - Material
+                                      ,ZK_P.M
+::       _d - KH.ref() - kontrahent
+                                      ,ZK_P.N().KH
+::       _e - DATE - data realizacji
+                                      ,ZK_P.PL_DATA
+::       _f - TIME - godzina realizacji
+                                      ,ZK_P.PL_TIME
+::       _g - REAL - ilosc do wykonania
+                                      ,ZK_P.ILP-ZK_P.ILRB
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                      ,null()
+::       _i - ZK_P.ref() - zamowienie zrodlowe
+                                      ,ZK_P.ref()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                      ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                      ,ZK_P.JM
+::       [_l] - STRING - kolor
+                                      ,ZK_P.N().KOLOR
+::       [_m] - STRING - rodzaj
+                                      ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                      ,ZK_P.PL_DIR
+::       [_o] - DATE - data najwczesniej
+                                      ,
+::       [_p] - TIME - godzina najwczesniej
+                                      ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                      ,ZK_P.N
+::       [_r] - STRING[1] - obiekt grupujacy
+                                      ,
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                      ,_act:='N';
+                                       {? ZK_P.N().AKC='T' || _act:='T' ?};
+                                       {? ZK_P.N().A<>'A' || _act:='N' ?};
+                                       _act
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                      ,ZK_P.PL_FORCE
+                   )
+   ?}
+||
+   PX_OBJ.index('ZK_P');
+   PX_OBJ.prefix(ZK_P.name(),ZK_P.ref());
+   {? PX_OBJ.first() || exec('delete','px_obj',PX_OBJ.ref()) ?}
+?};
+
+{? _result>0
+||
+:: Znalezienie obiektu dla naglowka zamowienia
+   _zk_n:=ZK_P.N;
+   PX_OBJ.cntx_psh();
+   PX_OBJ.index('GRP');
+   PX_OBJ.prefix('T',null(),ref_name(_zk_n),_zk_n);
+   {? PX_OBJ.first()
+   || _zkn_obj:=PX_OBJ.ref(); _zkn_a:=PX_OBJ.A
+   ||
+::    Jak brak obiektu dla naglowka zamowienia, to dodajemy
+      exec('zkn2obj','px_obj',_zk_n);
+      {? PX_OBJ.first()
+      || _zkn_obj:=PX_OBJ.ref(); _zkn_a:=PX_OBJ.A
+      || _zkn_obj:=null(); _zkn_a:='X'
+      ?}
+   ?};
+   PX_OBJ.cntx_pop();
+
+:: Przywiazanie obiektu-pozycji do obiektu-naglowka
+   {? _zkn_obj<>null()
+   || PX_OBJ.index('ZK_P');
+      PX_OBJ.prefix(ZK_P.name(),ZK_P.ref());
+      {? PX_OBJ.first()
+      || PX_OBJ.A:=_zkn_a;
+         PX_OBJ.TREE:=#_zkn_obj;
+         PX_OBJ.put()
+      ?}
+   ?};
+
+   exec('tree_px_set','px_obj',_zkn_obj);
+
+:: Zmiana aktywnosci biezacego obiektu i obiektow powiazanych
+::   {? _zkn_obj<>null()
+::   ||
+::      _act:='N';
+::      {? ZK_P.N().AKC='T' || _act:='T' ?};
+::      {? ZK_P.N().A<>'A' || _act:='N' ?};
+::      _act;
+::      exec('obj_tree_update','px_obj',_zkn_obj,_act)
+::   ?};
+   ~~
+?};
+
+ZK_P.cntx_pop();
+ZK_N.cntx_pop();
+PX_OBJ.cntx_pop();
+_result
+
+
+\zkn2obj
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Tworzy z pozycji zamowien danego ZK_N obiekty planowania o ile takich jeszcze nie ma
+::   WE: _a - ZK_N.ref()
+::   WY: sukres (1) lub porażka (0)
+::----------------------------------------------------------------------------------------------------------------------
+_zkn:=_a;
+
+_result:=1;
+
+Cntx.psh(ZK_N,ZK_P,PX_OBJ);
+ZK_N.clear();
+{? ~ZK_N.seek(_zkn) || Cntx.pop(ZK_N,ZK_P,PX_OBJ); return() ?};
+
+ZK_P.index('TYPN');
+ZK_P.prefix(ZK_N.A,'Z',_zkn,1);
+{? ZK_P.first()
+||
+   PX_OBJ.cntx_psh();
+   PX_OBJ.index('GRP');
+   PX_OBJ.prefix('T',null(),ref_name(_zkn),_zkn);
+   {? PX_OBJ.first()
+   || _result:=exec('obj_upd','px_obj',exec('obj_sym_create','px_obj','ZK_N')
+                                      ,exec('obj_naz_create','px_obj','ZK_N')
+::       _c - M.ref() - Material
+                                      ,null()
+::       _d - KH.ref() - kontrahent
+                                      ,ZK_N.KH
+::       _e - DATE - data realizacji
+                                      ,ZK_N.PL_DATA
+::       _f - TIME - godzina realizacji
+                                      ,ZK_N.PL_TIME
+::       _g - REAL - ilosc do wykonania
+                                      ,0
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                      ,null()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                      ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                      ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                      ,null()
+::       [_l] - STRING - kolor
+                                      ,ZK_N.KOLOR
+::       [_m] - STRING - rodzaj
+                                      ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                      ,ZK_N.PL_DIR
+::       [_o] - DATE - data najwczesniej
+                                      ,
+::       [_p] - TIME - godzina najwczesniej
+                                      ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                      ,ZK_N.ref()
+::       [_r] - STRING[1] - pozycja grupujaca
+                                      ,'T'
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                      ,
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                      ,ZK_N.PL_FORCE
+                    )
+
+   || _result:=exec('obj_add','px_obj',exec('obj_sym_create','px_obj','ZK_N')
+                                      ,exec('obj_naz_create','px_obj','ZK_N')
+::       _c - M.ref() - Material
+                                      ,null()
+::       _d - KH.ref() - kontrahent
+                                      ,ZK_N.KH
+::       _e - DATE - data realizacji
+                                      ,ZK_N.PL_DATA
+::       _f - TIME - godzina realizacji
+                                      ,ZK_N.PL_TIME
+::       _g - REAL - ilosc do wykonania
+                                      ,0
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                      ,null()
+::       _i - ZK_P.ref() - zamowienie zrodlowe
+                                      ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                      ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                      ,null()
+::       [_l] - STRING - kolor
+                                      ,ZK_N.KOLOR
+::       [_m] - STRING - rodzaj
+                                      ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                      ,ZK_N.PL_DIR
+::       [_o] - DATE - data najwczesniej
+                                      ,
+::       [_p] - TIME - godzina najwczesniej
+                                      ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                      ,ZK_N.ref()
+::       [_r] - STRING[1] - pozycja grupujaca
+                                      ,'T'
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                      ,_act:='N';
+                                       {? ZK_N.AKC='T' | ZK_N.STAT_REJ<>'N' || _act:='T' ?};
+                                       {? ZK_N.A<>'A' || _act:='N' ?};
+                                       _act
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                      ,ZK_N.PL_FORCE
+                   )
+   ?};
+
+:: Obrobka pozycji zamowienia
+   {? _result>0
+   || _parent:=#PX_OBJ.ref();
+      _p1:=PX_OBJ.SYMBOL;
+      _il_poz:=0;
+      {!
+      |? {? exec('zkp2obj','px_obj')
+         || _il_poz+=1;
+            PX_OBJ.cntx_psh();
+            PX_OBJ.clear();
+            PX_OBJ.index('ZK_P');
+            PX_OBJ.prefix(ref_name(ZK_P.ref()),ZK_P.ref());
+            {? PX_OBJ.first()
+            || _p2:=PX_OBJ.SYMBOL;
+               PX_OBJ.TREE:=_parent;
+               PX_OBJ.put();
+               ~~
+            ?};
+            PX_OBJ.cntx_pop()
+         ?};
+         ZK_P.next()
+      !}
+   ?};
+
+   {? _result>0
+   ||
+      {? _il_poz>0
+      ||
+::       Zmiana aktywnosci biezacego obiektu i obiektow powiazanych
+         _act1:=PX_OBJ.A;
+         _act:='N';
+         {? ZK_N.AKC='T' | ZK_N.STAT_REJ<>'N' || _act:='T' ?};
+         {? ZK_N.A<>'A' || _act:='N' ?};
+         {? _act1<>_act
+         || exec('obj_tree_update','px_obj',PX_OBJ.ref(),_act)
+         ?}
+      ||
+::       Jak brak pozycji na produkty, czyli brak obiektow podrzednych, to usuwamy obiekt naglowkowy
+         PX_OBJ.del()
+      ?}
+   ?};
+   PX_OBJ.cntx_pop()
+?};
+
+Cntx.pop(ZK_N,ZK_P,PX_OBJ);
+_result
+
+
+\grop2obj
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Tworzy z grupy operacji obiekt planowania o ile takiego jeszcze nie ma
+::       Kontekst pracy - GROP ktory bedzie przeksztalcany w obiekt
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+
+PX_OBJ.cntx_psh();
+PX_OBJ.index('GROP');
+PX_OBJ.prefix(GROP.ref());
+_akt:='N';
+{? exec('get','#params',500390,type_of(''))='T'
+|| _akt:='T'
+?};
+{? GROP.STATUS='Z'
+|| _akt:='N'
+?};
+{? PX_OBJ.first()
+|| _result:=exec('obj_upd','px_obj',exec('obj_sym_create','px_obj','GROP')
+                                   ,exec('obj_naz_create','px_obj','GROP')
+::       _c - M.ref() - Material
+                                   ,null()
+::       _d - KH.ref() - kontrahent
+                                   ,null()
+::       _e - DATE - data realizacji
+                                   ,GROP.PL_DATA
+::       _f - TIME - godzina realizacji
+                                   ,GROP.PL_TIME
+::       _g - REAL - ilosc do wykonania
+                                   ,GROP.IL
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                   ,null()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                   ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                   ,GROP.ref()
+::       _k - JM.ref() - jednostka miary obiektu
+                                   ,null()
+::       [_l] - STRING - kolor
+                                   ,
+::       [_m] - STRING - rodzaj
+                                   ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                   ,GROP.DIR
+::       [_o] - DATE - data najwczesniej
+                                   ,
+::       [_p] - TIME - godzina najwczesniej
+                                   ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                   ,
+::       [_r] - STRING[1] - obiekt grupujacy
+                                   ,
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                   ,_akt
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                   ,
+                 )
+
+|| _result:=exec('obj_add','px_obj',exec('obj_sym_create','px_obj','GROP')
+                                   ,exec('obj_naz_create','px_obj','GROP')
+::       _c - M.ref() - Material
+                                   ,null()
+::       _d - KH.ref() - kontrahent
+                                   ,null()
+::       _e - DATE - data realizacji
+                                   ,GROP.PL_DATA
+::       _f - TIME - godzina realizacji
+                                   ,GROP.PL_TIME
+::       _g - REAL - ilosc do wykonania
+                                   ,GROP.IL
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                   ,null()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                   ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                   ,GROP.ref()
+::       _k - JM.ref() - jednostka miary obiektu
+                                   ,null()
+::       [_l] - STRING - kolor
+                                   ,
+::       [_m] - STRING - rodzaj
+                                   ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                   ,GROP.DIR
+::       [_o] - DATE - data najwczesniej
+                                   ,
+::       [_p] - TIME - godzina najwczesniej
+                                   ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                   ,
+::       [_r] - STRING[1] - obiekt grupujacy
+                                   ,
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                   ,_akt
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                   ,
+                 )
+?};
+{? _result>0
+|| PX_OBJ.A:=_akt;
+   _result:=PX_OBJ.put()
+?};
+PX_OBJ.cntx_pop();
+PX_OBJ.get();
+_result
+
+
+\rem2obj
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [20.14]
+:: OPIS: Tworzy ze zgłoszenia remontowego obiekt planowania o ile takiego jeszcze nie ma
+::       Kontekst pracy - REM_ZGL ktory bedzie przeksztalcany w obiekt
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+
+PX_OBJ.index('REM_ZGL');
+PX_OBJ.prefix(REM_ZGL.ref());
+{? PX_OBJ.first()
+|| _result:=exec('obj_upd','px_obj',exec('obj_sym_create','px_obj','REM_ZGL')
+                                   ,exec('obj_naz_create','px_obj','REM_ZGL')
+::       _c - M.ref() - Material
+                                   ,null()
+::       _d - KH.ref() - kontrahent
+                                   ,null()
+::       _e - DATE - data realizacji
+                                   ,REM_ZGL.DT_PUA
+::       _f - TIME - godzina realizacji
+                                   ,REM_ZGL.TM_PUA
+::       _g - REAL - ilosc do wykonania
+                                   ,1
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                   ,null()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                   ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                   ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                   ,null()
+::       [_l] - STRING - kolor
+                                   ,
+::       [_m] - STRING - rodzaj
+                                   ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                   ,1
+::       [_o] - DATE - data najwczesniej
+                                   ,
+::       [_p] - TIME - godzina najwczesniej
+                                   ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                   ,
+::       [_r] - STRING[1] - obiekt grupujacy
+                                   ,
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                   ,'N'
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                   ,
+::       [_u] - INTEGER - czy odtwarzać PX_SET
+                                   ,
+::       [_v] - REM_ZGL.ref - zrodlowe zgłoszenie remontowe
+                                   ,REM_ZGL.ref()
+                 )
+
+|| _result:=exec('obj_add','px_obj',exec('obj_sym_create','px_obj','REM_ZGL')
+                                   ,exec('obj_naz_create','px_obj','REM_ZGL')
+::       _c - M.ref() - Material
+                                   ,null()
+::       _d - KH.ref() - kontrahent
+                                   ,null()
+::       _e - DATE - data realizacji
+                                   ,REM_ZGL.DT_PUA
+::       _f - TIME - godzina realizacji
+                                   ,REM_ZGL.TM_PUA
+::       _g - REAL - ilosc do wykonania
+                                   ,1
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                   ,null()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                   ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                   ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                   ,null()
+::       [_l] - STRING - kolor
+                                   ,
+::       [_m] - STRING - rodzaj
+                                   ,
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                   ,1
+::       [_o] - DATE - data najwczesniej
+                                   ,
+::       [_p] - TIME - godzina najwczesniej
+                                   ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                   ,
+::       [_r] - STRING[1] - obiekt grupujacy
+                                   ,
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                   ,'N'
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu
+                                   ,
+::       [_u] - INTEGER - czy odtwarzać PX_SET
+                                   ,
+::       [_v] - REM_ZGL.ref - zrodlowe zgłoszenie remontowe
+                                   ,REM_ZGL.ref()
+                 )
+?};
+_result
+
+
+\obj_add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Dodaje do tabeli PX_OBJ jeden rekord
+::   WE: _a - STRING - Symbol
+::       _b - STRING - Nazwa
+::       _c - M.ref() - Material
+::       _d - KH.ref() - kontrahent
+::       _e - DATE - data realizacji
+::       _f - TIME - godzina realizacji
+::       _g - REAL - ilosc do wykonania
+::       _h - ZL.ref() - zlecenie zrodlowe
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+::       _j - GROP.ref() - grupa operacji zrodlowa
+::       _k - JM.ref() - jednostka miary obiektu
+::       [_l] - STRING - kolor
+::       [_m] - STRING - rodzaj
+::       [_n] - INTEGER - domyslny kierunek planowania
+::       [_o] - DATE - data najwczesniej
+::       [_p] - TIME - godzina najwczesniej
+::       [_q] - ZK_N.ref() - naglowek zamowenia zrodlowego
+::       [_r] - STRING[1] - obiekt grupujacy (T/N)
+::       [_s] - STRING[1] - znacznik aktywnosci (T/N)
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu (T,N)
+::       [_u] - INTEGER - czy wykonywać generowanie przepisu i powiązań px_set
+::       [_v] - REM_ZGL.ref - zgłoszenie remontowe zrodlowe
+::   WY: 0 / 1 - Sukces czy porazka
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('obj_can_add','px_obj',_h,_i)=0
+|| return(0)
+?};
+_result:=0;
+
+_px_update:=1;
+{? var_pres('_u')=type_of(0)
+|| _px_update:=_u
+?};
+
+_rem_zgl:=null();
+{? var_pres('_v')=type_of(REM_ZGL.ref())
+|| _rem_zgl:=_v
+?};
+
+PX_OBJ.blank();
+PX_OBJ.SYMBOL:=_a;
+PX_OBJ.NAZWA:=_b;
+PX_OBJ.M:=_c;
+PX_OBJ.KH:=_d;
+PX_OBJ.ENDD:=exec('get','daty',_e);
+PX_OBJ.ENDT:=_f;
+PX_OBJ.IL:=_g;
+PX_OBJ.ZL:=_h;
+PX_OBJ.ZK_P:=_i;
+PX_OBJ.M_ZK_P:=ref_name(_i);
+PX_OBJ.GROP:=_j;
+PX_OBJ.JM:=_k;
+PX_OBJ.KOLOR:={? var_pres('_l')=type_of('')      || _l || exec('kolor_rand','#color') ?};
+PX_OBJ.ZK_N:={? var_pres('_q')=type_of(null())   || _q || null() ?};
+:: TODO: usunąć jak będzie trigger
+PX_OBJ.M_ZK_N:={? var_pres('_q')=type_of(null()) || ref_name(_q) || '' ?};
+PX_OBJ.KIND:={? var_pres('_m')=type_of('')       || _m || exec('obj_kind_set','px_obj') ?};
+PX_OBJ.DIR:={? var_pres('_n')=type_of(1)         || _n || 1 ?};
+PX_OBJ.STARTD:={? var_pres('_o')=type_of(date()) || exec('get','daty',_o) || null() ?};
+PX_OBJ.STARTT:={? var_pres('_p')=type_of(time()) || _p || time(0,0,0) ?};
+PX_OBJ.GRP:={? var_pres('_r')=type_of('')        || _r || 'N' ?};
+PX_OBJ.A:={? var_pres('_s')=type_of('')          || _s || 'N' ?};
+PX_OBJ.PL_FORCE:={? var_pres('_t')=type_of('')   || _t || 'N' ?};
+PX_OBJ.REM_ZGL:=_rem_zgl;
+_result:=PX_OBJ.add();
+
+:: teraz jeszcze ewentualne aktualizacje na wdrozeniu
+{? _result>0 || exec('PX_OBJ_added','px_obj',PX_OBJ.ref(),_px_update) ?};
+_result
+
+
+\obj_upd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Uaktualniam w tabeli PX_OBJ jeden rekord
+::       Kontekst pracy - PX_OBJ ktory chce uaktualnic
+::   WE: _a - STRING - Symbol
+::       _b - STRING - Nazwa
+::       _c - M.ref() - Material
+::       _d - KH.ref() - kontrahent
+::       _e - DATE - data realizacji
+::       _f - TIME - godzina realizacji
+::       _g - REAL - ilosc do wykonania
+::       _h - ZL.ref() - zlecenie zrodlowe
+::       _i - ZK_P.ref() - zamowienie zrodlowe
+::       _j - GROP.ref() - grupa operacji zrodlowa
+::       _k - JM.ref() - jednostka miary obiektu
+::       [_l] - STRING - kolor
+::       [_m] - STRING - rodzaj
+::       [_n] - INTEGER - domyslny kierunek planowania
+::       [_o] - DATE - data najwczesniej
+::       [_p] - TIME - godzina najwczesniej
+::       [_q] - ZK_N.ref() - naglowek zamowenia zrodlowego
+::       [_r] - STRING[1] - obiekt grupujacy (T/N)
+::       [_s] - STRING[1] - znacznik aktywnosci (T/N) - nieuzywane w tej formule - tylko zgodnosc z \obj_add
+::       [_t] - STRING[1] - znacznik kontynuacji planowania po przekroczeniu terminu (T,N)
+::       [_u] - INTEGER - czy wykonywać generowanie przepisu i powiązań px_set
+::       [_v] - REM_ZGL.ref - zgłoszenie remontowe zrodlowe
+::   WY: 0 / 1 - Sukces czy porazka
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+
+_px_update:=1;
+{? var_pres('_u')=type_of(0)
+|| _px_update:=_u
+?};
+_rem_zgl:=null();
+{? var_pres('_v')=type_of(REM_ZGL.ref())
+|| _rem_zgl:=_v
+?};
+
+_tm_old:=PX_OBJ.TM_REA;
+
+PX_OBJ.SYMBOL:=_a;
+PX_OBJ.NAZWA:=_b;
+PX_OBJ.M:=_c;
+PX_OBJ.KH:=_d;
+PX_OBJ.ENDD:=exec('get','daty',_e);
+PX_OBJ.ENDT:=_f;
+PX_OBJ.IL:=_g;
+PX_OBJ.ZL:=_h;
+PX_OBJ.ZK_P:=_i;
+PX_OBJ.M_ZK_P:=ref_name(_i);
+PX_OBJ.GROP:=_j;
+PX_OBJ.JM:=_k;
+{? var_pres('_l')=type_of('')     || PX_OBJ.KOLOR:=_l ?};
+{? var_pres('_m')=type_of('')
+|| PX_OBJ.KIND:=_m
+|? PX_OBJ.KIND=''
+|| PX_OBJ.KIND:=exec('obj_kind_set','px_obj')
+?};
+{? var_pres('_n')=type_of(1)      || PX_OBJ.DIR:=_n ?};
+{? var_pres('_o')=type_of(date()) || PX_OBJ.STARTD:=exec('get','daty',_o) ?};
+{? var_pres('_p')=type_of(time()) || PX_OBJ.STARTT:=_p ?};
+{? var_pres('_q')=type_of(null()) || PX_OBJ.ZK_N:=_q; PX_OBJ.M_ZK_N:=ref_name(_q) ?};
+{? var_pres('_r')=type_of('')     || PX_OBJ.GRP:=_r ?};
+{? var_pres('_t')=type_of('')     || PX_OBJ.PL_FORCE:=_t ?};
+PX_OBJ.REM_ZGL:=_rem_zgl;
+_result:=PX_OBJ.put();
+
+:: odswiezam ilosc zaplanowana w planie glownym
+{? _result>0 & PX_OBJ.GRP='N'
+|| exec('il_plan_refresh','px_obj',PX_OBJ.ref());
+   exec('planend_refresh','px_obj',PX_OBJ.ref());
+   PX_OBJ.get()
+?};
+
+:: teraz jeszcze ewentualne aktualizacje na wdrozeniu
+{? _result>0 || exec('PX_OBJ_updated','px_obj',PX_OBJ.ref(),_px_update) ?};
+
+:: Dodaje ewentualne komunikaty o przesunięciu terminu realizacji
+:: do wersji głównej i aktualizuje TM_END grupom w kolejce planu glownego
+exec('termin_chng','px_obj',PX_OBJ.ref(),_tm_old);
+
+{? _result>0 & _tm_old<>PX_OBJ.TM_REA & PX_OBJ.PX_TAG<>null()
+||
+   exec('update_after_add','px_tag',PX_OBJ.PX_TAG)
+?};
+
+_result
+
+
+\PX_OBJ_added
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: Formula do wykonania po dodaniu nowego PX_OBJa, np. automatyczne wygenerowanie przepisu, itp.
+::       wywolanie w exec('obj_add','px_obj')
+::   WE:  _a  - PX_OBJ.ref()
+::       [_b] - INTEGER - 0/[1] - czy wykonywać aktualizację pola PX_OBJ.PX_SET
+::UWAGA: Parametry bez [] sa wymagane, formula moze nie sprawdzac czy zostaly podane i moze wystapic blad.
+::----------------------------------------------------------------------------------------------------------------------
+_PX_OBJ:=_a;
+_px_set_update:=1;
+_px_tex_gen:=1;
+{? var_pres('_b')=type_of(0)
+|| _px_set_update:=_b
+?};
+
+{? _px_set_update>0
+||
+:: Jeśli będę aktualizował pole PX_OBJ.PX_SET to nie generuję przepisu, żeby nie robić tego dwa razy
+   _px_tex_gen:=0
+?};
+
+PX_OBJ.cntx_psh(); PX_OBJ.clear();
+{? PX_OBJ.seek(_PX_OBJ)
+ & exec('PX_OBJ_added','px_prepq',PX_OBJ.ref())
+|| {? _px_set_update>0
+   ||
+::    Aktualizacja pola PX_OBJ.PX_SET
+      exec('update_px_set','px_obj',PX_OBJ.ref())
+   ?}
+?};
+PX_OBJ.cntx_pop();
+PX_OBJ.get();
+~~
+
+
+\PX_OBJ_updated
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: Formula do wykonania po aktualizacji PX_OBJa, np. automatyczne wygenerowanie przepisu, itp.
+::       wywolanie w exec('obj_upd','px_obj')
+::   WE: _a - PX_OBJ.ref()
+::       [_b] - INTEGER - 0/[1] - czy wykonywać aktualizację pola PX_OBJ.PX_SET
+::UWAGA: Parametry bez [] sa wymagane, formula moze nie sprawdzac czy zostaly podane i moze wystapic blad.
+::----------------------------------------------------------------------------------------------------------------------
+_PX_OBJ:=_a;
+
+_px_set_update:=1;
+_px_tex_gen:=1;
+{? var_pres('_b')=type_of(0)
+|| _px_set_update:=_b
+?};
+
+{? _px_set_update>0
+||
+:: Jeśli będę aktualizował pole PX_OBJ.PX_SET to nie generuję przepisu, żeby nie robić tego dwa razy
+   _px_tex_gen:=0
+?};
+
+PX_OBJ.cntx_psh();
+PX_OBJ.clear();
+{? PX_OBJ.seek(_PX_OBJ)
+ & exec('PX_OBJ_updated','px_prepq',PX_OBJ.ref())
+|| {? _px_set_update>0
+   ||
+::    Aktualizacja pola PX_OBJ.PX_SET
+      exec('update_px_set','px_obj',PX_OBJ.ref())
+   ?}
+?};
+PX_OBJ.cntx_pop();
+PX_OBJ.get();
+~~
+
+
+\obj_kind_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.10]
+:: OPIS: Ustala pole PX_OBJ.KIND na podstawie danych w PX_OBJ
+::   WE: --
+::   WY: STRING - rodzaj
+::UWAGA: PRACA NA AKTUALNYM BUFORZE PX_OBJ
+::     : nowe rodzaje uwzglednic w: exec('PX_OBJ_get_texy','px_obj')
+::----------------------------------------------------------------------------------------------------------------------
+:: ZL_PROD, PROJ_ZADAN, ZL_WARSZT, ZAM_POZ, ZAM_NAG
+::
+_result:='';
+_prepq:=exec('obj_kind_set','px_prepq',obj_new('done','result'));
+{? _prepq.done=1
+|| _result:=_prepq.result
+?};
+{? _result='' & PX_OBJ.ZL<>null()
+|| {? _result='' & PX_OBJ.ZL().PROJEKTY<>null() || _result:=exec('kind_proj_zad','px_obj') ?};
+   {? _result='' & PX_OBJ.ZL().TYP().WP='P' || _result:=exec('kind_zl_prod','px_obj') ?};
+   {? _result='' & PX_OBJ.ZL().TYP().WP='W'
+   || _typ:=PX_OBJ.ZL().TYP().TYP;
+      {? _result='' & 1+PX_OBJ.ZL().TYP().TYP='~'
+      || {? _result='' & _typ=exec('p_res_string','zl_common') || _result:=exec('kind_proj_zad','px_obj') ?}
+      ?};
+      {? _result='' || _result:=exec('kind_zl_warszt','px_obj') ?}
+   ?}
+|? PX_OBJ.ZK_P<>null()
+|| _result:=exec('kind_zam_poz','px_obj')
+|? PX_OBJ.ZK_N<>null()
+|| _result:=exec('kind_zam_nag','px_obj')
+|? PX_OBJ.GROP<>null()
+|| _result:=exec('kind_grop','px_obj')
+|? PX_OBJ.M<>null()
+|| 0
+?};
+_result
+
+
+\obj_can_add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Sprawdza czy moge dodac obiekt do bazy (czy takiego nie ma juz przypadkiem)
+::   WE: _a - ZL.ref()
+::       _b - ZK_P.ref()
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+
+_zl:=_a;
+_zk_p:=_b;
+
+PX_OBJ.cntx_psh();
+
+{? _zl<>null()
+|| PX_OBJ.index('ZL');
+   PX_OBJ.prefix(_zl);
+   {? PX_OBJ.first()
+   || _result:=0
+   ?}
+?};
+{? _result>0
+|| {? _zk_p<>null()
+   || PX_OBJ.index('ZK_P');
+      PX_OBJ.prefix(ref_name(_zk_p),_zk_p);
+      {? PX_OBJ.first()
+      || _result:=0
+      ?}
+   ?}
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\obj_stmp_trig
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Trigger przed add() i przed put() w tabeli PX_OBJ. Automatycznie nawija pola:
+::       PX_OBJ.TM_REA, PX_OBJ.TM_PLEND, PX_OBJ.TM_START
+::----------------------------------------------------------------------------------------------------------------------
+:: Termin realizacji
+PX_OBJ.TM_REA:=tm_stamp(   PX_OBJ.ENDD().DATA~1,
+                           DATY.DATA~2,
+                           DATY.DATA~3,
+                           PX_OBJ.ENDT~1,
+                           PX_OBJ.ENDT~2,
+                           PX_OBJ.ENDT~3,
+                           0);
+:: Planowana realizacja
+PX_OBJ.TM_PLEND:=tm_stamp( PX_OBJ.PLANENDD().DATA~1,
+                           DATY.DATA~2,
+                           DATY.DATA~3,
+                           PX_OBJ.PLANENDT~1,
+                           PX_OBJ.PLANENDT~2,
+                           PX_OBJ.PLANENDT~3,
+                           0);
+:: Najwczesniej
+PX_OBJ.TM_START:=tm_stamp( PX_OBJ.STARTD().DATA~1,
+                           DATY.DATA~2,
+                           DATY.DATA~3,
+                           PX_OBJ.STARTT~1,
+                           PX_OBJ.STARTT~2,
+                           PX_OBJ.STARTT~3,
+                           0);
+:: koniec
+1
+
+
+\obj_sym_create
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Zwraca symbol dla tworzonego obiektu planowania
+::       Pracuje w kontekscie ZK_P (i ZK_N), ZL, GROP
+::   WE: _a - STRING - na podstawie czego mam utworzyc symbol:
+::                         1. zamowienia ('ZK_P')
+::                         2. zlecenia ('ZL')
+::                         3. grupy operacji ('GROP')
+::                         4. zadania projektowego ('ZadanieProjektu')
+::                         5. zgłoszenia remontowego ('REM_ZGL')
+::   WY: STRING - utworzony symbol
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+_source:=_a;
+
+{? _source='ZK_N'
+|| _result:=ZK_N.SYM
+
+|? _source='ZK_P'
+|| _result:=ZK_P.N().SYM+' poz. '+form(ZK_P.POZ,,,'9.')
+
+|? _source='ZL'
+|| _result:=ZL.SYM
+
+|? _source='ZadanieProjektu'
+|| _result:=ZL.SYMZ
+
+|? _source='GROP'
+|| _result:='Gr.oper.: '+GROP.KOD
+
+|? _source='REM_ZGL'
+|| _result:=REM_ZGL.SYM
+
+?};
+
+_result
+
+
+\obj_naz_create
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: Zwraca nazwe dla tworzonego obiektu planowania
+::       Pracuje w kontekscie ZK_P (i ZK_N) lub ZL
+::   WE: _a - STRING - na podstawie czego mam utworzyc symbol:
+::                         1. zamowienia ('ZK_P')
+::                         2. zlecenia ('ZL')
+::                         3. grupy operacji ('GROP')
+::                         4. zadania projektowego ('ZadanieProjektu')
+::   WY: STRING - utworzona nazwa
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+_source:=_a;
+
+{? _source='ZK_N'
+|| _result:='Handlowiec: '+ZK_N.HAN().NAZ+' stan: '+ZK_N.STAN
+
+|? _source='ZK_P'
+|| _result:='Handlowiec: '+ZK_P.N().HAN().NAZ+' stan: '+ZK_P.N().STAN
+
+|? _source='ZL'
+|| _result:=ZL.OPIS
+
+|? _source='ZadanieProjektu'
+|| _result:=ZL.OPIS+' ETAP: '+ZL.PROJETAP().OPIS+' PROJEKT: '+ZL.PROJEKTY().NAZWA
+
+|? _source='GROP'
+|| TTOPER.cntx_psh();
+   _result:=GROP.OPIS+' (operacje typu: '+GROP.TTOPER().KOD+')';
+   TTOPER.cntx_pop()
+
+|? _source='REM_ZGL'
+|| _result:=REM_ZGL.TYTUL
+
+?};
+_result
+
+
+\px_obj_rkprz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Rekord przed w tabeli PX_OBJ, okienka: WER, WERT
+::----------------------------------------------------------------------------------------------------------------------
+_last:=_a;
+_keys:=':';
+{? _last>0 & PX_OBJ.sel_size()=0
+|| {? PX_OBJ.PX_TAG<>null()
+   || _keys:='R'+_keys
+   || _keys:='U'+_keys
+   ?}
+?};
+PX_OBJ.actions_grayed(cur_win(1,1),_keys);
+exec('rekprzed','color','PX_OBJ#01#')
+
+
+\px_obj_berec
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.10]
+:: OPIS: Wlasciwa akcja rekord przed w tabeli PX_OBJ, okienka: WER, WERT
+::----------------------------------------------------------------------------------------------------------------------
+:: Zapamietuje pozycje w filtrze
+PX_VAR.FLTR_OBJ:=PX_OBJ.ref();
+
+:: Ustawiam zmienna PX_VAR.OBJ_IL - ilosc obiektu w wyswietlanym planie
+PX_VAR.OBJ_IL:=exec('get_ilosc_que','px_obj',PX_VAR.VER_QUE,PX_OBJ.ref());
+
+:: Ustawiam zmienne:
+::  PX_VAR.OBJ_PROB - problemy przenoszone z PX_GRP na PX_OBJ
+::  PX_VAR.CONFIRM - potwierdzenia przenoszone z PX_GRP na PX_OBJ
+PX_CONN.cntx_psh();
+PX_GRP.cntx_psh();
+PX_CONN.index('VER');
+PX_CONN.prefix(PX_VAR.VIE_VER,PX_OBJ.ref());
+_problems:=exec('problem_none','px_obj');
+{? PX_CONN.first()
+|| {!
+   |? {? PX_CONN.PX_GRP().PROBLEMS<>exec('problem_none','px_grp')
+      || _problems:=exec('problem_present','px_obj')
+      ?};
+      PX_CONN.next() & _problems<>exec('problem_none','px_obj')
+   !}
+?};
+_c_n:=_c_p:=_c_t:=0;
+{? PX_CONN.first()
+|| {!
+   |? _cc:=PX_CONN.PX_GRP().CONFIRM;
+      {? _cc='N' || _c_n+=1
+      |? _cc='P' || _c_p+=1
+      |? _cc='T' || _c_t+=1
+      ?};
+      PX_CONN.next()
+   !}
+?};
+{? _c_n=0 & _c_p=0 & _c_t>0
+|| _confirm:='T'
+|? _c_p>0 | _c_t>0
+|| _confirm:='P'
+|| _confirm:='N'
+?};
+PX_VAR.OBJ_PROB:=_problems;
+PX_VAR.CONFIRM:=_confirm;
+PX_GRP.cntx_pop();
+PX_CONN.cntx_pop();
+
+:: Ustawiam pozostale zmienne wyswietlane w oknie
+_zkn:='';
+_zl:='';
+{? PX_OBJ.ZK_N<>null()
+|| ZK_N.cntx_psh();
+
+   _cur_zkn:=ZK_N.name();
+   _new_zkn:=ref_name(PX_OBJ.ZK_N);
+   {? _cur_zkn<>_new_zkn
+   ||
+::    otwieram maske ZK_N odpowiadajaca aktualnie przetwarzanemu ZK_N
+      ZK_N.use(_new_zkn)
+   ?};
+   _zkn:=PX_OBJ.ZK_N().SYM;
+
+   ZK_N.cntx_pop()
+?};
+{? PX_OBJ.ZL<>null()
+|| _zl:=PX_OBJ.ZL().SYM
+?};
+PX_VAR.OBJ_ZAM:=_zkn;
+PX_VAR.OBJ_ZL:=_zl;
+{? exec('mainversion_vie','px_ver')
+|| {? PX_OBJ.GRP='T'
+   || _plan:=0;
+      PX_OBJ.cntx_psh();
+      PX_OBJ.index('TSYMBOL');
+      PX_OBJ.prefix(PX_OBJ.A,#PX_OBJ.ref());
+      {? PX_OBJ.first()
+      || {!
+         |?
+            {? PX_OBJ.IL_PLAN<>0 || _plan:=1 ?};
+            PX_OBJ.next()
+         !}
+      ?};
+      PX_OBJ.cntx_pop();
+      {? _plan
+      || 'PX_OBJ#01#03'
+      || ''
+      ?}
+   |? PX_OBJ.IL_PLAN=0
+   || ''
+   || 'PX_OBJ#01#02'
+   ?}
+|| 'PX_OBJ#01#01'
+?}
+
+
+\px_obj_legenda
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Legenda w tabeli PX_OBJ, okienka: WER
+::----------------------------------------------------------------------------------------------------------------------
+exec('legenda','color','PX_OBJ#01#','#PX_OBJ#01');
+~~
+
+
+\px_obj_kolor_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Przed wyswietleniem pola PX_OBJ.KOLOR
+::----------------------------------------------------------------------------------------------------------------------
+'0:0:0,'+PX_OBJ.KOLOR
+
+
+\px_obj_kolor_fd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Format wyswietlania pola PX_OBJ.KOLOR
+::----------------------------------------------------------------------------------------------------------------------
+'empty=1'
+
+
+\px_obj_fld_fd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Format wyswietlania pol tabeli PX_OBJ: IL, IL_PLAN, IL_WYK
+::----------------------------------------------------------------------------------------------------------------------
+_res:='';
+{? cur_afld()='IL' | cur_afld()='IL_PLAN' | cur_afld()='IL_WYK'
+|| {? PX_OBJ.GRP='T'
+   || _res:='empty=1'
+   || _res:='empty=0,out_prec='+{? (2+cur_kwin())='e_' || $PX_OBJ.M().DOKL || $ST.DOKL ?}
+   ?}
+?};
+_res
+
+
+\obj_inside_grp
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Sprawdza czy podany obiekt planowania jest juz powiazany z obiektem grupujacym
+::       Jesli tak to ustawia sie na tym obiekcie grupujacym
+::   WE: _a - PX_VER.ref() - wersja w ktorej szukac
+::       _b - PX_OBJ.ref() - obiekt planowania
+::   WY: PX_GRP.ref() - obiekt grupujacy ktory wewnatrz ktorego znajduje sie juz obiekt planowania
+::       null() - gdy brak powiazan
+::----------------------------------------------------------------------------------------------------------------------
+_ver:=_a;
+_obj:=_b;
+
+_result:=null();
+PX_CONN.cntx_psh();
+PX_CONN.index('VER');
+PX_CONN.prefix(_ver,_obj);
+{? PX_CONN.first()
+|| _result:=PX_CONN.PX_GRP
+?};
+PX_CONN.cntx_pop();
+_result
+
+
+\px_obj_display
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Wyswietla biezacy rekord PX_OBJ (obluga Wyswietl w oknie WER tabeli PX_OBJ), w menu uzytkownika tego okna
+::       oraz wolane z formuly exec('px_obj_display','px_plan') - zakladki widoku szczegolowego planu
+::----------------------------------------------------------------------------------------------------------------------
+Cntx.psh(ZK_N,ZK_P,ZL,PX_OBJ);
+
+{? PX_OBJ.ZK_N<>null() || ZK_N.use(ref_name(PX_OBJ.ZK_N)) ?};
+{? PX_OBJ.ZK_P<>null() || ZK_P.use(ref_name(PX_OBJ.ZK_P)) ?};
+
+PX_OBJ.index('SYMBOL');
+PX_OBJ.prefix(PX_OBJ.A,PX_OBJ.SYMBOL,);
+{? PX_OBJ.first()
+|| {? exec('mainversion_vie','px_ver')
+   || PX_OBJ.btn_eopt('RED','POPRAW','state=normal')
+   || PX_OBJ.btn_eopt('RED','POPRAW','state=grayed')
+   ?};
+   D_HELP.M_ZKP:=PX_OBJ.M().KTM;
+
+   PX_OBJ.win_edit('RED');
+   PX_OBJ.display()
+?};
+::exec('PX_TEX_tst','px_tex',PX_OBJ.ref());
+
+Cntx.pop(ZK_N,ZK_P,ZL,PX_OBJ);
+~~
+
+
+\tree_view_obj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Dla zakladki 'Obiekty' buduje drzewo dla przekazanego obiektu w ujeciu:
+::       - Grupy do ktorych nalezy obiekt
+::          - Etapy ktore występuja w grupach
+::             - Kontenery na ktorych wystepuja etapy
+::   WE: _a - PX_VER.ref()
+::       _b - PX_OBJ.ref()
+::       _c - PX_SET.ref()
+::   WY: tabela tymczasowa
+::----------------------------------------------------------------------------------------------------------------------
+_px_kont:=tab_tmp(3,
+   'TYP'       ,'STRING[1]'   ,'Typ: K - kontener, S - etap',
+   'UID_PAR'   ,'STRING[15]'  ,'Unikalne id elementu nadrzednego',
+   'SYMBOL'    ,'STRING[60]'  ,'Symbol',
+   'UID'       ,'STRING[15]'  ,'Unikalne id elementu',
+   'REF_STG'   ,'INTEGER'     ,'#PX_STAGE.ref()',
+   'REF_KONT'  ,'INTEGER'     ,'#PX_KONT.ref()',
+   'REF_GRP'   ,'INTEGER'     ,'#PX_STAGE.ref()',
+   'NAZWA'     ,'STRING[80]'  ,'Nazwa',
+   'RES_TYP'   ,'STRING[1]'   ,'Typ zasobu'
+);
+_ndx1:=_px_kont.ndx_tmp('',1, 'TYP',,,
+                              'REF_GRP',,,
+                              'REF_STG',,,
+                              'REF_KONT',,);
+
+_px_ver:=_a;
+_px_obj:=_b;
+_px_set:=_c;
+
+PX_KONT.cntx_psh();
+PX_STAGE.cntx_psh();
+PX_POZ.cntx_psh();
+{? _px_set=null()
+|| PX_POZ.index('PX_POZ');
+   PX_POZ.prefix(_px_ver,_px_obj)
+|| PX_POZ.index('PX_SET');
+   PX_POZ.prefix(_px_ver,_px_set,_px_obj)
+?};
+{? PX_POZ.first()
+|| {!
+   |?
+      _px_kont.blank();
+      _kont:=PX_POZ.PX_KONT;
+      _stage:=PX_POZ.PX_STAGE;
+      _px_grp:=PX_POZ.PX_GRP;
+
+      _uid_grp:='';
+      _uid_stg:='';
+
+      {? _px_grp<>null()
+      ||
+::       Pozycja planu posiada obiekt grupujacy
+         _px_kont.cntx_psh();
+         _px_kont.index(_ndx1);
+         _px_kont.prefix('G',#_px_grp);
+         {? _px_kont.first()
+         || _uid_grp:=_px_kont.UID
+         ||
+::          Pierwszy poziom drzewa - grupa
+            _px_kont.UID:=exec('uid','#blank');
+            _px_kont.REF_GRP:=#_px_grp;
+            _px_kont.TYP:='G';
+            _px_kont.SYMBOL:=PX_POZ.PX_GRP().SYMBOL;
+            _px_kont.NAZWA:=PX_GRP.NAZWA;
+            _px_kont.add();
+            _uid_grp:=_px_kont.UID
+         ?};
+         _px_kont.cntx_pop();
+         ~~
+      ||
+::       Pozycja planu nie posiada obiektu grupujacego
+         _px_kont.cntx_psh();
+         _px_kont.index(_ndx1);
+         _px_kont.prefix('G',0);
+         {? _px_kont.first()
+         || _uid_grp:=_px_kont.UID
+         ||
+::          Pierwszy poziom drzewa - grupa
+            _px_kont.UID:=exec('uid','#blank');
+            _px_kont.REF_GRP:=0;
+            _px_kont.TYP:='G';
+            _px_kont.SYMBOL:='Brak obiektu grupującego'@;
+            _px_kont.NAZWA:='Brak obiektu grupującego'@;
+            _px_kont.add();
+            _uid_grp:=_px_kont.UID
+         ?};
+         _px_kont.cntx_pop();
+         ~~
+      ?};
+
+      {? _stage<>null()
+      ||
+::       Pozycja planu posiada etap
+         _px_kont.cntx_psh();
+         _px_kont.index(_ndx1);
+         _px_kont.prefix('S',#_px_grp,#_stage);
+         {? _px_kont.first()
+         || _uid_stg:=_px_kont.UID
+         ||
+::          Drugi poziom drzewa - etap
+            _px_kont.UID:=exec('uid','#blank');
+            _px_kont.UID_PAR:=_uid_grp;
+            _px_kont.REF_STG:=#_stage;
+            _px_kont.REF_GRP:=#_px_grp;
+            _px_kont.TYP:='S';
+            _px_kont.SYMBOL:=form(PX_POZ.PX_STAGE().NR,-2)+' '+PX_STAGE.NAZWA;
+            _px_kont.NAZWA:=PX_STAGE.NAZWA;
+            _px_kont.add();
+            _uid_stg:=_px_kont.UID;
+            ~~
+         ?};
+         _px_kont.cntx_pop();
+         ~~
+      ||
+::       Pozycja planu nie posiada etapu (np zaplanowana na podstawie Planu operacyjnego)
+
+::       Sprawdzam czy jest 'pusty etap', jesli nie ma to go zakladam
+         _px_kont.cntx_psh();
+         _px_kont.index(_ndx1);
+         _empty_uid:='';
+         _empty_ref:=0;
+         _px_kont.prefix('S',#_px_grp,0);
+         {? _px_kont.first()
+         ||
+            _uid_stg:=_px_kont.UID
+         ||
+::          Drugi poziom drzewa - etap
+            _px_kont.REF_STG:=0;
+            _px_kont.REF_GRP:=#_px_grp;
+            _px_kont.UID_PAR:=_uid_grp;
+            _px_kont.UID:=exec('uid','#blank');
+            _px_kont.TYP:='S';
+            _px_kont.SYMBOL:='00 '+'Brak etapu planistycznego'@;
+            _px_kont.NAZWA:='Nieokreślony (pusty etap planistyczny)'@;
+            _px_kont.add();
+            _uid_stg:=_px_kont.UID;
+            ~~
+         ?};
+         _px_kont.cntx_pop();
+         ~~
+      ?};
+      _px_kont.cntx_psh();
+      _px_kont.index(_ndx1);
+      _px_kont.prefix('K',#_px_grp,#_stage,#_kont);
+      {? _px_kont.size()=0
+      ||
+::       Trzeci poziom drzewa - kontener
+         _px_kont.UID:=exec('uid','#blank');
+         _px_kont.UID_PAR:=_uid_stg;
+         _px_kont.REF_STG:=#_stage;
+         _px_kont.REF_KONT:=#_kont;
+         _px_kont.REF_GRP:=#_px_grp;
+         _px_kont.TYP:='K';
+         _px_kont.SYMBOL:=PX_POZ.PX_KONT().SYMBOL;
+         _px_kont.NAZWA:=PX_KONT.NAZWA;
+         _px_kont.RES_TYP:=PX_KONT.PL_RES().TYP;
+         _px_kont.add()
+      ?};
+      _px_kont.cntx_pop();
+      PX_POZ.next()
+   !}
+?};
+PX_STAGE.cntx_pop();
+PX_POZ.cntx_pop();
+PX_KONT.cntx_pop();
+_px_kont.clear();
+_px_kont.ndx_drop(_ndx1);
+_px_kont
+
+
+\borders
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Zwraca graniczne daty zaplanowanego obiektu
+::   WE: _a - PX_VER.ref()
+::       _b - PX_OBJ.ref()
+::   WY: .OD .DO
+::----------------------------------------------------------------------------------------------------------------------
+_borders:=obj_new('OD','DO');
+_borders.OD:=_borders.DO:=date(0,0,0);
+
+PX_POZ.cntx_psh();
+PX_POZ.index('PX_POZ');
+PX_POZ.prefix(_a,_b);
+{? PX_POZ.first()
+|| {!
+   |?
+      _od:=PX_POZ.PX_CUP().STARTD().DATA;
+      _do:=PX_CUP.ENDD().DATA;
+      {? _od<_borders.OD | _borders.OD=date(0,0,0) || _borders.OD:=_od ?};
+      {? _do>_borders.DO                           || _borders.DO:=_do ?};
+      PX_POZ.next()
+   !}
+?};
+PX_POZ.cntx_pop();
+_borders
+
+
+\obj_find_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Zwraca pusta tabele tymczasowa wykorzystywana w formulach \obj_find_*
+::       Do wykorzystania w formulach \select_*/px_plan
+::   WY: Tablica tymczasowa z #PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+tab_tmp(1,'REF','INTEGER','#PX_OBJ.ref()','SQLREF','STRING[16]','$PX_OBJ.ref()')
+
+
+\obj_find_zl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Szuka obiektow dla danego/danych ZL, pojedyncze zlecenia lub dla zlecenia zlozonego wszystkie podzlecenia
+::       Do wykorzystania w formule exec('select_zl','px_plan')
+::   WE: _a - ZL.ref() albo tabela tymczasowa ZL.sel_aget()
+::   WY: Tablica tymczasowa z #PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=exec('obj_find_tab','px_obj');
+
+{? var_pres('_a')=type_of(null())
+|| _tab:=tab_tmp(1,'REF','INTEGER','#ZL.ref()');
+   _tab.REF:=#_a;
+   _tab.add()
+|| _tab:=_a
+?};
+
+ZL.cntx_psh();
+
+{? _tab.first()
+|| {!
+   |? ZL.prefix();
+      {? ZL.seek(_tab.REF) & exec('zl_planned','px_obj',ZL.ref(),PX_VAR.VIE_VER)>0
+      || ZL.index('NRNZL');
+         ZL.prefix(ZL.UNRZL);
+         {? ZL.first() & ZL.RODZ_TEX='P'
+         ||
+::          znajdz obiekty dla podzlecen
+            {!
+            |?
+               PX_OBJ.index('ZL');
+               PX_OBJ.prefix(ZL.ref());
+               {? PX_OBJ.first()
+               || _px_obj.REF:=#PX_OBJ.ref();
+                  _px_obj.SQLREF:=$PX_OBJ.ref();
+                  _px_obj.add()
+               || _px_obj.REF:=0;
+                  _px_obj.SQLREF:='';
+                  _px_obj.add()
+               ?};
+               ZL.next()
+            !}
+         ||
+::          jezeli brak podzlecen, to znajdz obiekt planistyczny dla wskazanego zlecenia
+            PX_OBJ.index('ZL');
+            PX_OBJ.prefix(_tab.REF);
+            {? PX_OBJ.first()
+            || _px_obj.REF:=#PX_OBJ.ref();
+               _px_obj.SQLREF:=$PX_OBJ.ref();
+               _px_obj.add()
+            || _px_obj.REF:=0;
+               _px_obj.SQLREF:='';
+               _px_obj.add()
+            ?}
+         ?}
+      ?};
+      _tab.next()
+   !}
+?};
+
+ZL.cntx_pop();
+
+_px_obj
+
+
+\obj_find_zkn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Szuka obiektow dla danego ZK_N
+::       Wykorzystane w formule exec(select_zkn','px_plan'), a w zasadzie exec('zam_plan','zk2'),
+::       bo tam jest ladowanie danych
+::   WE: _a - ZK_N.ref()
+::   WY: Tablica tymczasowa z #PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=exec('obj_find_tab','px_obj');
+
+Cntx.psh(ZK_N,ZK_P,ZL);
+Cntx.clr(ZK_N,ZK_P,ZL);
+
+:: znajdz zamowienie i jego pozycje - tylko wyroby i polfabrykaty
+{? ZK_N.seek(_a)
+||
+   ZK_P.index('TYPN');
+   ZK_P.prefix('A','Z',ZK_N.ref(),1);
+   {? ZK_P.first()
+   ||
+      {!
+      |?
+         {? 'PW'*ZK_P.M().R
+         ||
+::          jezeli sa wygenerowane zlecenia
+            ZLZAM.index('ZMZL');
+            ZLZAM.prefix($ZK_P.ref());
+            {? ZLZAM.first()
+            || {!
+               |?
+                  PX_OBJ.index('ZL');
+                  PX_OBJ.prefix(ZLZAM.ZL);
+                  {? PX_OBJ.first()
+                  || _px_obj.REF:=#PX_OBJ.ref();
+                     _px_obj.SQLREF:=$PX_OBJ.ref();
+                     _px_obj.add()
+                  || _px_obj.REF:=0;
+                     _px_obj.SQLREF:='';
+                     _px_obj.add()
+                  ?};
+                  ZLZAM.next()
+               !}
+            ?};
+
+            {? exec('zkp2obj','px_obj')
+            || PX_OBJ.index('ZK_P');
+               PX_OBJ.prefix(ZK_P.name(),ZK_P.ref());
+               {? PX_OBJ.first()
+               || _px_obj.REF:=#PX_OBJ.ref();
+                  _px_obj.SQLREF:=$PX_OBJ.ref();
+                  _px_obj.add()
+               || _px_obj.REF:=0;
+                  _px_obj.SQLREF:='';
+                  _px_obj.add()
+               ?}
+            || _px_obj.REF:=0;
+               _px_obj.SQLREF:='';
+               _px_obj.add()
+            ?}
+         ?};
+         ZK_P.next()
+      !}
+   || _px_obj.REF:=0;
+      _px_obj.SQLREF:='';
+      _px_obj.add()
+   ?}
+|| _px_obj.REF:=0;
+   _px_obj.SQLREF:='';
+   _px_obj.add()
+?};
+
+Cntx.pop(ZK_N,ZK_P,ZL);
+
+_px_obj
+
+
+\obj_find_used
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Szuka wszystkich uzywanych obiektow we wskazanej wersji planu
+::       Opcjonalnie (podany PX_SET.ref()) tylko w ramach wskazanego zestawu planistycznego
+::       Do wykorzystania w formulach: exec('select','px_plan'), exec('px_obj_wykony','px_wyk')
+::   WE: _a - PX_VER.ref()
+::       _b - PX_SET.ref()
+::   WY: Tablica tymczasowa z #PX_OBJ.ref(), $PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_px_ver:=_a;
+_px_set:=_b;
+
+_px_obj:=exec('obj_find_tab','px_obj');
+
+PX_CONN.cntx_psh();
+PX_CONN.index('PX_GRP');
+PX_GRP.cntx_psh();
+PX_OBJ.cntx_psh();
+PX_OBJ.index('SYMBOL');
+PX_OBJ.prefix('T');
+
+PX_GRP.index('VISIBLE');
+PX_GRP.prefix(_px_ver,'T');
+{? PX_GRP.first()
+|| {!
+   |?
+      {? PX_GRP.STATWYK2<>'T'
+      || PX_CONN.prefix(PX_GRP.ref());
+         {? PX_CONN.first()
+         || {!
+            |? {? PX_CONN.PX_OBJ<>null() & PX_CONN.PX_OBJ().A='T'
+               ||
+                  _px_obj.REF:=#PX_OBJ.ref();
+                  _px_obj.SQLREF:=$PX_OBJ.ref();
+                  {? _px_set=null()
+                  || PX_POZ.index('PX_POZ');
+                     PX_POZ.prefix(_px_ver,PX_OBJ.ref());
+                     {? PX_POZ.first() & PX_POZ.SRC_OPER<>'T'
+                     || _px_obj.add()
+                     ?}
+                  || PX_POZ.index('PX_SET');
+                     PX_POZ.prefix(_px_ver,_px_set,PX_OBJ.ref());
+                     {? PX_POZ.first() & PX_POZ.SRC_OPER<>'T'
+                     || _px_obj.add()
+                     ?}
+                  ?}
+               ?};
+               PX_CONN.next()
+            !}
+         ?}
+      ?};
+      PX_GRP.next()
+   !}
+?};
+PX_OBJ.cntx_pop();
+PX_CONN.cntx_pop();
+PX_GRP.cntx_pop();
+_px_obj
+
+
+\get_ilosc_que
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Zwraca jaka ilosc PX_OBJ znajduje sie w kolejce danej wersji
+::   WE: _a - PX_VER.ref() - wersja planu
+::       _b - PX_OBJ.ref() - obiekt planowany
+::   WY: REAL - ilosc
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_ver:=_a;
+_obj:=_b;
+
+PX_VER.cntx_psh();
+PX_OBJ.cntx_psh();
+PX_CONN.cntx_psh();
+PX_VER.clear();
+
+{? PX_VER.seek(_ver)
+|| PX_OBJ.clear();
+   {? PX_OBJ.seek(_obj)
+   || PX_CONN.clear();
+      PX_CONN.index('VER');
+      PX_CONN.prefix(PX_VER.ref(),PX_OBJ.ref);
+      {? PX_CONN.first()
+      || {!
+         |? _result+=PX_CONN.ILOSC;
+            PX_CONN.next()
+         !}
+      ?}
+   ?}
+?};
+PX_CONN.cntx_pop();
+PX_OBJ.cntx_pop();
+PX_VER.cntx_pop();
+_result
+
+
+\get_ilosc_zl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.37]
+:: OPIS: Zwraca ilosc zleconą
+::   WE: [_a] - PX_OBJ.ref - obiekt do planu
+::   WY: REAL - ilość na zleceniach
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PX_OBJ.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PX_OBJ.cntx_psh();
+{? _ref<>null()
+|| PX_OBJ.prefix();
+   {? PX_OBJ.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| ZLZAM.cntx_psh();
+   ZLZAM.index('ZMZL');
+   {? PX_OBJ.ZL<>null
+   || _result:=PX_OBJ.ZL().IL
+   |? PX_OBJ.ZK_P<>null()
+   || ZLZAM.prefix($PX_OBJ.ZK_P,);
+      {? ZLZAM.first()
+      || {!
+         |? _result+=ZLZAM.ILZL;
+            ZLZAM.next()
+         !}
+      ?};
+      ~~
+   |? PX_OBJ.ZK_N<>null()
+   || ZK_P.cntx_psh();
+      ZK_N.cntx_psh();
+      _mask:=ref_name(PX_OBJ.ZK_N);
+      ZK_N.use(_mask);
+      ZK_P.use((5+ZK_P.name())+(_mask+3));
+      ZK_P.index('TYPN');
+      ZK_P.prefix('A','Z',PX_OBJ.ZK_N,1);
+      {? ZK_P.first()
+      || {!
+         |?
+            ZLZAM.prefix($ZK_P.ref());
+            {? ZLZAM.first()
+            || {!
+               |? _result+=ZLZAM.ILZL;
+                  ZLZAM.next()
+               !}
+            ?};
+            ZK_P.next()
+         !}
+      ?};
+      ZK_N.cntx_pop();
+      ZK_P.cntx_pop();
+      ~~
+   ?};
+   ZLZAM.cntx_pop()
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\get_oddzial
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.37]
+:: OPIS: Zwraca oddział
+::   WE: [_a] - PX_OBJ.ref - obiekt do planu
+::   WY: STRING - kod oddziału
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PX_OBJ.ref())
+|| _ref:=_a
+?};
+
+_result:='';
+_can_continue:=1;
+
+PX_OBJ.cntx_psh();
+{? _ref<>null()
+|| PX_OBJ.prefix();
+   {? PX_OBJ.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   ZL.cntx_psh();
+   ZK_N.cntx_psh();
+   ZK_P.cntx_psh();
+   {? PX_OBJ.ZL<>null()
+   || _result:=PX_OBJ.ZL().ODDZ
+   |? PX_OBJ.ZK_N<>null()
+   || ZK_N.use(ref_name(PX_CONN.PX_OBJ().ZK_N));
+      _result:=PX_OBJ.ZK_N().ODDZ
+   |? PX_OBJ.ZK_P<>null()
+   || _mask:=ref_name(PX_OBJ.ZK_P);
+      ZK_P.use(_mask);
+      ZK_N.use(5+ZK_N.name()+(_mask+3));
+      _result:=PX_OBJ.ZK_P().N().ODDZ
+   ?};
+   ZL.cntx_pop();
+   ZK_N.cntx_pop();
+   ZK_P.cntx_pop();
+   ~~
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\get_dkc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.37]
+:: OPIS: Zwraca cechę
+::   WE: [_a] - PX_OBJ.ref - obiekt do planu
+::   WY: DK_C.ref
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PX_OBJ.ref())
+|| _ref:=_a
+?};
+
+_result:=null();
+_can_continue:=1;
+
+PX_OBJ.cntx_psh();
+{? _ref<>null()
+|| PX_OBJ.prefix();
+   {? PX_OBJ.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   ZL.cntx_psh();
+   ZK_N.cntx_psh();
+   ZK_P.cntx_psh();
+   {? PX_OBJ.ZK_P<>null()
+   || _mask:=ref_name(PX_OBJ.ZK_P);
+      ZK_P.use(_mask);
+      ZK_N.use(5+ZK_N.name()+(_mask+3));
+      _result:=PX_OBJ.ZK_P().DK_C
+   ?};
+   ZL.cntx_pop();
+   ZK_N.cntx_pop();
+   ZK_P.cntx_pop();
+   ~~
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\get_first_grp
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Zwraca pierwsza grupe zawierającą PX_OBJ znajduje sie w kolejce danej wersji
+::   WE: _a - PX_VER.ref() - wersja planu
+::       _b - PX_OBJ.ref() - obiekt planowany
+::   WY: PX_GRP.ref lub null()
+::----------------------------------------------------------------------------------------------------------------------
+_result:=null();
+_ver:=_a;
+_obj:=_b;
+
+PX_VER.cntx_psh();
+PX_OBJ.cntx_psh();
+PX_CONN.cntx_psh();
+PX_VER.clear();
+
+{? PX_VER.seek(_ver)
+|| PX_OBJ.clear();
+   {? PX_OBJ.seek(_obj)
+   || PX_CONN.clear();
+      PX_CONN.index('VER');
+      PX_CONN.prefix(PX_VER.ref(),PX_OBJ.ref);
+      {? PX_CONN.first()
+      || _result:=PX_CONN.PX_GRP
+      ?}
+   ?}
+?};
+PX_CONN.cntx_pop();
+PX_OBJ.cntx_pop();
+PX_VER.cntx_pop();
+_result
+
+
+\get_first_conn
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [21.37]
+:: OPIS: Zwraca pierwsze PX_CONN zawierającą PX_OBJ w podanej grupie w kolejce
+::   WE: _a - PX_GRP.ref() - grupa w kolejce
+::       _b - PX_OBJ.ref() - obiekt planowany
+::   WY: PX_GRP.ref lub null()
+::----------------------------------------------------------------------------------------------------------------------
+_result:=null();
+_grp:=_a;
+_obj:=_b;
+
+PX_CONN.cntx_psh();
+PX_CONN.index('PX_OBJ2');
+PX_CONN.prefix(_grp,_obj);
+{? PX_CONN.first()
+|| _result:=PX_CONN.ref()
+?};
+PX_CONN.cntx_pop();
+_result
+
+
+\PX_OBJ_get_texy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.10]
+:: OPIS: Zwraca liste technologii dla podanego PX_OBJa
+::   WE: _a - PX_OBJ.ref()
+::      [_b] - aktywna ['T']
+::   WY: tab_tmp[PX_TEX.name(), #PX_TEX.ref()]
+::UWAGA: Parametry bez [] sa wymagane, formula moze nie sprawdzac, czy zostaly podane i moze wystapic blad.
+::----------------------------------------------------------------------------------------------------------------------
+_px_texy:=exec('px_texy_tab','px_tex');
+_px_obj:=_a;
+_akt:={?_>1 & type_of(_b)=2 || _b || 'T' ?};
+:: sprawdzam czy dostepny jest PXoTEX, jesli nie to powoluje
+{? var_pres('PXoTEX')<100 || exec('PXoTEX','px_tex') ?};
+:: najpierw dajmy szanse wdrozeniowcowi
+PX_OBJ.cntx_psh();
+PX_OBJ.clear();
+{? PX_OBJ.seek(_px_obj)
+|| exec('get_default_tex','px_tex',PX_OBJ.ref(),2,_px_texy)
+?};
+PX_OBJ.cntx_pop();
+_px_texy
+
+
+\status_normal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Status normalny
+::----------------------------------------------------------------------------------------------------------------------
+'NORMALNY'
+
+
+\px_obj_filter
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Ustawienie filtra programowego w okniach: WER, WYK tabeli PX_OBJ
+::   WE: [_a] - INTEGER - czy uruchamiać formułę na filter i zapisywanie wartości w FO
+::----------------------------------------------------------------------------------------------------------------------
+_run:=1;
+{? var_pres('_a')=type_of(0)
+|| _run:=_a
+?};
+
+{? PX_VAR.PX_SET=null()
+|| _head:=''
+|| _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] '
+?};
+_names:=obj_new(8);
+_values:=obj_new(8);
+
+_names[1]:='Wszystkie'@;
+_values[1]:='ALL';
+
+_names[2]:='Status normalny'@;
+_values[2]:='NORMAL';
+
+_names[3]:='Nie zaplanowane'@;
+_values[3]:='NOT_PLANNED';
+
+_names[4]:='Przyszły termin'@;
+_values[4]:='FUTURE';
+
+_names[5]:='Zlecenia'@;
+_values[5]:='ZLEC';
+
+_names[6]:='Zamówienia sprzedaży'@;
+_values[6]:='ZAM_SPR';
+
+_names[7]:='Zamówienia wewnętrzne'@;
+_values[7]:='ZAM_WEW';
+
+_names[8]:='Grupy operacji'@;
+_values[8]:='GROP';
+
+_default:=exec('get','#params',8064,type_of(''),OPERATOR.USER);
+{? _default=''
+|| _default:='ALL'
+?};
+
+_val:=exec('edit_radiobutton','#edit',_default,'Obiekty'@,_names,_values,'Zakres obiektów do kolejki'@);
+{? type_of(_val)=type_of('') & _val<>''
+|| {? _run>0
+   || exec('px_obj_run_filter','px_obj',_val);
+      exec('set','#params',8064,_val,OPERATOR.USER)
+   ?}
+?};
+_val
+
+
+\px_obj_run_filter
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [23.25]
+:: OPIS: Uruchamia formułę na filtr w PX_OBJ na podstawie zapamiętanej wartości
+::   WE: _a - STRING - zapamiętana wartość
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_val:=_a;
+PX_OBJ.prefix();
+{? _val='ALL'
+|| exec('filter_all_act','px_obj')
+|? _val='NORMAL'
+|| exec('filter_normal','px_obj')
+|? _val='NOT_PLANNED'
+|| exec('filter_nieplan','px_obj')
+|? _val='FUTURE'
+|| exec('filter_future','px_obj')
+|? _val='ZLEC'
+|| exec('filter_zlec','px_obj')
+|? _val='ZAM_SPR'
+|| exec('filter_zam','px_obj','Z')
+|? _val='ZAM_WEW'
+|| exec('filter_zam','px_obj','W')
+|? _val='GROP'
+|| exec('filter_grop','px_obj')
+?};
+~~
+
+
+\filter_all_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Ustawienie filtra programowego dla PX_OBJ - wszystkie aktywne obiekty
+::----------------------------------------------------------------------------------------------------------------------
+PX_VAR.FILTER_O:='all_act';
+_head:='';
+{? PX_VAR.PX_SET=null()
+||
+   {? PX_VAR.PX_TAG=null()
+   ||
+::    Bez zestawu i grupy
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'''
+      )
+   ||
+::    Bez zestawu ale z grupą
+      _head:='[Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_TAG=:_a and PX_OBJ.A=''T''',
+         PX_VAR.PX_TAG
+      )
+   ?}
+|| {? PX_VAR.PX_TAG=null()
+   ||
+::    Z zestawem, bez grupy
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_a and PX_OBJ.A=''T''',
+         PX_VAR.PX_SET
+      )
+   ||
+::    Z zestawem i grupą
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] [Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_a and PX_TAG=:_b and PX_OBJ.A=''T''',
+         PX_VAR.PX_SET,PX_VAR.PX_TAG
+      )
+   ?}
+?};
+{? ~PX_OBJ.f_seek(PX_VAR.FLTR_OBJ) || PX_OBJ.f_first() ?};
+PX_VAR.OBJFILTR:=_head+'Wszystkie aktywne obiekty';
+~~
+
+
+\filter_normal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Ustawienie filtra programowego dla PX_OBJ - aktywne obiekty o statusie 'NORMALNY'
+::----------------------------------------------------------------------------------------------------------------------
+PX_VAR.FILTER_O:='normal';
+_head:='';
+{? PX_VAR.PX_SET=null()
+||
+   {? PX_VAR.PX_TAG=null()
+   ||
+::    Bez zestawu i grupy
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'' and PX_OBJ.STATUS='':_a''',
+         exec('status_normal','px_obj')
+      )
+   ||
+::    Bez zestawu ale z grupą
+      _head:='[Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'' and PX_OBJ.PX_TAG=:_b and PX_OBJ.STATUS='':_a''',
+         exec('status_normal','px_obj'),PX_VAR.PX_TAG
+      )
+   ?}
+||
+   {? PX_VAR.PX_TAG=null()
+   ||
+::    Z zestawem, bez grupy
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_b and PX_OBJ.A=''T'' and PX_OBJ.STATUS='':_a''',
+         exec('status_normal','px_obj'),
+         PX_VAR.PX_SET
+      )
+   ||
+::    Z zestawem i z grupą
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] [Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_b and PX_TAG=:_c and PX_OBJ.A=''T'' and PX_OBJ.STATUS='':_a''',
+         exec('status_normal','px_obj'),
+         PX_VAR.PX_SET,PX_VAR.PX_TAG
+      )
+   ?}
+?};
+{? ~PX_OBJ.f_seek(PX_VAR.FLTR_OBJ) || PX_OBJ.f_first() ?};
+PX_VAR.OBJFILTR:=_head+'Aktywne obiekty o statusie '''+exec('status_normal','px_obj')+'''';
+~~
+
+
+\filter_nieplan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Ustawienie filtra programowego dla PX_OBJ - aktywne obiekty niezaplanowane
+::----------------------------------------------------------------------------------------------------------------------
+PX_VAR.FILTER_O:='nieplan';
+_head:='';
+{? PX_VAR.PX_SET=null()
+|| {? PX_VAR.PX_TAG=null()
+   ||
+::    Bez zestawu i grupy
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'' and PX_OBJ.IL_PLAN<PX_OBJ.IL'
+      )
+   ||
+::    Bez zestawu ale z grupą
+      _head:='[Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'' and PX_TAG=:_a and PX_OBJ.IL_PLAN<PX_OBJ.IL',
+         PX_VAR.PX_TAG
+      )
+   ?}
+|| {? PX_VAR.PX_TAG=null()
+   ||
+::    Z zestawem, bez grupy
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_a and PX_OBJ.A=''T'' and PX_OBJ.IL_PLAN<PX_OBJ.IL',
+         PX_VAR.PX_SET
+      )
+   ||
+::    Z zestawem i z grupą
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] [Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_a and PX_TAG=:_b and PX_OBJ.A=''T'' and PX_OBJ.IL_PLAN<PX_OBJ.IL',
+         PX_VAR.PX_SET,PX_VAR.PX_TAG
+      )
+   ?}
+?};
+{? ~PX_OBJ.f_seek(PX_VAR.FLTR_OBJ) || PX_OBJ.f_first() ?};
+PX_VAR.OBJFILTR:=_head+'Aktywne obiekty niezaplanowane';
+~~
+
+
+\filter_future
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Ustawienie filtra programowego dla PX_OBJ - aktywne obiekty z przyszlym terminem realizacji
+::----------------------------------------------------------------------------------------------------------------------
+PX_VAR.FILTER_O:='future';
+_head:='';
+{? PX_VAR.PX_SET=null()
+||
+   {? PX_VAR.PX_TAG=null()
+   ||
+::    Bez zestawu i grupy
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',
+         'join DATY using(PX_OBJ.ENDD,DATY.REFERENCE)',
+         'PX_OBJ.A=''T'' and DATY.DATA>to_date(:_a)',
+         date()
+      )
+   ||
+::    Bez zestawu ale z grupą
+      _head:='[Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',
+         'join DATY using(PX_OBJ.ENDD,DATY.REFERENCE)',
+         'PX_OBJ.A=''T'' and PX_TAG=:_b and DATY.DATA>to_date(:_a)',
+         date(),PX_VAR.PX_TAG
+      )
+
+   ?}
+||
+   {? PX_VAR.PX_TAG=null()
+   ||
+::    Z zestawem, bez grupy
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',
+         'join DATY using(PX_OBJ.ENDD,DATY.REFERENCE)',
+         'PX_SET=:_b and PX_OBJ.A=''T'' and DATY.DATA>to_date(:_a)',
+         date(),
+         PX_VAR.PX_SET
+      )
+   ||
+::    Z zestawem i z grupą
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] [Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',
+         'join DATY using(PX_OBJ.ENDD,DATY.REFERENCE)',
+         'PX_SET=:_b and PX_TAG=:_c and PX_OBJ.A=''T'' and DATY.DATA>to_date(:_a)',
+         date(),
+         PX_VAR.PX_SET,
+         PX_VAR.PX_TAG
+      )
+   ?}
+?};
+{? ~PX_OBJ.f_seek(PX_VAR.FLTR_OBJ) || PX_OBJ.f_first() ?};
+PX_VAR.OBJFILTR:=_head+'Aktywne obiekty z przyszłym terminem realizacji';
+~~
+
+
+\filter_zlec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Ustawienie filtra programowego dla PX_OBJ - aktywne obiekty dotyczace zlecen
+::----------------------------------------------------------------------------------------------------------------------
+PX_VAR.FILTER_O:='zlec';
+_head:='';
+{? PX_VAR.PX_SET=null()
+||
+   {? PX_VAR.PX_TAG=null()
+   ||
+::    Bez zestawu i grupy
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'' and PX_OBJ.ZL<>'''''
+      )
+   ||
+::    Bez zestawy ale z grupą
+      _head:='[Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'' and PX_TAG=:_a and PX_OBJ.ZL<>''''',
+         PX_VAR.PX_TAG
+      )
+   ?}
+|| {? PX_VAR.PX_TAG=null()
+   ||
+::    Z zestawem, bez grupy
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_a and PX_OBJ.A=''T'' and PX_OBJ.ZL<>''''',
+         PX_VAR.PX_SET
+      )
+   ||
+::    Z zestawem i z grupą
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] [Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_a and PX_TAG=:_b and PX_OBJ.A=''T'' and PX_OBJ.ZL<>''''',
+         PX_VAR.PX_SET,PX_VAR.PX_TAG
+      )
+   ?}
+?};
+{? ~PX_OBJ.f_seek(PX_VAR.FLTR_OBJ) || PX_OBJ.f_first() ?};
+PX_VAR.OBJFILTR:=_head+'Aktywne obiekty dotyczące zleceń';
+~~
+
+
+\filter_zam
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Ustawienie filtra programowego dla PX_OBJ - aktywne obiekty dotyczace zamowien
+::   WE: _a - STRING - rodzaj zamówienia - 'Z' - sprzedaży, 'W' - wewnętrzne
+::----------------------------------------------------------------------------------------------------------------------
+_rodz:=_a;
+PX_VAR.FILTER_O:='zam';
+_head:='';
+{? PX_VAR.PX_SET=null()
+|| {? PX_VAR.PX_TAG=null()
+   ||
+::    Bez zestawu i grupy
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',
+         'join ZK_P using(PX_OBJ.ZK_P,ZK_P.REFERENCE)',
+         'PX_OBJ.A=''T'' and PX_OBJ.ZK_P<>'''' and ZK_P.RODZ='':_a''',
+         _rodz
+      )
+   ||
+::    Bez zestawu ale z grupą
+      _head:='[Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',
+         'join ZK_P using(PX_OBJ.ZK_P,ZK_P.REFERENCE)',
+         'PX_OBJ.A=''T'' and PX_TAG=:_a and PX_OBJ.ZK_P<>'''' and ZK_P.RODZ='':_b''',
+         PX_VAR.PX_TAG,
+         _rodz
+      )
+   ?}
+|| {? PX_VAR.PX_TAG=null()
+   ||
+::    Z zestawem, bez grupy
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',
+         'join ZK_P using(PX_OBJ.ZK_P,ZK_P.REFERENCE)',
+         'PX_SET=:_a and PX_OBJ.A=''T'' and PX_OBJ.ZK_P<>'''' and  and ZK_P.RODZ='':_b''',
+         PX_VAR.PX_SET,
+         _rodz
+      )
+   ||
+::    Z zestawem i z grupą
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] [Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',
+         'join ZK_P using(PX_OBJ.ZK_P,ZK_P.REFERENCE)',
+         'PX_SET=:_a and PX_TAG=:_b and PX_OBJ.A=''T'' and PX_OBJ.ZK_P<>'''' and ZK_P.RODZ='':_c''',
+         PX_VAR.PX_SET,
+         PX_VAR.PX_TAG,
+         _rodz
+      )
+   ?}
+?};
+{? ~PX_OBJ.f_seek(PX_VAR.FLTR_OBJ) || PX_OBJ.f_first() ?};
+PX_VAR.OBJFILTR:=_head+'Aktywne obiekty dotyczące zamówień';
+~~
+
+
+\filter_grop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [23.25]
+:: OPIS: Ustawienie filtra programowego dla PX_OBJ - aktywne obiekty dotyczace grup operacji
+::----------------------------------------------------------------------------------------------------------------------
+PX_VAR.FILTER_O:='grop';
+_head:='';
+{? PX_VAR.PX_SET=null()
+|| {? PX_VAR.PX_TAG=null()
+   ||
+::    Bez zestawu i grupy
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'' and PX_OBJ.GROP<>'''''
+      )
+   ||
+::    Bez zestawu ale z grupą
+      _head:='[Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_OBJ.A=''T'' and PX_TAG=:_a and PX_OBJ.GROP<>''''',
+         PX_VAR.PX_TAG
+      )
+   ?}
+|| {? PX_VAR.PX_TAG=null()
+   ||
+::    Z zestawem, bez grupy
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_a and PX_OBJ.A=''T'' and PX_OBJ.GROP<>''''',
+         PX_VAR.PX_SET
+      )
+   ||
+::    Z zestawem i z grupą
+      _head:='[Zestaw: '+PX_VAR.PX_SET().SYMBOL+'] [Grupa: '+PX_VAR.PX_TAG().ID+'] ';
+      PX_OBJ.f_set(
+         'ENDD(DATA),SYMBOL',,
+         'PX_SET=:_a and PX_TAG=:_b and PX_OBJ.A=''T'' and PX_OBJ.GROP<>''''',
+         PX_VAR.PX_SET,PX_VAR.PX_TAG
+      )
+   ?}
+?};
+{? ~PX_OBJ.f_seek(PX_VAR.FLTR_OBJ) || PX_OBJ.f_first() ?};
+PX_VAR.OBJFILTR:=_head+'Aktywne obiekty dotyczące grup operacji';
+~~
+
+
+\il_plan_refresh
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Odswieza pole PX_OBJ.IL_PLAN - ilosc w planie glownym
+::   WE: _a - PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=_a;
+_mainver:=exec('get_mainversion','px_ver');
+PX_OBJ.cntx_psh();
+PX_CONN.cntx_psh();
+
+PX_OBJ.clear();
+{? PX_OBJ.seek(_obj)
+||
+:: Zerowanie ilosci na PX_OBJ
+   PX_OBJ.IL_PLAN:=0;
+
+   {? PX_OBJ.ZL<>null()
+   ||
+::    Usuwanie znacznika zaplanowania na zleceniu
+      exec('zl_plan_px_set','px_obj',PX_OBJ.ZL,'N')
+   ?};
+   {? PX_OBJ.GROP<>null()
+   || exec('grop_plan_px_set','px_grop',PX_OBJ.GROP,'N')
+   ?};
+
+   PX_CONN.index('VER');
+   PX_CONN.prefix(_mainver,PX_OBJ.ref());
+   {? PX_CONN.first()
+   || {!
+      |?
+::       Aktualizacja ilosci na PX_OBJ
+         PX_OBJ.IL_PLAN+=PX_CONN.ILOSC;
+         PX_CONN.next()
+      !}
+   ?};
+   PX_OBJ.put();
+   {? PX_OBJ.IL_PLAN>0
+   || {? PX_OBJ.ZL<>null()
+      || exec('zl_plan_px_set','px_obj',PX_OBJ.ZL,'T')
+      ?};
+      {? PX_OBJ.GROP<>null()
+      || exec('grop_plan_px_set','px_grop',PX_OBJ.GROP,'T')
+      ?}
+   ?}
+?};
+PX_OBJ.cntx_pop();
+PX_CONN.cntx_pop();
+PX_OBJ.get();
+~~
+
+
+\planend_refresh
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Odswieza pola PX_OBJ.PLANENDD i PX_OBJ.PLANENDT
+::   WE: _a - PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=_a;
+_mainver:=exec('get_mainversion','px_ver');
+PX_OBJ.cntx_psh();
+PX_CONN.cntx_psh();
+PX_POZ.cntx_psh();
+PX_POZ.index('TM_GRP');
+
+_tm_planned:=0;
+PX_OBJ.clear();
+{? PX_OBJ.seek(_obj)
+||
+:: zerowanie dat
+   PX_OBJ.PLANENDD:=null();
+   PX_OBJ.PLANENDT:=time(0,0,0);
+
+   PX_CONN.index('VER');
+   PX_CONN.prefix(_mainver,PX_OBJ.ref());
+   {? PX_CONN.first()
+   || {!
+      |? PX_POZ.prefix(PX_CONN.PX_GRP);
+         {? PX_POZ.last()
+         || {? PX_POZ.TM_END>_tm_planned
+            || _tm_planned:=PX_POZ.TM_END
+            ?}
+         ?};
+         PX_CONN.next()
+      !}
+   ?};
+   {? _tm_planned>0
+   ||
+      _form:=tm_form(_tm_planned);
+      _date:=date(   #(4+_form),
+                     #(2 + (5-_form)),
+                     #(2 + (8-_form)));
+      _time:=time(   #(2 + (11-_form)),
+                     #(2 + (14-_form)),
+                     #(2 + (17-_form)));
+      PX_OBJ.PLANENDD:=exec('get','daty',_date);
+      PX_OBJ.PLANENDT:=_time
+   || PX_OBJ.PLANENDD:=null();
+      PX_OBJ.PLANENDT:=time(0,0,0)
+   ?};
+   PX_OBJ.put()
+?};
+PX_POZ.cntx_pop();
+PX_OBJ.cntx_pop();
+PX_CONN.cntx_pop();
+PX_OBJ.get();
+~~
+
+
+\problem_none
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Brak problemu
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+'BRAK'
+
+
+\problem_present
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Wystepuja jakies problemy
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+'ISTNIEJĄ PROBLEMY'
+
+
+\icon_symbol
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.10]
+:: OPIS: Obsluga ikony w polu PX_OBJ.SYMBOL
+::   WY: STRING - identyfikator ikonki lub ''
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+{? PX_VAR.OBJ_PROB<>exec('problem_none','px_obj')
+|| _result:='xwin16.png:4'
+|? exec('planned_mainver','px_obj')>0
+|| _result:='xwin16.png:38'
+|? PX_OBJ.PX_TAG<>null()
+|| _result:='xwin16.png:11'
+|| _result:='xwin16.png:110'
+?};
+_result
+
+
+\can_plan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.10]
+:: OPIS: Sprawdza, czy obiekt mozna planowac - np. zlecenie powiazane z zaplanowanym zamowieniem lub odwrotnie
+::   WE: _a - PX_OBJ.ref()
+::       _b   - INTEGER - tryb dialogów:   0 - brak,
+::                                           1 - komunikaty na ekran
+::                                           2 - komunikaty do KOMMa,
+::                                           3 - komunikaty do PX_KOMM i do _mp.error
+::       [_c] - INTEGER - 0/[1] - czy aktualizowac zestaw startowy przed porownaniem zestawu z aktualnie wybranym
+::       [_d] - INTEGER - 0/[1] - czy podczas sprawdzania obiektu porownywac zestaw startowy z obecnym
+::       [_e] - INTEGER - 0/[1] - czy podczas sprawdzania obiektu dokonywać sprawdzeń powiązań zamówienia i zlecenia
+::       [_f] - INTEGER - [0]/1 - czy sprawdzać też powiązane obiekty
+::       [_g] - obj_new - tablica refów z już sprawdzonymi obiektami
+::       [_h] - PX_VER.ref() - wersja planu, jeżeli nie podane to wersja główna
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_ok:=1;
+_ref:=_a;
+_dialog:=_b;
+_set_upd:=1;
+{? var_pres('_c')=type_of(0)
+|| _set_upd:=_c
+?};
+_set_chk:=1;
+{? var_pres('_d')=type_of(0)
+|| _set_chk:=_d
+?};
+
+_tie_chk:=1;
+{? var_pres('_e')=type_of(0)
+|| _tie_chk:=_e
+?};
+
+_chk_conn:=0;
+{? var_pres('_f')=type_of(0)
+|| _chk_conn:=_f
+?};
+
+_can_check:=1;
+_ref_table:=~~;
+{? var_pres('_g')>100
+|| _ref_table:=_g;
+   {? _ref_table.r_find(_ref)>0
+   || _can_check:=0
+   ?}
+|| _ref_table:=exec('ref_table','#table')
+?};
+_px_ver:=exec('get_mainversion','px_ver');
+{? var_pres('_h')=type_of(PX_VER.ref())
+|| _px_ver:=_h
+?};
+
+Cntx.psh(PX_OBJ,ZL,PX_SET);
+Cntx.clr(PX_OBJ,ZL);
+
+{? _can_check>0
+||
+   {? PX_OBJ.seek(_ref)
+   ||
+      _px_obj:=PX_OBJ.SYMBOL;
+      _ref_table.add(PX_OBJ.ref());
+
+      {? exec('is_px_set','px_param')>0
+      || {? _set_upd>0 & exec('get','#params',500366,2)=exec('kind_pxtex','px_set')
+         ||
+::          Na wszelki wypadek aktualizuje zestaw startowy
+            exec('update_px_set','px_obj',PX_OBJ.ref(),,1)
+         ?};
+
+         {? _set_chk>0
+         ||
+::          Sprawdzam czy zestaw startowy w oknie i zestaw startowy na obiekcie sa takie same
+            {? PX_VAR.PX_SET<>null() & PX_VAR.PX_SET<>PX_OBJ.PX_SET
+            || _ok:=0;
+               _msg:='Aby dodać: %1 do kolejki należy pracować w zestawie: %2'@[_px_obj,PX_OBJ.PX_SET().SYMBOL];
+               {? _dialog=1
+               || FUN.emsg(_msg)
+               |? _dialog=2
+               || KOMM.add(_msg,2,,1)
+               |? _dialog=3
+               || _komm_args:=exec('add_komm_a','px_komm');
+                  _komm_args.PX_VER:=_px_ver;
+                  _komm_args.PX_OBJ:=PX_OBJ.ref();
+                  _komm_args.TYP:=exec('type_error','px_komm');
+                  _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+                  _komm_args.MESSAGE:=_msg;
+                  exec('add_komm','px_komm',_komm_args);
+                  ~~
+               ?}
+            ?}
+         ?};
+
+::       Zestaw startowy musi być określony
+         {? PX_OBJ.PX_SET=null()
+         || _msg:='Obiekt do kolejki: %1 musi posiadać zestaw startowy.'@[_px_obj];
+            _ok:=0;
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            |? _dialog=3
+            || _komm_args:=exec('add_komm_a','px_komm');
+               _komm_args.PX_VER:=_px_ver;
+               _komm_args.PX_OBJ:=PX_OBJ.ref();
+               _komm_args.TYP:=exec('type_error','px_komm');
+               _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+               _komm_args.MESSAGE:=_msg;
+               exec('add_komm','px_komm',_komm_args);
+               ~~
+            ?}
+         ?}
+      ?};
+
+      {? PX_OBJ.IL=0
+      || _ok:=0;
+         _msg:='Nie można umieścić %1 w kolejce planu, bo cała jego ilość została zrealizowana lub zarezerwowana.'@[_px_obj];
+         {? _dialog=1
+         || FUN.emsg(_msg)
+         |? _dialog=2
+         || KOMM.add(_msg,2,,1)
+         |? _dialog=3
+         || _komm_args:=exec('add_komm_a','px_komm');
+            _komm_args.PX_VER:=_px_ver;
+            _komm_args.PX_OBJ:=PX_OBJ.ref();
+            _komm_args.TYP:=exec('type_error','px_komm');
+            _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+            _komm_args.MESSAGE:=_msg;
+            exec('add_komm','px_komm',_komm_args);
+            ~~
+         ?}
+      ?};
+      _il_que:=exec('get_ilosc_que','px_obj',PX_VAR.VER_QUE,PX_OBJ.ref());
+      {? _il_que>0 & _il_que>=PX_OBJ.IL
+      || _ok:=0;
+         _msg:='Obiekt do kolejki: %1 znajduje się już w kolejce w pełnej ilości.'@[_px_obj];
+         {? _dialog=1
+         || FUN.emsg(_msg)
+         |? _dialog=2
+         || KOMM.add(_msg,2,,1)
+         |? _dialog=3
+         || _komm_args:=exec('add_komm_a','px_komm');
+            _komm_args.PX_VER:=_px_ver;
+            _komm_args.PX_OBJ:=PX_OBJ.ref();
+            _komm_args.TYP:=exec('type_error','px_komm');
+            _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+            _komm_args.MESSAGE:=_msg;
+            exec('add_komm','px_komm',_komm_args);
+            ~~
+         ?}
+      ?};
+      {? PX_OBJ.GROP<>null()
+      || _grop_sequence:=exec('chk_grop_oper','zl_grop',PX_OBJ.GROP);
+         {? _grop_sequence='X'
+         || _ok:=0;
+            _msg:='Grupa operacji: %1 zawiera elementy, w których technologii operacja grupowa występuje wewnątrz procesu (a może tylko na początku lub końcu)'@[_px_obj];
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            |? _dialog=3
+            || _komm_args:=exec('add_komm_a','px_komm');
+               _komm_args.PX_VER:=_px_ver;
+               _komm_args.PX_OBJ:=PX_OBJ.ref();
+               _komm_args.TYP:=exec('type_error','px_komm');
+               _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+               _komm_args.MESSAGE:=_msg;
+               exec('add_komm','px_komm',_komm_args);
+               ~~
+            ?}
+         |? _grop_sequence='Z'
+         || _ok:=0;
+            _msg:='Grupa operacji: %1 zawiera elementy, w których technologii operacja jest raz na końcu, raz na początku procesu.'@[_px_obj];
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            |? _dialog=3
+            || _komm_args:=exec('add_komm_a','px_komm');
+               _komm_args.PX_VER:=_px_ver;
+               _komm_args.PX_OBJ:=PX_OBJ.ref();
+               _komm_args.TYP:=exec('type_error','px_komm');
+               _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+               _komm_args.MESSAGE:=_msg;
+               exec('add_komm','px_komm',_komm_args);
+               ~~
+            ?}
+         ?}
+      ?};
+      {? PX_OBJ.GROP<>null()
+      || {? exec('get','#params',500390,type_of(''))<>'T'
+         || _ok:=0;
+            _msg:='Wyłączono planowanie grup operacji (parametr 500390). Zaplanowanie grupy: %1 niemożliwe.'@[_px_obj];
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            |? _dialog=3
+            || _komm_args:=exec('add_komm_a','px_komm');
+               _komm_args.PX_VER:=_px_ver;
+               _komm_args.PX_OBJ:=PX_OBJ.ref();
+               _komm_args.TYP:=exec('type_error','px_komm');
+               _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+               _komm_args.MESSAGE:=_msg;
+               exec('add_komm','px_komm',_komm_args);
+               ~~
+            ?}
+         ?}
+      ?};
+
+      {? PX_OBJ.ZL<>null()
+      ||
+::       Sprawdzanie czy obiekt znajduje sie w planie operacyjnym
+         _plan_oper:=exec('zlec_planned','po_plan',$PX_OBJ.ZL);
+         {? _plan_oper>0
+         || _ok:=0;
+            _msg:='Obiekt do kolejki: %1 znajduje się w Planie operacyjnym w ilości: %2.'@[_px_obj,$_plan_oper]+'\n'+
+                  'Nie można dodawać do Planu strategicznego.'@;
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            |? _dialog=3
+            || _komm_args:=exec('add_komm_a','px_komm');
+               _komm_args.PX_VER:=_px_ver;
+               _komm_args.PX_OBJ:=PX_OBJ.ref();
+               _komm_args.TYP:=exec('type_error','px_komm');
+               _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+               _komm_args.MESSAGE:=_msg;
+               exec('add_komm','px_komm',_komm_args);
+               ~~
+            ?}
+         ?};
+         {? PX_OBJ.ZL().ILDOK>0
+         || _ok:=0;
+            _msg:='Obiekt do kolejki: %1 posiada już zarejestrowane dokumenty raportujące produkcję.'@[_px_obj]+'\n'+
+                  'Nie można dodawać do Planu strategicznego.'@;
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            |? _dialog=3
+            || _komm_args:=exec('add_komm_a','px_komm');
+               _komm_args.PX_VER:=_px_ver;
+               _komm_args.PX_OBJ:=PX_OBJ.ref();
+               _komm_args.TYP:=exec('type_error','px_komm');
+               _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+               _komm_args.MESSAGE:=_msg;
+               exec('add_komm','px_komm',_komm_args);
+               ~~
+            ?}
+         ?};
+         {? PX_OBJ.ZL().ILWYK>0 | ZL.HWYK>0
+         || _ok:=0;
+            _msg:='Obiekt do kolejki: %1 posiada już zarejestrowane wykonania.'@[_px_obj]+'\n'+
+                  'Nie można dodawać do Planu strategicznego.'@;
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            |? _dialog=3
+            || _komm_args:=exec('add_komm_a','px_komm');
+               _komm_args.PX_VER:=_px_ver;
+               _komm_args.PX_OBJ:=PX_OBJ.ref();
+               _komm_args.TYP:=exec('type_error','px_komm');
+               _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+               _komm_args.MESSAGE:=_msg;
+               exec('add_komm','px_komm',_komm_args);
+               ~~
+            ?}
+         ?};
+
+         {? _ok>0
+         ||
+::          Jezeli zlecenie podrzedne, to najpierw szukamy nadrzednego
+            _zl:=PX_OBJ.ZL;
+            _nrnzl:=PX_OBJ.ZL().NRNZL;
+            {? _nrnzl<>0
+            || ZL.index('UNRZL');
+               ZL.prefix(_nrnzl);
+               {? ZL.first()
+               || _zl:=ZL.ref()
+               ?}
+            ?};
+
+::          Dla zlecenia szukamy powiazanych pozycji zamowienia
+            {? _tie_chk>0
+            ||
+               ZLZAM.cntx_psh();
+               ZLZAM.index('ZLZM');
+               ZLZAM.prefix(_zl);
+               {? ZLZAM.first()
+               || {!
+                  |?
+                     {? ZLZAM.ZAMPOZ<>''
+                     ||
+                        ZK_P.cntx_psh();
+::                   otwieram maske ZK_P
+                        _mask_current:=ZK_P.name();
+                        _mask_needed:=8+ZLZAM.ZAMPOZ;
+                        {? 5+_mask_needed='zkpoz'
+                        || {? _mask_current<>_mask_needed
+                           || ZK_P.use(_mask_needed)
+                           ?};
+                           ZK_P.clear();
+                           {? ZK_P.seek(ZLZAM.ZAMPOZ)
+                           ||
+::                         Sprawdzenie czy jest plan do pozycji zamowienia
+                              PX_OBJ.cntx_psh();
+                              PX_OBJ.index('ZK_P');
+                              PX_OBJ.prefix(ZK_P.name(),ZK_P.ref());
+                              {? PX_OBJ.first()
+                              ||
+                                 {? exec('get_ilosc_que','px_obj',PX_VAR.VER_QUE,PX_OBJ.ref())>0
+                                 || _ok:=0;
+                                    _msg:='Zlecenie [%1] powiązane z planem pozycji zamówienia [%2] w kolejce.'@
+                                          [_px_obj,PX_OBJ.SYMBOL];
+                                    {? _dialog=1
+                                    || FUN.emsg(_msg)
+                                    |? _dialog=2
+                                    || KOMM.add(_msg,2,,1)
+                                    |? _dialog=3
+                                    || _komm_args:=exec('add_komm_a','px_komm');
+                                       _komm_args.PX_VER:=_px_ver;
+                                       _komm_args.PX_OBJ:=PX_OBJ.ref();
+                                       _komm_args.TYP:=exec('type_error','px_komm');
+                                       _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+                                       _komm_args.MESSAGE:=_msg;
+                                       exec('add_komm','px_komm',_komm_args);
+                                       ~~
+                                    ?}
+                                 ?};
+                                 {? _ok & PX_OBJ.IL_PLAN>0
+                                 || _ok:=0;
+                                    _msg:='Zlecenie [%1] powiązane z planem pozycji zamówienia [%2].'@
+                                          [_px_obj,PX_OBJ.SYMBOL];
+                                    {? _dialog=1
+                                    || FUN.emsg(_msg)
+                                    |? _dialog=2
+                                    || KOMM.add(_msg,2,,1)
+                                    |? _dialog=3
+                                    || _komm_args:=exec('add_komm_a','px_komm');
+                                       _komm_args.PX_VER:=_px_ver;
+                                       _komm_args.PX_OBJ:=PX_OBJ.ref();
+                                       _komm_args.TYP:=exec('type_error','px_komm');
+                                       _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+                                       _komm_args.MESSAGE:=_msg;
+                                       exec('add_komm','px_komm',_komm_args);
+                                       ~~
+                                    ?}
+                                 ?}
+                              ?};
+                              PX_OBJ.cntx_pop()
+                           ?}
+                        ?};
+                        ZK_P.cntx_pop()
+                     ?};
+                     ZLZAM.next()
+                  !}
+               ?};
+               ZLZAM.cntx_pop()
+            ?}
+         ?}
+      |? PX_OBJ.ZK_P<>null()
+      ||
+::       Sprawdzanie czy obiekt znajduje sie w planie operacyjnym
+         _plan_oper:=exec('zam_planned','po_plan',$PX_OBJ.ZK_P);
+         {? _plan_oper>0
+         || _ok:=0;
+            _msg:='Obiekt do kolejki: %1 znajduje się w Planie operacyjnym w ilości: %2.'@[_px_obj,$_plan_oper]+'\n'+
+                  'Nie można dodawać do Planu strategicznego.'@;
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            |? _dialog=3
+            || _komm_args:=exec('add_komm_a','px_komm');
+               _komm_args.PX_VER:=_px_ver;
+               _komm_args.PX_OBJ:=PX_OBJ.ref();
+               _komm_args.TYP:=exec('type_error','px_komm');
+               _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+               _komm_args.MESSAGE:=_msg;
+               exec('add_komm','px_komm',_komm_args);
+               ~~
+            ?}
+         ?};
+
+         {? _ok>0
+         ||
+::          Dla pozycji zamowienia szukamy powiazanych zlecen
+            ZLZAM.index('ZMZL');
+            ZLZAM.prefix($PX_OBJ.ZK_P);
+            {? ZLZAM.first()
+            || {!
+               |?
+::                Sprawdzenie czy ZK_P ma juz utworzone zlecenie, jesli tak, to nalezy planowac zlecenie
+                  {? ZLZAM.ZL<>null()
+                  || _ok:=0;
+                     _msg:='Dla pozycji zamówienia [%1] wygenerowano zlecenie [%2]. Należy zaplanować to zlecenie.'@
+                           [_px_obj,ZLZAM.ZL().SYM];
+                     {? _dialog=1
+                     || FUN.emsg(_msg)
+                     |? _dialog=2
+                     || KOMM.add(_msg,2,,1)
+                     |? _dialog=3
+                     || _komm_args:=exec('add_komm_a','px_komm');
+                        _komm_args.PX_VER:=_px_ver;
+                        _komm_args.PX_OBJ:=PX_OBJ.ref();
+                        _komm_args.TYP:=exec('type_error','px_komm');
+                        _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+                        _komm_args.MESSAGE:=_msg;
+                        exec('add_komm','px_komm',_komm_args);
+                        ~~
+                     ?}
+                  ?};
+
+::                Sprawdzenie, czy jest plan do zlecenia
+                  PX_OBJ.cntx_psh();
+                  PX_OBJ.index('ZL');
+                  PX_OBJ.prefix(ZLZAM.ZL);
+                  {? PX_OBJ.first()
+                  ||
+                     {? exec('get_ilosc_que','px_obj',PX_VAR.VER_QUE,PX_OBJ.ref())>0
+                     || _ok:=0;
+                        _msg:='Pozycja zamówienia [%1] powiązana z planem zlecenia [%2] w kolejce.'@
+                              [_px_obj,PX_OBJ.SYMBOL];
+                        {? _dialog=1
+                        || FUN.emsg(_msg)
+                        |? _dialog=2
+                        || KOMM.add(_msg,2,,1)
+                        |? _dialog=3
+                        || _komm_args:=exec('add_komm_a','px_komm');
+                           _komm_args.PX_VER:=_px_ver;
+                           _komm_args.PX_OBJ:=PX_OBJ.ref();
+                           _komm_args.TYP:=exec('type_error','px_komm');
+                           _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+                           _komm_args.MESSAGE:=_msg;
+                           exec('add_komm','px_komm',_komm_args);
+                           ~~
+                        ?}
+                     ?};
+                     {? _ok & PX_OBJ.IL_PLAN>0
+                     || _ok:=0;
+                        _msg:='Pozycja zamówienia [%1] powiązana z planem zlecenia [%2].'@[_px_obj,PX_OBJ.SYMBOL];
+                        {? _dialog=1
+                        || FUN.emsg(_msg)
+                        |? _dialog=2
+                        || KOMM.add(_msg,2,,1)
+                        |? _dialog=3
+                        || _komm_args:=exec('add_komm_a','px_komm');
+                           _komm_args.PX_VER:=_px_ver;
+                           _komm_args.PX_OBJ:=PX_OBJ.ref();
+                           _komm_args.TYP:=exec('type_error','px_komm');
+                           _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+                           _komm_args.MESSAGE:=_msg;
+                           exec('add_komm','px_komm',_komm_args);
+                           ~~
+                        ?}
+                     ?}
+                  ?};
+                  PX_OBJ.cntx_pop();
+
+::                Sprawdzenie, czy jest plan do podzlecen (dla optymalizacji bierzemy pierwsze, bo sa planowane lacznie)
+                  ZL.index('NRNZL');
+                  ZL.prefix(ZLZAM.ZL().UNRZL);
+                  {? ZL.first()
+                  ||
+                     PX_OBJ.cntx_psh();
+                     PX_OBJ.index('ZL');
+                     PX_OBJ.prefix(ZL.ref());
+                     {? PX_OBJ.first()
+                     ||
+                        {? exec('get_ilosc_que','px_obj',PX_VAR.VER_QUE,PX_OBJ.ref())>0
+                        || _ok:=0;
+                           _msg:='Pozycja zamówienia [%1] powiązana z planem zlecenia [%2] w kolejce.'@
+                                 [_px_obj,PX_OBJ.SYMBOL];
+                           {? _dialog=1
+                           || FUN.emsg(_msg)
+                           |? _dialog=2
+                           || KOMM.add(_msg,2,,1)
+                           |? _dialog=3
+                           || _komm_args:=exec('add_komm_a','px_komm');
+                              _komm_args.PX_VER:=_px_ver;
+                              _komm_args.PX_OBJ:=PX_OBJ.ref();
+                              _komm_args.TYP:=exec('type_error','px_komm');
+                              _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+                              _komm_args.MESSAGE:=_msg;
+                              exec('add_komm','px_komm',_komm_args);
+                              ~~
+                           ?}
+                        ?};
+                        {? _ok & PX_OBJ.IL_PLAN>0
+                        || _ok:=0;
+                           _msg:='Pozycja zamówienia [%1] powiązana z planem zlecenia [%2].'@
+                                 [_px_obj,PX_OBJ.SYMBOL];
+                           {? _dialog=1
+                           || FUN.emsg(_msg)
+                           |? _dialog=2
+                           || KOMM.add(_msg,2,,1)
+                           |? _dialog=3
+                           || _komm_args:=exec('add_komm_a','px_komm');
+                              _komm_args.PX_VER:=_px_ver;
+                              _komm_args.PX_OBJ:=PX_OBJ.ref();
+                              _komm_args.TYP:=exec('type_error','px_komm');
+                              _komm_args.SRC_KIND:=exec('src_act_que','px_komm');
+                              _komm_args.MESSAGE:=_msg;
+                              exec('add_komm','px_komm',_komm_args);
+                              ~~
+                           ?}
+                        ?}
+                     ?};
+                     PX_OBJ.cntx_pop()
+                  ?};
+
+                  ZLZAM.next()
+               !}
+            ?}
+         ?}
+      ?};
+
+      {? _ok>0 & _chk_conn>0
+      || PX_CON_O.cntx_psh();
+::       Pętla po następnikach
+         PX_CON_O.index('PN');
+         PX_CON_O.prefix(_ref);
+         {? PX_CON_O.first()
+         || {!
+            |?
+::             !!! REKURENCJA !!!
+               _ok:=exec('can_plan','px_obj',PX_CON_O.PX_OBJ_N,_dialog,_set_upd,_set_chk,_tie_chk,_chk_conn,_ref_table);
+               PX_CON_O.next() & _ok>0
+            !}
+         ?};
+         {? _ok>0
+         ||
+::          Pętla po poprzednikach
+            PX_CON_O.index('NP');
+            PX_CON_O.prefix(_ref);
+            {? PX_CON_O.first()
+            || {!
+               |?
+::             !!! REKURENCJA !!!
+                  _ok:=exec('can_plan','px_obj',PX_CON_O.PX_OBJ_P,_dialog,_set_upd,_set_chk,_tie_chk,_chk_conn,_ref_table);
+                  PX_CON_O.next() & _ok>0
+               !}
+            ?}
+         ?};
+         PX_CON_O.cntx_pop()
+      ?}
+   || _ok:=0
+   ?}
+?};
+Cntx.pop(PX_OBJ,ZL,PX_SET);
+_ok
+
+
+\px_obj_select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Selekcja obiektow planistycznych
+::   WE: [_a] - INTEGER - 0/[1] - czy akcje redakcyjne dostępne czy nie
+::----------------------------------------------------------------------------------------------------------------------
+_edit:=_a;
+{? var_pres('_a')=type_of(0)
+|| _edit:=_a
+?};
+_context:=PxSelect.Context;
+PxSelect.Context:=_context+'|MENU';
+PX_OBJ.win_sel('WER');
+_hide:='';
+{? _edit=0
+|| _hide:='D'
+?};
+PX_OBJ.select(,1,5,_hide);
+PxSelect.Context:=_context;
+~~
+
+
+\where_in_plan_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: tablica wejsciowo/wyjsciowa formuly exec('where_in_plan','px_obj')
+::   WY: tablica
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new('state','STARTD','STARTT','STARTM','ENDD','ENDT','ENDM','PROBLEMS');
+_args.state:=0;
+_args.STARTD:=date(0,0,0);
+_args.STARTT:=time(0,0,0);
+_args.STARTM:=0;
+_args.ENDD:=date(0,0,0);
+_args.ENDT:=time(0,0,0);
+_args.ENDM:=0;
+_args.PROBLEMS:='';
+_args
+
+
+\where_in_plan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [12.30]
+:: OPIS: Zwraca informacje kiedy dane 'cos' wystepuje w planie
+::   WE: _a - cos (np. ZL.ref(), ZK_P.ref())
+::       [_b] - wersja planu - domyslnie glowna
+::       [_c] - tablica wynikowa (where_in_plan_a)
+::   WY: tablica wynikowa
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new('what','PX_VER','pxpoz');
+_args.what:=_a;
+_args.PX_VER:={? var_pres('_b')=7 || _b || exec('get_mainversion','px_ver') ?};
+_args.pxpoz:={? var_pres('_c')>100 || _c || exec('where_in_plan_a','px_obj') ?};
+
+_args.pxpoz.state:=0;
+_args.pxpoz.STARTD:=_args.pxpoz.ENDD:=date(0,0,0);
+_args.pxpoz.STARTT:=_args.pxpoz.ENDT:=time(0,0,0);
+_args.pxpoz.STARTM:=_args.pxpoz.ENDM:=0;
+
+_loc:=obj_new('PX_OBJ','NoProblem');
+_loc.PX_OBJ:=null();
+_loc.NoProblem:=exec('problem_none','px_grp');
+:: najpierw szukamy PX_OBJ dla tego czegos
+PX_OBJ.cntx_psh(); PX_OBJ.clear();
+{? ref_name(_args.what)=ZL.name()
+|| PX_OBJ.index('ZL');
+   {? PX_OBJ.find_key(_args.what) || _loc.PX_OBJ:=PX_OBJ.ref() ?}
+
+|? 5+ref_name(_args.what)=5+ZK_P.name()
+|| PX_OBJ.index('ZK_P');
+   {? PX_OBJ.find_key(_args.what) || _loc.PX_OBJ:=PX_OBJ.ref() ?}
+?};
+PX_OBJ.cntx_pop();
+:: jezeli udalo sie znalezc PX_OBJ dla _args.what, to mozemy dalej dzialac
+{? _loc.PX_OBJ<>null()
+|| PX_CUP.cntx_psh(); PX_CUP.clear();
+   PX_GRP.cntx_psh(); PX_GRP.clear();
+   PX_CONN.cntx_psh(); PX_CONN.clear();
+   PX_POZ.cntx_psh(); PX_POZ.clear();
+   PX_POZ.index('TM_VOBJ');
+   PX_POZ.prefix(_args.PX_VER,_loc.PX_OBJ);
+:: jezeli sa jakies zaplanowane pozycje, to mozemy ustalic ze status=1
+   {? PX_POZ.first()
+   || _args.pxpoz.state:=1;
+      _args.pxpoz.STARTD:=PX_POZ.PX_CUP().STARTD().DATA;
+      _args.pxpoz.STARTT:=PX_POZ.PX_CUP().STARTT;
+      _args.pxpoz.STARTM:=PX_POZ.TM_START;
+      _args.pxpoz.ENDD:=PX_POZ.PX_CUP().ENDD().DATA;
+      _args.pxpoz.ENDT:=PX_POZ.PX_CUP().ENDT;
+      _args.pxpoz.ENDM:=PX_POZ.TM_END;
+      {!
+      |?
+         {? PX_POZ.PX_GRP().PROBLEMS<>_loc.NoProblem
+         || _args.PROBLEMS+=' <'+PX_POZ.PX_GRP().PROBLEMS+'> '
+         ?};
+         {? _args.pxpoz.ENDM<PX_POZ.TM_END
+         || _args.pxpoz.ENDD:=PX_POZ.PX_CUP().ENDD().DATA;
+            _args.pxpoz.ENDT:=PX_POZ.PX_CUP().ENDT;
+            _args.pxpoz.ENDM:=PX_POZ.TM_END;
+            ~~
+         ?};
+         PX_POZ.next()
+      !}
+   ?};
+   PX_POZ.cntx_pop();
+   PX_CONN.cntx_pop();
+   PX_GRP.cntx_pop();
+   PX_CUP.cntx_pop();
+   ~~
+?};
+_args.pxpoz
+
+
+\clean_from_ver
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: MBUILDER
+::  UTW: WH [12.30]
+:: OPIS: Usuwa powiazania z PX_OBJ z podanej wersji planu
+::   WE: _a - PX_OBJ.ref() - obiekt ktorego powiazania usunac
+::       _b - PX_VER.ref() - wersja planu w ktorej usunac powiazania
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+_ver:=_b;
+
+_result:=0;
+_can_continue:=0;
+
+PX_VER.cntx_psh();
+PX_VER.clear();
+PX_OBJ.cntx_psh();
+PX_OBJ.clear();
+{? PX_OBJ.seek(_px_obj)
+||
+   {? PX_VER.seek(_ver)
+   ||
+      _can_continue:=1;
+      {? exec('obj_inside_ver','px_obj',PX_OBJ.ref(),PX_VER.ref())>0
+      ||
+::       Blokuje wersje ktora bede modyfikowal
+         {? exec('lock','px_ver',PX_VER.ref())>0
+         ||
+            _can_continue:=1;
+::          1. Usuwam powiazania z pozycjami planu
+            _can_continue:=exec('clean_from_plan','px_obj',PX_OBJ.ref(),PX_VER.ref());
+
+::          2. Usuwam powiazania w kolejce
+            {? _can_continue>0
+            || PX_CONN.cntx_psh();
+               PX_CONN.index('VER');
+               PX_CONN.prefix(_ver,PX_OBJ.ref());
+               {? PX_CONN.first()
+               || {!
+                  |? _px_grp:=PX_CONN.PX_GRP;
+:: DRO:[rr] px_conn.fml
+                     _can_continue:=exec('delete','px_conn',PX_CONN.ref());
+::                   usuwam puste PX_GRP
+:: DRO:[rr] px_grp.fml
+                     {? _can_continue>0
+                     || exec('delete_ifempty','px_grp',_px_grp)
+                     ?};
+                     PX_CONN.first() & _can_continue>0
+                  !}
+               ?};
+               PX_CONN.cntx_pop()
+            ?};
+::          Odblokowuje wersje ktora modyfikowalem
+            exec('unlock','px_ver',PX_VER.ref())
+         || _can_continue:=0
+         ?}
+      ?}
+   ?}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+PX_OBJ.cntx_pop();
+PX_VER.cntx_pop();
+_result
+
+
+\clean_from_plan
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Usuwa powiazania PX_OBJta z pozycjami planu w danej wersji
+::   WE: _a - PX_OBJ.ref() - obiekt ktorego powiazania usunac
+::       _b - PX_VER.ref() - wersja planu w ktorej usunac powiazania
+::       [_c] - PX_GRP.ref() - grupa z której powiązania usuwać
+::       [_d] - INTEGER - tryb usuwania pozycji:  [1] - usuwac wszystkie pozycje
+::                                                 2 - usuwać wszystko poza zrobionymi na podstawie planu oper
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+_ver:=_b;
+
+_px_grp:=null();
+{? var_pres('_c')=type_of(PX_GRP.ref())
+|| _px_grp:=_c
+?};
+
+_mode:=1;
+{? var_pres('_d')=type_of(0)
+|| _mode:=_d
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PX_VER.cntx_psh(); PX_VER.clear();
+PX_OBJ.cntx_psh(); PX_OBJ.clear();
+
+{? PX_OBJ.seek(_px_obj)
+|| {? PX_VER.seek(_ver)
+   || PX_POZ.cntx_psh();
+      {? _px_grp<>null()
+      || PX_POZ.index('PX_GRP2');
+         PX_POZ.prefix(_px_grp,PX_OBJ.ref(),_ver)
+      ||
+         PX_POZ.index('TM_VOBJ');
+         PX_POZ.prefix(_ver,PX_OBJ.ref())
+      ?};
+      {? PX_POZ.first()
+      || {!
+         |?
+            _next:=0;
+            _can_delete:=1;
+            _deleted:=0;
+            _ref_next:=null();
+
+::          Zapamietuje ref kolejnego rekordu, na wypadek gdyby biezacy wyskoczyl z dziedziny
+            PX_POZ.cntx_psh();
+            {? PX_POZ.next()
+            || _ref_next:=PX_POZ.ref()
+            ?};
+            PX_POZ.cntx_pop();
+
+            {? _mode=2
+            ||
+::             Sprawdzam czy mozna usunac
+               {? PX_POZ.SRC_OPER='T'
+               || _can_delete:=0
+               ?}
+            ?};
+            {? _can_delete>0
+            || _deleted:=exec('delete','px_poz',PX_POZ.ref())
+            ?};
+
+            {? _ref_next<>null()
+            || _next:=PX_POZ.seek(_ref_next)
+            || _next:=0
+            ?};
+            _next>0
+         !}
+      ?};
+      PX_POZ.cntx_pop()
+   ?}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+PX_OBJ.cntx_pop();
+PX_VER.cntx_pop();
+_result
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Usuwa obiekt planowany
+::       UWAGA!!! Moze modyfikowac plan wszystkich wersji planu
+::   WE: _a - PX_OBJ.ref()
+::   WY:  0 - porazka
+::       >0 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+PX_OBJ.cntx_psh();
+PX_VER.cntx_psh();
+PX_OBJ.clear();
+{? PX_OBJ.seek(_px_obj)
+||
+:: 1. Jade po wszystkich wersjach planu i usuwam powiazania obiektu
+   PX_VER.index('TIME');
+   PX_VER.clear();
+   {? PX_VER.first()
+   || {!
+      |? _can_continue:=exec('clean_from_ver','px_obj',PX_OBJ.ref(),PX_VER.ref());
+         PX_VER.next() & _can_continue>0
+      !}
+   ?};
+:: 2. Usuwam powiazania z komunikatami
+   {? _can_continue>0
+   || _can_continue:=exec('del_obj','px_komm',PX_OBJ.ref())
+   ?};
+
+:: Usuwam PX_OBJ
+   {? _can_continue>0
+   || _result:=PX_OBJ.del(,1)
+   ?}
+?};
+PX_OBJ.cntx_pop();
+PX_VER.cntx_pop();
+_result
+
+
+\obj_inside_ver
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Sprawdza czy PX_OBJ zawiera powiazania w podanej wersji planu
+::   WE: _a - PX_OBJ.ref()
+::       _b - PX_VER.ref()
+::   WY: 0 - brak powiazan
+::       1 - sa powiazania w pozycjach planu
+::       2 - sa powiazania w kolejce
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+_px_ver:=_b;
+
+_result:=0;
+
+PX_OBJ.cntx_psh();
+PX_OBJ.clear();
+{? PX_OBJ.seek(_px_obj)
+|| PX_VER.cntx_psh();
+   PX_VER.clear();
+   {? PX_VER.seek(_px_ver)
+   ||
+::    1. Powiazania z pozycjami planu
+      PX_POZ.cntx_psh();
+      PX_POZ.index('TM_VOBJ');
+      PX_POZ.prefix(PX_VER.ref(),PX_OBJ.ref());
+      {? PX_POZ.first()
+      || _result:=1
+      ?};
+      PX_POZ.cntx_pop();
+
+::    2. Powiazania z pozycjami w kolejce
+      PX_CONN.cntx_psh();
+      PX_CONN.index('VER');
+      PX_CONN.prefix(PX_VER.ref(),PX_OBJ.ref());
+      {? PX_CONN.first()
+      || _result:=2
+      ?};
+      PX_CONN.cntx_pop()
+   ?};
+   PX_VER.cntx_pop()
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\get_que_ilosc
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ilosc w kolejce w jakiej zaplanowany jest obiekt
+::   WE: _a - PX_OBJ.ref() - obiekt planowany
+::       _b - PX_VER.ref() - wersja planu
+::   WY: REAL
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+_ver:=_b;
+
+_result:=0;
+PX_CONN.cntx_psh();
+PX_CONN.index('VER');
+PX_CONN.prefix(_ver,_px_obj);
+{? PX_CONN.first()
+|| {!
+   |? _result+=PX_CONN.ILOSC;
+      PX_CONN.next()
+   !}
+?};
+PX_CONN.cntx_pop();
+_result
+
+
+\get_que_fragm
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca w ilu kawalkach w kolejce zaplanowano dany obiekt
+::   WE: _a - PX_OBJ.ref() - obiekt planowany
+::       _b - PX_VER.ref() - wersja planu
+::   WY: INTEGER - ilosc fragmentow obiektu w kolejce
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+_ver:=_b;
+
+_result:=0;
+PX_CONN.cntx_psh();
+PX_CONN.index('VER');
+PX_CONN.prefix(_ver,_px_obj);
+{? PX_CONN.first()
+|| {!
+   |? _result+=1;
+      PX_CONN.next()
+   !}
+?};
+PX_CONN.cntx_pop();
+_result
+
+
+\zkp_planned
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ilosc zaplanowana dla pozycji zamowienia w danej wersji (w kolejce)
+::   WE: _a - ZK_P.ref() - pozycja zamowienia klienta
+::       _b - PX_VER.ref() - wersja planu
+::   WY: REAL - ilosc zaplanowana w kolejce
+::----------------------------------------------------------------------------------------------------------------------
+_zkp:=_a;
+_ver:=_b;
+
+_result:=0;
+
+:: Szukam obiektu planowanego
+_px_obj:=exec('get_zkp_object','px_obj',_zkp);
+
+{? _px_obj<>null()
+||
+:: Zwracam ilosc w kolejce dla obiektu
+   _result:=exec('get_que_ilosc','px_obj',_px_obj,_ver)
+?};
+_result
+
+
+\zkp_plannedSQL
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ilosc zaplanowana dla pozycji zamowienia w danej wersji (w kolejce)
+::   WE: _a - $ZK_P.ref() - SQL ref pozycji zamowienia klienta
+::       _b - PX_VER.ref() - wersja planu
+::   WY: REAL - ilosc zaplanowana w kolejce
+::----------------------------------------------------------------------------------------------------------------------
+_zkpsql:=_a;
+_ver:=_b;
+
+_result:=0;
+
+_zkp:=exec('FindAndGet','#table',ZK_P,_zkpsql,,,null());
+{? _zkp<>null()
+|| _result:=exec('zkp_planned','px_obj',_zkp,_ver)
+?};
+_result
+
+
+\zl_planned
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ilosc zaplanowana dla zlecenia w danej wersji (w kolejce)
+::   WE: _a - ZL.ref() - zlecenie
+::       _b - PX_VER.ref() - wersja planu
+::   WY: REAL - ilosc zaplanowana w kolejce
+::----------------------------------------------------------------------------------------------------------------------
+_zl:=_a;
+_ver:=_b;
+
+_result:=0;
+
+:: Szukam obiektu planowanego
+_px_obj:=exec('get_zl_object','px_obj',_zl);
+
+{? _px_obj<>null()
+||
+:: Zwracam ilosc w kolejce dla obiektu
+   _result:=exec('get_que_ilosc','px_obj',_px_obj,_ver)
+?};
+_result
+
+
+\grop_planned
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [23.25]
+:: OPIS: Zwraca ilosc zaplanowana dla grupy operacji w danej wersji (w kolejce)
+::   WE: _a - GROP.ref() - zlecenie
+::       _b - PX_VER.ref() - wersja planu
+::   WY: REAL - ilosc zaplanowana w kolejce
+::----------------------------------------------------------------------------------------------------------------------
+_grop:=_a;
+_ver:=_b;
+
+_result:=0;
+
+:: Szukam obiektu planowanego
+_px_obj:=exec('get_grop_object','px_obj',_grop);
+
+{? _px_obj<>null()
+||
+:: Zwracam ilosc w kolejce dla obiektu
+   _result:=exec('get_que_ilosc','px_obj',_px_obj,_ver)
+?};
+_result
+
+
+\zl_plannedSQL
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca ilosc zaplanowana dla zlecenia w danej wersji (w kolejce)
+::   WE: _a - $ZL.ref() - SQL ref zlecenia
+::       _b - PX_VER.ref() - wersja planu
+::   WY: REAL - ilosc zaplanowana w kolejce
+::----------------------------------------------------------------------------------------------------------------------
+_zlsql:=_a;
+_ver:=_b;
+
+_result:=0;
+
+_zl:=exec('FindAndGet','#table',ZL,_zlsql,,,null());
+{? _zl<>null()
+|| _result:=exec('zl_planned','px_obj',_zl,_ver)
+?};
+_result
+
+
+\get_zl_object
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca obiekt planowany dla zlecenia
+::   WE: _a - ZL.ref()
+::   WY: PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+
+_result:=null();
+PX_OBJ.cntx_psh();
+PX_OBJ.index('ZL');
+PX_OBJ.prefix(_ref);
+{? PX_OBJ.first()
+|| _result:=PX_OBJ.ref()
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\get_zkp_object
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca obiekt planowany dla pozycji zamowienia
+::   WE: _a - ZK_P.ref()
+::   WY: PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_result:=null();
+PX_OBJ.cntx_psh();
+PX_OBJ.index('ZK_P');
+PX_OBJ.prefix(ref_name(_ref),_ref);
+{? PX_OBJ.first()
+|| _result:=PX_OBJ.ref()
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\get_grop_object
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca obiekt planowany dla grupy operacji
+::   WE: _a - GROP.ref()
+::   WY: PX_OBJ.ref() lub null()
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_result:=null();
+PX_OBJ.cntx_psh();
+PX_OBJ.index('GROP');
+PX_OBJ.prefix(_ref);
+{? PX_OBJ.first()
+|| _result:=PX_OBJ.ref()
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\get_rem_object
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [20.14]
+:: OPIS: Zwraca obiekt planowany dla zgłoszenia remontowego
+::   WE: _a - REM_ZGL.ref()
+::   WY: PX_OBJ.ref() lub null()
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_result:=null();
+PX_OBJ.cntx_psh();
+PX_OBJ.index('REM_ZGL');
+PX_OBJ.prefix(_ref);
+{? PX_OBJ.first()
+|| _result:=PX_OBJ.ref()
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\kind_zl_prod
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca typ dla PX_OBJ - zlecenie produkcyjne
+::   WY: STRING[10]
+::----------------------------------------------------------------------------------------------------------------------
+'ZL_PROD'
+
+
+\kind_zl_warszt
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca typ dla PX_OBJ - zlecenie warsztatowe
+::   WY: STRING[10]
+::----------------------------------------------------------------------------------------------------------------------
+'ZL_WARSZT'
+
+
+\kind_zam_poz
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca typ dla PX_OBJ - pozycja zamowienia
+::   WY: STRING[10]
+::----------------------------------------------------------------------------------------------------------------------
+'ZAM_POZ'
+
+
+\kind_zam_nag
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca typ dla PX_OBJ - pozycja zamowienia
+::   WY: STRING[10]
+::----------------------------------------------------------------------------------------------------------------------
+'ZAM_NAG'
+
+
+\kind_proj_zad
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca typ dla PX_OBJ - zadanie w projekcie
+::   WY: STRING[10]
+::----------------------------------------------------------------------------------------------------------------------
+'PROJ_ZADAN'
+
+
+\kind_plan_sprze
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Zwraca typ dla PX_OBJ - pozycja planu sprzedazy
+::   WY: STRING[10]
+::----------------------------------------------------------------------------------------------------------------------
+'PLAN_SPRZE'
+
+
+\kind_grop
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [23.25]
+:: OPIS: Zwraca typ dla PX_OBJ - grupa operacji
+::   WY: STRING[10]
+::----------------------------------------------------------------------------------------------------------------------
+'GROP'
+
+
+\obj_tree_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Ustawia flage aktywnosci dla obiektow powiazanych
+::       Zakladamy, ze wywolanie jest z poziomu wezla nadrzednego
+::   WE: _a - PX_OBJ.ref()
+::       _b - PX_OBJ.A
+::       Parametry wejsciowe nie sa badane!
+::----------------------------------------------------------------------------------------------------------------------
+PX_OBJ.cntx_psh();
+PX_OBJ.clear();
+{? PX_OBJ.seek(_a)
+||
+   {? PX_OBJ.GRP='N'
+   || PX_OBJ.A:=_b;
+      PX_OBJ.put()
+   || _parent:=#PX_OBJ.ref();
+::    Kopia wskazan TREE, a PX_OBJ czyscimy ze wskazan
+      _tree:=tab_tmp(1,'REF','INTEGER','#PX_OBJ.ref()','TREE','INTEGER','PX_OBJ.TREE');
+
+      PX_OBJ.cntx_psh();
+      PX_OBJ.index('TSYMBOL');
+      PX_OBJ.prefix(PX_OBJ.A,_parent);
+      {? PX_OBJ.first()
+      || {!
+         |?
+            _tree.REF:=#PX_OBJ.ref();
+            _tree.TREE:=PX_OBJ.TREE;
+            _tree.add();
+            PX_OBJ.TREE:=0;
+            PX_OBJ.A:=_b;
+            PX_OBJ.cntx_psh();
+            PX_OBJ.clear();
+            PX_OBJ.put();
+            PX_OBJ.cntx_pop();
+            PX_OBJ.first()
+         !}
+      ?};
+      PX_OBJ.cntx_pop();
+
+      PX_OBJ.A:=_b;
+      PX_OBJ.put();
+
+::    Odtworzenie powiazan drzewa
+      PX_OBJ.clear();
+      {? _tree.first()
+      || {!
+         |?
+            {? PX_OBJ.seek(_tree.REF,)
+            || PX_OBJ.TREE:=_tree.TREE;
+               PX_OBJ.put()
+            ?};
+            _tree.next()
+         !}
+      ?};
+      ~~
+   ?}
+?};
+
+PX_OBJ.cntx_pop();
+~~
+
+
+\to_queue_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Akcja 'Do kolejki' w oknie tabeli PX_OBJ
+::   WE: [_a] - PX_GRP.ref() - obiekt na który jest robiony drop
+::       [_b] - INTEGER - 0/1 - czy akcja grupowa, jeśli nie podane to sprawdza zaznaczenie PX_OBJ
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+
+_result:=0;
+
+_drop_dest:=null();
+{? var_pres('_a')=type_of(PX_GRP.ref())
+|| _drop_dest:=_a
+?};
+_grupa:=0;
+_udawana_grupa:=0;
+_viewport:=null();
+
+_can_continue:=1;
+
+{? var_pres('_b')=type_of(0)
+|| _grupa:=_b
+|| {? PX_OBJ.sel_size()>0
+   || _grupa:=1
+   || {? PX_OBJ.GRP='T'
+      || _viewport:=PX_OBJ.ref();
+         _what:=exec('PX_OBJ','#to_string');
+         _to_que:=tab_tmp(1,
+                        'REF','INTEGER','#PX_OBJ.ref()',
+                        'CRC','INTEGER','PX_OBJ.crc()',
+                        'POS','INTEGER','Pozycja');
+         _to_que.blank();
+         _to_que.REF:=#PX_OBJ.ref();
+         _to_que.CRC:=PX_OBJ.crc();
+         _to_que.add();
+         _can_update:=1;
+         {? PX_OBJ.ZL<>null()
+         || ZL.cntx_psh();
+            PX_OBJ.ZL();
+            {? ZL.RODZAJ='Z' & ZL.RODZ_TEX='P'
+            ||
+               {? exec('zl_from_zam_planned','px_tie',ZL.ref())>0
+               || _can_update:=0
+               ?}
+            ?};
+            ZL.cntx_pop();
+            ~~
+         ?};
+         {? _can_update>0
+         ||
+            exec('dropped_update','px_grp',_to_que);
+            _can_continue:=exec('to_queue_act_gr1','px_obj',_to_que);
+
+            _udawana_grupa:=1;
+
+            {? _can_continue>0
+            ||
+               PX_OBJ.cntx_psh();
+               PX_OBJ.prefix();
+               _to_que.clear();
+               {? _to_que.first()
+               || _grupa:=1;
+                  {!
+                  |? {? PX_OBJ.seek(_to_que.REF,)
+                     ||
+::                      !!! REKURENCJA !!!
+                        exec('to_queue_act','px_obj',_drop_dest,1)
+
+                     ?};
+                     _to_que.next()
+                  !}
+               || _msg:='Obiekt do kolejki: %1 jest typu agregującego, ale nie posiada żadnych elementów składowych'
+                        ' (np zlecenie nadrzędne bez podrzędnych, nagłówek zamówienia bez pozycji itp.)'@[_what];
+                  FUN.emsg(_msg)
+               ?};
+               PX_OBJ.cntx_pop()
+            ||
+::             Jeśli nic nie będę robił to czyszczę KOMMa żeby się dwa razy nie pojawił
+               KOMM.init(250,,'Dodawanie obiektów do planu'@)
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+
+{? _can_continue>0 & _udawana_grupa=0
+||
+   ZL.cntx_psh();
+   ZK_N.cntx_psh();
+   ZK_P.cntx_psh();
+   _args:=exec('mp_run_a','#b__box');
+   _args.ACT_UID:='TPP_PPS_DOPL';
+
+   _args.CONTEXT:=obj_new('RESULT','DEST','TRANSFORMED','VER_QUE');
+   _args.CONTEXT.RESULT:=0;
+   _args.CONTEXT.DEST:=_drop_dest;
+   _args.CONTEXT.TRANSFORMED:=0;
+   _args.CONTEXT.VER_QUE:=null();
+   {? exec('is_one_version','px_param')=0
+   || _args.CONTEXT.VER_QUE:=PX_VAR.VER_QUE
+   ?};
+
+   {? PX_OBJ.ZL<>null()
+   || _args.UIDREF:=PX_OBJ.ZL().uidref()
+   |? PX_OBJ.ZK_P<>null()
+   || ZK_N.use(ref_name(PX_OBJ.ZK_N)); ZK_P.use(ref_name(PX_OBJ.ZK_P));
+      _args.UIDREF:=PX_OBJ.ZK_P().uidref()
+   |? PX_OBJ.ZK_N<>null()
+   || _mask:=ref_name(PX_OBJ.ZK_N);
+      ZK_N.use(_mask); ZK_P.use('zkpoz'+(_mask+3));
+      _args.UIDREF:=PX_OBJ.ZK_N().uidref()
+   |? PX_OBJ.GROP<>null()
+   || _args.UIDREF:=PX_OBJ.GROP().uidref()
+   ?};
+   _args.AKCJA:='DO_KOLEJKI';
+
+   {? _grupa>0
+   || _args.GRUPA:='T'
+   ?};
+
+   _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',PX_OBJ.ZL);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZK_N',PX_OBJ.ZK_N);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZK_P',PX_OBJ.ZK_P);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'GROP',PX_OBJ.GROP);
+
+   exec('mp_run','#b__box',_args);
+   {? _args.CONTEXT.RESULT>0 || _result:=1 ?};
+   ZL.cntx_pop();
+   ZK_N.cntx_pop();
+   ZK_P.cntx_pop();
+   {? _grupa=0
+   || {? exec('is_one_version','px_param')=0 & _args.CONTEXT.TRANSFORMED>0
+      || exec('Pxgrp_refresh','px_grp',PxSelect.Pxgrp)
+      ?};
+      grp_disp(PxSelect.Pxgrp.TAB,PxSelect.Pxgrp.WERT,1);
+      {? PX_VAR.PL_GROP
+      || grp_disp(PxSelect.Pxgrp.TAB,PxSelect.Pxgrp.WERT_G)
+      ?};
+      ~~
+   ?};
+   ~~
+?};
+{? _udawana_grupa>0
+|| {? _viewport<>null()
+   || PX_OBJ.seek(_viewport)
+   ?};
+   exec('to_queue_act_gr2','px_obj')
+?};
+_result
+
+
+\to_queue_act_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Akcja grupa przed 'Do kolejki' w oknie tabeli PX_OBJ
+::   WE: [_a] - tab_tmp - tablica zaznaczonych rekordów
+::       [_b] - PX_GRP.ref() - element na który jest robiony drop
+::   WY: 0/1
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _to_que:=_a
+|| sel_nchk();
+   _to_que:=PX_OBJ.sel_aget()
+?};
+VAR.GRUPA:='T';
+PX_VAR.GROP:=null();
+PX_VAR.GROPS:=null();
+PX_VAR.PL_RESGG:=null();
+_dest:=null();
+{? var_pres('_b')=type_of(null())
+|| _dest:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+KOMM.init(250,,'Dodawanie obiektów do planu strategicznego.'@);
+
+{? exec('is_px_set','px_param') & PX_VAR.PX_SET=null()
+|| _can_continue:=0;
+   FUN.info('Aby dodawać elementy do kolejki należy pracować w kontekście zestawu planistycznego.'@)
+?};
+
+exec('dropped_update','px_grp',_to_que,0);
+
+_predivision_can:=0;
+PX_OBJ.cntx_psh();
+PX_OBJ.prefix();
+{? _to_que.first()
+|| {!
+   |? {? PX_OBJ.seek(_to_que.REF,)
+      || {? PX_OBJ.GROP<>null()
+         || _predivision_can:=1
+         ?}
+      ?};
+      _to_que.next() & _predivision_can=0
+   !}
+?};
+PX_OBJ.cntx_pop();
+{? _predivision_can>0
+|| _predivision_tab:=exec('predivision_group','px_grop',_to_que);
+   {? type_of(_predivision_tab)>0
+   || _ndx:=_predivision_tab.ndx_tmp(,,'SELECTED',,);
+      _predivision_tab.index(_ndx);
+      _predivision_tab.prefix('T');
+      {? _predivision_tab.first()
+      || PX_VAR.PL_RESGG:=exec('FindAndGet','#table',PL_RES,_predivision_tab.PL_RES,,,null())
+      ?};
+      _predivision_tab.ndx_drop(_ndx)
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| _can_continue:=exec('to_queue_ctrl','px_grp',_to_que,PxSelect.VER_QUE,_dest,1,,2)
+?};
+
+{? _can_continue>0
+|| _can_continue:=exec('to_queue_edit','px_grp',_to_que,PxSelect.VER_QUE,_dest,1)
+?};
+
+{? PX_VAR.AGR='T'
+|| PX_VAR.AGR_UID:=exec('uid','#blank')
+?};
+{? _can_continue>0
+|| _result:=1
+|| VAR.GRUPA:='N';
+   KOMM.select()
+?};
+_result
+
+
+\to_queue_act_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Akcja grupa po 'Do kolejki' w oknie tabeli PX_OBJ
+::   WE: [_a] - INTEGER - 0/1 - czy pokazywac KOMMA
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_show_komm:=1;
+{? var_pres('_a')=type_of(0)
+|| _show_komm:=_a
+?};
+
+_one_ver:=exec('is_one_version','px_param');
+
+ exec('prenumber','px_grp',PxSelect.VER_QUE);
+
+:: Ponowne załadowanie widoku kolejki
+{? var_pres('PxSelect')>100
+|| {? ~_one_ver
+   || PX_OBJ.cntx_psh();
+      exec('Pxgrp_refresh','px_grp',PxSelect.Pxgrp);
+      PX_OBJ.cntx_pop()
+   ?}
+?};
+
+:: Aktualizuje przyciski dot przeliczania jednej wersji planu
+{? _one_ver>0 & var_pres('PxSelect')>100
+|| exec('przelicz_btn','px_plan')
+?};
+
+exec('UpdatePX_VER','px_con_g',PX_VAR.VER_QUE);
+
+grp_disp(PxSelect.Pxgrp.TAB,PxSelect.Pxgrp.WERT);
+{? PX_VAR.PL_GROP
+|| grp_disp(PxSelect.Pxgrp.TAB,PxSelect.Pxgrp.WERT_G)
+?};
+{? _show_komm>0
+|| KOMM.select()
+?};
+PX_VAR.AGR_UID:='';
+VAR.GRUPA:='N';
+PX_VAR.GROP:=null();
+PX_VAR.GROPS:=null();
+PX_VAR.PL_RESGG:=null();
+~~
+
+
+\px_obj_details
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Wyswietla szczegoly obiektu (bezposrednio ze zrodla)
+::----------------------------------------------------------------------------------------------------------------------
+{? PX_OBJ.ZL<>null()
+||
+   PX_OBJ.ZL();
+   exec('zl_display','zl_head')
+|? PX_OBJ.ZK_P=null() & PX_OBJ.ZK_N<>null()
+||
+   PX_OBJ.ZK_N();
+   ZK_N.win_edit({? ZK_N.T().R='Z' || 'RED' || 'REDW' ?});
+   ZK_N.display()
+|? PX_OBJ.ZK_P<>null()
+||
+   PX_OBJ.ZK_P();
+   PX_OBJ.ZK_N();
+   exec('wys_pozy','zamsiw_poz',1)
+|? PX_OBJ.GROP<>null()
+||
+   PX_OBJ.GROP();
+   exec('grop_display','zl_grop')
+?};
+''
+
+
+\px_obj_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Poprawianie obiektu zrodlowego - termin realizacji
+::----------------------------------------------------------------------------------------------------------------------
+_can_continue:=1;
+
+{? PX_OBJ.ZL<>null()
+|| {? exec('chk_role','#b__box',OPERATOR.USER,'TTE_PZL_DZLE')=0
+   || _can_continue:=0;
+      FUN.emsg('Do zmiany terminu realizacji zlecenia należy być uprawnionym do czynności: %1'@['TTE_PZL_DZLE'])
+   ?};
+   {? _can_continue>0
+   || exec('zl_popraw_term','zl_head',PX_OBJ.ZL)
+   ?}
+|? PX_OBJ.ZK_P=null() & PX_OBJ.ZK_N<>null()
+||
+   ZK_N.cntx_psh(); ZK_P.cntx_psh();
+   _mask:=ref_name(PX_OBJ.ZK_N);
+   ZK_N.use(_mask); ZK_P.use('zkpoz'+(_mask+3));
+   ZK_N.clear(); ZK_P.clear();
+
+   {? ZK_N.seek(PX_OBJ.ZK_N)
+   ||
+      {? ZK_N.T().R='Z'
+      || {? exec('chk_role','#b__box',OPERATOR.USER,'LSP_ZKN_DRZK')=0
+         || _can_continue:=0;
+            FUN.emsg('Do zmiany terminu realizacji zamówienia należy być uprawnionym do czynności: %1'@['LSP_ZKN_DRZK'])
+         ?}
+      |? ZK_N.T().R='W'
+      || {? exec('chk_role','#b__box',OPERATOR.USER,'LMG_ZAM_DRZK')=0
+         || _can_continue:=0;
+            FUN.emsg('Do zmiany terminu realizacji zamówienia należy być uprawnionym do czynności: %1'@['LMG_ZAM_DRZK'])
+         ?}
+      ?};
+
+      {? _can_continue>0
+      ||
+         {? ZK_N.LIM='T'
+         ||
+            FUN.info('Zamówienie wygenerowane na podstawie limitów zleceń — nie można modyfikować.'@)
+         ||
+            {? ZK_N.r_lock(1,1,1)
+            || exec('zam_pop','zamsiw_nag');
+               ZK_N.r_unlock()
+            || FUN.info('Zamówienie redagowane przez innego użytkownika — nie można modyfikować.'@)
+            ?}
+         ?}
+      ?}
+   ?};
+
+   ZK_N.cntx_pop(); ZK_P.cntx_pop()
+
+|? PX_OBJ.ZK_P<>null()
+||
+   ZK_N.cntx_psh(); ZK_P.cntx_psh();
+   ZK_N.use(ref_name(PX_OBJ.ZK_N)); ZK_P.use(ref_name(PX_OBJ.ZK_P));
+   ZK_N.clear(); ZK_P.clear();
+
+   {? ZK_N.seek(PX_OBJ.ZK_N) & ZK_P.seek(PX_OBJ.ZK_P)
+   ||
+      {? ZK_N.T().R='Z'
+      || {? exec('chk_role','#b__box',OPERATOR.USER,'LSP_ZKN_DRZK')=0
+         || _can_continue:=0;
+            FUN.emsg('Do zmiany terminu realizacji zamówienia należy być uprawnionym do czynności: %1'@['LSP_ZKN_DRZK'])
+         ?}
+      |? ZK_N.T().R='W'
+      || {? exec('chk_role','#b__box',OPERATOR.USER,'LMG_ZAM_DRZK')=0
+         || _can_continue:=0;
+            FUN.emsg('Do zmiany terminu realizacji zamówienia należy być uprawnionym do czynności: %1'@['LMG_ZAM_DRZK'])
+         ?}
+      ?};
+
+      {? _can_continue>0
+      ||
+         {? ZK_N.LIM='T'
+         ||
+            FUN.info('Zamówienie wygenerowane na podstawie limitów zleceń — nie można modyfikować.'@)
+         ||
+            {? ZK_N.r_lock(1,1,1)
+            || D_HELP.M_ZKP:=ZK_P.M().KTM;
+               exec('pop_pozy','zamsiw_poz');
+               ZK_N.r_unlock()
+            || FUN.info('Zamówienie redagowane przez innego użytkownika — nie można modyfikować.'@)
+            ?}
+         ?}
+      ?}
+   ?};
+
+   ZK_N.cntx_pop(); ZK_P.cntx_pop()
+|? PX_OBJ.GROP<>null()
+|| _can_continue:=0;
+   FUN.emsg('Poprawianie terminu na grupie operacji niedozwolone. Termin grupy pochodzi ze zleceń wchodzących w skład grupy.'@)
+?};
+{? _can_continue>0 & PX_OBJ.PX_TAG<>null()
+|| exec('update_after_add','px_tag',PX_OBJ.PX_TAG,0)
+?};
+''
+
+
+\obj_mask_trig
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Trigger przed add() i przed put() w tabeli PX_OBJ. Automatycznie wypelnia pola:
+::       PX_OBJ.M_ZK_N, PX_OBJ.M_ZK_P
+::----------------------------------------------------------------------------------------------------------------------
+PX_OBJ.M_ZK_N:=ref_name(PX_OBJ.ZK_N);
+PX_OBJ.M_ZK_P:=ref_name(PX_OBJ.ZK_P);
+1
+
+
+\proc_wyk_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.30]
+:: OPIS: Aktualizuje pole PX_OBJ.PROC_WYK
+::   WE: _a - PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+
+_procent:=0;
+
+Cntx.psh(PX_OBJ,PX_POZ,PX_KONT);
+Cntx.clr(PX_OBJ);
+
+{? PX_OBJ.seek(_px_obj)
+||
+   _mainver:=exec('get_mainversion','px_ver');
+   PX_POZ.index('PX_POZ');
+   PX_POZ.prefix(_mainver,PX_OBJ.ref());
+   {? PX_POZ.first()
+   ||
+      _il_wym:=PX_POZ.PX_KONT().IL_WYM;
+      _eat:=obj_new(_il_wym); {! _dim:=1.._il_wym |! _eat[_dim]:=0 !};
+      _wyk:=obj_new(_il_wym); {! _dim:=1.._il_wym |! _wyk[_dim]:=0 !};
+
+      {!
+      |?
+         {! _dim:=1.._il_wym
+         |!
+            _eat[_dim]+=($('PX_POZ.CAP_EAT'+$_dim))();
+            _wyk[_dim]+=($('PX_POZ.CAP_WYK'+$_dim))()
+         !};
+         PX_POZ.next()
+      !};
+
+      _prop:=obj_new(_il_wym);
+      {! _dim:=1.._il_wym |! _prop[_dim]:={? _eat[_dim]=0 || 0 || _wyk[_dim]/_eat[_dim] ?} !};
+
+      _procent:=exec('array_sum','#array',_prop)/_il_wym*100
+
+   ?}
+?};
+
+PX_OBJ.PROC_WYK:=_procent;
+PX_OBJ.put();
+
+Cntx.pop(PX_OBJ,PX_POZ,PX_KONT);
+~~
+
+
+\psp2obj
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Tworzy z pozycji planu sprzedazy obiekt planowania o ile takiego jeszcze nie ma
+::       Kontekst pracy - pozycja planu sprzedazy ktore bedzie przeksztalcana w obiekt
+::       UWAGA - FORMULA NA RAZIE NIE UZYWANA !!!
+::   WY: 0 / 1 - Sukces czy porazka
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+
+PX_OBJ.cntx_psh();
+PSP.cntx_psh();
+
+PX_OBJ.index('SYMBOL');
+
+{? PSP.PSOKR<>null() & PSP.M<>null()
+||
+   _symbol:=PSP.PSOKR().N+' '+PSP.M().KTM;
+   _nazwa:=PSP.PS().S;
+   PX_OBJ.prefix('T',_symbol);
+   {? PX_OBJ.first()
+   || _result:=exec('obj_upd','px_obj',_symbol
+                                      ,_nazwa
+::       _c - M.ref() - Material
+                                      ,PSP.M
+::       _d - KH.ref() - kontrahent
+                                      ,PSP.KH
+::       _e - DATE - data realizacji
+                                      ,PSP.PSOKR().DO
+::       _f - TIME - godzina realizacji
+                                      ,time(0,0,0)
+::       _g - REAL - ilosc do wykonania
+                                      ,PSP.IL
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                      ,null()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                      ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                      ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                      ,PSP.M().J
+::       [_l] - STRING - kolor
+                                      ,
+::       [_m] - STRING - rodzaj
+                                      ,exec('kind_plan_sprze','px_obj')
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                      ,-1
+::       [_o] - DATE - data najwczesniej
+                                      ,
+::       [_p] - TIME - godzina najwczesniej
+                                      ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                      ,
+::       [_r] - STRING[1] - obiekt grupujacy
+                                      ,
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                      ,
+                   )
+
+   || _result:=exec('obj_add','px_obj',_symbol
+                                      ,_nazwa
+::       _c - M.ref() - Material
+                                      ,PSP.M
+::       _d - KH.ref() - kontrahent
+                                      ,PSP.KH
+::       _e - DATE - data realizacji
+                                      ,PSP.PSOKR().DO
+::       _f - TIME - godzina realizacji
+                                      ,time(0,0,0)
+::       _g - REAL - ilosc do wykonania
+                                      ,PSP.IL
+::       _h - ZL.ref() - zlecenie zrodlowe
+                                      ,null()
+::       _i - ZK_P.ref() - pozycja zamowienia zrodlowego
+                                      ,null()
+::       _j - GROP.ref() - zrodlowa grupa operacji
+                                      ,null()
+::       _k - JM.ref() - jednostka miary obiektu
+                                      ,PSP.M().J
+::       [_l] - STRING - kolor
+                                      ,
+::       [_m] - STRING - rodzaj
+                                      ,exec('kind_plan_sprze','px_obj')
+::       [_n] - INTEGER - domyslny kierunek planowania
+                                      ,-1
+::       [_o] - DATE - data najwczesniej
+                                      ,
+::       [_p] - TIME - godzina najwczesniej
+                                      ,
+::       [_q] - ZK_N.ref() - zamowienie zrodlowe
+                                      ,
+::       [_r] - STRING[1] - obiekt grupujacy
+                                      ,
+::       [_s] - STRING[1] - znacznik aktywnosci
+                                      ,'T'
+                   )
+   ?}
+?};
+
+PSP.cntx_pop();
+PX_OBJ.cntx_pop();
+_result
+
+
+\termin_chng
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Po modyfikacji terminu dla obiektu planistycznego nanosze ta informacje na kolejke planu glownego
+::       (o ile obiekt znajduje sie w kolejce)
+::   WE: _a - PX_OBJ.ref
+::       _b - REAL - tm_stamp - poprzedni termin realizacji
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+_tm_old:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+_main_ver:=exec('get_mainversion','px_ver');
+
+PX_OBJ.cntx_psh(); PX_OBJ.clear();
+PX_CONN.cntx_psh();
+PX_GRP.cntx_psh();
+
+{? PX_OBJ.seek(_px_obj)
+||
+   _tm_obj:=PX_OBJ.TM_REA;
+
+:: Sprawdzam czy obiekt zostal zaplanowany w planie glownym
+   {? exec('get_ilosc_que','px_obj',_main_ver,PX_OBJ.ref())>0
+   ||
+      {? _tm_old<>_tm_obj
+      ||
+         _type:=exec('type_warning','px_komm');
+         _src:=exec('src_refresh_que','px_komm');
+::       Szukam PX_CONNa w wersji glownej planu
+         PX_CONN.index('VER');
+         PX_CONN.prefix(_main_ver,PX_OBJ.ref());
+         {? PX_CONN.first()
+         || {!
+            |?
+::             Podczytuje PX_GRP
+               PX_CONN.PX_GRP();
+
+::             Aktualizuje termin dla grupy
+               exec('upd_termin','px_grp',PX_GRP.ref());
+
+::             Kasujemy wszystkie poprzednie komunikaty dotyczace terminow
+               exec('del_kommy','px_komm','PX_VER',_main_ver,_type,_src);
+
+               {? var_pres('_argskom')>100
+               || obj_del(_argskom)
+               ?};
+               _argskom:=exec('add_komm_a','px_komm');
+               _msg:='Zmienił się termin realizacji obiektu: %1. Wymagane przeliczenie planu.'@[PX_OBJ.SYMBOL];
+               _argskom.MESSAGE:=_msg;
+               _argskom.PX_VER:=_main_ver;
+               _argskom.PX_OBJ:=PX_OBJ.ref();
+               _argskom.PX_GRP:=PX_GRP.ref();
+               _argskom.TYP:=_type;
+               _argskom.SRC_KIND:=_src;
+::             Dodaje komunikat
+               _can_continue:=exec('add_komm','px_komm',_argskom);
+               PX_CONN.next() & _can_continue>0
+            !}
+         ?}
+      ?}
+   ?}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+
+PX_GRP.cntx_pop();
+PX_CONN.cntx_pop();
+PX_OBJ.cntx_pop();
+_result
+
+
+\px_obj_px_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Modyfikacja przypisania zestawu planistycznego do obiektu
+::----------------------------------------------------------------------------------------------------------------------
+{? VAR.GRUPA<>'T'
+|| PX_POZ.cntx_psh();
+   PX_POZ.index('TM_VOBJ');
+   _mainver:=exec('get_mainversion','px_ver');
+   PX_POZ.prefix(_mainver,PX_OBJ.ref());
+   {? PX_POZ.first()
+   || _txt:='Obiekt "%1" zaplanowany — nie można zmienić przypisania do zestawu planistycznego.'@[PX_OBJ.SYMBOL];
+      FUN.info(_txt)
+   || {? PX_VAR.PX_SET<>null()
+      || FUN.emsg('Zmodyfikowany obiekt zostanie usunięty z widoku.'@)
+      ?};
+      _red:=PX_OBJ.mk_edit('Obiekt planistyczny'@,,'edit_px_set');
+      PX_OBJ.win_efld(_red,,'PX_SET','SYMBOL','SYMBOL',50,,,'Startowy zestaw planistyczny'@);
+      PX_OBJ.win_ebtn(_red,'text='+'&Zapisz'@,'key:F2');
+      PX_OBJ.win_ebtn(_red,'text='+'&Anuluj'@,'key:Esc');
+      PX_OBJ.win_edit(_red);
+      _before:=PX_OBJ.PX_SET;
+      {? PX_OBJ.edit()
+      || {? PX_OBJ.PX_SET<>_before
+         || PX_OBJ.MAN_SET:='T';
+            {? PX_OBJ.put()
+            || {? PX_VAR.PX_SET<>null() || PX_OBJ.f_del() ?}
+            ?}
+         ?}
+      ?}
+   ?};
+   PX_POZ.cntx_pop()
+?};
+~~
+
+
+\px_obj_pxset_bg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Modyfikacja przypisania zestawu planistycznego do obiektow - akcja przed grupa rekordow
+::----------------------------------------------------------------------------------------------------------------------
+{? PX_VAR.PX_SET<>null()
+|| FUN.emsg('Zmodyfikowane obiekty zostaną usunięte z widoku.'@)
+?};
+_red:=PX_VAR.mk_edit('Obiekty planistyczne'@,,'edit_px_sets');
+PX_VAR.win_efld(_red,AH,'H');
+PX_VAR.win_efld(_red,,'RED_SET','SYMBOL','SYMBOL',50,,,'Startowy zestaw planistyczny'@);
+PX_VAR.win_efld(_red,AH,'H');
+PX_VAR.win_ebtn(_red,'text='+'&Zapisz'@,'key:F2');
+PX_VAR.win_ebtn(_red,'text='+'&Anuluj'@,'key:Esc');
+PX_VAR.win_edit(_red);
+{? PX_VAR.edit()
+|| KOMM.init(,,'Przypisanie zestawów do obiektów'@);
+   VAR.GRUPA:='T';
+   _px_obj:=PX_OBJ.sel_aget();
+   _mainver:=exec('get_mainversion','px_ver');
+   PX_OBJ.sel_adel();
+   {? _px_obj.first()
+   || {!
+      |? PX_OBJ.cntx_psh();
+         PX_OBJ.prefix();
+         {? PX_OBJ.seek(_px_obj.REF,)
+         || PX_POZ.cntx_psh();
+            PX_POZ.index('TM_VOBJ');
+            PX_POZ.prefix(_mainver,PX_OBJ.ref());
+            {? PX_POZ.first()
+            || _txt:='Obiekt "%1" zaplanowany — nie można zmienić przypisania do zestawu planistycznego.'@
+                     [PX_OBJ.SYMBOL];
+               KOMM.add(_txt)
+            || {? PX_VAR.RED_SET<>PX_OBJ.PX_SET
+               || PX_OBJ.PX_SET:=PX_VAR.RED_SET;
+                  PX_OBJ.MAN_SET:='T';
+                  {? PX_OBJ.put()
+                  || {? PX_VAR.PX_SET<>null() || {? PX_OBJ.f_seek(_px_obj.REF,) || PX_OBJ.f_del() ?} ?}
+                  ?}
+               ?}
+            ?};
+            PX_POZ.cntx_pop()
+         ?};
+         PX_OBJ.cntx_pop();
+         _px_obj.next()
+      !}
+   ?};
+   1
+|| 0
+?}
+
+
+\px_obj_pxset_ag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Modyfikacja przypisania zestawu planistycznego do obiektow - akcja po grupie rekordow
+::----------------------------------------------------------------------------------------------------------------------
+VAR.GRUPA:='N';
+KOMM.select();
+~~
+
+
+\update_px_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Aktualizuje pole PX_OBJ.PX_SET (pod warunkiem, ze nie bylo zmodyfikowane recznie)
+::   WE: _a - PX_OBJ.ref()
+::       [_b] - INTEGER [0]/1 - czy aktualizowac PX_SET na podstawie lisci w drzewie
+::       [_c] - INTEGER [0]/1 - czy aktualizowac PX_SET na elemencie nadrzednym w drzewie
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+_child_upd:=0;
+{? var_pres('_b')=type_of(0)
+|| _child_upd:=_b
+?};
+_par_upd:=0;
+{? var_pres('_c')=type_of(0)
+|| _par_upd:=_c
+?};
+
+PX_SET.cntx_psh();
+PX_OBJ.cntx_psh();
+PX_OBJ.prefix();
+{? PX_OBJ.seek(_px_obj)
+|| PX_SET.clear();
+   {? PX_SET.size()=0
+   ||
+::    Nie ma juz zadnych zestawow wiec czyszcze pole MAN_SET, bo po dodaniu zestawow
+::    obiekt juz nigdy sie nie zaktualizuje
+      PX_OBJ.MAN_SET:='N';
+      PX_OBJ.put()
+   ?};
+   {? PX_OBJ.MAN_SET<>'T'
+   || _par:=exec('get','#params',500366,2);
+      {? _par=exec('kind_default','px_set')
+      || PX_OBJ.PX_SET:=exec('default_set','px_set');
+         {? PX_OBJ.PX_SET=null()
+         ||
+::          Jesli system automatycznie sam mi czysci zestaw, to anihiluje pole MAN_SET
+::          bo nastepnym razem nie nastapila by automatyczna aktualizacja z pustego zestawu
+            PX_OBJ.MAN_SET:='N'
+         ?};
+         PX_OBJ.put()
+      |? _par=exec('kind_pxtex','px_set')
+      || _px_tex:=exec('get_default_tex','px_tex',PX_OBJ.ref());
+         {? _px_tex<>null()
+         || PX_OBJ.PX_SET:=exec('pxtex_set','px_set',PX_OBJ.ref(),_px_tex)
+         || PX_OBJ.PX_SET:=null()
+         ?};
+         PX_OBJ.PX_TEX:=_px_tex;
+         {? PX_OBJ.PX_SET=null()
+         || PX_OBJ.PX_SET:=exec('default_set','px_set')
+         ?};
+         {? PX_OBJ.PX_SET=null()
+         ||
+::          Jesli system automatycznie sam mi czysci zestaw, to anihiluje pole MAN_SET
+::          bo nastepnym razem nie nastapila by automatyczna aktualizacja z pustego zestawu
+            PX_OBJ.MAN_SET:='N'
+         ?};
+         PX_OBJ.put()
+      ?};
+      {? _child_upd>0
+      ||
+::       Jesli ten PX_OBJ jest galezia drzewa to aktualizuje mu zestaw na podstawie tego
+::       co jest na elementach podrzednych
+         exec('tree_px_set','px_obj',PX_OBJ.ref())
+      ?};
+      {? _par_upd>0
+      ||
+::       Aktualizuje elementowi nadrzednemu w drzewie zestaw na podstawie jego potomkow
+         {? PX_OBJ.TREE>0
+         || PX_OBJ.cntx_psh();
+            PX_OBJ.clear();
+            {? PX_OBJ.seek(PX_OBJ.TREE,)
+            || exec('tree_px_set','px_obj',PX_OBJ.ref())
+            ?};
+            PX_OBJ.cntx_pop()
+         ?}
+      ?}
+   ?}
+?};
+PX_SET.cntx_pop();
+PX_OBJ.cntx_pop();
+PX_OBJ.get();
+~~
+
+
+\px_obj_fld_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Przed wyswietlaniem pol w tabeli PX_OBJ
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+{? cur_afld()='PX_SET'
+|| {? ~exec('is_one_version','px_param')
+   || _result:=exec('color_noavail','px_param')
+   ?}
+|? cur_afld()='MAN_SET'
+|| {? ~exec('is_one_version','px_param')
+   || _result:=0
+   ?}
+?};
+_result
+
+
+\tree_px_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Ustawia PX_OBJ.PX_SET na podstawie rekordow powiazanych w drzewie
+::   WE: _a - PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=_a;
+
+PX_OBJ.cntx_psh();
+PX_OBJ.clear();
+{? PX_OBJ.seek(_px_obj)
+|| PX_OBJ.cntx_psh();
+   PX_OBJ.index('TSYMBOL');
+   PX_OBJ.prefix(PX_OBJ.A,#PX_OBJ.ref());
+   _px_sets:=exec('ref_table','#table');
+   _can_continue:=0;
+   {? PX_OBJ.first()
+   || _can_continue:=1;
+      {!
+      |? _px_sets.add(PX_OBJ.PX_SET);
+         PX_OBJ.next()
+      !}
+   ?};
+   PX_OBJ.cntx_pop();
+   {? _can_continue>0
+   ||
+      _px_set:=null();
+      _px_sets.tab.clear();
+      {? _px_sets.tab.size()=1
+      || {? _px_sets.tab.first()
+         || _px_set:=exec('FindAndGet','#table',PX_SET,_px_sets.tab.SQL,,"ref()",null());
+            PX_OBJ.PX_SET:=_px_set
+         ?}
+      ?};
+      {?  PX_OBJ.PX_SET=null()
+      ||
+::       Jesli system automatycznie sam mi czysci zestaw, to anihiluje pole MAN_SET
+::       bo nastepnym razem nie nastapila by automatyczna aktualizacja z pustego zestawu
+         PX_OBJ.MAN_SET:='N'
+      ?};
+      PX_OBJ.put()
+   ?}
+?};
+PX_OBJ.cntx_pop();
+PX_OBJ.get();
+~~
+
+
+\px_obj_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [12.41]
+:: OPIS: Odtworzenie zestawow startowych dla obiektow
+::   WE: _a - PX_SET.ref() startowy analizowanych obiektow
+::----------------------------------------------------------------------------------------------------------------------
+_px_set:=_a;
+
+_par:=exec('get','#params',500366,2);
+{? _par=exec('kind_pxtex','px_set')
+|| _tab:=tab_tmp(1,'REF','STRING[16]','$PX_OBJ.ref()');
+   PX_OBJ.cntx_psh();
+   PX_OBJ.index('PX_SET');
+   PX_OBJ.prefix(_px_set);
+   {? PX_OBJ.first()
+   || {!
+      |? {? PX_OBJ.MAN_SET='N'
+         || _tab.REF:=$PX_OBJ.ref();
+            _tab.add()
+         ?};
+         PX_OBJ.next()
+      !}
+   ?};
+   {? _tab.first()
+   || {!
+      |? exec('update_px_set','px_obj',exec('FindAndGet','#table',PX_OBJ,_tab.REF));
+         _tab.next()
+      !}
+   ?};
+   PX_OBJ.cntx_pop()
+?};
+~~
+
+
+\zkp_upd_ilosc
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.41]
+:: OPIS: Aktualizuje ilosc do wytworzenia na PX_OBJ pochodzacym z zamowienia uwzgledniajac
+::       rezerwacje magazynowe
+::   WE: [_a] - ZK_P.ref() lub biezacy rekord
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(SYSLOG.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZK_P.cntx_psh();
+{? _ref<>null()
+|| ZK_P.use(ref_name(_ref));
+   ZK_P.clear();
+   {? ZK_P.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   PX_OBJ.cntx_psh();
+   PX_OBJ.index('ZK_P');
+   PX_OBJ.prefix(ref_name(ZK_P.ref()),ZK_P.ref());
+   {? PX_OBJ.first()
+   || PX_OBJ.IL:=ZK_P.ILP-ZK_P.ILRB;
+      _can_continue:=PX_OBJ.put()
+   ?};
+   PX_OBJ.cntx_pop()
+?};
+ZK_P.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\planned_mainver
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.41]
+:: OPIS: Sprawdza czy podany obiekt, lub powiazany z nim (np zlecenie do zamowienia) znajduje sie w planie glownym
+::   WE: [_a] - PX_OBJ.ref
+::   WY: 0 - nie znajduje sie w planie glownym
+::       1 - znajduje sie w planie glownym
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(SYSLOG.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PX_OBJ.cntx_psh();
+{? _ref<>null()
+|| PX_OBJ.clear();
+   {? PX_OBJ.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _mainver:=exec('get_mainversion','px_ver');
+
+:: Najpierw sprawdzam czy podany obiekt znajduje sie w planie glownym
+   _il_planned:=exec('get_que_ilosc','px_obj',PX_OBJ.ref(),_mainver);
+   {? _il_planned>0
+   || _result:=1
+   ?};
+
+:: Jesli nic to sprawdzam czy powiazany obiekt jest w planie glownym
+   {? _result>0
+   ||
+      ZL.cntx_psh();
+      ZLZAM.cntx_psh();
+      {? PX_OBJ.ZK_P<>null()
+      ||
+         ZLZAM.index('ZMZL');
+         ZLZAM.prefix($PX_OBJ.ZK_P);
+         {? ZLZAM.first()
+         || {!
+            |?
+::             Sprawdzenie, czy jest plan do zlecenia
+               PX_OBJ.cntx_psh();
+               PX_OBJ.index('ZL');
+               PX_OBJ.prefix(ZLZAM.ZL);
+               {? PX_OBJ.first()
+               ||
+                  {? exec('get_que_ilosc','px_obj',PX_OBJ.ref(),_mainver)>0
+                  || _result:=1
+                  ?}
+               ?};
+               PX_OBJ.cntx_pop();
+
+::             Sprawdzenie, czy jest plan do podzlecen (dla optymalizacji bierzemy pierwsze, bo sa planowane lacznie)
+               ZL.index('NRNZL');
+               ZL.prefix(ZLZAM.ZL().UNRZL);
+               {? ZL.first()
+               ||
+                  PX_OBJ.cntx_psh();
+                  PX_OBJ.index('ZL');
+                  PX_OBJ.prefix(ZL.ref());
+                  {? PX_OBJ.first()
+                  ||
+                     {? exec('get_que_ilosc','px_obj',PX_OBJ.ref(),_mainver)>0
+                     || _result:=1
+                     ?}
+                  ?};
+                  PX_OBJ.cntx_pop()
+               ?};
+               ZLZAM.next()
+            !}
+         ?}
+      ?};
+      ZLZAM.cntx_pop();
+      ZL.cntx_pop()
+   ?}
+?};
+PX_OBJ.cntx_pop();
+_result
+
+
+\trig_add_b
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: formuła Triggerów dla tabeli PX_OBJ - add
+::  OLD: \PX_OBJ/trigger.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('obj_stmp_trig','px_obj');
+exec('obj_mask_trig','px_obj');
+1
+
+
+\trig_put_b
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.10]
+:: OPIS: formuła Triggerów dla tabeli PX_OBJ - put
+::  OLD: \PX_OBJ/trigger.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('obj_stmp_trig','px_obj');
+exec('obj_mask_trig','px_obj');
+1
+
+
+\zl_plan_px_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.28]
+:: OPIS: Ustawia pole ZL.PLAN_PX
+::   WE: [_a] - ZL.ref() lub bieżący rekord
+::       [_b] - STRING - 'T'/['N']
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(ZL.ref())
+|| _ref:=_a
+?};
+_value:='N';
+{? var_pres('_b')=type_of('')
+|| _value:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+ZL.cntx_psh();
+{? _ref<>null()
+|| ZL.prefix();
+   {? ZL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+|| _can_continue:=0
+?};
+
+{? _can_continue>0
+|| {? _value='T'
+   || ZL.PLAN_PX:=_value;
+      _can_continue:=ZL.put();
+      {? _can_continue>0
+      || _top:=exec('top_level','zl_link',ZL.ref());
+         {? _top<>ZL.ref()
+         || ZL.prefix();
+            {? ZL.seek(_top)
+            || ZL.PLAN_PX:='T';
+               ZL.put()
+            ?}
+         ?}
+      ?}
+   |? _value='N'
+   || ZL.PLAN_PX:=_value;
+      _can_continue:=ZL.put();
+      {? _can_continue>0
+      || _top:=exec('top_level','zl_link',ZL.ref());
+         {? _top<>ZL.ref()
+         || exec('zl_plan_update','zl_common',_top)
+         ?}
+      ?}
+   ?}
+?};
+ZL.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\obj_find_zkp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.02]
+:: OPIS: Szuka obiektow dla danego ZK_P
+::       Wykorzystane w formule exec(select_zkp','px_plan')
+::   WE: _a - ZK_P.ref() albo tabela tycmzasowa z ZK_P.sel_aget()
+::   WY: Tablica tymczasowa z #PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=exec('obj_find_tab','px_obj');
+
+{? var_pres('_a')=type_of(null())
+|| _tab:=tab_tmp(1,'REF','INTEGER','#ZL.ref()');
+   _tab.REF:=#_a;
+   _tab.add()
+|| _tab:=_a
+?};
+
+Cntx.psh(ZK_N,ZK_P,ZL);
+Cntx.clr(ZK_N,ZK_P,ZL);
+
+{? _tab.first()
+|| {!
+   |?
+::    tylko wyroby i półfabrykaty
+      {? ZK_P.seek(_tab.REF) & 'PW'*ZK_P.M().R
+      ||
+::       jeżeli są wygenerowane zlecenia - pomijane
+         {? 0
+         || ZLZAM.index('ZMZL');
+            ZLZAM.prefix($ZK_P.ref());
+            {? ZLZAM.first()
+            || {!
+               |? PX_OBJ.index('ZL');
+                  PX_OBJ.prefix(ZLZAM.ZL);
+                  {? PX_OBJ.first()
+                  || _px_obj.REF:=#PX_OBJ.ref();
+                     _px_obj.SQLREF:=$PX_OBJ.ref();
+                     _px_obj.add()
+                  ?};
+                  ZLZAM.next()
+               !}
+            ?}
+         ?};
+
+         {? exec('zkp2obj','px_obj')
+         || PX_OBJ.index('ZK_P');
+            PX_OBJ.prefix(ZK_P.name(),ZK_P.ref());
+            {? PX_OBJ.first()
+            || _px_obj.REF:=#PX_OBJ.ref();
+               _px_obj.SQLREF:=$PX_OBJ.ref();
+               _px_obj.add()
+            ?}
+         ?}
+      ?};
+      _tab.next()
+   !}
+?};
+
+Cntx.pop(ZK_N,ZK_P,ZL);
+
+_px_obj
+
+
+\obj_find_grop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [23.25]
+:: OPIS: Szuka obiektow dla danego GROP
+::       Wykorzystane w formule exec(select_grop','px_plan')
+::   WE: _a - GROP.ref() albo tabela tymczasowa z GROP.sel_aget()
+::   WY: Tablica tymczasowa z #PX_OBJ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_px_obj:=exec('obj_find_tab','px_obj');
+
+{? var_pres('_a')=type_of(null())
+|| _tab:=tab_tmp(1,'REF','INTEGER','#GROP.ref()');
+   _tab.REF:=#_a;
+   _tab.add()
+|| _tab:=_a
+?};
+
+Cntx.psh(GROP);
+Cntx.clr(GROP);
+
+{? _tab.first()
+|| {!
+   |?
+      {? GROP.seek(_tab.REF)
+      ||
+         {? exec('grop2obj','px_obj')
+         || PX_OBJ.index('GROP');
+            PX_OBJ.prefix(GROP.ref());
+            {? PX_OBJ.first()
+            || _px_obj.REF:=#PX_OBJ.ref();
+               _px_obj.SQLREF:=$PX_OBJ.ref();
+               _px_obj.add()
+            ?}
+         ?}
+      ?};
+      _tab.next()
+   !}
+?};
+Cntx.pop(GROP);
+_px_obj
+
+
+\tex_default
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [23.25]
+:: OPIS: Wyświetla domyślny przepis dla obiektu
+::   WE: [_a] - PX_OBJ.ref() lub bieżący rekord
+::   WY: ~~
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PX_OBJ.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PX_OBJ.cntx_psh();
+{? _ref<>null()
+|| PX_OBJ.prefix();
+   {? PX_OBJ.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _px_tex:=exec('get_default_tex','px_tex',PX_OBJ.ref(),1);
+
+   {? _px_tex<>null()
+   || PX_TEX.cntx_psh(); PX_TEX.prefix();
+      {? PX_TEX.seek(_px_tex)
+      || exec('PX_TEXWER4GRPbG','px_tex')
+      ?};
+      PX_TEX.cntx_pop()
+   || FUN.emsg('Brak przepisu domyślnego dla obiektu: %1'@[exec('PX_OBJ','#to_string')])
+   ?}
+?};
+PX_OBJ.cntx_pop();
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:39 7dcdd10295d8201934582e1ded398cb61b543b797b3e90447fbd1782957db3fefc0c82266f60ea4fb2d4d64279445692cdccac23d789a26edf695eff63566f63d6dd9152c0bfd9cb9e1546f443ceb7e89b790605e80be368817271e673ad84f63d0f27a57888b6d68b90803d15052bf7125335d4c0748948cd84995365087066

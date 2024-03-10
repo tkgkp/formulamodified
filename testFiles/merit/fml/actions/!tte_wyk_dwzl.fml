@@ -1,0 +1,194 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_wyk_dwzl.fml
+:: Utworzony: 23.02.2016
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_WYK_DWZL - Rejestracja wykonań zleceń
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Główna formuła czynności rejestrowania wykonań do zlecenia (TTE_WYK_DWZL)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+::# permissions=ODDZ,F_ZATR,UD_SKL
+
+::# condition=Generowanie raportu produkcji, act_uid=TTE_WYK_DGRP, auto=N, formula=exec('czy_generowac_rp','%gate',_a.ZL)
+::# condition=Rozliczenie surowców nielimitowanych, act_uid=TTE_WYK_DGRW, auto=N, formula=exec('czy_sa_limity_zgp','%gate',_a.ZGP)
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N, keyref=T
+{? var_pres('ZL',_in)<>type_of(~~) & var_pres('ZL',_in)<>type_of(null())
+|| return()
+|? _in.ZL=~~
+|| _in.ZL:=null()
+?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N, keyref=N
+{? var_pres('ZL',_out)<>type_of(~~) & var_pres('ZL',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=ZGP, type=_ZGP, name=Pozycja przewodnika, required=N, keyref=N
+{? var_pres('ZGP',_out)<>type_of(~~) & var_pres('ZGP',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=ILOSC, type=NUMBER, name=Zarejestrowana ilość (dobre), required=N, keyref=N
+{? var_pres('ILOSC',_out)<>type_of(~~) & var_pres('ILOSC',_out)<>type_of(0) || return() ?};
+::# kind=WY, symbol=BRAKI, type=NUMBER, name=Zarejestrowana ilość (braki), required=N, keyref=N
+{? var_pres('BRAKI',_out)<>type_of(~~) & var_pres('BRAKI',_out)<>type_of(0) || return() ?};
+::# kind=WY, symbol=ZLGD, type=_ZLGD, name=Zapis akordowy, required=N, keyref=N
+{? var_pres('ZLGD',_out)<>type_of(~~) & var_pres('ZLGD',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=STATUS, type=STRING, name="Status czynności (START, END, END_KJ, CLOSE)", required=N, keyref=N
+{? var_pres('STATUS',_out)<>type_of(~~) & var_pres('STATUS',_out)<>type_of('') || return() ?};
+
+_clean_result:=params_exec('clean','!tte_wyk_dwzl',_mp,_in);
+_can_continue:=_clean_result.RESULT;
+
+{? _can_continue
+||
+:: Uruchomienie jako czynność startowa
+   {? _mp.pathProc()
+   || VAR.A_ZLEC:=null();
+      exec('rej_zlec','zl_wyk',1)
+
+:: Uruchomienie z listy zadań (znane ZL)
+   |? _mp.pathTodo() & _in.ZL<>null()
+   ||
+:: Zbudowanie nowego środowisko do uruchomienia Czynności, na podstawie konfiguracji Pierwotnej.
+      _id:=__PARSES.clone('C','U','P');
+      _pid:=__PARSES.getPID();
+      {? _id='' | _pid=''
+      || FUN.info('Próba utworzenia środowiska nie powiodła się.'@);
+         return()
+      ?};
+      __PARSES.pushEnv();
+      {? __PARSES.setMode('C',_id,_pid) & __PARSES.setEnv('TTE_WYK_DWZL')
+:: Jeżeli wszystko się udało, to bieżące środowisko jest identyczne, ze środowiskiem obszaru (a nie czynności).
+:: Mogę zatem zapamiętać interesujące mnie parametry.
+      || _okres:=__PARSES.getVal('OkresRok')
+      || FUN.info('Próba utworzenia środowiska nie powiodła się.'@)
+      ?};
+:: Zwijamy to lipne środowisko.
+      __PARSES.popEnv();
+:: Usuwam rekord konfiguracji, jako parametr podając Uidref.
+      __PARSES.del(_id);
+:: W bieżącym (tym związanym z czynnością) środowisku zmieniamy wartości.
+      __PARSES.setVal('OkresRok',_okres);
+
+      _mp.keep();
+      ZL.cntx_psh();
+      ZL.prefix();
+      {? ZL.seek(_in.ZL)
+      || VAR.A_ZLEC:=ZL.ref();
+         exec('rej_zlec','zl_wyk',1)
+      ?};
+      ZL.cntx_pop()
+:: Uruchomienie akcji ZAKOŃCZ w oknie rejestracji wykonań (uruchamianej z listy todo - tutaj czynność jest kończona)
+   |? _mp.akcja()='ZAKOŃCZ_TODO' & _in.ZL<>null()
+   || _out.ZL:=_in.ZL;
+      _out.STATUS:='CLOSE';
+      _mp.save(,_out);
+      _mp.done()
+:: Uruchomienie PO zarejestrowaniu wykonania (tutaj czynność jest kończona)
+   |? _mp.akcja()='ZAKOŃCZ' & _in.ZL<>null()
+   || _out.ZL:=_in.ZL;
+      _out.ZLGD:=_context.ZLGD;
+      _out.ZGP:=_context.ZGP;
+      _out.ILOSC:=_context.ILOSC;
+      _out.BRAKI:=_context.BRAKI;
+      _out.STATUS:='END';
+      _mp.save(,_out);
+      _mp.done()
+:: Uruchomienie PO zakwalifikowaniu wykonania przez kontrolera jakości (tutaj czynność jest kończona)
+   |? _mp.akcja()='ZAKOŃCZ_KJ' & _in.ZL<>null()
+   || _out.ZL:=_in.ZL;
+      _out.ZLGD:=_context.ZLGD;
+      _out.ZGP:=_context.ZGP;
+      _out.ILOSC:=_context.ILOSC;
+      _out.BRAKI:=_context.BRAKI;
+      _out.STATUS:='END_KJ';
+      _mp.save(,_out);
+      _mp.done()
+:: Uruchomienie PO zarejestrowaniu wykonania (tutaj czynnośc wrzucana jest na ToDo)
+   |? _mp.akcja()='ROZPOCZNIJ' & _in.ZL<>null()
+   || _out.ZL:=_in.ZL;
+      _out.ZGP:=_context.ZGP;
+      _out.STATUS:='START';
+      _mp.save(,_out);
+      _mp.keep()
+
+:: Uruchomienie z listy zadań, ale nieznane ZL
+   |? _mp.pathTodo() & _in.ZL=null()
+   || _msg:='Błędna konfiguracja procesu — nie przekazano zlecenia.';
+      FUN.emsg(_msg);
+      _mp.error(_msg)
+
+   || _msg:='Nie obsłużony kontekst wywołania czynności.';
+      FUN.emsg(_msg);
+      _mp.error(_msg)
+   ?}
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Opis dla czynności rejestrowania wykonań do zlecenia (TTE_WYK_DWZL)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+:: jest rekord kluczowy to ustawiam odpowiedniego ZL
+{? var_pres('[1]',_keyRefs)
+|| _tmp:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"SYM",'');
+   _desc:={? _tmp<>'' || 'Zarejestruj wykonania do zlecenia %1'@@[_tmp] || '' ?}
+::|| _desc:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"'Zarejestruj wykonania do zlecenia %1'[SYM]",'')
+
+:: jest parametr wejściowy to ustawiam odpowiedniego ZL
+|? var_pres('ZL',_in)
+|| _tmp:=exec('FindAndGet','#table',ZL,_in.ZL,,"SYM",'');
+   _desc:={? _tmp<>'' || 'Zarejestruj wykonanie do zlecenia %1'@@[_tmp] || '' ?}
+::|| _desc:=exec('FindAndGet','#table',ZL,_in.ZL,,"'Zarejestruj wykonanie do zlecenia %1'[SYM]",'')
+
+?};
+_desc
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.22]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+params_exec('zl_clean','zl_common',_mp,_in,'DONE')
+
+:Sign Version 2.0 jowisz:1048 2021/04/09 15:19:42 5563cf17d58712638d9cc064886d743c46352a8d61128a977b3eca42e2536ebd7f964126d3cf6a8028edf7a73c84fa1c9f50d74f9701541a06b197fc38e3a6380d7a7be09b1ff8df8ad53cfa5ba5d325880d217666eb1f4042401e9a109d6168bc508be2f2dc0b7fcc70ac17c2442d5b852c9b230fa43a3adb4936e4f1cc9fe2

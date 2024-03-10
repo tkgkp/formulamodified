@@ -1,0 +1,223 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lmg_mag_dzwf.fml
+:: Utworzony: 11.04.2016
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Zwrot na podstawie korekty
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LMG
+::# properties=LOOP
+::# parses=exec('parses','!lmg_mag_dzwf')
+::# kind=WE,   symbol=TYPYDOK,      type=_TYPYDOK,    name=Typ dokumentu magazynowego, required=N, fml_val="exec('typydok','!lmg_mag_dzwf')", fml_exp="exec('typydok_export','magdok_nag',_a)"
+::# kind=WE,   symbol=KORS,         type=_FAKS,       name=Korekta sprzedaży,          required=T, keyref=T
+::# kind=WE,   symbol=GEN_ZZ,       type=STRING,      name=Generacja dokumentów,       required=N
+::# kind=WEW,  symbol=ND,           type=_ND,         name=Dokument przychodowy,       required=N
+::# kind=WY,   symbol=GEN_ZZ,       type=STRING,      name=Generacja dokumentów,       required=N
+::# kind=WY,   symbol=ND,           type=_ND,         name=Dokument przychodowy,       required=N
+::# condition=Rejestracja dokumentu zwrotu, act_uid=LMG_MAG_DAPZ,  auto=T,  formula=_a.ND<>~~ & _a.ND<>null()
+_mp:=params_get().mp;
+_in:=params_get().in;
+_out:=params_get().out;
+
+exec('init','lmg');
+
+_akcja:=_mp.akcja();
+_auto:=_akcja<>'Zwrot' & _mp.isAutoRun();
+_cancel:=0;
+
+:: Wyzwalacz
+_mp.trigRef('ND',,1,,exec('kind_internal','#b_port'),'ND');
+
+{? ~(var_pres('KORS',_in)=type_of(null()) & _in.KORS)
+|| _mp.error('Brak wymaganego parametru KORS.')
+|? exec('FindAndGet','#table',FAKS,_in.KORS,,"FAKS.STAT_REJ",'')='A'
+|| _mp.error('Dokument sprzedaży został anulowany.')
+||
+   _continue:=0;
+   _gen_dok:='';
+   _typydok:={? var_pres('TYPYDOK',_in)=type_of(null()) || _in.TYPYDOK || null() ?};
+
+   {? _mp.loop()=0
+:: pierwsze wywołanie
+   || FAKS.cntx_psh();
+      _jest:=FAKS.seek(_in.KORS);
+      {? ~_jest || FAKS.prefix(); _jest:=FAKS.seek(_in.KORS) ?};
+      {? ~_jest
+      || _cancel:=1;
+         _mp.error('Nie znaleziono dokumentu sprzedaży.')
+      |? _jest & FAKS.T().KOR<>'T'
+      || FUN.info('Dokument %1 nie jest korektą.'
+            '\nZadanie zostanie zakończone.'@[exec('record','#to_string',_in.KORS)]);
+         _cancel:=1;
+         _mp.done()
+      |? FAKS.SZ<>'S'
+      || FUN.info('Zwrot do magazynu dostępny tylko dla dokumentów sprzedaży.'
+            '\nZadanie zostanie zakończone.'@);
+         _cancel:=1;
+         _mp.done()
+      |? 'MG'*FAKS.WHERE=0 & FAKS.T().HIS<>'T'
+        & ~(FAKS.WHERE='N' & (';MG'*exec('FindAndGet','#table',FAKS,FAKS.LKSQL,,"WHERE",''))>1)
+      || FUN.info('Korekta nie jest historyczną, nie dotyczy dokumentu z wydań lub z rezerwacją.'
+            '\nZadanie zostanie zakończone.'@);
+         _cancel:=1;
+         _mp.done()
+      |? _jest & FAKS.STAT_REJ<>'T'
+      || FUN.info('Dokument korekty nie został zaakceptowany.'@);
+         _cancel:=1;
+         _mp.cancel()
+      |? _jest & FAKS.WHERE<>'N' & exec('czy_il','faktury_poz',FAKS.ref,1)<>'-I'
+      || FUN.info('Korekta nie dotyczy zwrotu.'
+            '\nZadanie zostanie zakończone.'@);
+         _cancel:=1;
+         _mp.done()
+      ||
+         {? _akcja='Zwrot'
+            | _auto
+            | _mp.pathTodo()
+         ||
+            {? FAKS.T().KOR='T'
+            || exec('ustaw_df','faktury_nag');
+               exec('f_mdok','faktury_wspolne',1,_typydok)
+            ?};
+
+            _internal:=_mp.load(exec('kind_internal','#b_port'));
+            _continue:={? var_pres('ND',_internal)=type_of(null()) & _internal.ND || 1 || -1 ?};
+            {? _continue=1 || _gen_dok:=exec('FindAndGet','#table',ND,_internal.ND,,"GRP_KEY",'') ?}
+         || _cancel:=1;
+            _mp.error('Nieobsługiwana ścieżka.')
+         ?}
+      ?};
+      FAKS.cntx_pop()
+:: wywołanie w pętli
+   || _continue:=var_pres('GEN_ZZ',_in)=type_of('') & _in.GEN_ZZ<>'';
+      {? _continue || _gen_dok:=_in.GEN_ZZ ?}
+   ?};
+
+   {? _continue=-1
+:: Wycofano się z wystawiania dokumentów
+   || 1
+   |? _continue=1 & _gen_dok<>''
+:: Zapisanie parametru wyjściowego ND, wykluczenie kolejnej realizacji z pętli, zakończenie czynności
+   || _aktmsk:=FAKS.name()+3;
+      _newmsk:=_aktmsk;
+      {? _in.KORS || _newmsk:=ref_name(_in.KORS)+3 ?};
+      ND.cntx_psh();
+      ND.use('nagdo'+_newmsk);
+      ND.prefix();
+      _grp_key:=_gen_dok-1;
+      _grp_key_on:=_grp_key+'1';
+      _grp_key_off:=_grp_key+'0';
+      {? _grp_key<>''
+      || ND.index('GRP_KEY');
+         ND.prefix(_grp_key_on);
+         {? ND.first()
+         || ND.cntx_psh();
+            ND.prefix();
+            ND.GRP_KEY:=_grp_key_off;
+            do();
+            ND.put();
+            _mp.save(exec('kind_out','#b_port'),'ND',ND.ref());
+            _mp.save(exec('kind_out','#b_port'),'GEN_ZZ',_gen_dok);
+            end();
+            ND.cntx_pop();
+            {? ND.first()
+::          kontynuacja pętli
+            || _mp.loop_continue()
+            ?}
+         ?}
+      ?};
+      ND.cntx_pop();
+      _mp.done()
+   |? ~_cancel
+   || _mp.error('Brak oczekiwanego parametru GEN_ZZ.')
+   ?}
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+{? var_pres('KORS',_in)<>type_of(~~)
+|| 'Wystaw dokumenty zwrotu w magazynie do korekty: %1'@@[exec('record','#to_string',_in.KORS)]
+|| ''
+?}
+
+
+\typydok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła na wartość parametru TYPYDOK
+::   WY: TYPYDOK.ref()
+::----------------------------------------------------------------------------------------------------------------------
+::_typ_dok:=exec('get','#params',300501,2);
+::{? _typ_dok=''
+::|| _typ_dok:='"TYPYDOK".Z=\'T\' and "TYPYDOK".P=\'T\' and "TYPYDOK".DN=\'T\''
+::      +'and "TYPYDOK".TD=\'\' and "TYPYDOK".DS=\'N\''
+::?};
+_typ_dok:='"TYPYDOK".Z=\'T\' and "TYPYDOK".P=\'T\' and "TYPYDOK".DN=\'T\''
+          +'and "TYPYDOK".TD=\'\' and "TYPYDOK".DS=\'N\'';
+exec('typ_dok','lmg',_typ_dok,,,0,0,,,,,-1)
+
+
+\faks_zwrot
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Zwrot do magazynu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('faks_zwrot','faktury_nag')
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+{? var_pres('KORS',_in)=type_of(null()) & _in.KORS
+|| FAKS.cntx_psh();
+   FAKS.use(ref_name(_in.KORS));
+   FAKS.prefix();
+   {? FAKS.seek(_in.KORS)
+   || __PARSES.setVal('OddzialLogProd',FAKS.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LSP';
+      _args.AR:=FAKS.AR;
+      _args.AM:=FAKS.AM;
+      __PARSES.setVal('OkresRok',_args)
+   ?};
+   FAKS.cntx_pop()
+?};
+
+1
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:37 261973a2358386e42c938ab5a769b9906101e6b77a76e966c9a3531ccbc704cfb4c3797e947a49433500a55627ea071a897509f063a41507af93955029a539166d36b7f7dd8147d7574e91d4f6a134840aff171c7f22fc86cd60e76b0948b8468cdb29c0110a86438c4056914112743075b22ab351d731c6ed18ee3e969f5e6d

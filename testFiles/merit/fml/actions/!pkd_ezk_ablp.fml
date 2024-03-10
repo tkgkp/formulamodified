@@ -1,0 +1,225 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_ezk_ablp.fml
+:: Utworzony: 17.08.2021
+:: Autor: DG
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PKD_EZK_ABLP - Pow. o wykon. badań lekarskich.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Pow. o wykon. badań lekarskich - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=SERVICE
+::# permissions=F_ZATR,UD_SKL
+::
+:: Parametry wejściowe
+::# kind=WE, symbol=DNI, type=NUMBER, name=Czas trwania choroby (w dniach), required=N
+::
+::----------------------------------------------------------------------------------------------------------------------
+:: Parametry wyjściowe.
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik czynności (OK,BŁĄD)", required=N
+::# kind=WY, symbol=SUB, type=STRING, name=Temat, required=N
+::# kind=WY, symbol=RCV, type=MEMO, name=Lista odbiorców, required=N
+::# kind=WY, symbol=BODYH, type=MEMO, name=Treść w formacie HTML, required=N
+::
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+_service:=_mp.isService();
+
+{? var_press('DNI',_in)<>type_of(0) | _in.DNI<1
+|| _in.DNI:=30
+?};
+
+_out.SUB:='Powiadomienie o konieczności skierowania pracowników na badania lekarskie';
+:{? (_result:=exec('input_chk_get','personel_alerty',_service,_in,_out.SUB,,1))=''
+{? _in.DNI>0
+|| _ret:=exec('run','!pkd_ezk_ablp');
+   _out.RESULT:='OK';
+   _out.RCV:=_ret.RCV;
+   _out.BODYH:=_ret.BODYH
+
+|| _out.RESULT:='BŁĄD'
+?};
+_mp.save(,_out);
+_mp.done();
+
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Pow. o wykon. badań lekarskich - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Powiadomienie o konieczności skierowania pracowników na badania lekarskie'@@
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła odpowiedzialna za przetwarzanie danych
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+
+:: Liczba dni z wyprzedzeniem pobierana z parametru (domyślnie 0)
+_p283:=exec('get_par','#parametr',283);
+_days:={? type_of(_p283)=type_of('') & #_p283>0 || #_p283 || 0 ?};
+
+:: Pobranie danych o pracownikach, którzy powinni wykonać badania
+_TAB:=exec('get_data','!pkd_ezk_ablp',_days);
+
+_ret:=obj_new('RCV','BODYH');
+_ret.RCV:=_ret.BODYH:='';
+
+:: Wyszukujemy odbiorców wiadomości na podstawie uprawnień do czynności
+_ret.RCV:=exec('emls_w_perm','personel_alerty',_mp.buf_act.UID);
+
+:: Przygotowanie treści maila
+{? _TAB.first()
+|| _th:="'<th [[STYLE_TABLE_TH]]>'+_a+'</th>'";
+   _td:="'<td [[STYLE_TABLE_TD]]>'+_a+'</td>'";
+
+   _ret.BODYH:=
+      '<h3>'+
+         'Powiadomienie o konieczności skierowania pracowników na badania lekarskie.'@+
+      '</h3>\n'
+      '<p>'+
+         'Pracownicy, którzy w okresie od %1 do %2 osiągną %3 dni zwolnienia lekarskiego.'@
+         [date()$4,(date()+_days)$4,$_in.DNI]+
+      '</p><br>'
+      '<table [[STYLE_TABLE]]>\n'
+         '<tr [[STYLE_TABLE_TR]]>'+
+            _th('Lp.'@)+
+            _th('Nazwisko'@)+
+            _th('Imię'@)+
+            _th('Nr teczki'@)+
+            _th('Stanowisko'@)+
+            _th('Jednostka organizacyjna'@)+
+         '</tr>\n';
+
+   _lp:=0;
+   {!
+   |? _lp+=1;
+      _ret.BODYH+=
+         '<tr [[STYLE_TABLE_TR]]>'+
+            _td($_lp)+
+            _td(_TAB.NAZWISKO)+
+            _td(_TAB.PIERWSZE)+
+            _td(_TAB.T)+
+            _td(_TAB.ST)+
+            _td(_TAB.WYDZIAL)+
+         '</tr>\n';
+      _TAB.next()
+   !};
+
+   _ret.BODYH+=
+      '</table>\n'
+      '<p>'+'Ta wiadomość została wygenerowana automatycznie - prosimy na nią nie odpowiadać.'+'</p>'
+
+?};
+
+_ret
+
+
+\get_data
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Wyszukiwanie pracowników, których czas trwania choroby jest zgodny z parametrem _in.DNI
+::   WE: _a [INTEGER] - Liczba dni z wyprzedzeniem do zakresu dat
+::   WY: [TABLE] - Tabela z listą pracowników spełniających podane warunki
+::----------------------------------------------------------------------------------------------------------------------
+_days:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+
+_start:=date();
+_end:=date()+_days;
+
+_prac:=tab_tmp(3,'NAZWISKO','STRING[30]','Nazwisko',
+                 'PIERWSZE','STRING[20]','Imię',
+                 'T',       'STRING[9]', 'Teczka',
+                 'ST',      'STRING[80]','Stanowisko',
+                 'WYDZIAL', 'STRING[16]','Jednostka org.');
+
+:: Pobieramy pracowników, których czas trwania choroby mieści się w przedziale _start i _end
+_nieo:=sql('select distinct N.P from N join R
+            where N.FIRMA=:_d and N.KOR=\'N\' and N.OD <= to_date(:_b) and N.DO >= to_date(:_a)
+            and R.RN in (:_c)',
+            _start,_end,__RUB.sys_sql(1211,_start)+','+__RUB.sys_sql(1221,_start),exec('ref_firma','ustawienia'));
+
+P.cntx_psh();
+OSOBA.cntx_psh();
+N.cntx_psh();
+N.index('NIEOBECN');
+H.cntx_psh();
+H.index('_HISTDAT');
+STN.cntx_psh();
+UD_SKL.cntx_psh();
+
+{? _nieo.first()
+|| {!
+   |? {? P.seek(_nieo.P,,1)
+      || N.prefix('N',P.ref());
+         _continue:=1;_count:=0;_total:=0;
+::       Zliczamy liczbę dni choroby (atrybut 1211 - wynagrodzenie i 1221 - zasiłek) następujących po sobie
+         {? N.find_le(_end)
+         || _controlDate:=N.DO;
+            {!
+            |? {? _controlDate - N.DO > 1 | ~(__RUB.sys_attr(N.NB,1211,N.OD) | __RUB.sys_attr(N.NB,1221,N.OD))
+               || _continue:=0
+               || _count:=_start-N.OD+1;
+                  _total+=N.NK;
+                  _controlDate:=N.OD
+               ?};
+               N.prev() & _continue
+            !}
+         ?};
+::       Kontrolujemy, czy dany pracownik osiągnął już minimalną liczbę dni choroby określoną parametrem (domyślnie 30)
+         {? _count > 0 & _count <= _in.DNI & _count+(_end-_start) >= _in.DNI & _total>=_in.DNI
+         || H.prefix(P.ref);
+            H.find_le(_start,'Z');
+            _prac.NAZWISKO:=P.OSOBA().NAZWISKO;
+            _prac.PIERWSZE:=OSOBA.PIERWSZE;
+            _prac.T:=P.T;
+            {? H.find_le(_start,'Z')
+            || _prac.ST:=H.ST().ST;
+               _prac.WYDZIAL:=H.WYDZIAL().SYMBOL
+            || _prac.ST:=P.ST().ST;
+               _prac.WYDZIAL:=P.WYDZIAL().SYMBOL
+            ?};
+            _prac.add()
+         ?}
+      ?};
+      _nieo.next()
+   !}
+?};
+
+UD_SKL.cntx_pop();
+STN.cntx_pop();
+H.cntx_pop();
+N.cntx_pop();
+OSOBA.cntx_pop();
+P.cntx_pop();
+
+_prac
+
+:Sign Version 2.0 jowisz:1045 2021/09/17 15:16:58 915436f5128dcb3916c266c4fabf53bb236806806fd739829d720bf0e063256cef070e39d47fb0694bd89362c87c83913a7d76c70205610bd41ae1020472375b8bccbc4567ad3c863e6b2958b6d8cc2817b23d6439fcee26dd316a00790e75a6177c754f800fccef61249703f90f3a9a5d40274add9599a885601fea937c5b61

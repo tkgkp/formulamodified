@@ -1,0 +1,423 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2226_04.fml
+:: Utworzony: 18.07.2022
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 21.14 na 21.37
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Główna formuła aktualizacji 22.26_04
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania automatyczne, wykonywane raz dla całego systemu
+__UPG.add_task('PORTALL',,'T','POR',,,,1,'T');
+__UPG.add_task('PORTALO',,'T','POR',,,,1,'T');
+__UPG.add_task('USERS',,'T','ZWS',,,,1,'T');
+__UPG.add_task('id_sync',,'T','ZWS',,,,1,'T');
+__UPG.add_task('p_portal',,'T','ZWS',1,,,1,'T');
+:: Zadania automatyczne, wykonywane dla każdej firmy
+__UPG.add_task('init_send','T','N','POR',,,,1,'T');
+__UPG.add_task('XINFO','T','N','POR',,,,1,'T');
+__UPG.add_task('SYNCFMWA','T','N','ZWS',,,,1,'T');
+__UPG.add_task('ETYPY_P','T','N','ZWS',,,,1,'T');
+:: Zadania manualne, wykonywane raz dla całego systemu
+__UPG.add_task('imp_wzor','N','T','POR',2,,,1,'T');
+:: Zadania manualne, wykonywane dla każdej firmy
+~~
+
+
+\PORTALL
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Usuwa licencje portalu bez przypisanej firmy, zeruje licencje przypisane do firm
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+
+VAR_DEL.delete('__lrec','__ldel','__lmod');
+__lrec:=__ldel:=__lmod:=0;
+
+PORTALL.cntx_psh();
+PORTALL.index('MAIN');
+PORTALL.prefix(0,null());
+_can_continue:=0;
+{? PORTALL.first()
+|| _can_continue:=1;
+   {!
+   |? __lrec+=1;
+      _del:=PORTALL.del();
+      {? _del || __ldel+=1 ?};
+      _del
+   !}
+?};
+PORTALL.prefix();
+{? (_can_continue | exec('portall_chk_il','portal_engine')=0) & PORTALL.first()
+|| {!
+   |? __lrec+=1;
+      PORTALL.BOUGHT:=PORTALL.INSTALED:=PORTALL.USED:=PORTALL.USEDG:=0;
+      {? PORTALL.put() || __lmod+=1 ?};
+      PORTALL.next()
+   !}
+?};
+PORTALL.cntx_pop();
+
+__UPG.msg('Zaktualizowano licencje portalowe.');
+__UPG.msg(
+   'Przetworzono: %1 zapisów, z czego usunięto: %2 zapisów, zmodyfikowano: %3 zapisów.'[$__lrec,$__ldel,$__lmod]
+);
+VAR_DEL.delete('__lrec','__ldel','__lmod');
+
+_result
+
+
+\PORTALL_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Usuwa licencje portalu bez przypisanej firmy, zeruje licencje przypisane do firm - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizuje licencje portalowe.'
+
+
+\PORTALO
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Naprawia komunikaty dla licencji portalu.
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+
+PORTALO.cntx_psh();
+PORTALO.prefix();
+_tab:=sql('select distinct PORTALO.LICENSE from PORTALO');
+{? _tab.size()>2
+|| _result:=PORTALO.erase();
+   {? _result || __UPG.msg('Usunięto komunikaty dla licecji portalu.') ?}
+?};
+PORTALO.cntx_pop();
+
+_result
+
+
+\PORTALO_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Naprawia komunikaty dla licencji portalu - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Naprawia komunikaty do licencji portalu.'
+
+
+\USERS
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Aktualizacja użytkowników
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+USERS.cntx_psh();
+USERS.prefix();
+USERS.for_each("
+   __lrec+=1;
+   _put:=0;
+   {? USERS.PORTAL2<>'N'
+   || USERS.PORTAL2:='N';
+      _put:=1
+   ?};
+   {? _put & USERS.put(1)
+   || __lmod+=1
+   ?}",
+   1
+);
+USERS.cntx_pop();
+__UPG.msg('Zaktualizowano użytkowników.');
+__UPG.msg('Przetworzono: %1 zapisów, z czego zmodyfikowano: %2 zapisów.'[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\USERS_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Aktualizacja użytkowników - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja użytkowników'
+
+
+\id_sync
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Dodaje definicje identyfikatorów rekordów
+::----------------------------------------------------------------------------------------------------------------------
+_init:=exec('init','sync_id');
+_result:=_init.RESULT;
+_args:=_init.ARGS;
+{? _result
+|| __UPG.msg('Zaktualizowano definicje identyfikatorów rekordów.')
+|| __UPG.msg('Wystąpił problem podczas aktualizacji definicji identyfikorów rekordów %1 - %2 do systemu %3.'
+      [_args.KOD,_args.OPIS,_args.SYSTEM])
+?};
+_result
+
+
+\id_sync_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Dodaje definicje identyfikatorów rekordów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie definicji identyfikatorów rekordów.'
+
+
+\init_send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Inicjuje wysyłkę danych Portal HR.
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+exec('init_send_reset','sync_mwa','PORTAL');
+exec('init_send_reset','sync_mwa','PORTAL_CFG');
+exec('init_send_reset','sync_mwa','PORTAL_WNIOSKI');
+exec('init_send_reset','sync_mwa','PORTAL_CUSTOM');
+__UPG.msg('Zainicjowano wysyłkę danych dla: PORTAL, PORTAL_CFG, PORTAL_WNIOSKI, PORTAL_CUSTOM.');
+_result
+
+
+\init_send_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Inicjuje wysyłkę danych Portal HR - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Inicjowanie wysyłki danych na Portal HR.'
+
+
+\imp_wzor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Komunikat o konieczności zaimportowania danych wzorcowych.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask(
+      'Aktualizacja 22.26_04 wymaga zaimportowania dołączonych do niej danych wzorcowych.\n'
+      'Nie ma potrzeby importowania wszystkich danych wzorcowych dostarczanych z wersją 22.26 -\n'
+      'wystarczy import danych, które zostały zmodyfikowane i dostarczone jako element aktualizacji.\n'
+      'Import należy wykonać w trybie: \'Nadpisuj istniejące\'.\n'
+      '\n'
+      'Czy import danych wzorcowych aktualizacji 22.26_04 został wykonany?'@
+   )
+|| __UPG.msg('Użytkownik %1 potwierdził wykonania zadania.' [exec('operatorKod','#users')]);
+   1
+|| __UPG.msg('Użytkownik %1 nie potwierdził wykonania zadania.' [exec('operatorKod','#users')]);
+   0
+?}
+
+
+\imp_wzor_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Komunikat o konieczności zaimportowania danych wzorcowych - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Komunikat o konieczności zaimportowania danych wzorcowych.'
+
+
+\XINFO
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Wyłącza dostęp do Portal HR, jeżeli została pozostawiona konfiguracja wielofirmowa
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+exec('czytaj_conf','portal_engine');
+{? XINFO.POR_CONF='W'
+|| XINFO.POR_CONF:='J';
+   {? 1+XINFO.POR_TNNT<>'_' || XINFO.POR_TNNT:='_'+XINFO.POR_TNNT ?};
+   {? 1+XINFO.POR0TNNT<>'_' || XINFO.POR0TNNT:='_'+XINFO.POR0TNNT ?};
+   exec('zapisz','#stalesys',1,XINFO,'POR_CONF','POR_TNNT','POR0TNNT');
+   __UPG.msg('Zmodyfikowano dostęp do Portal HR.')
+|| __UPG.msg('Nie zmodyfikowano dostępu do Portal HR.')
+?};
+_result
+
+
+\XINFO_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Wyłącza dostęp do Portal HR, jeżeli została pozostawiona konfiguracja wielofirmowa - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Wyłączenie dostępu do Portal HR, jeżeli została pozostawiona konfiguracja wielofirmowa.'
+
+
+\p_portal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Wyłączenie flagi prezentacji na portalu dla współpracowników w "poczekalni".
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+F_ZATR.cntx_psh();
+F_ZATR.prefix();
+P.cntx_psh();
+P.index('OSOZATR');
+P.prefix();
+{? P.first()
+|| _stat:=obj_new('all','dozmiany','zmienionych');
+   {! _lp:=1 .. obj_len(_stat)
+   |! _stat[_lp]:=0
+   !};
+   _stat.all:=P.size();
+   P.trig_off('*','*');
+   {!
+   |? {? P.PORTAL='T' & P.F_ZATR().DOCELOWA<>'T'
+      || _stat.dozmiany+=1;
+         P.PORTAL:='N';
+         {? P.put()
+         || _stat.zmienionych+=1
+         ?}
+      ?};
+      P.next()
+   !};
+   P.trig_on('*','*');
+   __UPG.msg('Wszystkich rekordów w tabeli współpracowników: %1'[$_stat.all]);
+   __UPG.msg('Rekordów wymagających zmiany: %1'[$_stat.dozmiany]);
+   __UPG.msg('Rekordów zmienionych: %1'[$_stat.zmienionych]);
+   {? _stat.dozmiany<>_stat.zmienionych
+   || _ret:=-1
+   ?}
+|| __UPG.msg('Brak współpracowników.')
+?};
+P.cntx_pop();
+F_ZATR.cntx_pop();
+_ret
+
+
+\p_portal_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Wyłączenie flagi prezentacji na portalu dla współpracowników w "poczekalni" - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Wyłączenie flagi prezentacji na portalu dla współpracowników w "poczekalni".'
+
+
+\SYNCFMWA
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Aktualizacja klienta usług intergracyjnych API
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+VAR_DEL.delete('__lrec','__lmod');
+__lrec:=__lmod:=0;
+SYNC_MWA.cntx_psh(); SYNCFMWA.cntx_psh();
+SYNCFMWA.index('FIRMA');
+SYNC_MWA.prefix(); SYNCFMWA.prefix();
+_formula:="
+   __lrec+=1;
+   {? SYNC_MWA.RESULT<>''
+   || SYNCFMWA.prefix(SYNC_MWA.ref(),REF.FIRMA);
+      {? ~SYNCFMWA.first()
+      || SYNCFMWA.blank();
+         SYNCFMWA.SYNC_MWA:=SYNC_MWA.ref();
+         SYNCFMWA.FIRMA:=REF.FIRMA;
+         SYNCFMWA.RESULT:=SYNC_MWA.RESULT;
+         {? SYNCFMWA.add() || __lmod+=1 ?}
+      ?}
+   ?}
+";
+SYNC_MWA.for_each(_formula,1);
+SYNC_MWA.cntx_pop(); SYNCFMWA.cntx_pop();
+__UPG.msg('Zaktualizowano klienta usług integracyjnych API.');
+__UPG.msg('Przetworzono: %1 zapisów w tabeli SYNC_MWA, z czego dodano: %2 zapisów w tabeli SYNFMWA.'[$__lrec,$__lmod]);
+VAR_DEL.delete('__lrec','__lmod');
+_res
+
+
+\SYNCFMWA_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26_04]
+:: OPIS: Aktualizacja klienta usług intergracyjnych API - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja klienta usług integracyjnych API - wynik przetwarzania w kontekście firmy.'
+
+
+\ETYPY_P
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [22.26]
+:: OPIS: Uaktualnienie uprawnień do typów wniosków
+::----------------------------------------------------------------------------------------------------------------------
+exec('build_etyp_p','obiegi2',1);
+__UPG.msg('Zaktualizowano uprawnienia do typów wniosków.');
+1
+
+
+\ETYPY_P_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [22.26]
+:: OPIS: Uaktualnienie uprawnień do typów wniosków - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja uprawnień do typów wniosków.'
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:16:37 8e2198d315d31fd1520c2214bc0e2850863c9ab0260c7d9b8e3815f30360d19c74142ce53a22e0219ebfb6cb5d12553dacd5b9bcce2c2cb07ff91e70d2fde6cf5604cd8a9597b1af17e59aa3252aa32e1977bebe0c59be3824f2cb69ca604a49d4b8b22736d3689e567f7c7f5bf1f29386869e94cb782edd6f96da97f16104d2

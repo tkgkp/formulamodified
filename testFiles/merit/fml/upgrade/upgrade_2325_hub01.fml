@@ -1,0 +1,214 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2325_hub01.fml
+:: Utworzony: 11.12.2023
+:: Autor: PBS
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 23.25 na 23.25_GVO01
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::
+::            Programowe wyłączenie zadania transferowego.
+::             W plikach upgrade_rrxx.fml korzystamy z metody
+::               __UPG.off_task(<task>,[<operator>],[<value>])
+::                 - dodaje do listy zadanie,
+::                   które ma zostać wyłączone wg warunku porównania wg operatora porównania i wartości, gdzie:
+::                <task> - symbol zadania do wyłączenia;
+::                [<operator>] - operator porównania - domyślnie operator '<'; dostępne opcje:
+::                                   '<' - wartość mniejsza;
+::                                   '<=' - wartość mniejsza lub równa;
+::                                   '=' - wartość równa;
+::                [<value>] - wersja systemu lub aktualizacji do porównania z wersją zadania
+::                            - domyślnie aktualna wersja aktualizacji (wg pliku).
+::            W pliku upgrade.fml NALEŻY umieścić wywołanie poniższej metody na końcu formuły \init
+::               (po wywołaniach __UPG.add_head()):
+::              __UPG.act_off() - wyłączenie wszystkich zadań wskazanych do wyłączenia.
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Główna formuła upgrade do 23.25_GVO01
+::----------------------------------------------------------------------------------------------------------------------
+:: Informacja o dacie i czasie aktualizacji
+__UPG.id_ver(date(2023,12,21),time(0,0,0));
+
+:: Zadania automatyczne, wykonywane raz dla całego systemu
+__UPG.add_task('upgrade_act',,,'ZPR');
+__UPG.add_task('areatitle',,,'ZWS');
+:: Zadania automatyczne, wykonywane dla każdej firmy
+__UPG.add_task('hub_role_add',,'N','ZPR');
+:: Zadania manualne, wykonywane raz dla całego systemu
+:: Zadania manualne, wykonywane dla każdej firmy
+~~
+
+
+\upgrade_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [23.25]
+:: OPIS: Aktualizacja typów danych oraz czynności dla wskazanych obszarów
+::   WE: [_a] - dziedziny
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+:: Poniżej wpisać domeny, których dotyczą nowe lub aktualizowane czynności (ciekawe, czy uda się alfabetycznie ...)
+::_dom:=spli_str('LMG.LSP.LZK.LUM.LOD.PKD.POR.PPK.PKW.PPL.TPP.TTE.TRE.WYP.ZWS.FST.FKS.KON.OBE.OBG.PBA.BIQ','.');
+_dom_str:={? var_pres('_a')=type_of('')
+          || _a
+          || 'FKS'
+          ?};
+_dom:=spli_str(_dom_str,'.');
+_len:=obj_len(_dom);
+
+{? _len & _dom[1]<>''
+|| FUN.prg_start(_len+2,'Aktualizacja czynności.',,,1);
+
+:: Uzupełnienie domen (zawsze)
+   FUN.prg_next();
+   exec('add_domain','#b_action');
+   __UPG.msg('Zaktualizowano dziedziny.');
+
+:: Uzupełnienie typów (zawsze)
+   FUN.prg_next();
+   exec('fill_tab','#b_type',0);
+   __UPG.msg('Zaktualizowano typy danych.');
+
+   {! _i.._len
+   |! FUN.prg_next();
+      _domain:=exec('FindInSet','#table','B_DOMAIN','SYMBOL',_dom[_i]);
+      {? _domain<>null()
+      || exec('import_needed_dom','#b_design',_domain,0);
+         __UPG.msg('Zaktualizowano czynności dziedziny: %1.'[_dom[_i]])
+      ?}
+   !};
+   FUN.prg_stop()
+?};
+obj_del(_dom);
+_res
+
+
+\upgrade_act_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [23.25]
+:: OPIS: Aktualizacja typy danych oraz czynności dla wskazanych obszarów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja typów danych oraz czynności dla modelera'
+
+
+\hub_role_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Dodanie nowej roli do systemu
+::----------------------------------------------------------------------------------------------------------------------
+_rola:='MeritHUB - użytkownik';
+_czynn:='FKS_HUB_LINK';
+_wyn:=0;
+B_ROLE.cntx_psh(); B_ROLE.index('UNIK');
+B_ROLE.prefix(REF.FIRMA,_rola);
+{? B_ROLE.first()
+|| _wyn:=10
+|| B_ROLE.blank();
+   B_ROLE.FIRMA:=REF.FIRMA;
+   B_ROLE.NAME:=_rola;
+   _wyn:=_can_continue:=B_ROLE.add();
+   {? _can_continue
+   || _wyn+=exec('add_actrol_one','#b_role',_rola,_czynn)
+   ?}
+?};
+_msg:='';
+B_ROLE.cntx_pop();
+{? _wyn=10
+|| _msg:='Rola \'%1\' istnieje już w systemie. Nie dokonano żadnych zmian.'[_rola]
+|? _wyn=1
+|| _msg:='Dodano rolę \'%1\', do roli nie dopisano czynności %2'[_rola,_czynn]
+|? _wyn=2
+|| _msg:='Dodano rolę \'%1\', do roli dopisano czynności %2'[_rola,_czynn]
+|| _msg:='Nie udało się dodać nowej roli (\'%1\') do systemu. Należy zrobić to ręcznie.'[_rola]
+?};
+__UPG.msg(_msg);
+1
+
+
+\hub_role_add_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Dodanie nowej roli do systemu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ról użytkowników - dodanie roli \'MeritHUB - użytkownik\''
+
+
+\areatitle
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Inicjuje AreaTitle - obiekt do wyświetlania tytułów w obszarach roboczych
+::----------------------------------------------------------------------------------------------------------------------
+exec('init','areatitle');
+__UPG.msg('Zainicjowano tytuły obszarów roboczych.');
+1
+
+
+\areatitle_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PBS [23.25]
+:: OPIS: Inicjuje AreaTitle - obiekt do wyświetlania tytułów w obszarach roboczych - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Inicjuje AreaTitle - obiekt do wyświetlania tytułów obszarów roboczych'
+
+:Sign Version 2.0 jowisz:1045 2023/12/21 13:22:36 530a76b4a5e4a133511d3a18965ebaec3c6f70c20007e9071ccdffee041f0cfffcf467241d912afdaca94035cc04ca2db9a35f20838d79a3d43e6483e2ee21ab2fabd6824f5c60c8f8fbb3d8b07d8f30c093573ff45c6245cd6934322f3654d927eb047b71351f0997345efff54583f4a060e0db5fcd620300b98858031e347a

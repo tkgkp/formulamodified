@@ -1,0 +1,187 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lmo_mob_dlok.fml
+:: Utworzony: 18.04.2016
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Czynność LMO_MOB_DKZK - Operacja kompletacji wysyłki
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP
+::# permissions=ODDZ
+::# kind=WE,  symbol=ZK_N,    type=_ZK_N,    name=Zamówienie,                    required=T,   keyref=T
+::# kind=WE,  symbol=NRC_Z,   type=NUMBER,   name=Nr czytnika kompletacja,       required=N,   fml_val="EANX.NRC_Z:=0;exec('wyb_czyt','magazyn_mob',1,'EANX.NRC_Z');EANX.NRC_Z"
+::# kind=WE,  symbol=NRC_R,   type=NUMBER,   name=Nr czytnika reorganizacja,     required=N,   fml_val="EANX.NRC_R:=0;exec('wyb_czyt','magazyn_mob',1,'EANX.NRC_R');EANX.NRC_R"
+::# kind=WE,  symbol=EANL,    type=STRING,   name=Kod doku załadunkowego,        required=N,   fml_val=""
+::# kind=WE,  symbol=GEN_OPE, type=STRING,   name=Generacja operacji,            required=N
+::# kind=WE,  symbol=TR_NZL,  type=_TR_NZL,  name=Dyspozycja w magazynie,        required=N
+::# kind=WEW, symbol=EANN,    type=_EANN,    name=Operacja mobilna,              required=N
+::# kind=WY,  symbol=EANN,    type=_EANN,    name=Operacja mobilna,              required=N
+::# kind=WY,  symbol=GEN_OPE, type=STRING,   name=Generacja operacji,            required=N
+::# condition=Realizacja zamówień sprzedaży,       act_uid=LSP_ZKN_IPRZ,   auto=T,  formula=_a.EANN<>~~ & _a.EANN<>null() & exec('FindAndGet','#table',EANN,_a.EANN,,"TYP='Z'",0)
+::# condition=Realizacja zamówień wewnętrznych,    act_uid=LMG_ZAM_IPRZ,   auto=T,  formula=_a.EANN<>~~ & _a.EANN<>null() & exec('FindAndGet','#table',EANN,_a.EANN,,"TYP='Z'",0)
+::# condition=Rejestracja dokumentu reorganizacji, act_uid=LMG_MAG_DREO,   auto=T,  formula=_a.EANN<>~~ & _a.EANN<>null() & exec('FindAndGet','#table',EANN,_a.EANN,,"TYP='R'",0)
+_mp:=params_get().mp;
+_in:=params_get().in;
+_out:=params_get().out;
+_int:=params_get().int;
+
+exec('init','lmo');
+
+_akcja:=_mp.akcja();
+_auto:=_akcja<>'Do wysyłki' & _mp.isAutoRun();
+
+_mp.trigRef('EANN',,1,,exec('kind_internal','#b_port'),'EANN');
+
+_nrc_z:={? var_pres('NRC_Z',_in)=type_of(0) || _in.NRC_Z || -1 ?};
+_nrc_r:={? var_pres('NRC_R',_in)=type_of(0) || _in.NRC_R || -1 ?};
+_dok_z:={? var_pres('EANL',_in)=type_of('') || _in.EANL || '' ?};
+_trnzl:={? var_pres('TR_NZL',_in)=type_of(null()) || _in.TR_NZL || '' ?};
+{? ~_auto & _nrc_z>=0 || _auto:=2 ?};
+
+{? ~(var_pres('ZK_N',_in)=type_of(null()) & _in.ZK_N)
+|| _mp.error('Brak wymaganego parametru ZK_N.')
+
+|? exec('FindAndGet','#table',ZK_N,_in.ZK_N,,"STAT_REJ='A'",0)
+||
+   FUN.info('Anulowano zamówienie %1.\nKompletacja wysyłki niemożliwa.'@[exec('record','#to_string',_in.ZK_N)]);
+   _mp.error('Anulowano zamówienie %1. Kompletacja wysyłki niemożliwa.'[exec('record','#to_string',_in.ZK_N)])
+||
+   _continue:=0;
+   _gen_ope:='';
+   _ctrl:=1;
+
+   {? _mp.loop()=0
+:: pierwsze wywołanie
+   || ZK_N.cntx_psh();
+      {? _in.ZK_N || ZK_N.use(ref_name(_in.ZK_N)) ?};
+      ZK_N.prefix();
+      _jest:=ZK_N.seek(_in.ZK_N);
+      {? ~_jest || ZK_N.prefix(); _jest:=ZK_N.seek(_in.ZK_N) ?};
+      {? ~_jest
+      || _mp.error('Nie znaleziono zamówienia.')
+      |? (_ctrlZK:=exec('ctrlZK_N','magazyn_mob',_trnzl); _ctrlZK<=0)
+      || _ctrl:=0;
+         {? _ctrlZK=0 || _mp.done() ?}
+      || _answer:=
+         {? _akcja='Do wysyłki'
+            | _akcja='Dyspozycja do wysyłki'
+            | _auto
+            | _mp.pathTodo()
+         || _menu:=BEER.MENU_PTH;
+            BEER.MENU_PTH:='Z'+{? ZK_N.T().R='Z' || 'ZT' || 'TT' ?};
+            BEER.ZK_N:=ZK_N.ref();
+            _grp_key:=exec('akc_wysl','magazyn_mob',_auto,_nrc_z,_nrc_r,_dok_z,_trnzl);
+            BEER.MENU_PTH:=_menu;
+
+            _eann:={? _grp_key<>'' || exec('FindInSet','#table','EANN','GRP_KEY',_grp_key) || null() ?};
+            {? _eann<>null()
+            || _int.EANN:=_eann;
+               _mp.save(,_int);
+               _continue:=1;
+               _gen_ope:=_grp_key
+            || _internal:=_mp.load(exec('kind_internal','#b_port'));
+               _continue:={? var_pres('EANN',_internal)=type_of(null()) & _internal.EANN || 1 || -1 ?};
+               {? _continue=1
+               || _gen_ope:=exec('FindAndGet','#table',EANN,_internal.EANN,,"GRP_KEY",'')
+               ?}
+            ?}
+         || _mp.error('Nieobsługiwana ścieżka.')
+         ?}
+      ?};
+      ZK_N.cntx_pop()
+:: wywołanie w pętli
+   || _continue:=var_pres('GEN_OPE',_in)=type_of('') & _in.GEN_OPE<>'';
+      {? _continue || _gen_ope:=_in.GEN_OPE ?}
+   ?};
+
+   {? _continue=-1
+:: Wycofano się z wystawiania operacji
+   || {? _mp.isMicro() || _mp.cancel() ?};
+      1
+   |? _continue=1 & _gen_ope<>''
+:: Zapisanie parametru wyjściowego EANN, wykluczenie kolejnej realizacji z pętli, zakończenie czynności
+   || EANN.cntx_psh();
+      EANN.prefix();
+      _grp_key:=_gen_ope-1;
+      _grp_key_on:=_grp_key+'1';
+      _grp_key_off:=_grp_key+'0';
+      {? _grp_key<>''
+      || EANN.index('GRP_KEY');
+         EANN.prefix(_grp_key_on);
+         {? EANN.first()
+         || EANN.cntx_psh();
+            EANN.prefix();
+            EANN.GRP_KEY:=_grp_key_off;
+            do();
+            _oki:=EANN.put();
+            end();
+            {? _oki
+            || _out.EANN:=EANN.ref();
+               _out.GEN_OPE:=_gen_ope;
+               _mp.save(,_out)
+            ?};
+            EANN.cntx_pop();
+            {? EANN.first()
+::          kontynuacja pętli
+            || _mp.loop_continue()
+            ?}
+         ?}
+      ?};
+      EANN.cntx_pop();
+      _mp.done()
+   |? _ctrl
+   || _mp.error('Brak oczekiwanego parametru GEN_OPE.')
+   ?}
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_out:=_mp.load(exec('kind_in','#b_port'));
+
+_wgr:={? var_pres('ZK_N',_in)<>type_of(~~) & _in.ZK_N
+      || _in.ZK_N
+      || null()
+      ?};
+
+{? _wgr<>null()
+|| 'Zarejestruj kompletację wysyłki dla zamówienia %1'@@[exec('record','#to_string',_wgr)]
+|| 'Zarejestruj kompletację wysyłki'@@
+?}
+
+
+\zknag_kompletuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła Dołaczenia Kompletacji
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LMO_MOB_DKZK';
+_params.UIDREF:=ZK_N.uidref();
+_params.AKCJA:='Do wysyłki';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZK_N',ZK_N.ref());
+exec('mp_run','#b__box',_params)
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:38 afc7fa5103896e33643b894ab75fb47d15fb0e1cd8ef9991c9ef7bfb50293026316903e3b82ba3446e7bc38b35be541d3dbd6348c85e5c37f58f40c7f09a73f673f9bffa58e42cbf29a880328f7c9e6d2569b9a23771b4afc2db81c87449f1e42f13d8920af9de3c713ecfb495823937ef79338b7e75777ee22dc481fcb15565

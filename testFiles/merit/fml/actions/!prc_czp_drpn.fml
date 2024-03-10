@@ -1,0 +1,480 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !prc_czp_drpn.fml
+:: Utworzony: 19.05.2021
+:: Autor: DG
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PRC_CZP_DRPN - Rej. godzin pracy nocnej.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Rej. godzin pracy nocnej - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP
+::# permissions=F_ZATR,UD_SKL
+::
+::# access=exec('run_cond_p','pkd')
+::
+::# kind=WE, symbol=P, type=_P, name=Wskazanie na pracownika, required=T, keyref=T
+::
+::# kind=WY, symbol=GDPN, type=_GDPN, name=Wskazanie na porę nocną pracownika, required=N
+::
+_par:=params_get();
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+_akcja:=_mp.akcja();
+_context:=_par.context;
+
+_result:='';
+_done:=0;
+_uidref:=exec('ref2uid','#table',_in.P);
+
+{? _uidref=''
+|| _result:=exec('error','!prc_czp_drpn','P')
+
+|? _mp.loop()
+:: Kolejny obrót pętli - odzyskajmy klucz grupujący.
+:: Właściwie moglibyśmy odwołać się wyłącznie do _in.GRPKEY. Ale dla zgodności zastosujemy zapis standardowy.
+|| _out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+:: Nie zapisujemy parametrów wyjściowych, bo zrobimy to przy obsłudze _done=1.
+   _done:=1
+
+|| {? ~_mp.isMicro()
+::    Zabawa z obsługą pętli nie ma sensu dla mikroczynności.
+::    Ustalenie klucza grupującego.
+::    Właściwie moglibyśmy odwołać się wyłącznie do _out.GRPKEY. Ale dla zgodności zastosujemy zapis standardowy.
+   || _out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+      _mp.save(,_out)
+   ?};
+
+:: Przepychanie m.in. ikon i obsługi dla "Zakończ".
+   params_set(
+      exec('obj_ntab_set','#array',params_get()
+      )
+   );
+
+   {? _mp.pathTodo()
+::    Czynność uruchomiona z listy zadań ("zerowe" uruchomienie pętli).
+   || _ret:=exec('select','!prc_czp_drpn',_uidref);
+      {? type_of(_ret)=type_of('')
+      || _result:=_ret
+      |? _ret
+      || _done:=1
+      || _mp.keep()
+      ?}
+
+::    Obsługa akcji - wywołania wyłącznie z obszaru roboczego.  --------------------------------------------------------
+
+   |? _akcja='DOŁĄCZ'
+::    Wywołanie tylko z obszaru roboczego.
+   || _ret:=exec('gdpn_dolacz','!prc_czp_drpn',_uidref);
+      {? +_ret=48
+      || _context.GDPN:=_ret;
+         {? ~_mp.isMicro()
+         || _mp.grpkeyAdd(_ret)
+         ?}
+      |? _ret<>''
+      || _result:=_ret
+      ?}
+
+   |? _akcja='POPRAW'
+::    Wywołanie tylko z obszaru roboczego.
+   || _ret:=exec('gdpn_popraw','!prc_czp_drpn',_uidref,_context.GDPN);
+      {? +_ret=48
+      || _context.GDPN:=_ret;
+         {? ~_mp.isMicro()
+         || _mp.grpkeyAdd(_ret)
+         ?}
+      |? _ret<>''
+      || _result:=_ret
+      ?}
+
+   |? _akcja='USUŃ'
+::    Wywołanie tylko z obszaru roboczego.
+   || _ret:=exec('gdpn_usun','!prc_czp_drpn',_uidref,_context.GDPN,_mp.isGroup());
+      {? +_ret=48
+      || _context.GDPN:=_ret;
+         {? ~_mp.isMicro()
+         || _mp.grpkeyDel(_ret)
+         ?}
+      |? _ret<>''
+      || _result:=_ret
+      ?}
+
+   |? _akcja='ZAKOŃCZ'
+   || _done:=1
+
+   |? _akcja<>''
+   || _result:='Czynność %1 nie obsługuje akcji %2.'@ [_mp.buf_act.UID,_akcja]
+
+   ?}
+?};
+
+{? _done
+|| GDPN.cntx_psh();
+   GDPN.prefix();
+   do();
+   _grpkey:=_mp.grpkeyGet();
+   {? _grpkey<>~~
+   || {? GDPN.seek(_grpkey)
+      || _out.GDPN:=GDPN.ref();
+         _mp.save(,_out)
+      ?};
+      {? _mp.grpkeyDel()
+      || {? _mp.grpkeyGet()<>~~
+::          Jeżeli jest jeszcze choć jeden element do przetworzenia, to pętla powinna być kontynuowana.
+         || _mp.loop_continue()
+         ?}
+      ?}
+   ?};
+   _mp.done();
+   end();
+   GDPN.cntx_pop()
+?};
+
+{? _result<>''
+:: Obsługa błędów
+|| _mp.error(_result);
+   FUN.emsg(_result)
+?};
+
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Redakcja godzin pracy nocnej.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=exec('desc','pracownik',params_get().mp);
+{? _tab.ZAW_DANE='T'
+|| {? _tab.OBCY='T'
+   || 'Dodaj godziny pracy nocnej: %1 %2: Paszport - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+   |? +_tab.PESEL
+   || 'Dodaj godziny pracy nocnej: %1 %2: PESEL - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+   || 'Dodaj godziny pracy nocnej: %1 %2: Data urodzenia - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+   ?}
+|| 'Dodaj godziny pracy nocnej'@@
+?}
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Komunikat z informacją o błędzie.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'%1\n%2'['Dodanie pory nocnej nie jest możliwe.'@,'Nie znaleziono pracownika.'@]
+
+
+\select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Obsługa czynności wywołanej z listy zadań.
+::   WE: _a [REFERENCE] - Wskazanie pracownika.
+::   WY: Komunikat o błędzie lub informacja o wyjściu z okna poprzez wywołanie sel_exit() - czyli "Zakończ".
+::----------------------------------------------------------------------------------------------------------------------
+P.cntx_psh();
+P.prefix();
+{? var_pres('_a')=type_of('') & +_a=48 & P.seek(_a)
+|| params_set(params_get());
+   OSOBA.cntx_psh();
+   OSOBA.prefix();
+   P.OSOBA();
+   GDPN.cntx_psh();
+   GDPN.index('GDPNPD');
+   GDPN.prefix(P.ref());
+   GDPN.win_sel(exec('wnd','!prc_czp_drpn'));
+   GDPN.win_edit('RED');
+   _ret:=GDPN.select();
+   GDPN.cntx_pop();
+   OSOBA.cntx_pop()
+|| _ret:=exec('error','!prc_czp_drpn','P')
+?};
+P.cntx_pop();
+_ret
+
+
+\wnd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Przygotowanie grupowego okna wertowania pór nocnych pracownika.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_mode:='maximized';
+
+_czyZ:=exec('dest','f_zatr',P.F_ZATR,'KOD')='Z';
+_before:=
+   {? _czyZ
+   || "mb_exec('GRP_EDISP_P_INFO_Z')"
+   || "mb_exec('GRP_EDISP_P_INFO_P')"
+   ?};
+
+_wnd:=GDPN.grp_make('Pory nocne pracownika'@,_before,'gdpn_weri',,,,,_mode);
+GDPN.grp_edit(_wnd,P,{? _czyZ || 'INFO_Z' || 'INFO_P' ?},,,,,,_mode);
+GDPN.grp_splt(_wnd,,'horizontal','gdpn');
+GDPN.grp_sel(_wnd,,'WER',,,,,,,,,,_mode,,1);
+
+_wnd
+
+
+\_args
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Formuła zwraca argumenty wymagane do uruchomienia czynności.
+::   WE:
+::   WY: Obiekt z parametrami zgodny z exec('mp_run_a','#b__box') z uzupełnionymi wybranymi polami.
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='PRC_CZP_DRPN';
+_args.UIDREF:=P.uidref();
+_args.CONTEXT:=obj_new('GDPN');
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'P',P.ref());
+_args
+
+
+\gdpn_act_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Obsługa akcji "Dołącz - przed" w oknach wertowania tabeli GDPN
+::       Formuła wykonywana w dwóch środowiskach:
+::          - po wywołaniu z listy zadań (okno wertowania tabeli GDPN z doklejonym oknem redagowania tabeli P);
+::          - w ramach obszaru roboczego (okno wertowania tabeli GDPN jako składowa okna grupowego).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Przepychanie m.in. ikon i obsługi dla "Zakończ".
+params_set(_par:=params_get());
+
+{? cur_tab(0,0)=GDPN
+:: Wywołanie z listy zadań (czynność, w postaci okna wertowania, jest już uruchomiona).
+|| _mp:=_par.mp;
+   {!
+   |? _ret:=exec('gdpn_dolacz','!prc_czp_drpn',P.uidref());
+      {? +_ret=48
+      || _mp.grpkeyAdd(_ret);
+         1
+      |? _ret<>''
+      || FUN.emsg(_ret);
+         0
+      ?}
+   !}
+
+:: Jeżeli wywołanie z obszaru, to zawsze procesowo.
+|| _args:=exec('_args','!prc_czp_drpn');
+   _args.AKCJA:='DOŁĄCZ';
+   {!
+   |? _args.CONTEXT.GDPN:='';
+      exec('mp_run','#b__box',_args);
+      {? type_of(_args.CONTEXT.GDPN)=type_of('') & +_args.CONTEXT.GDPN=48
+      || _loop:=GDPN.seek(_args.CONTEXT.GDPN);
+         win_disp();
+         _loop
+      ?}
+   !}
+?};
+~~
+
+
+\gdpn_act_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Obsługa akcji "Popraw - przed" w oknach wertowania tabeli GDPN.
+::       Formuła wykonywana w dwóch środowiskach:
+::          - po wywołaniu z listy zadań (okno wertowania tabeli GDPN z doklejonym oknem redagowania tabeli P);
+::          - w ramach obszaru roboczego (okno wertowania tabeli GDPN jako składowa okna grupowego).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Przepychanie m.in. ikon i obsługi dla "Zakończ".
+params_set(_par:=params_get());
+
+{? cur_tab(0,0)=GDPN
+:: Wywołanie z listy zadań (czynność, w postaci okna wertowania, jest już uruchomiona).
+|| _mp:=_par.mp;
+   _ret:=exec('gdpn_popraw','!prc_czp_drpn',P.uidref(),GDPN.uidref());
+   {? +_ret=48
+   || _mp.grpkeyAdd(_ret)
+   |? _ret<>''
+   || FUN.emsg(_ret)
+   ?}
+
+:: Jeżeli wywołanie z obszaru, to zawsze procesowo.
+|| _args:=exec('_args','!prc_czp_drpn');
+   _args.AKCJA:='POPRAW';
+   _args.CONTEXT.GDPN:=GDPN.uidref();
+   exec('mp_run','#b__box',_args)
+?};
+~~
+
+
+\gdpn_act_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Obsługa akcji "Usuń - przed" w oknach wertowania tabeli GDPN.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Przepychanie m.in. ikon i obsługi dla "Zakończ".
+params_set(_par:=params_get());
+
+:: !!! Ochrona przed usunięciem dla rekordów "automatycznych"
+
+{? cur_tab(0,0)=GDPN
+:: Wywołanie z listy zadań (czynność, w postaci okna wertowania, jest już uruchomiona).
+|| _mp:=_par.mp;
+   _ret:=exec('gdpn_usun','!prc_czp_drpn',P.uidref(),GDPN.uidref());
+   {? +_ret=48
+   || _mp.grpkeyDel(_ret)
+   |? _ret<>''
+   || FUN.emsg(_ret)
+   ?}
+
+:: Jeżeli wywołanie z obszaru, to zawsze procesowo.
+|| _args:=exec('_args','!prc_czp_drpn');
+   _args.AKCJA:='USUŃ';
+   _args.CONTEXT.GDPN:=GDPN.uidref();
+   _args.GRUPA:={? GDPN.sel_size() || 'T' || 'N' ?};
+   exec('mp_run','#b__box',_args)
+?};
+~~
+
+
+\gdpn_act_usun_bg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Obsługa akcji "Usuń - grupa przed" w oknach wertowania tabeli GDPN.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('del_ask','#table')
+
+
+\gdpn_act_zakoncz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Obsługa akcji "Zakończ". Formuła wykonywana w dwóch środowiskach:
+::          - po wywołaniu z listy zadań (okno wertowania tabeli GDPN z doklejonym oknem redagowania tabeli P);
+::          - w ramach obszaru roboczego (okno wertowania tabeli GDPN jako składowa okna grupowego).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? cur_tab(0,0)=GDPN
+:: Wywołanie z listy zadań (czynność, w postaci okna wertowania, jest już uruchomiona).
+|| sel_exit()
+
+:: Jeżeli wywołanie z obszaru, to zawsze procesowo. Dobrze jest skorzystać z maszynki obszarowej - odświeży odpowiednie
+:: okna.
+|| params_set(params_get());
+   exec('pkd_run','pkd','ZAKOŃCZ')
+?}
+
+
+\gdpn_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Obsługa akcji "Dołącz - przed" tabeli GDPN
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+
+P.cntx_psh();
+P.prefix();
+{? var_pres('_a')=type_of('') & +_a=48 & P.seek(_a)
+|| GDPN.cntx_psh();
+   GDPN.prefix();
+   GDPN.blank();
+   GDPN.win_edit('RED');
+:: Przepychanie m.in. ikon.
+   params_set(params_get());
+   {? GDPN.edit("exec('gdpn_ae','prc')") & GDPN.add()
+   || _ret:=GDPN.uidref()
+   ?};
+   GDPN.cntx_pop()
+|| _ret:=exec('error','!prc_czp_drpn','P')
+?};
+P.cntx_pop();
+
+_ret
+
+
+\gdpn_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Obsługa akcji "Popraw - przed" tabeli GDPN okno WER
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+
+P.cntx_psh();
+P.prefix();
+{? var_pres('_a')=type_of('') & +_a=48 & P.seek(_a)
+|| GDPN.cntx_psh();
+   GDPN.prefix();
+   GDPN.win_edit('RED');
+   {? var_pres('_b')=type_of('') & +_b=48 & GDPN.seek(_b) & GDPN.P=P.ref()
+   ||
+::    Przepychanie m.in. ikon.
+      params_set(params_get());
+      {? GDPN.edit("exec('gdpn_ae','prc')") & GDPN.put()
+      || _ret:=GDPN.uidref()
+      ?}
+   || _ret:=exec('error','!prc_czp_drpn','GDPN_put')
+   ?};
+   GDPN.cntx_pop()
+|| _ret:=exec('error','!prc_czp_drpn','P')
+?};
+P.cntx_pop();
+
+_ret
+
+
+\gdpn_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Właściwe usunięcie rekordu z tabeli GDPN.
+::   WE:  _a [STRING]  - Wskazanie (uidref) na pracownika.
+::        _b [STRING]  - Wskazanie (uidref) na usuwaną porę nocną.
+::       [_c] [NUMBER] - Pomijać pytanie o usunięcie [0*/1].
+::   WY: Komunikat o błędzie lub uidref usuniętego rekordu lub ''.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+
+P.cntx_psh();
+P.prefix();
+{? var_pres('_a')=type_of('') & +_a=48 & P.seek(_a)
+|| GDPN.cntx_psh();
+   GDPN.prefix();
+   {? var_pres('_b')=type_of('') & +_b=48 & GDPN.seek(_b) & GDPN.P=P.ref()
+   || {? (var_pres('_c')=type_of(0) & _c) | exec('del_ask','#table')
+      || {? GDPN.del(1,1)
+         || _ret:=_b
+         ?}
+      ?}
+   || _ret:=exec('error','!prc_czp_drpn','GDPN_del')
+   ?};
+   GDPN.cntx_pop()
+|| _ret:=exec('error','!prc_czp_drpn','P')
+?};
+P.cntx_pop();
+
+_ret
+
+:Sign Version 2.0 jowisz:1045 2021/09/17 15:17:01 5c255ce16b01535f94b98185e1501804f1f3140f942cff6081e45d9521845810ba98531003db661f26763673b8a08964f692e244b5348de940d10877a252918ffde2875565cf299bb61beb4d1eef62fa104c9d243ebd34dfec0baf7aabb1d39ac7578cf6d6bb757c997984071ca090f9ae0f79a412e18b44520aa576d6c95ac8

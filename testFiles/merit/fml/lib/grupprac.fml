@@ -1,0 +1,342 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: grupprac.fml [12.30]
+:: Utworzony: 2012-12-21
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Procedury do obsługi grup pracowników.
+::======================================================================================================================
+
+
+\Nalezy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.30]
+::  MOD: MicKoc [22.26]
+:: OPIS: Procedura weryfikuje przynależność pracownika do grupy pracowników. Dokładniej: sprawdzane jest, czy dla danego
+::       pracownika istnieje zapis mówiący o jego przynależności do wskazanej grupy we wskazanym dniu. Poprawność
+::       (istnienie) samej grupy nie jest weryfikowane.
+::   WE: _a - Kod grupy pracowników.
+::       _b - Wskazanie na pracownika [domyślnie: P.ref()] - parametr opcjonalny.
+::       _c - Data badania stanu [domyślnie: date()] - parametr opcjonalny.
+::       _d [INTEGER] - Czy sprawdzać w podgrupach, domyślnie 0
+::   WY: 1 - Pracownik w podanym dniu należy do podanej grupy.
+::       0 - Nie udało się potwierdzić, że pracownik w podanym dniu należy do podanej grupy.
+::           Przyczyną mogły być również błędne argumentu wywołania.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _gr:=_a
+|| return(0)
+?};
+_pref:={? var_pres('_b')=type_of(null()) || _b || P.ref() ?};
+_dt:={? var_pres('_c')=type_of(date()) || _c || date() ?};
+_pod:={? var_pres('_d')=type_of(0) || _d || 0 ?};
+_odp:=0;
+
+{? _pod
+|| Cntx.psh(SLO_TYP,SLO_KOD,GRUPRODZ);
+   _slo:=exec('kod_ref','ext_slo','GRUPPRAC','PRZERWY','Grupy niepłatnych przerw w pracy');
+   {? _slo
+   || GRUPRODZ.index('RODZAJ');
+      GRUPRODZ.prefix(_slo);
+      {? GRUPRODZ.first()
+      || {!
+         |? _odp:=exec('Nalezy','grupprac',GRUPRODZ.GR().KOD,_pref,_dt);
+            ~_odp & GRUPRODZ.next()
+         !}
+      ?}
+   ?};
+   Cntx.pop(SLO_TYP,SLO_KOD,GRUPRODZ)
+|| GRUPPRAC.cntx_psh();
+   GRUPPRAC.index('PGROD');
+   GRUPPRAC.prefix(_pref,_gr);
+   _odp:=GRUPPRAC.find_le(_dt) & (GRUPPRAC.DO=date(0,0,0) | _dt<=GRUPPRAC.DO);
+   GRUPPRAC.cntx_pop()
+?};
+
+_odp
+
+
+\ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [12.30]
+::  MOD: MicKoc [22.26]
+:: OPIS: Obsługa akcji "Rekord po".
+::       Bieżąca formuła jest wykonywana w wyniku akcji:
+::          - Popraw i Dołącz wywoływanych z okienka WERP tabeli GRUPPRAC (przy obsłudze z poziomu pracownika);
+::          - Popraw i Dołącz wywoływanych z okienka WERG tabeli GRUPPRAC (przy obsłudze z poziomu grup);
+::          - Wybierz wywoływanej z okienka !!! tabeli P_UPR (przy zapisywaniu pracowników do grupy).
+::   WE: _a - Czy wyświetlać komunikaty o błędach?
+::          0 - Nie;
+::          1 - Tak [domyślnie].
+::          2 - Pełny tekst komunikatu
+::   WY: Łańcuch znakowy (zawsze!) z akronimem pola do uzupełnienia lub pusty.
+::----------------------------------------------------------------------------------------------------------------------
+_verb:={? var_pres('_a')=type_of(0) || _a || 1 ?};
+_ret:='';
+_odp:=__CHK.record(GRUPPRAC,,'P','GR','OD');
+
+_d0:=date(0,0,0);
+
+{? _odp='' & GRUPPRAC.DO<>_d0 & GRUPPRAC.OD>GRUPPRAC.DO
+|| {? _verb
+   || _ret:='"%1" nie może być wcześniejsza niż "%2".'@ [MS.name(GRUPPRAC,'DO'),MS.name(GRUPPRAC,'OD')];
+      {? _verb=1 || FUN.error(_ret) ?}
+   ?};
+   _odp:='DO'
+?};
+
+:: formuła sprawdzająca nakładanie się okresów - zwraca 0/1
+_overlap:="
+   _tab:={? var_pres('_a')=type_of(GRUPPRAC) || _a || return(0) ?};
+   _buf:={? var_pres('_b')=117               || _b || return(0) ?};
+   _d0:=#0;
+:  Obydwa przedzialy sa otwarte.
+   (_tab.DO=_d0 & _buf.DO=_d0) |
+:  Porownywany przedzial jest zamkniety, wstawiany - zamkniety i maja czesc wspolna.
+   (_tab.DO<>_d0 & _buf.DO<>_d0 & (_buf.OD<=_tab.DO & _buf.DO>=_tab.OD)) |
+:  Porownywany przedzial jest zamkniety, wstawiany - otwarty i wstawiany zaczyna sie wczesniej.
+   (_tab.DO<>_d0 & _buf.DO=_d0 & _buf.OD<=_tab.DO) |
+:  Porownywany przedzial jest otwarty, wstawiany - zamkniety i wstawiany obejmuje poczatek porownywanego.
+   (_tab.DO=_d0 & _buf.DO<>_d0 & _tab.OD<=_buf.DO)
+";
+
+:Weryfikacja dat (przedziałów czasowych). Pracownik nie może być dwa razy w tej samej grupie w tym samym czasie.
+{? _odp=''
+|| Cntx.psh(GRUPPRAC,SLO_TYP,SLO_KOD);
+   _buf:=obj_new('REF','GR','P','OD','DO');
+:  Popraw zawsze (w obsługiwanych tutaj akcjach) oznacza edycję bieżącego rekordu.
+   _popraw:=-menu_txt()='popraw';
+   _buf.REF:={? _popraw || GRUPPRAC.ref() || null() ?};
+   _buf.GR:=GRUPPRAC.GR;
+   _buf.P:=GRUPPRAC.P;
+   _buf.OD:=GRUPPRAC.OD;
+   _buf.DO:=GRUPPRAC.DO;
+   _err:='';
+   GRUPPRAC.index('GRPOD');
+   GRUPPRAC.prefix(_buf.GR,_buf.P);
+   _dn:=GRUPPRAC.first();
+   {!
+   |? _err='' & _dn
+   |! {? GRUPPRAC.ref()=_buf.REF
+:        Porównujemy z samym sobą - jest ok.
+      || ~~
+      |? _overlap(GRUPPRAC,_buf)
+      || _err:=GRUPPRAC.OD$2+' - '+GRUPPRAC.DO$2
+      ?};
+      _dn:=GRUPPRAC.next()
+   !};
+   &_dn;
+:: jeżeli jest aktualizacja z niepłatnymi przerwami to dodatkowo sprawdzamy, czy pracownik nie jest już przypisany
+:: do innej grupy płatnych przerw w zakresie dat
+   SLO_KOD.prefix();
+   _kod:=exec('parent','grupprac','KOD',_buf.GR);
+   _parent:=exec('kod','ext_slo','GRUPPRAC',_kod);
+   SLO_KOD.prefix();
+   _grupa:={? SLO_KOD.seek(_buf.GR) || SLO_KOD.ref() || null() ?};
+   {? _err='' & exec('exist','grupprac',_parent,_grupa)
+   || {? var_pres('_tP')>0 || obj_del(_tP) ?};
+      _tP:=tab_tmp(1,'P','STRING[16]','Wskazanie na P');
+      _tP.P:=$_buf.P;
+      _tP.add();
+      {? var_pres('_tabGR')>0 || obj_del(_tabGR) ?};
+      _tabGR:=exec('childs','grupprac',_kod,_tP,#0,#0,_buf.GR);
+      {? var_pres('_tabGR')>0
+      || _dn:=_tabGR.first();
+         {!
+         |? _err='' & _dn
+         |! {? _overlap(_tabGR,_buf)
+            || SLO_KOD.cntx_psh(); SLO_KOD.index('KOD'); SLO_KOD.prefix();
+               {? SLO_KOD.seek(_tabGR.GR,)
+               || _err:='Grupa: %1\n'@[SLO_KOD.KOD]
+               ?};
+               SLO_KOD.cntx_pop();
+               _err+=_tabGR.OD$2+' - '+_tabGR.DO$2
+            ?};
+            _dn:=_tabGR.next()
+         !};
+         &_dn
+      ?}
+   ?};
+
+
+   {? _err<>''
+   || {? _verb
+      || GRUPPRAC.P().OSOBA();
+         _ret:='Grupa: %1.'@ [GRUPPRAC.GR().KOD]+'.\n'+
+            'Pracownik: %1.\n'@[exec('P','#to_string')]+
+            'Bieżący okres\n%1 - %2\nnie jest rozłączny z okresem\n%3.'@[GRUPPRAC.OD$2,GRUPPRAC.DO$2,_err];
+         {? _verb=1 || FUN.error(_ret) ?}
+      ?};
+      _odp:='DO'
+   ?};
+   &_err;
+   obj_del(_buf); &_buf;
+   Cntx.pop(GRUPPRAC,SLO_TYP,SLO_KOD)
+?};
+
+{? _verb=2 || _ret || _odp ?}
+
+
+\przerwy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51_24]
+::  MOD: MicKoc [22.26]
+:: OPIS: Funkcja zwraca tabelę z grupami pracowników podrzędnymi do grupy PRZERWY dla pracowników wskazanych w tabeli _a
+::   WE: _a [DICT]      - tabela z pracownikami
+::       _b [DATE]      - data od
+::       _c [DATE]      - data do
+::      [_d][REFERENCE] - wskazanie na pomijaną grupę
+::   WY: ~~ / tabela z informacjami o grupach
+::  OLD: \przerwy/grupprac.fml
+::----------------------------------------------------------------------------------------------------------------------
+     _tP:={? var_pres('_a')=type_of(P) || _a || return(~~) ?};
+     _od:={? var_pres('_b')=type_of(date()) || _b || return(~~) ?};
+     _do:={? var_pres('_c')=type_of(date()) || _c || return(~~) ?};
+_skip_gr:={? var_pres('_d')=type_of(null()) || _d || null() ?};
+
+exec('childs','grupprac','PRZERWY',_tP,_od,_do,_skip_gr)
+
+
+\childs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51_24]
+::  MOD: MicKoc [22.26]
+:: OPIS: Funkcja zwraca tabelę z grupami pracowników podrzędnymi do grupy o kodzie _a dla pracowników
+::       wskazanych w tabeli _b
+::   WE: _a [STRING]    - kod grupy nadrzędnej
+::       _b [DICT]      - tabela z pracownikami
+::       _c [DATE]      - data od
+::       _d [DATE]      - data do
+::      [_e][REFERENCE] - wskazanie na pomijaną grupę
+::   WY: ~~ / tabela z informacjami o grupach
+::  OLD: \childs/grupprac.fml
+::----------------------------------------------------------------------------------------------------------------------
+    _kod:={? var_pres('_a')=type_of('')     || _a || return(~~) ?};
+     _tP:={? var_pres('_b')=type_of(P) || _b || return(~~) ?};
+     _od:={? var_pres('_c')=type_of(date()) || _c || return(~~) ?};
+     _do:={? var_pres('_d')=type_of(date()) || _d || return(~~) ?};
+_skip_gr:={? var_pres('_e')=type_of(null()) || _e || null() ?};
+
+:: wszystkie grupy podrzędne grupie o kodzie _kod
+SLO_TYP.cntx_psh(); SLO_KOD.cntx_psh();
+_slo_kod:=exec('kod','ext_slo','GRUPPRAC',_kod);
+SLO_KOD.cntx_pop(); SLO_TYP.cntx_pop();
+_sql:=''+"select * from GRUPRODZ where GRUPRODZ.RODZ=:_a"+{? _skip_gr || " and GRUPRODZ.GR<>:_b" || "" ?};
+_tGR:=sql(_sql,_slo_kod,_skip_gr);
+
+_sql:=''+"
+   select
+      GRUPPRAC.P, GRUPPRAC.OD, GRUPPRAC.DO, GRUPPRAC.GR
+   from
+      GRUPPRAC
+      join :_a using (GRUPPRAC.P,:_a.P)
+      join :_b using (GRUPPRAC.GR,:_b.GR)
+   where
+      (GRUPPRAC.OD<=to_date(:_d) or to_date(:_d) IS NULL) and
+      (GRUPPRAC.DO>=to_date(:_c) or to_date(:_c) IS NULL or GRUPPRAC.DO IS NULL)
+";
+
+sql(_sql,_tP,_tGR,_od,_do)
+
+
+\parent
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51_24]
+:: OPIS: Funkcja zwraca informacje o rodzicu GRUPPRAC.GR
+::   WE: _a [STRING]    - co zrwacać ref-a czy kod
+::       _b [REFERENCE] - wskazanie na rodzaj grupy (SLO_KOD.ref)
+::   WY: null/ref  lub ''/kod rodzica
+::  OLD: \parent/grupprac.fml
+::----------------------------------------------------------------------------------------------------------------------
+_co:={? var_pres('_a')=type_of('')   || _a || ''     ?};
+_gr:={? var_pres('_b')=type_of(null) || _b || null() ?};
+_result:={? _co='KOD' || '' || null() ?};
+{? var_pres('GRUPRODZ')<0 || return(_result) ?};
+
+GRUPRODZ.cntx_psh();
+GRUPRODZ.index('GR');
+GRUPRODZ.prefix(_gr);
+{? GRUPRODZ.first()
+|| _result:={? _co='KOD' || GRUPRODZ.RODZ().KOD || GRUPRODZ.RODZ ?}
+?};
+GRUPRODZ.cntx_pop();
+_result
+
+
+\exist
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51_24]
+:: OPIS: Funkcja sprawdza czy istnieje zapis w tabeli GRUPRODZ dla przekazanych parametrów
+::   WE: [_a] [REFERENCE] - wskazanie na rodzaj grupy (SLO_KOD.ref)
+::        _b  [REFERENCE] - wskazanie na grupę pracowników (SLO_KOD.ref)
+::   WY: 0/1
+::  OLD: \exist/grupprac.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+{? var_pres('GRUPRODZ')<0 || return(_result) ?};
+_rodz:={? var_pres('_a')=type_of(null) || _a || null()          ?};
+  _gr:={? var_pres('_b')=type_of(null) || _b || return(_result) ?};
+
+GRUPRODZ.cntx_psh();
+{? _rodz
+|| GRUPRODZ.index('RODZAJ');
+   GRUPRODZ.prefix(_rodz,_gr)
+|| GRUPRODZ.index('GR');
+   GRUPRODZ.prefix(_gr)
+?};
+_result:=GRUPRODZ.first();
+GRUPRODZ.cntx_pop();
+_result
+
+
+\add2rodz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.51_24]
+:: OPIS: Funkcja dodająca zapis w tabeli rodzajów grup
+::   WE: _a [REFERENCE] - wskazanie na rodzaj grupy (SLO_KOD.ref)
+::       _b [REFERENCE] - wskazanie na grupę pracowników (SLO_KOD.ref)
+::   WY: null/ref
+::----------------------------------------------------------------------------------------------------------------------
+_result:=null();
+{? var_pres('GRUPRODZ')<0 || return(_result) ?};
+_rodz:={? var_pres('_a')=type_of(null) || _a || return(_result) ?};
+  _gr:={? var_pres('_b')=type_of(null) || _b || return(_result) ?};
+
+GRUPRODZ.cntx_psh();
+GRUPRODZ.index('RODZAJ');
+GRUPRODZ.prefix(_rodz,_gr);
+{? ~GRUPRODZ.first()
+|| GRUPRODZ.RODZ:=_a;
+   GRUPRODZ.GR:=_b;
+   {? GRUPRODZ.add()
+   || _result:=GRUPRODZ.ref()
+   ?}
+|| _result:=GRUPRODZ.ref()
+?};
+GRUPRODZ.cntx_pop();
+_result
+
+
+\grupprac_addb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Wyzwalacz dołącz przed tabeli GRUPPRAC.
+::   WE:
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+GRUPPRAC.OSOBA:=GRUPPRAC.P().OSOBA;
+1
+
+
+\grupprac_putb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [22.26]
+:: OPIS: Wyzwalacz popraw przed tabeli GRUPPRAC.
+::   WE:
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+GRUPPRAC.OSOBA:=GRUPPRAC.P().OSOBA;
+1
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:18 7dd521389ade51ba5b39bf89837e5397aaa638785fc7bbbf71d6c7258864bea5e0230e316ec17e1304f917cad832ecad58f0c4480ce3fa7a931f06e0fa7ba777d90f850f160dcbdd3687515f1bdd06146940c8a3a369f47b70303fb7e70d75fe922a2454a0a88bd2071f483833378ba2fb439a159f0b4d14ef09b4b675c14893

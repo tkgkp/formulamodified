@@ -1,0 +1,181 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: mwa_pos.fml
+:: Utworzony: 10.05.2019
+:: Autor: Markus
+:: Systemy: Merit
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi posesji przez MacroWebAPI
+::======================================================================================================================
+
+
+\serialize_pos
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Formuła pomocnicza do serializacji rekordów z tabeli pos
+::       Kontekst wywołania: ustawiona dziedzina tabeli pos
+::   WE: _a - FILE - obiekt plikowy przeznaczony do zapisu wynikowego JSONa
+::   WY: 0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_resp:=fopen(null,'Uw',,1,1);
+
+_mwa_lib:=exec('lib','__mwa');
+
+_data:="
+   POS.mwa_records(params_get().resp,,'data','p',,'noheader=1,norecord=0,nodata=1,indentation=1',params_get().fld_list);
+   ''
+";
+_tab:=tab_tmp(,'STATUS','STRING[20]','');
+_tab.STATUS:='OK'; _tab.add();
+params_set('resp',_resp, 'fld_list',_mwa_lib.TableType.getRecordsJSON(_a.SVER, 'POS'));
+_tab.xml_records(_resp,_a.METHOD+'Response',,'p',_a.OUTNSPC,'norecord=1'
+   ,'STATUS:status',
+   ,'',_data
+);
+
+_resp
+
+
+\set_fields_pos
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Ustawia pola posesji.
+::   WE: _a - STRING - parametry kontrahenta
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_fields','mwapi',_a);
+~~
+
+
+\serialize_pos_error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Formuła pomocnicza do serializacji umów
+::   WE: _a - parametry
+::       _b - STRING - treść błędu
+::       _c - _wsenv
+::----------------------------------------------------------------------------------------------------------------------
+{? _ >= 3
+|| _wsenv:=_c
+|| _wsenv:=exec('wsenv','#mwapi')
+?};
+_wsenv.erase();
+_wsenv.add_error(_b);
+_resp:=_wsenv.to_json();
+_result:=exec('serialize_res','mwapi',_a,_resp);
+_result
+
+
+\read_pos
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje wszystkie pos.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_khref:=exec('get_option','mwapi',_par,'Kh').value;
+_kh:=null();
+_isKh:=0;
+
+_ok:=1;
+
+{? _khref<>''
+|| {? +_khref=16
+   || _isKh:=1;
+      _kh:=exec('FindAndGet','#table',KH,_khref,,"ref()",null())
+   || _ok:=0;
+      _result:=exec('serialize_pos_error','mwa_pos',_par,
+         'Nieprawidłowa wartość parametru %1 [%2]. Nie znaleziono kontrahenta'@ ['<Kh>',_khref]
+      )
+   ?}
+?};
+
+{? _ok
+|| {? ~exec('authorized','#b__box','ZWS_KHR','ZWS')
+   || _result:=exec('serialize_pos_error','mwa_pos',_par,'Brak uprawnień do przeglądania kontrahentów.'@)
+
+   |? (_isKh=1 & _kh<>null()) | _isKh=0
+   || POS.cntx_psh();
+      POS.index('KH');
+      {? _isKh
+      || POS.prefix(_kh)
+      || POS.prefix()
+      ?};
+      {? POS.first()
+      || _result:=exec('serialize_pos','mwa_pos',_par)
+      || _result:=exec('serialize_pos_error','mwa_pos',_par,'Brak posesji w systemie.'@)
+      ?};
+      POS.cntx_pop()
+
+   || _result:=exec('serialize_pos_error','mwa_pos',_par,'Brak kontrahenta w systemie.'@)
+   ?}
+?};
+_result
+
+
+\read_pos_idadd_row
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje dany pos.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: _a - par
+::     : _b - idadd
+::----------------------------------------------------------------------------------------------------------------------
+_par:=_a;
+_idadd:=_b;
+POS.cntx_psh();
+_ndx:=POS.ndx_tmp(,,'IDADD',,);
+POS.index(_ndx);
+POS.prefix();
+{? +_idadd=31 & POS.find_key(_idadd)
+|| POS.prefix(POS.IDADD);
+   _result:=exec('serialize_pos','mwa_pos',_par)
+||
+   _result:=exec('serialize_pos_error','mwa_pos',_par,'Nieprawidłowa wartość parametru %1 [%2].'@ ['<idadd>',_idadd])
+?};
+POS.ndx_drop(_ndx);
+POS.cntx_pop();
+_result
+
+
+\read_pos_idadd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje daną posesje.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_idadd:=exec('get_option','mwapi',_par,'IDADD').value;
+{? exec('authorized','#b__box','ZWS_KHR','ZWS')
+|| _result:=exec('read_pos_idadd_row','mwa_pos',_par,_idadd)
+|| _result:=exec('serialize_pos_error','mwa_pos',_par,'Brak uprawnień do przeglądania kontrahentów.'@)
+?};
+_result
+
+
+\prolog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Formuła startowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+exec('prolog','mwapi',_par);
+~~
+
+
+\epilog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Fomuła końcowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+exec('epilog','mwapi');
+~~
+
+:Sign Version 2.0 jowisz:1045 2023/09/06 12:34:10 48aea8cfbbcc4bd6f99bf2c764af36377d9cb5a999783114dec1d0e9b09ecb468b9a38e0965c8166a9b62bfc123504264b3425f8d9b243124a52b4a80ebb2271c02ebf9024b7d313e14f8b7b6f9ebe708e419590861244208b1bd97706c100d14d3117c5bd24df3054d9af0725e39d63013ebc811c528898c3feb60e9ce8c4a7

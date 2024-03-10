@@ -1,0 +1,440 @@
+﻿:!UTF-8
+{TITLE:2. Struktura technologiczna produktu — zlecenie}
+{PRINTER: INFO.W_PRN,,,,,'i','b',,,,1}
+{BEGIN:
+  exec('tktl_cntx_psh','tech_common');
+  ZL.cntx_psh();
+  ZL.clear();
+  ZL.seek(VAR.A_ZLEC);
+  {? ZL.SRCTECH='T'
+  || VAR.A_KTL:=exec('FindAndGet','#table',TKTL,{? ZL.RTKTL<>'' || ZL.RTKTL || ZL.RKTL ?},,"ref()",null());
+     _msk:=(8+$VAR.A_KTL)+3;
+     exec('tktl_use','tech_common',_msk);
+     TKTL.clear();
+     TKTL.seek(VAR.A_KTL)
+  ?};
+  kreska:='─';
+  width:=92;
+  "---Ramki tekstowe czy graficzne do rysowania drzewa.";
+  bcross:='├─';
+  lbcross:='└─';
+  sep:='│';
+  ktl:=null();
+  nrk:='';
+  wer:='';
+  xjm:=0;
+  "---Odleglosc pomiedzy poszczegolnymi poziomami drzewa (pozioma).";
+  levelspace:=6;
+  "---Biezacy poziom drzewa (numeracja od 0).";
+  level:=0;
+  "---REF biezacego surowca.";
+  mat:=null();
+  "---REF karty technologicznej surowca.";
+  matktl:=null();
+  "---Maksymalny poziom zagniezdzenia drzewa.";
+  maxlevel:=50;
+  "---Norma materialowa brutto dla elementu nadrzednego w drzewie. Informacja ";
+  "---jest przechowywana dla kazdego poziomu.";
+  warbmast:=obj_new(maxlevel);
+  {! _iter:=1..maxlevel |! warbmast[_iter]:=0 !};
+  "---Wartosci XJM technologio elementu nadrzednego w drzewie. Informacja     ";
+  "---jest przechowywana dla kazdego poziomu.";
+  techmast:=obj_new(maxlevel);
+  {! _iter:=1..maxlevel |! techmast[_iter]:=0 !};
+  poziomy:=obj_new(maxlevel);
+  {! _iter:=1..maxlevel |! poziomy[_iter]:=''!}
+}
+{END:
+  exec('tktl_cntx_pop','tech_common');
+  ZL.cntx_pop();
+  &kreska;
+  obj_del(warbmast);
+  obj_del(techmast);
+  obj_del(poziomy);
+  "---Sekcja zwalniania funkcji.";
+  {? var_pres('getgaprow')>0 || &getgaprow ?};
+  "---";
+  &bcross;
+  &lbcross;
+  &sep;
+  &levelspace;
+  &level;
+  &mat;
+  &ktl;
+  &nrk;
+  &wer;
+  &xjm;
+  &matktl;
+  &maxlevel
+}
+{IF: ZL.NRNZL=0 & ZL.RODZAJ='Z'}
+{ ZL.index('NRNZL');
+  ZL.prefix(ZL.UNRZL,1,ZL.TYP,ZL.SYM+'/01');
+  ZL.first();
+  VAR.A_KTL:=exec('FindAndGet','#table',TKTL,{? ZL.RTKTL<>'' || ZL.RTKTL || ZL.RKTL ?},,"ref()",null());
+  _msk:=(8+$VAR.A_KTL)+3;
+  exec('tktl_use','tech_common',_msk);
+  TKTL.clear();
+  TKTL.seek(VAR.A_KTL);
+  ~~}
+{ELIF: ZL.NRNZL=0 & ZL.RODZAJ='N'}
+{ FUN.emsg('Zlecenie nagłówkowe niezależne, wydruk z tego poziomu nie jest możliwy.'@);~~}
+{EXIT}
+{FI}
+{COMMENT}
+  Struktura technologiczna produktu — zlecenie.
+  [SS] - 2001/04/10 - [7.41]
+  [MKO] - 2001/11/16 - [7.53] OWwSK003_Aneks1
+  Wywolanie: Produkcja -> Zlecenia -> Produkcyjne -> TEN -> DEFINICJE -> Wydruki
+{COMMENT-}
+{COMMENT}
+
+  Schemat wydruku:
+
+    0   1   2       M                   0   1   2       M
+    │   │   │  ...  │                   |   |   |  ...  |
+  Produkt                              Produkt
+    │                                   |
+    ├─ Surowiec1                        +- Surowiec1
+    │   │                               |   |
+    │   ├─ Surowiec1                    |   +- Surowiec1
+    │   .   │                           |   .   |
+    │   .   ├─ Surowiec1                |   .   +- Surowiec1
+    │   .   .                           |   .   .
+    │   │                               |   |
+    │   └─ SurowiecN                    |   +- SurowiecN
+    │                                   |
+    │                                   |
+    ├─ Surowiec2                        +- Surowiec2
+    .                                   .
+    .                                   .
+    .                                   .
+    └─ SurowiecN                        +- SurowiecN
+
+{COMMENT-}
+{"------------------------------------------------------------------------"; ~~}
+{"---Makrodefinicje systemowe.                                            "; ~~}
+{INCLUDE: wsp_pw.rpi}
+{PAR_WYDR.TITLE:='STRUKTURA TECHNOLOGICZNA PRODUKTU — ZLECENIE';~~}
+{"------------------------------------------------------------------------"; ~~}
+{"---Zbior funkcji wykorzystywanych w biezacej definicji wydruku.         "; ~~}
+{MACRO: 'functions'}
+  {"--------------------------------------------------------------------------";
+   "---Zwraca wiersz wydruku dla poziomu okreslonego przez _a, w tej czesci,  ";
+   "---gdzie NIE wystepuje opis surowca, np. '│    │    │'.                   ";
+   "---Parametry:                                                             ";
+   "--- _a:NUMBER - poziom zaglebienia.";
+   "--- _b:NUMBER - 1 - koniec galezi (' '), 0 - srodek galezi ('│').";
+   getgaprow:="
+      _result:='';sep:='│';
+      {? _<1
+      || _result:='error';
+         FUN.error('Funkcja GETGAPROW wydruku TTE_ZLDOD_02.RPM:\n'
+            'niewłaściwa liczba parametrów.'@)
+      ?};
+      {? _result<>'error'
+      || _result:='';
+         {? _a>0
+         || {? _a>1
+            || _result:=poziomy[1];
+               {! _iter:=2.._a-1
+               |! _result:=_result + ' '*levelspace +poziomy[_iter]
+               !};
+               {? _b || sep:='   ' || sep:='│' ?};
+               _result:=_result + ' '*levelspace  +sep
+            || _result:=poziomy[1]
+            ?}
+         ?}
+      ?};
+      _result
+   ";
+   "--------------------------------------------------------------------------";
+   "---Zwraca wiersz wydruku dla poziomu okreslonego przez _a, w tej czesci,  ";
+   "---gdzie wystepuje opis surowca, np. '│    │    ├'.                   ";
+   "---Parametry:                                                             ";
+   "--- _a:NUMBER - poziom zaglebienia.                                       ";
+   "--- _b:NUMBER - 1 - koniec galezi ('└'), 0 - srodek galezi ('├').";
+   getmatrow:="
+      _result:='';_sum:='';
+      {? _<2
+      || _result:='error';
+         FUN.error('Funkcja GETMATROW wydruku TTE_ZLDOD_02.RPM:\n'
+            'niewłaściwa liczba parametrów.'@)
+      ?};
+      {? _result<>'error'
+      || {? _a>0
+         || {? _b
+            || _result:=lbcross
+            || _result:=bcross
+            ?};
+            {? _a> 1
+            || {! _iter:=1.._a-1
+               |! _sum:=_sum + poziomy[_iter] + ' '*levelspace
+               !};
+               _result:=_sum +_result
+            ?}
+         ?}
+     ?};
+     _result
+   ";
+   "--------------------------------------------------------------------------";
+  ~~}
+{MACRO-}
+{"------------------------------------------------------------------------"; ~~}
+{"---Sekcja akcji inicjalizujacych.                                       "; ~~}
+{MACRO: 'miscelaneous'}
+  {"--- B R A K   A K C J I   I N I C J A L I Z U J A C Y C H.            "; ~~}
+{MACRO-}
+{"------------------------------------------------------------------------"; ~~}
+{"---Deklaracja funkcji wydruku.                                          "; ~~}
+{SUBSTITUTE: 'functions'}
+{"------------------------------------------------------------------------"; ~~}
+{"---Wykonanie akcji inicjalizujacych.                                    "; ~~}
+{SUBSTITUTE: 'miscelaneous'}
+{"------------------------------------------------------------------------"; ~~}
+{"---Drukuje cale drzewo stanowiace strukture technologiczna produktu.      "; ~~}
+{MACRO: 'prntree'}
+  {"-----------------------------------"; ~~}
+  {"---Na zerowym poziomie biezemy technologie bezposrednio z TKTL, ale   "; ~~}
+  {"---w innych przypadkach biezemy ja juz z surowca (jezeli oczywiscie   "; ~~}
+  {"---surowiec jest produktem).                                          "; ~~}
+  {IF: level<=1 & ZL.TYP().TECH='T'}
+    {mat:={? TMAT.GRKTM='G' || TMAT.TGDFLT().PT || TMAT.PT ?}; ~~}
+    {matktl:={? TMAT.DFLT_KTL='T'
+             || exec('dflt_ktl','tech_prod',mat)
+             || exec('FindAndGet','#table',TKTL,TMAT.RKTL,,"ref()",null())
+             ?}; ~~}
+    {warbmast[level+1]:=warbmast[level]*(TMAT.WARB)/techmast[level]; ~~}
+    {techmast[level+1]:=exec('FindAndGet','#table',TKTL,matktl,,"XJM",0); ~~}
+  {ELSE}
+    {matktl:=ktl; ~~}
+    {IF: level+1<=maxlevel}
+      {warbmast[level+1]:=TMAT.WARB; ~~}
+      {techmast[level+1]:={? ktl<>null() || xjm || 0 ?}; ~~}
+    {FI}
+  {FI}
+  {"-----------------------------------"; ~~}
+  {"---Skok na nastepny poziom drzewa.                                    "; ~~}
+  {level+=1; ~~}
+  {"---Sprawdz, czy nie zostal przekroczony maksymalny poziom             "; ~~}
+  {"---zagniezdzenia drzewa.                                              "; ~~}
+  {IF: level>maxlevel-2}
+    {FUN.emsg('Został przekroczony maksymalny poziom zagnieżdżenia\n'
+         'drzewa (%1). Zwiększam maksymalną wartość poziomu\n'
+         'zagnieżdżenia, używając zmiennej "maxlevel"'@[form(maxlevel)]); ~~}
+    {EXIT}
+  {FI}
+  {"-----------------------------------"; ~~}
+  {exec('tktl_cntx_psh','tech_common');
+   _msk:=(8+$matktl)+3;
+   exec('tktl_use','tech_common',_msk);~~}
+  {FOR: 'TMAT'}
+    {INDEX: 'NL'}
+    {PREFIX: matktl}
+  {DO}
+    { TMAT.cntx_psh(); dalej:=~TMAT.next(); TMAT.cntx_pop(); ~~}
+    {"---Przeswit.                                                        "; ~~}
+    {<2 getgaprow(level,0)}
+    {{? ~dalej || poziomy[level]:='│' || poziomy[level]:=' ' ?};~~}
+    {"---Linia z opisem KTM surowca.                                      "; ~~}
+    {<2 getmatrow(level,dalej)
+    } {{? ~(-TMAT.GRKTM)='G'
+                  || TMAT.TGDFLT().PT().KTM+' ['+TMAT.SO+']'
+                  || TMAT.PT().KTM+' ['+TMAT.SO+']'
+                  ?}}
+    {"---Zapotrzebowanie.                                                 "; ~~}
+    {<2 getgaprow(level,dalej) + '  '+form('Ilość:',9)+form({? techmast[level]<>0
+                                                      || warbmast[level]*(TMAT.WARB)/techmast[level]
+                                                      || 0
+                                                      ?}) +' '+TMAT.PT().J().KOD }
+    {"---Technologia zwiazana z surowcem, jezeli jest zlozony.            "; ~~}
+    {{? TMAT.DFLT_KTL='T'
+     || ktl:=exec('dflt_ktl','tech_prod',{? TMAT.GRKTM='K' || TMAT.PT || TMAT.TGDFLT().PT ?})
+     || ktl:=exec('FindAndGet','#table',TKTL,TMAT.RKTL,,"ref()",null())
+     ?};
+        xjm:=1; nrk:=''; wer:='';
+     exec('FindAndGet','#table',TKTL,ktl,,"xjm:=XJM; nrk:=NRK; wer:=WER");~~}
+    {IF: ktl<>null()}
+      {<2 getgaprow(level,dalej)+'  KTL:     '+nrk+' '+nrk+' / '+wer+' (XJM: '+form(xjm,,0,,'9')+')'}
+    {FI}
+    {"---Norma materialowa brutto.                                        "; ~~}
+    {<2 getgaprow(level,dalej)+'  Norma b: '+form(TMAT.WARB,,0,,'9')}
+    {"---Recurse.                                                         "; ~~}
+    {IF: ktl<>null()}
+      {SUBSTITUTE: 'prntree'}
+    {FI}
+  {OD}
+  {exec('tktl_cntx_pop','tech_common'); ~~}
+  {"-----------------------------------"; ~~}
+  {"---powrot do poprzedniego poziomu drzewa.                             "; ~~}
+  {level-=1; ~~}
+{MACRO-}
+{"------------------------------------------------------------------------"; ~~}
+{"---Dla zleceń złożonych-drukuje cale drzewo stanowiace strukture technologiczna produktu."; ~~}
+{MACRO: 'prn1tree'}
+  {"-----------------------------------"; ~~}
+  {"---Na zerowym poziomie biezemy technologie bezposrednio z TKTL, ale   "; ~~}
+  {"---w innych przypadkach biezemy ja juz z surowca (jezeli oczywiscie)  "; ~~}
+  {"---surowiec jest produktem.                                           "; ~~}
+  {IF: level=1}
+    {mat:={? TMAT.GRKTM='G' || TMAT.TGDFLT().PT || TMAT.PT ?}; ~~}
+    {matktl:={? TMAT.DFLT_KTL='T'
+             || exec('dflt_ktl','tech_prod',mat)
+             || exec('FindAndGet','#table',TKTL,TMAT.RKTL,,"ref()",null())
+             ?}; ~~}
+    {warbmast[level+1]:={? techmast[level]<>0
+                        || warbmast[level]*(TMAT.WARB)/techmast[level]
+                        || 0
+                        ?}; ~~}
+    {techmast[level+1]:=exec('FindAndGet','#table',TKTL,matktl,,"XJM",0); ~~}
+  {ELSE}
+    {mat:={? TMAT.GRKTM='G' || TMAT.TGDFLT().PT || TMAT.PT ?}; ~~}
+    {matktl:={? TMAT.DFLT_KTL='T'
+             || exec('dflt_ktl','tech_prod',mat)
+             || exec('FindAndGet','#table',TKTL,TMAT.RKTL,,"ref()",null())
+             ?}; ~~}
+    {IF: level+1<=maxlevel}
+      {warbmast[level+1]:={? techmast[level]<>0
+                          || warbmast[level]*(TMAT.WARB)/techmast[level]
+                          || 0
+                          ?}; ~~}
+      {techmast[level+1]:=exec('FindAndGet','#table',TKTL,matktl,,"XJM",0); ~~}
+    {FI}
+  {FI}
+  {"-----------------------------------"; ~~}
+  {"---Skok na nastepny poziom drzewa.                                    "; ~~}
+  {level+=1; ~~}
+  {"---Sprawdz, czy nie zostal przekroczony maksymalny poziom             "; ~~}
+  {"---zagniezdzenia drzewa.                                              "; ~~}
+  {IF: level>maxlevel-2}
+    {FUN.emsg('Został przekroczony maksymalny poziom zagnieżdżenia\n'
+         'drzewa (%1). Zwiększam maksymalną wartość poziomu\n'
+         'zagnieżdżenia, używając zmiennej "maxlevel"'@[form(maxlevel)]); ~~}
+    {EXIT}
+  {FI}
+  {"-----------------------------------"; ~~}
+  {ZL.cntx_psh();~~}
+  {ZL.index('RTMATSRC'); ZL.prefix($TMAT.ref());~~}
+  {IF: ZL.first()}
+  {exec('tktl_cntx_psh','tech_common');
+   matktl:=exec('FindAndGet','#table',TKTL,{? ZL.RTKTL<>'' || ZL.RTKTL || ZL.RKTL ?},,"ref()",null());
+   _msk:=(8+$matktl)+3;
+   exec('tktl_use','tech_common',_msk);~~}
+  {FOR: 'TMAT'}
+    {INDEX: 'NL'}
+    {PREFIX: matktl}
+  {DO}
+    { TMAT.cntx_psh(); dalej:=~TMAT.next(); TMAT.cntx_pop(); ~~}
+    {"---Przeswit.                                                        "; ~~}
+    {<2 getgaprow(level,0)}
+    {{? ~dalej || poziomy[level]:='│' || poziomy[level]:=' ' ?};~~}
+    {"---Linia z opisem KTM surowca.                                      "; ~~}
+    {<2 getmatrow(level,dalej)
+    } {{? TMAT.GRKTM='G' || TMAT.TGDFLT().PT().KTM || TMAT.PT().KTM ?}+' ['+TMAT.SO+']'}
+    {"---Zapotrzebowanie.                                                 "; ~~}
+    {<2 getgaprow(level,dalej) + '  Ilość:   '+form({? techmast[level]<>0
+                                                    || warbmast[level]*(TMAT.WARB)/techmast[level]
+                                                    || 0
+                                                    ?})+' '+TMAT.PT().J().KOD}
+    {"---Technologia zwiazana z surowcem, jezeli jest zlozony.            "; ~~}
+    {IF: TMAT.KTL<>null()}
+      {<2 getgaprow(level,dalej)+'  KTL:     '+exec('FindAndGet','#table',TKTL,TMAT.RKTL,,"NRK+' / '+WER+' (XJM: '+form(XJM,,0,,'9')+')'",'')}
+    {FI}
+    {"---Norma materialowa brutto.                                        "; ~~}
+    {<2 getgaprow(level,dalej)+'  Norma b: '+form(TMAT.WARB,,0,,'9')}
+    {"---Recurse.                                                         "; ~~}
+    {IF: TMAT.KTL<>null()}
+      {SUBSTITUTE: 'prn1tree'}
+    {FI}
+  {OD}
+  {exec('tktl_cntx_pop','tech_common');~~}
+  {FI}
+  {ZL.cntx_pop();~~}
+  {"-----------------------------------"; ~~}
+  {"---powrot do poprzedniego poziomu drzewa.                             "; ~~}
+  {level-=1; ~~}
+{MACRO-}
+{COMMENT}------------------------------REPORT-HEADER----------------{COMMENT-}
+{SUBSTITUTE: 'HEAD'}
+{FONT: 'T10'}{SPACE: 'B'}
+{COMMENT}------------------------------HEADER-----------------------{COMMENT-}
+{HEADER}
+{SUBSTITUTE: 'HEAD'}
+{HEADER-}
+{COMMENT}------------------------------FOOTER-----------------------{COMMENT-}
+{FOOTER: 0}
+{LINE: 1}
+{FOOTER-}
+{COMMENT}------------------------------SIGNATURE--------------------{COMMENT-}
+{SUBSTITUTE: 'FOOT'}
+{"========================================================================"; ~~}
+{"=========================== POCZATEK WYDRUKU ==========================="; ~~}
+{"========================================================================"; ~~}
+{"------------------------------------------------------------------------"; ~~}
+{"---Informacje naglowkowe.                                               "; ~~}
+{IF: ZL.RTKTL<>'' | ZL.RKTL<>''}
+{<1 'Zlecenie:'}{<25 ZL.SYM}
+{<1 'Produkt:'}{<25 ZL.KTM().KTM+' — '+M.N}
+{IF: ZL.SRCTECH='T'}
+{<1 'Karta technologiczna:'}{<25 TKTL.NRK} {'Wersja: '}{TKTL.WER}
+{<1 'Kalkulowana na:'}{<25 form(TKTL.XJM,,2)+' '+TKTL.JM().KOD}
+{<1 'Domyślny wariant kalk.:'}{<25 + {? form(TKTL.DEF_OPCK().NAZ)<>''
+                                              || TKTL.DEF_OPCK().NAZ
+                                              || '<brak>'
+                                              ?}}
+{<1 form('Opis:')}{<25 TKTL.OPIS}
+{ELSE}
+{<1 'Karta technologiczna:'}{<25 '<brak>'}
+{FI}
+
+{level:=0; ~~}
+{<1 ZL.KTM().KTM}
+{<1 'Ilość: '+form(ZL.IL)+' '+ZL.KTM().J().KOD}
+{<1 'Zlecenie: '+ZL.SYM}
+{FOR: 'TMAT'}
+  {INDEX: 'NNL'}
+  {PREFIX: VAR.A_KTL}
+{DO}
+  {warbmast[level+1]:=ZL.IL; ~~}
+  {techmast[level+1]:=exec('FindAndGet','#table',TKTL,VAR.A_KTL,,"XJM",0); ~~}
+  {level+=1; ~~}
+  {exec('tktl_cntx_psh','tech_common'); ~~}
+  { TMAT.cntx_psh(); dalej:=~TMAT.next(); TMAT.cntx_pop(); ~~}
+  {"---Przeswit.                                                          "; ~~}
+  {<2 getgaprow(level,0)}
+ {{? ~dalej || poziomy[level]:='│' || poziomy[level]:=' ' ?};~~}
+ {"---Linia z opisem KTM surowca.                                        "; ~~}
+  {{? ~(-TMAT.GRKTM)='G'
+   || tekst:=TMAT.TGDFLT().PT().KTM+' ['+TMAT.SO+']'
+   || tekst:=TMAT.PT().KTM+' ['+TMAT.SO+']'
+   ?};~~}
+  {<2 getmatrow(level,dalej)
+  }{tekst}
+  {"---Zapotrzebowanie.                                                   "; ~~}
+  {IF: lineleft<6}{<2 getgaprow(level,dalej)+'  '+'...'}{PAGE}{FI}
+  {<2 getgaprow(level,dalej) + '  '+form('Ilość:',9)+form({? techmast[level]<>0
+                                                      || warbmast[level]*(TMAT.WARB)/techmast[level]
+                                                      || 0
+                                                      ?})+' '+TMAT.PT().J().KOD}
+  {"---Technologia zwiazana z surowcem, jezeli jest zlozony.             "; ~~}
+  {{? TMAT.DFLT_KTL='T'
+   || ktl:=exec('dflt_ktl','tech_prod',{? TMAT.GRKTM='K' || TMAT.PT || TMAT.TGDFLT().PT ?})
+   || ktl:=exec('FindAndGet','#table',TKTL,TMAT.RKTL,,"ref()",null())
+   ?};
+      xjm:=1; nrk:=''; wer:='';
+   exec('FindAndGet','#table',TKTL,ktl,,"xjm:=XJM; nrk:=NRK; wer:=WER");~~}
+  {IF: ktl<>null()}
+    {<2 getgaprow(level,dalej)+'  KTL:     '+nrk+' / '+wer+' (XJM: '+form(xjm,,0,,'9')+')'}
+  {"---Norma materialowa brutto.                                          "; ~~}
+  {<2 getgaprow(level,dalej)+'  Norma b: '+form(TMAT.WARB,,0,,'9')}
+  {IF: ZL.NRNZL<>0 & ZL.NR=1 & ZL.TYP().TECH='T'}
+  {SUBSTITUTE: 'prn1tree'}
+  {ELSE}
+  {SUBSTITUTE: 'prntree'}
+  {FI}
+  {FI}
+  {exec('tktl_cntx_pop','tech_common');~~}
+  {"---powrot do poprzedniego poziomu drzewa.                             "; ~~}
+  {level-=1; ~~}
+{OD}
+{FI}

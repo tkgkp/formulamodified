@@ -1,0 +1,498 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #notify.fml [22.26]
+:: Utworzony: 11.01.2022
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Obsługa notyfikacji (metody niskiego poziomu znajdują się w pliku #abc_notify.fml)
+::======================================================================================================================
+
+
+\notify_on
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26]
+:: OPIS: Warunek na włączenie przetwarzania notyfikacji
+::   WE: _a - czy wyświetlać komunikat [0]/1
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(0) || _dialog:=_a || _dialog:=0 ?};
+
+_app_ident:=app_info('app_ident');
+:: odczytanie parametrów przekazanych w cluster.cfg
+_ap:=AppList.my.tab;
+_ap.index(AppList.my.ndx_app);
+_ap.prefix(_app_ident,);
+{? _ap.first()
+|| _app_par5:=_ap.APP_PAR5
+|| _app_par5:=''
+?};
+_abc_notify_on:='ABC_NOTIFY_ON';
+_on:=((_app_par5*_abc_notify_on)>0);
+{? _dialog & _on=1
+|| FUN.info(
+      'Przetwarzanie notyfikacji jest włączone.\n\n'
+      'W pliku %1 dla bieżącej aplikacji (%2) jest ustawiona wartość %3=%4.'@
+      ['cluster.cfg',_app_ident,'app_par5',_abc_notify_on]
+   )
+?};
+_on
+
+
+\abc_notify
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26]
+:: OPIS: Inicjuje obsługę notyfikacji w kolejkach
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__AbcNotify')<0
+||
+   __AbcNotify:=_obj:=obj_new(
+::    Obiekt systemowy
+      'notifier'
+::    Funkcja inicjująca obiekt systemowy
+     ,'init'
+::    Stan obiektu systemowego (funkcja, zmienna kontrolna) - dodatkowa wartość (-1), gdy nie został zainicjowany
+     ,'valid','Valid'
+::    Funkcje notyfikatora - rozbudowane
+     ,'start','stop','restart','setTimeout','getState','setTenantData','getLogPath'
+::    Tabela tenantów - globalna, każda instancja programu dopisuje swoje
+     ,'TENANTS'
+::    Tabela powiadomień - globalna
+     ,'NOTIFICATIONS'
+::    Tabela parametrów - lokalna
+     ,'PARAMS'
+::    Funkcje
+     ,'tenant_add','tenant_select'
+     ,'notify_add','notify_select','notify_get'
+     ,'param_set','param_select','param_get'
+   );
+   _obj.Valid:=-1;
+
+   _obj.init:="
+::    zapamiętanie początkowego stanu modułu
+      _valid:=.Valid;
+::    Inicjowanie modułu
+      {? _valid=-1
+      || .notifier:=exec(,'#abc_notify');
+         .Valid:=.notifier.Valid
+      ?};
+::    Sprawdzenie, czy przybyło dzierżawców
+      .TENANTS.TAB.cntx_psh();
+      .TENANTS.TAB.prefix();
+      _count:=.TENANTS.TAB.size();
+      .TENANTS.TAB.cntx_pop();
+::    Jeśli zmieniła się liczba dzierżawców, to wymuszenie przeładowania
+      _reload:=0;
+      {? _valid=-1 | _count<>.TENANTS.Count
+      || _reload:=1
+      ?};
+::    Stop, o ile konieczny (jeżeli wymuszone przeładowanie i gdy był wystartowany)
+      {? (_reload & _valid=2) || .notifier.stop() ?};
+::    Start, o ile konieczny (np. wymuszone przeładowanie)
+      {? ((_reload & _valid=2) | _valid<>2) & _count>0 || .setTenantData(); .notifier.start() ?};
+::    Pobranie nazwy loga
+      .getLogPath();
+::    Pobranie statusów tenantów
+      .getState();
+::    -1,0,1,2
+      .valid()
+   ";
+   _obj.valid:="
+      {? .Valid>=0
+      || .Valid:=.notifier.Valid
+      ?};
+      .Valid
+   ";
+::   _obj.restart:="
+::      {? .valid()=2 || .notifier.stop() ?};
+::      {? .valid()=1 || .notifier.start() ?}
+::   ";
+   _obj.setTimeout:="
+      {? var_pres('_a')=type_of(0)
+      || .notifier.setTimeout(_a)
+      || .notifier.setTimeout(60)
+      ?}
+   ";
+   _obj.getState:="
+      _res:=.notifier.getState();
+      {? type_of(_res)=exec('type_of_array','#var')
+      || _tab:=.TENANTS.TAB;
+         _tab.cntx_psh();
+         _size:=obj_len(_res);
+         {! _it:=1.. _size
+         |! _tab.prefix(_res[_it].tenant,_res[_it].environment,_res[_it].host,);
+            {? _tab.first()
+            || _tab.STATE:=_res[_it].state;
+               _tab.put(,1)
+            ?}
+         !};
+         _tab.cntx_pop()
+      ?}
+   ";
+   _obj.setTenantData:="
+      _tab:=.TENANTS.TAB;
+      _tab.cntx_psh();
+      _tab.prefix();
+      .TENANTS.Count:=_size:=_tab.size();
+      {? _size>0
+      || _tenants:=obj_new(_size);
+         _it:=0;
+         {? _tab.first()
+         || {!
+            |? _it+=1;
+               _tenants[_it]:=obj_new('tenant','environment','host');
+               _tenants[_it].tenant:=_tab.TNNT;
+               _tenants[_it].environment:=_tab.ENV;
+               _tenants[_it].host:=_tab.HOST;
+               _tab.next()
+            !}
+         ?};
+         .notifier.setTenantData(_tenants)
+      ?};
+      _tab.cntx_pop()
+   ";
+   _obj.getLogPath:="
+      .param_set('','LOG_PTH',.notifier.getLogPath());
+      ~~
+   ";
+
+   _syslog_name:=gsub(SYSLOG.name(1),'?','_');
+
+:: Tabela tenantów
+   _obj.TENANTS:=obj_new('TAB','NDX','WER','Count','add','select');
+   _ident_prefix:='notify_tenants';
+   {? SYSLOG.lock(1,,1)
+   || _st_list:=st_list(_ident_prefix,0);
+      {? _st_list.first()
+      || _obj.TENANTS.TAB:=st_open(_st_list.IDENT);
+         _obj.TENANTS.NDX:=_obj.TENANTS.TAB.ndx_tmp(,,'TNNT',,,'ENV',,,'HOST',,);
+         _obj.TENANTS.Count:=_obj.TENANTS.TAB.size()
+      || _obj.TENANTS.TAB:=st_create(3
+            ,'TNNT','STRING[50]','Dzierżawca'@
+            ,'ENV','STRING[250]','Środowisko'@
+            ,'HOST','STRING[100]','Serwer powiadomień'@
+            ,'STATE','STRING[30]','Status'@
+            ,'IDADD','IDADD','IDADD'
+            ,'IDPUT','IDPUT','IDPUT'
+         );
+         _obj.TENANTS.TAB.st_id_make(_syslog_name,_ident_prefix,-1);
+         _obj.TENANTS.NDX:=_obj.TENANTS.TAB.index('?');
+         _obj.TENANTS.Count:=0
+      ?};
+      obj_del(_st_list);
+      SYSLOG.unlock()
+   || _obj.TENANTS.TAB:=st_create(3
+         ,'TNNT','STRING[50]','Dzierżawca'@
+         ,'ENV','STRING[250]','Środowisko'@
+         ,'HOST','STRING[100]','Serwer powiadomień'@
+         ,'STATE','STRING[30]','Status'@
+         ,'IDADD','IDADD','IDADD'
+         ,'IDPUT','IDPUT','IDPUT'
+      );
+      _obj.TENANTS.TAB.st_id_make(_syslog_name,_ident_prefix,-1);
+      _obj.TENANTS.NDX:=_obj.TENANTS.TAB.index('?')
+   ?};
+   _obj.TENANTS.WER:=_obj.TENANTS.TAB.mk_sel('Dzierżawcy'@,'P',,'tenantstab',,,,,'U');
+   _obj.TENANTS.TAB.win_fld(_obj.TENANTS.WER,,'TNNT',,,40);
+   _obj.TENANTS.TAB.win_fld(_obj.TENANTS.WER,,'ENV',,,50);
+   _obj.TENANTS.TAB.win_fld(_obj.TENANTS.WER,,'HOST',,,40);
+   _obj.TENANTS.TAB.win_fld(_obj.TENANTS.WER,,'STATE');
+   _obj.TENANTS.TAB.win_act(_obj.TENANTS.WER,,'Usuń',,,,,,,1);
+   _obj.TENANTS.TAB.win_act(_obj.TENANTS.WER,,'Kolejność');
+   _obj.TENANTS.add:="
+      _host:=
+         {? var_pres('_c')=type_of('') & _c<>''
+         || _c
+         |? _b*'.abs.'>0
+         || 'abc-notifications-dev.abs.assecobs.pl'
+         || 'abc-notifications.assecobs.pl'
+         ?};
+      _res:=0;
+      .TAB.cntx_psh();
+      .TAB.index(.NDX);
+      .TAB.prefix(_a,_b,_host,);
+      {? ~.TAB.first()
+      || .TAB.TNNT:=_a;
+         .TAB.ENV:=_b;
+         .TAB.HOST:=_host;
+         _res:=.TAB.add()
+      ?};
+      .TAB.cntx_pop();
+      _res
+   ";
+   _obj.TENANTS.select:="
+      .TAB.cntx_psh();
+      .TAB.win_sel(.WER);
+      .TAB.prefix();
+      .TAB.select();
+      .TAB.cntx_pop()
+   ";
+
+:: Tabela notyfikacji
+   _obj.NOTIFICATIONS:=obj_new('TAB','NDX','WER','add','select');
+   _ident_prefix:='notifications';
+   {? SYSLOG.lock(1,,1)
+   || _st_list:=st_list(_ident_prefix,0);
+      {? _st_list.first()
+      || _obj.NOTIFICATIONS.TAB:=st_open(_st_list.IDENT);
+         _obj.NOTIFICATIONS.NDX:=_obj.NOTIFICATIONS.TAB.ndx_tmp(,,'TNNT',,,'ENV',,,'HOST',,,'IDADD',,)
+      || _obj.NOTIFICATIONS.TAB:=st_create(4
+            ,'TNNT','STRING[50]','Dzierżawca'@
+            ,'ENV','STRING[250]','Środowisko'@
+            ,'HOST','STRING[100]','Serwer powiadomień'@
+            ,'IDADD','IDADD','IDADD'
+            ,'TOKEN','STRING[255]','Token'@
+         );
+         _obj.NOTIFICATIONS.TAB.st_id_make(_syslog_name,_ident_prefix,-1);
+         _obj.NOTIFICATIONS.NDX:=_obj.NOTIFICATIONS.TAB.index('?')
+      ?};
+      obj_del(_st_list);
+      SYSLOG.unlock()
+   || _obj.NOTIFICATIONS.TAB:=st_create(4
+         ,'TNNT','STRING[50]','Dzierżawca'@
+         ,'ENV','STRING[250]','Środowisko'@
+         ,'HOST','STRING[100]','Serwer powiadomień'@
+         ,'IDADD','IDADD','IDADD'
+         ,'TOKEN','STRING[255]','Token'@
+      );
+      _obj.NOTIFICATIONS.TAB.st_id_make(_syslog_name,_ident_prefix,-1);
+      _obj.NOTIFICATIONS.NDX:=_obj.NOTIFICATIONS.TAB.index('?')
+   ?};
+   _obj.NOTIFICATIONS.WER:=_obj.NOTIFICATIONS.TAB.mk_sel('Tokeny'@,,,'notifytab',,,,,'U');
+   _obj.NOTIFICATIONS.TAB.win_fld(_obj.NOTIFICATIONS.WER,,'TNNT',,,40);
+   _obj.NOTIFICATIONS.TAB.win_fld(_obj.NOTIFICATIONS.WER,,'ENV',,,50);
+   _obj.NOTIFICATIONS.TAB.win_fld(_obj.NOTIFICATIONS.WER,,'HOST',,,40);
+   _obj.NOTIFICATIONS.TAB.win_fld(_obj.NOTIFICATIONS.WER,,'TOKEN',,,50);
+   _obj.NOTIFICATIONS.TAB.win_act(_obj.NOTIFICATIONS.WER,,'Usuń',,,,,,,1);
+   _obj.NOTIFICATIONS.TAB.win_act(_obj.NOTIFICATIONS.WER,,'Kolejność');
+   _obj.NOTIFICATIONS.add:="
+      .TAB.cntx_psh();
+      .TAB.prefix();
+      .TAB.TNNT:=_a;
+      .TAB.ENV:=_b;
+      .TAB.HOST:=_c;
+      .TAB.TOKEN:=_d;
+      _res:=.TAB.add();
+      .TAB.cntx_pop();
+      _res
+   ";
+   _obj.NOTIFICATIONS.select:="
+      .TAB.cntx_psh();
+      .TAB.prefix();
+      .TAB.win_sel(.WER);
+      .TAB.prefix();
+      .TAB.select();
+      .TAB.cntx_pop()
+   ";
+
+:: Tabela parametrów
+   _obj.PARAMS:=obj_new('TAB','NDX','WER','set','select','get');
+   _ident_prefix:='notify_params';
+   {? SYSLOG.lock(1,,1)
+   || _st_list:=st_list(_ident_prefix,0);
+      {? _st_list.first()
+      || _obj.PARAMS.TAB:=st_open(_st_list.IDENT);
+         _obj.PARAMS.NDX:=_obj.PARAMS.TAB.ndx_tmp(,,'FIRMA',,,'SYMBOL',,)
+      || _obj.PARAMS.TAB:=st_create(2
+            ,'FIRMA','STRING[10]','Firma'@
+            ,'SYMBOL','STRING[20]','Parametr'@
+            ,'IDADD','IDADD','IDADD'
+            ,'VALUE','STRING[255]','Wartość'@
+         );
+         _obj.PARAMS.TAB.st_id_make(_syslog_name,_ident_prefix,-1);
+         _obj.PARAMS.NDX:=_obj.PARAMS.TAB.index('?')
+      ?};
+      obj_del(_st_list);
+      SYSLOG.unlock()
+   || _obj.PARAMS.TAB:=st_create(2
+         ,'FIRMA','STRING[10]','Firma'@
+         ,'SYMBOL','STRING[20]','Parametr'@
+         ,'IDADD','IDADD','IDADD'
+         ,'VALUE','STRING[255]','Wartość'@
+      );
+      _obj.PARAMS.TAB.st_id_make(_syslog_name,_ident_prefix,-1);
+      _obj.PARAMS.NDX:=_obj.PARAMS.TAB.index('?')
+   ?};
+   _obj.PARAMS.WER:=_obj.PARAMS.TAB.mk_sel('Parametry'@,,,'paramstab',,,,,'U');
+   _obj.PARAMS.TAB.win_fld(_obj.PARAMS.WER,,'FIRMA');
+   _obj.PARAMS.TAB.win_fld(_obj.PARAMS.WER,,'SYMBOL');
+   _obj.PARAMS.TAB.win_fld(_obj.PARAMS.WER,,'VALUE',,,50);
+   _obj.PARAMS.TAB.win_act(_obj.PARAMS.WER,,'Usuń',,,,,,,1);
+   _obj.PARAMS.TAB.win_act(_obj.PARAMS.WER,,'Kolejność');
+   _obj.PARAMS.set:="
+      .TAB.cntx_psh();
+      .TAB.prefix(_a,_b,);
+      {? .TAB.first()
+      || .TAB.VALUE:=_c;
+         _res:=.TAB.put()
+      || .TAB.FIRMA:=_a;
+         .TAB.SYMBOL:=_b;
+         .TAB.VALUE:=_c;
+         _res:=.TAB.add()
+      ?};
+      .TAB.cntx_pop();
+      _res
+   ";
+   _obj.PARAMS.select:="
+      .TAB.cntx_psh();
+      .TAB.prefix();
+      .TAB.win_sel(.WER);
+      .TAB.prefix();
+      .TAB.select();
+      .TAB.cntx_pop()
+   ";
+   _obj.PARAMS.get:="
+      _res:='';
+      .TAB.cntx_psh();
+      .TAB.prefix(_a,_b);
+      {? .TAB.first()
+      || _res:=.TAB.VALUE
+      ?};
+      .TAB.cntx_pop();
+      _res
+   ";
+
+   _obj.tenant_add:=".TENANTS.add(_a,_b,_c)";
+   _obj.tenant_select:=".TENANTS.select()";
+   _obj.notify_add:=".NOTIFICATIONS.add(_a,_b,_c,_d)";
+   _obj.notify_select:=".NOTIFICATIONS.select()";
+   _obj.notify_get:="
+      _result:='';
+      _tab:=.NOTIFICATIONS.TAB;
+      _tab.cntx_psh();
+      _tab.prefix(_a,);
+      {? _tab.last()
+      || _result:=_tab.TOKEN;
+         {! |? _tab.del() !}
+      ?};
+      _tab.cntx_pop();
+      _result
+   ";
+   _obj.param_set:=".PARAMS.set(_a,_b,_c)";
+   _obj.param_select:=".PARAMS.select()";
+   _obj.param_get:=".PARAMS.get(_a,_b)";
+   ~~
+?};
+
+__AbcNotify
+
+
+\delay
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26]
+:: OPIS: Funkcja oczekuje na kolejne wywołanie (w tym czasie może odbierać notyfikacje)
+::   WE: _a - czas oczekiwania (s)
+::----------------------------------------------------------------------------------------------------------------------
+_delay:=_a;
+
+_abc:=exec('abc_notify','#notify');
+
+_abc.init();
+
+{? _abc.valid()=2
+||
+   _start:=_stop:=utc_get();
+   {!
+   |?
+      _abc.setTimeout(_delay-_start+_stop);
+
+::    Czekamy na otrzymane notyfikacje
+      _res:=_abc.notifier.waitForNotification();
+
+      {? type_of(_res)=exec('type_of_array','#var')
+      || _size:=obj_len(_res);
+         {? _size>0
+         || {! _it:=1.. _size
+            |! _abc.notify_add(
+                  _res[_it].tenant,
+                  _res[_it].environment,
+                  _res[_it].host,
+                  json_parse(_res[_it].notification).NotificationTokenValue
+               )
+            !}
+         ?};
+         obj_del(_res)
+      ?};
+
+::    Jeżeli zostało jeszcze trochę czasu, to ponowienie nasłuchu notyfikacji
+      _stop:=utc_get();
+      _stop-_start<_delay
+   !}
+
+|| delay(_delay)
+?};
+~~
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [22.26]
+:: OPIS: Główne menu zarządzania modułem
+::----------------------------------------------------------------------------------------------------------------------
+::on_error(0);
+
+_szer:=60;
+
+_TAB:=tab_tmp(1,
+   'LP','INTEGER','Lp.',
+   'NAME','STRING[%1]' [$_szer],'Nazwa',
+   'HELP','STRING[60]','Podpowiedź',
+   'FORMULA','STRING[255]','Formuła do wykonania'
+);
+_add:="
+   _a.blank();
+   _a.LP:=_a.size()+1;
+   {? var_pres('_d')=3
+   || _a.FORMULA:=$_d
+   ?};
+   _a.NAME:=
+      {? _a.FORMULA=''
+      || '[ %1 ]' [_b]
+      || _b
+      ?};
+   _a.HELP:={? var_pres('_c')=type_of('') || _c || '' ?};
+   _a.add()
+";
+
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_add(_TAB,'Dzierżawcy'@,'Lista dzierżawców (tenants).'@,"__AbcNotify.tenant_select();''");
+_add(_TAB,'Parametry'@,'Parametry modułu.'@,"__AbcNotify.param_select();''");
+_add(_TAB,'Tokeny'@,'Bieżące tokeny (notyfikacje).'@,"__AbcNotify.notify_select();''");
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+_dh:=_TAB.size()+1;
+{? _dh<5
+|| _dh:=5
+|? _dh>30
+|| _dh:=30
+?};
+_ws:=_TAB.mk_sel('Notyfikacje — zarządzanie modułem'@,'N',,,,,_dh,,'U');
+_TAB.win_fld(_ws,,'NAME',,,,,,,1);
+_TAB.win_act(_ws,,'Formuła','Uruchom'@,,,"($cur_tab(1,1).FORMULA)()",,1,,,,'U');
+_TAB.win_act(_ws,,'Formuła','Informacja'@,,,"FUN.info(cur_tab(1,1).HELP)",,,,,,'I');
+_TAB.win_act(_ws,,'Rekord',,,,"
+   _par:=params_get();
+   _TAB:=_par.TAB;
+   echo(_TAB.HELP);
+   {? _TAB.FORMULA=''
+   || _ag:='U';
+      _color:=1
+   || _ag:='';
+      _color:=0
+   ?};
+   {? _a
+   || _TAB.actions_grayed(_par.ws,_ag)
+   ?};
+   _color
+   ");
+_TAB.win_sel(_ws);
+params_set(
+   'TAB',_TAB,
+   'ws',_ws,
+   'szer',_szer
+);
+_TAB.select();
+
+~~
+
+:Sign Version 2.0 jowisz:1045 2024/01/23 14:35:19 83e3ba63ce34e40ec5427d9de83dada593da4b147396e7a11eafd6da6ba6c97c2ae06d36418e5204859c4b1c353aab5c2a387f798066ad65ec4bea9de328972680ca712e9a2daacdef5c5812bb626511258be9873a4b55c3e3e66d60fef1a1f6681fc0a113b24e78db0510047c4b29d48c2b15331c65b5aa34f04b36623141e9

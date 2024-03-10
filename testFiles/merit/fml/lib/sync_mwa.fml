@@ -1,0 +1,1844 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: sync_mwa.fml
+:: Utworzony: 10.01.2020
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły służące do synchronizacji danych z systemami zewnętrznymi przez API
+::======================================================================================================================
+
+
+\define
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Definiowanie
+::----------------------------------------------------------------------------------------------------------------------
+_env:=obj_new('loglevel'); _env.loglevel:=-1;
+params_set('env',_env);
+
+SYNC_MWA.cntx_psh();
+SYNC_MWA.index('TREE');
+SYNC_MWA.prefix();
+:: Renumeracja rekordow za pomoca d'n'd
+SYNC_MWA.dnd_sel('WER',,'records.SYNC_MWA',"exec('renum','synchro')");
+
+_grp:=SYNC_MWA.grp_make('',,'syncmwac',,,"exec('exit','zws',_a)");
+SYNC_MWA.grp_sel(_grp,,'WER',,,,,,,,,,'maximized');
+SYNC_MWA.win_sel(_grp);
+SYNC_MWA.win_patt('SZUK');
+
+AreaTitle.setTabWin(SYNC_MWA);
+AreaTitle.setTitle();
+
+SYNC_MWA.select();
+:: Wyłączenie d'n'd
+SYNC_MWA.dnd_sel('WER',,'records.SYNC_MWA',"");
+SYNC_MWA.cntx_pop();
+~~
+
+
+\process_start
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Przetwarzanie startowej wysyłki danych
+::       Zasilenie następuje wg ustalonej kolejności tabel a nie metod. Dopiero po zasileniu tabeli, albo dwukrotmym
+::       wystapieniu błędu program przechodzi do zasilenia z kolejnej tabeli.
+::   WE: _a - SYNC_PD.SYM
+::       [_b] - poziom logowania ([-1],0,1,2)
+::       [_c] - czy wyświetlać progress [0]/1
+::   WY: obj_new('SIZE','RESULT')
+::       SIZE: -1 / ilość definicji dla których uruchomiono przetwarzanie
+::       RESULT: 1-OK, 0-pojawiły się błędy
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('SIZE','RESULT');
+_result.SIZE:=-1;
+_result.RESULT:=1;
+
+KOMM.init(255,,'Wysyłanie danych'@);
+
+{? var_pres('_a')=type_of('')
+|| _sync_pd:=_a
+|| KOMM.add('Należy podać przeznaczenie danych (parametr %1).'@['_a']);
+   KOMM.select();
+   _result.RESULT:=0;
+   return(_result)
+?};
+
+:: Opóźnione aktualizacje
+exec('run','portaloa');
+
+:: środowisko wywołania
+_env:=exec('env','sync_mwa');
+_env.Context:='start';
+params_set('env',_env);
+{? var_pres('_b')=type_of(0)
+|| _env.LogLevel:=_b
+|| _env.LogLevel:=-1
+?};
+
+{? var_pres('_c')=type_of(0)
+|| _progress:=_c
+|| _progress:=0
+?};
+
+:: Maksymalny rozmiar paczki danych pobieranych z synchro
+_max_records:=100;
+
+:: Maksymalny znacznik czasowy, na który są pobierane dane
+_time_ident:=exec('time_ident','synchro');
+
+SYNC_MWA.cntx_psh();
+
+:: _tab_order - tabela zawiera uporządkowane akronimy tabel - uwzględniane tylko zapisy dotyczące wysyłania
+_tab_order:=tab_tmp(3
+   ,'LP','INTEGER','Lp'
+   ,'REPL','INTEGER','Replika'
+   ,'ACR','STRING[8]','Akronim'
+   ,'SIZE','INTEGER','Liczba rekordów'
+   ,'TIME_GET','REAL','Czas pobierania danych'
+   ,'TIME_WRK','REAL','Czas przetwarzania danych'
+);
+_tab_order_ndx0:=_tab_order.index('?');
+_tab_order_ndx1:=_tab_order.ndx_tmp(,,'REPL',,,'ACR',,);
+_tab_order.index(_tab_order_ndx1);
+SYNC_MWA.index('PD_AKT');
+SYNC_MWA.prefix(_sync_pd,'T');
+{? SYNC_MWA.first()
+|| {!
+   |? {? SYNC_MWA.PARENT<>0 & SYNC_MWA.TYPE=exec('mwac_type_send','synchro')
+      || _repl:={? SYNC_MWA.SYNC_REP=null() || 0 || SYNC_MWA.SYNC_REP().NR ?};
+         _tab_order.prefix(_repl,SYNC_MWA.TAB_ACR,);
+         {? ~_tab_order.first()
+         || _tab_order.LP:=SYNC_MWA.LP;
+            _tab_order.REPL:=_repl;
+            _tab_order.ACR:=SYNC_MWA.TAB_ACR;
+            _tab_order.add()
+         ?}
+      ?};
+      SYNC_MWA.next()
+   !}
+?};
+
+:: Indeks użyty w poniższej pętli
+SYNC_MWA.index('TYP_RTAB');
+
+_sync_log:=exec('get','#params',100955,2);
+
+_can_continue:=1;
+_err_500_all:=0;
+_err_500_msg:=
+   '\n\n'+
+   'Uwaga: podczas wysyłania danych wystąpiły błędy klasy %1.\n'
+   'Wysyłanie danych będzie powtarzane.\n'
+   'Zalecane jest przerwanie procesu i zweryfikowanie przyczyn błędów.'@['500'];
+
+_tab_order.index(_tab_order_ndx0);
+_tab_order.prefix();
+_size:=_tab_order.size();
+{? _tab_order.first()
+|| {? _progress || FUN.prg_start(_size,'Zasilanie danych.'@,,,0) ?};
+   _result.SIZE:=0;
+   {!
+   |? KOMM.sect_beg('Przetwarzanie tabeli %1 - replika %2.'@[_tab_order.ACR,$_tab_order.REPL]);
+      {? _progress
+      || _can_continue:=FUN.prg_next(1,
+            'Pobieranie danych z tabeli %1.'@[_tab_order.ACR]+
+            {? _err_500_all>0 || _err_500_msg || '' ?}
+         )
+      ?};
+
+      _loop:=1;
+
+      {!
+      |?
+::       Pobranie danych o zmodyfikowanych rekordach w tabeli _tab_order.ACR w kontekście bieżacej firmy
+::       maksimum _max_records rekordów
+         {? _progress
+         || _can_continue:=
+               FUN.prg_next(0,
+                  'Pobieranie danych z tabeli %1 - replika %2.'@[_tab_order.ACR,$_tab_order.REPL]+
+                  {? _err_500_all>0 || _err_500_msg || '' ?}
+               )
+         ?};
+
+         {? _can_continue>0
+         || _start:=utc_get();
+            _tab:=proc_exe('new_sync@synchro',_sync_pd,_tab_order.REPL,_tab_order.ACR,_max_records,,_time_ident);
+            {? var_pres('_tab')>100
+            ||
+               _tab_size:=_tab.size();
+
+               {? (_sync_log='T' & _tab_size>0) | _sync_log='W'
+               || exec('sync_log','sync_mwa',_sync_pd,_tab_order.REPL,_tab_order.ACR,'Zasilanie\n%1'[_time_ident],_tab)
+               ?};
+
+               KOMM.sect_beg(
+                  'Przetwarzanie tabeli %1 - replika %2 (liczba rekordów: %3).'@
+                  [_tab_order.ACR,$_tab_order.REPL,$_tab_size]
+               );
+               _tab_order.TIME_GET+=utc_get()-_start;
+               {? _progress
+               || FUN.prg_next(0,
+                     'Wysyłanie danych z tabeli %1 - replika %2.'@[_tab_order.ACR,$_tab_order.REPL]+
+                     {? _err_500_all>0 || _err_500_msg || '' ?}
+                  )
+               ?};
+::             Sortowanie wg IDPUT ze źródłowego zapisu
+               _tab_index:=_tab.ndx_tmp(,,'R_IDPUT',,);
+               _tab.index(_tab_index);
+
+               _tab_order.SIZE+=_tab_size;
+               _result.SIZE+=_tab_size;
+
+               _ok:=1;
+               _err_500:=0;
+               _id_sync:='';
+
+               SYNC_MWA.prefix('T',exec('mwac_type_send','synchro'),_sync_pd,_tab_order.REPL,_tab.ACR,);
+               {? SYNC_MWA.first()
+               || {!
+                  |? _pack:=SYNC_MWA.PACK;
+                     KOMM.sect_beg('Przetwarzanie metody: %1.'@[SYNC_MWA.METHOD]);
+::                   Wysyłka w paczkach - przygotownie tabeli gromadzącej uidref()-y rekordów
+                     {? _pack
+                     || _tab_uidref:=tab_tmp(1,'UIDREF','STRING[48]','uidref()')
+                     ?};
+
+                     {? _tab.first()
+                     ||
+                        _id_sync:=_tab.IDSYNC;
+                        {!
+                        |? {? _tab.RODZ='put'
+                           || _env.MethodName:=SYNC_MWA.METHOD;
+                              _env.TabAcr:=SYNC_MWA.TAB_ACR;
+::                            Wysyłka w paczkach - tutaj tylko zbieranie zawartości paczki
+                              {? _pack
+                              ||
+::                               Pobranie uidref() - zakładamy, że jest w polu TR1, co wynika z definicji SYNCHRO
+                                 _uidref:=8-_tab.TR1-1;
+                                 _tab_uidref.UIDREF:=_uidref;
+                                 _tab_uidref.add()
+::                            Wysyłka pojedynczymi rekordami - faktyczna wysyłka
+                              ||
+::                               Pobranie uidref() - zakładamy, że jest w polu TR1, co wynika z definicji SYNCHRO
+                                 _uidref:=8-_tab.TR1-1;
+::                               Wywołanie zapytania i parsowanie wyniku
+                                 KOMM.sect_beg(
+                                    'Przetworzono metodę %1 (przeznaczenie danych %2) dla zapisu: %3.'@
+                                    [SYNC_MWA.METHOD,_sync_pd,exec('record','#to_string',_uidref,1)]
+                                 );
+                                 {? var_pres('Param',_env)>100 || obj_del(_env.Param) ?};
+                                 {? var_pres('_res')>100 || obj_del(_res) ?};
+                                 _env.Param:=_uidref;
+                                 _start:=utc_get();
+                                 _res:=exec('run','sync_mwa');
+                                 {? var_pres('InetResponse',_env)>100 & _env.InetResponse.Status>=500
+                                 || _err_500:=_err_500_all:=1
+                                 ?};
+                                 _tab_order.TIME_WRK+=utc_get()-_start;
+                                 {? type_of(_res)=type_of(0) & _res=0
+                                 || _ok:=0;
+                                    _formula:="trig_off('*','*'); put(,1); trig_on('*','*')";
+                                    exec('FindAndGet','#table',_env.TabAcr,_uidref,,_formula,~~);
+                                    {? _err_500>0 || delay(1) ?}
+                                 ?};
+                                 KOMM.sect_end()
+                              ?}
+                           ?};
+                           _tab.next()
+                        !}
+                     || _loop:=0;
+                        _id_sync:=''
+                     ?};
+
+::                   Wysyłka w paczkach - faktyczna wysyłka
+                     {? _pack
+                     || {? var_pres('Param',_env)>100 || obj_del(_env.Param) ?};
+                        {? var_pres('_res')>100 || obj_del(_res) ?};
+                        _env.Param:=_tab_uidref;
+                        _start:=utc_get();
+                        _res:=exec('run','sync_mwa');
+                        {? var_pres('InetResponse',_env)>100 & _env.InetResponse.Status>=500
+                        || _err_500:=_err_500_all:=1
+                        ?};
+                        _tab_order.TIME_WRK+=utc_get()-_start;
+                        {? type_of(_res)=type_of(0) & _res=0
+                        || _ok:=0;
+                           _formula:="trig_off('*','*'); put(,1); trig_on('*','*')";
+                           _tab_uidref.prefix();
+                           {? _tab_uidref.first()
+                           || {!
+                              |? exec('FindAndGet','#table',_env.TabAcr,_tab_uidref.UIDREF,,_formula,~~);
+                                 _tab_uidref.next()
+                              !}
+                           ?};
+                           {? _err_500>0 || delay(5) ?}
+                        ?};
+                        obj_del(_env.Param);
+                        obj_del(_tab_uidref);
+                        ~~
+                     ?};
+                     KOMM.sect_end();
+                     SYNC_MWA.next()
+                  !}
+
+::             Brak danych, więc nie ma sensu pętlić
+               || _loop:=0
+               ?};
+               _tab.ndx_drop();
+
+::             Kasowanie identyfikatorów (rekordy powodujące błędy dostaną wcześniej put(,1) )
+               {? _id_sync<>''
+               || proc_exe('new_sync_id_del@synchro',_sync_pd,_tab_order.REPL,_tab_order.ACR,,_id_sync)
+               ?};
+
+::             Jeżeli nie jest ok, a nie ma błędów "500",
+::             to bezwarunkowe zakończenie pętli (pozostają nieprzetworzone dane)
+               {? _ok=0 & _err_500=0
+               || _result.RESULT:=0;
+                  _loop:=0;
+                  KOMM.error(
+                     'Dla tabeli %1 (replika %2) wystąpiły błędy przetwarzania. Wysłanie danych musi być powtórzone.'@
+                     [_tab_order.ACR,$_tab_order.REPL],
+                     0
+                  )
+::             Jeżeli nie jest ok, ale są błędy "500",
+::             to jednak dalej pętlimy w tym miejscu (powtarzamy wysyłanie, aż się odetka)
+               |? _ok=0 & _err_500>0
+               || KOMM.error(
+                     'Dla tabeli %1 (replika %2) wystąpiły błędy 500. Wysłanie danych będzie powtórzone.'@
+                     [_tab_order.ACR,$_tab_order.REPL],
+                     0
+                  )
+               ?};
+
+               KOMM.sect_end();
+
+               obj_del(_tab)
+
+::          Nie pobrało danych, więc nie ma sensu pętlić
+            || {? _sync_log='W' || exec('sync_log','sync_mwa',_sync_pd,_tab_order.REPL,_tab_order.ACR,'') ?};
+               _loop:=0
+            ?}
+
+         ?};
+
+         _can_continue>0 & _loop>0
+      !};
+
+      KOMM.sect_end();
+
+      _tab_order.put();
+      _can_continue>0 & _tab_order.next()
+   !};
+   {? _progress || FUN.prg_stop() ?}
+?};
+
+SYNC_MWA.cntx_pop();
+
+:: Raport końcowy
+{? _tab_order.first()
+|| KOMM.sect_beg('Tabele przetworzone:'@);
+   {!
+   |? KOMM.info(
+          '%1 - replika %2; liczba rekordów: %3; czas pobierania: %4s; czas przetwarzania: %5s'@
+          [_tab_order.ACR,$_tab_order.REPL,$_tab_order.SIZE,$_tab_order.TIME_GET,$_tab_order.TIME_WRK],0
+      );
+      _tab_order.next()
+   !};
+   KOMM.sect_end()
+?};
+
+KOMM.select();
+
+_result
+
+
+\test_start
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Testowe uruchomienie startowej wysyłki danych (zalecane przy zasilaniu początkowym). Uruchamia wszystkie
+::       zaakceptowane funkcje typu 'Wysyłanie' i 'Usuwanie' w ramach wskazanego przeznaczenia danych.
+::   WE: [_a] - przeznaczenie danych SYNC_PD.SYM
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _pd:=_a
+|| _pd:=''
+?};
+
+FUN.info(
+   'UWAGA:\n\n'
+   'Przed PIERWSZYM zasileniem należy wykonać funkcję inicjującą dane\n'
+   'dla wszystkich tabel wskazanego przeznaczenia danych.\n\n'
+   'Na czas zasilania należy WYŁĄCZYĆ wszystkie procesy związane\n'
+   'z zasilanym przeznaczeniem danych.'@
+);
+
+_tab:=tab_tmp(
+   ,'LOGLEVEL','INTEGER','Poziom raportowania'@
+);
+_tab.LOGLEVEL:=-1;
+
+_upf:='mwa.upf';
+_sect:='START';
+{! _lp:=1 .. _tab.fld_num()
+|! _acr:=_tab.fld_acr(_lp);
+   _sval:=exec('get','#profile',_upf,_sect,_acr);
+   _val:=
+      {? _sval=''
+      || {? _acr='LOGLEVEL'
+         || 2
+         || #_sval
+         ?}
+      || #_sval
+      ?};
+   ($('_a.'+_acr+':=_b'))(_tab,_val)
+!};
+_red:=_tab.mk_edit('Startowe zasilenie'@,0,'testsend');
+_tab.win_esep(_red,'Komunikacja'@);
+_tab.win_efld(_red,VAR1,'SYNC_PD','SYM','RSYM',,,,'Przeznaczenie danych'@);
+_tab.efld_opt(_red,'mark=1'+{? _pd='' || '' || ',editable=grayed' ?},VAR1,'SYNC_PD');
+_tab.win_esep(_red,'Raportowanie'@);
+_tab.win_efld(_red,,'LOGLEVEL',,,,,,,,,'radio-buttons',
+   ,'Brak rejestrowania zdarzeń'@,"0"
+   ,'Rejestrowane wyłącznie błędy'@+' *',"1"
+   ,'Rejestrowane wszystkie wywołania'@,"2"
+   ,'Poziom rejestrowania bez zmian'@,"-1"
+);
+_tab.win_efld(_red,AH,'H',,,,,,'* '+'nie dotyczy błędów biznesowych'@);
+exec('ok_esc','#window',_tab,_red);
+_tab.win_edit(_red);
+VAR1.SYNC_PDR:='I';
+{? _pd<>'' || VAR1.SYNC_PD:=exec('FindInSet','#table','SYNC_PD','SYM',_pd,,,1) ?};
+{? _tab.edit("__CHK.record(VAR1,,'SYNC_PD')")
+|| {! _lp:=1 .. _tab.fld_num()
+   |! _acr:=_tab.fld_acr(_lp);
+      exec('set','#profile',_upf,_sect,_acr,$($('_a.'+_acr))(_tab))
+   !};
+   _log_level:=_tab.LOGLEVEL;
+   exec('process_start','sync_mwa',VAR1.SYNC_PD().SYM,_log_level,1)
+?};
+~~
+
+
+\process_send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Przetwarzanie bieżącej wysyłki danych
+::   WE: _a - SYNC_PD.SYM - symbol przeznaczenia danych
+::       [_b] - poziom logowania ([-1],0,1,2)
+::       [_c] - czy kasować przetworzone identyfikatory [1]/0
+::       [_d] - akronim tabeli, której dotyczy przetwarzanie
+::       [_e] - metoda/metody API, dla których uruchomić obsługę
+::       [_f] - czy ograniczyć przetwarzanie tylko dla metod typu 'Wysyłanie' (bez typu 'Usuwanie')
+::              może być używane alternatywnie przy pierwotnym zasilaniu
+::       [_g] - czy wyświetlać progress [0]/1
+::       [_h] - czy inicjować i wyświetlać KOMM w tej formule (jeżeli nie, KOMM powinien być powołany na zewnątrz) [1]/0
+::   WY: obj_new('SIZE','RESULT')
+::       SIZE: -1 / ilość zapisów dla których uruchomiono przetwarzanie
+::       RESULT: 1-OK, 0-pojawiły się błędy
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('SIZE','RESULT');
+_result.SIZE:=-1;
+_result.RESULT:=1;
+
+:: UWAGA: dane są przetwarzane w kolejności tabelami (zgodnie z definicją), potem wg IDPUT, potem wg metod
+
+{? var_pres('_h')=type_of(0)
+|| _komm:=_h
+|| _komm:=1
+?};
+
+{? _komm || KOMM.init(255,,'Wysyłanie danych'@) ?};
+
+{? var_pres('_a')=type_of('')
+|| _sync_pd:=_a
+|| KOMM.add('Należy podać przeznaczenie danych (parametr %1).'@['_a']);
+   {? _komm || KOMM.select() ?};
+   _result.RESULT:=0;
+   return(_result)
+?};
+
+:: Opóźnione aktualizacje
+exec('run','portaloa');
+
+:: Środowisko wywołania
+_env:=exec('env','sync_mwa');
+_env.Context:='send';
+params_set('env',_env);
+{? var_pres('_b')=type_of(0)
+|| _env.LogLevel:=_b
+|| _env.LogLevel:=-1
+?};
+
+{? var_pres('_c')=type_of(0)
+|| _id_del:=_c
+|| _id_del:=1
+?};
+
+{? var_pres('_d')=type_of('')
+|| _tab_acr:=_d
+|| _tab_acr:=''
+?};
+
+{? var_pres('_e')=type_of('')
+|| _method:=_e;
+   {? _method<>''
+   || {? 1+_method<>',' || _method:=','+_method ?};
+      {? _method+1<>',' || _method:=_method+',' ?}
+   ?}
+|| _method:=''
+?};
+
+{? var_pres('_f')=type_of(0)
+|| _only_send:=_f
+|| _only_send:=0
+?};
+
+{? var_pres('_g')=type_of(0)
+|| _progress:=_g
+|| _progress:=0
+?};
+
+:: Maksymalny rozmiar paczki danych pobieranych z synchro
+_max_records:=100;
+
+:: Maksymalny znacznik czasowy, na który są pobierane dane
+_time_ident:=exec('time_ident','synchro');
+
+SYNC_MWA.cntx_psh();
+
+:: _tab_order - tabela zawiera uporządkowane akronimy tabel
+_tab_order:=tab_tmp(3
+   ,'LP','INTEGER','Lp'
+   ,'REPL','INTEGER','Replika'
+   ,'ACR','STRING[8]','Akronim'
+   ,'SIZE','INTEGER','Liczba rekordów'
+   ,'TIME_GET','REAL','Czas pobierania danych'
+   ,'TIME_WRK','REAL','Czas przetwarzania danych'
+);
+_tab_order_ndx0:=_tab_order.index('?');
+_tab_order_ndx1:=_tab_order.ndx_tmp(,,'REPL',,,'ACR',,);
+_tab_order.index(_tab_order_ndx1);
+SYNC_MWA.index('PD_AKT');
+SYNC_MWA.prefix(_sync_pd,'T');
+{? SYNC_MWA.first()
+|| {!
+   |? {? SYNC_MWA.PARENT<>0 &
+         (_tab_acr='' | SYNC_MWA.TAB_ACR=_tab_acr) &
+         (_method='' | _method*(','+SYNC_MWA.METHOD+',')>0) &
+         (SYNC_MWA.TYPE=exec('mwac_type_send','synchro') | ~_only_send) &
+         SYNC_MWA.TYPE<>exec('mwac_type_exec','synchro') &
+         SYNC_MWA.TYPE<>exec('mwac_type_receive','synchro')
+      || _repl:={? SYNC_MWA.SYNC_REP=null() || 0 || SYNC_MWA.SYNC_REP().NR ?};
+         _tab_order.prefix(_repl,SYNC_MWA.TAB_ACR,);
+         {? ~_tab_order.first()
+         || _tab_order.LP:=SYNC_MWA.LP;
+            _tab_order.REPL:=_repl;
+            _tab_order.ACR:=SYNC_MWA.TAB_ACR;
+            _tab_order.add()
+         ?}
+      ?};
+      SYNC_MWA.next()
+   !}
+?};
+
+:: Indeks użyty w poniższej pętli
+SYNC_MWA.index('TYP_RTAB');
+
+_sync_log:=exec('get','#params',100955,2);
+
+_tab_order.index(_tab_order_ndx0);
+_tab_order.prefix();
+_size:=_tab_order.size();
+{? _tab_order.first()
+|| {? _progress || FUN.prg_start(_size,'Wysyłanie danych.'@,,,1) ?};
+   _result.SIZE:=0;
+   {!
+   |? _loop:=0;
+      {!
+      |? KOMM.sect_beg('Przetwarzanie tabeli %1 - replika %2.'@[_tab_order.ACR,$_tab_order.REPL]);
+::       Pobranie danych o zmodyfikowanych rekordach w tabeli _tab_order.ACR w kontekście bieżacej firmy
+::       maksimum _max_records rekordów
+         {? _progress
+         || FUN.prg_next(1,'Pobieranie danych z tabeli %1 - replika %2.'@[_tab_order.ACR,$_tab_order.REPL])
+         ?};
+         _start:=utc_get();
+         _tab:=proc_exe('new_sync@synchro',_sync_pd,_tab_order.REPL,_tab_order.ACR,_max_records,,_time_ident);
+         {? var_pres('_tab')>100
+         ||
+            _tab_size:=_tab.size();
+
+            {? (_sync_log='T' & _tab_size>0) | _sync_log='W'
+            || exec('sync_log','sync_mwa',_sync_pd,_tab_order.REPL,_tab_order.ACR,'Wysyłanie\n%1'[_time_ident],_tab)
+            ?};
+
+            _tab_order.TIME_GET+=utc_get()-_start;
+            {? _progress
+            || FUN.prg_next(0,'Wysyłanie danych z tabeli %1 - replika %2.'@[_tab_order.ACR,$_tab_order.REPL])
+            ?};
+::          Sortowanie wg IDPUT ze źródłowego zapisu
+            _tab_index:=_tab.ndx_tmp(,,'R_IDPUT',,);
+            _tab.index(_tab_index);
+
+            _tab_order.SIZE+=_tab_size;
+            _result.SIZE+=_tab_size;
+
+            _ok_put:=_ok_del:=1;
+
+            {? _tab.first()
+            ||
+::             Pętla tylko wtedy, gdy kasowane są identyfikatory (inaczej byłaby nieskończona)
+               {? _id_del || _loop:=1 ?};
+
+               _id_sync:=_tab.IDSYNC;
+               {!
+               |? {? _tab.RODZ='put'
+                  || SYNC_MWA.prefix('T',exec('mwac_type_send','synchro'),_sync_pd,_tab_order.REPL,_tab.ACR,);
+                     {? SYNC_MWA.first()
+                     || {!
+                        |? _env.MethodName:=SYNC_MWA.METHOD;
+                           _env.TabAcr:=SYNC_MWA.TAB_ACR;
+::                         Pobranie uidref() - zakładamy, że jest w polu TR1, co wynika z definicji SYNCHRO
+                           _uidref:=8-_tab.TR1-1;
+::                         Wywołanie zapytania i parsowanie wyniku
+                           KOMM.sect_beg(
+                              'Przetworzono metodę %1 (przeznaczenie danych %2) dla zapisu: %3.'@
+                              [SYNC_MWA.METHOD,_sync_pd,exec('record','#to_string',_uidref,1)]
+                           );
+                           {? var_pres('Param',_env)>100 || obj_del(_env.Param) ?};
+                           {? var_pres('_res')>100 || obj_del(_res) ?};
+                           _env.Param:=_uidref;
+                           _start:=utc_get();
+                           _res:=exec('run','sync_mwa');
+                           _tab_order.TIME_WRK+=utc_get()-_start;
+                           {? type_of(_res)=type_of(0) & _res=0
+                           || _ok_put:=0;
+                              _formula:="trig_off('*','*'); put(,1); trig_on('*','*')";
+                               exec('FindAndGet','#table',_env.TabAcr,_uidref,,_formula,~~)
+                           ?};
+                           KOMM.sect_end();
+                           SYNC_MWA.next()
+                        !}
+                     ?}
+                  |? _tab.RODZ='del' & ~_only_send
+                  || SYNC_MWA.prefix('T',exec('mwac_type_delete','synchro'),_sync_pd,_tab_order.REPL,_tab.ACR,);
+                     {? SYNC_MWA.first()
+                     || {!
+                        |? _env.MethodName:=SYNC_MWA.METHOD;
+                           _env.TabAcr:=SYNC_MWA.TAB_ACR;
+::                         Pobranie uidref() - zakładamy, że jest w polu TR1, co wynika z definicji SYNCHRO
+                           _tr:=_tab.TR1;
+                           _uidref:=8-_tr-1;
+::                         Wywołanie zapytania i parsowanie wyniku
+                           KOMM.sect_beg(
+                              'Przetworzono metodę %1 (przeznaczenie danych %2) dla usuniętego zapisu: %3.'@
+                              [SYNC_MWA.METHOD,_sync_pd,_uidref]
+                           );
+                           {? var_pres('Param',_env)>100 || obj_del(_env.Param) ?};
+                           {? var_pres('_res')>100 || obj_del(_res) ?};
+                           _env.Param:=_uidref;
+                           _start:=utc_get();
+                           _res:=exec('run','sync_mwa');
+                           _tab_order.TIME_WRK+=utc_get()-_start;
+                           {? type_of(_res)=type_of(0) & _res=0
+                           || _ok_del:=0
+                           ?};
+                           KOMM.sect_end();
+                           SYNC_MWA.next()
+                        !}
+                     ?}
+                  ?};
+                  _tab.next()
+               !};
+               _tab.ndx_drop()
+            || _loop:=0;
+               _id_sync:=''
+            ?};
+
+::          Kasowanie identyfikatorów - rekordy powodujące błędy dostaną wcześniej put(,1) (nie dotyczy del-i)
+            {? _ok_del & _id_del & _id_sync<>''
+            || proc_exe('new_sync_id_del@synchro',_sync_pd,_tab_order.REPL,_tab_order.ACR,,_id_sync)
+            ?};
+
+::          Jeżeli nie jest ok, to bezwarunkowe zakończenie pętli (pozostają nieprzetworzone dane)
+            {? _ok_put=0 | _ok_del=0
+            || _result.RESULT:=0;
+               _loop:=0;
+               KOMM.error(
+                  'Dla tabeli %1 (replika %2) wystąpiły błędy przetwarzania. Wysłanie danych musi być powtórzone.'@
+                  [_tab_order.ACR,$_tab_order.REPL],
+                  0
+               )
+            ?};
+
+            KOMM.sect_end();
+
+            obj_del(_tab)
+
+         || {? _sync_log='W' || exec('sync_log','sync_mwa',_sync_pd,_tab_order.REPL,_tab_order.ACR,'') ?}
+         ?};
+
+         _loop>0
+      !};
+
+      _tab_order.put();
+      _tab_order.next()
+   !};
+   {? _progress || FUN.prg_stop() ?}
+?};
+
+SYNC_MWA.cntx_pop();
+
+:: Raport końcowy
+{? _tab_order.first()
+|| KOMM.sect_beg('Tabele przetworzone:'@);
+   {!
+   |? KOMM.info(
+          '%1 - replika %2; liczba rekordów: %3; czas pobierania: %4s; czas przetwarzania: %5s'@
+          [_tab_order.ACR,$_tab_order.REPL,$_tab_order.SIZE,$_tab_order.TIME_GET,$_tab_order.TIME_WRK],0
+      );
+      _tab_order.next()
+   !};
+   KOMM.sect_end()
+?};
+
+{? _komm || KOMM.select() ?};
+
+_result
+
+
+\test_send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Testowe uruchomienie bieżącej wysyłki danych. Uruchamia wszystkie zaakceptowane
+::       funkcje typu 'Wysyłanie' i 'Usuwanie' w ramach wskazanego przeznaczenia danych.
+::   WE: [_a] - przeznaczenie danych SYNC_PD.SYM
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _pd:=_a
+|| _pd:=''
+?};
+
+_tab:=tab_tmp(
+   ,'ID_DEL','INTEGER','Usuwać przetworzone identyfikatory?'@
+   ,'LOGLEVEL','INTEGER','Poziom raportowania'@
+);
+_tab.LOGLEVEL:=-1;
+_tab.ID_DEL:=1;
+
+_upf:='mwa.upf';
+_sect:='SEND';
+{! _lp:=1 .. _tab.fld_num()
+|! _acr:=_tab.fld_acr(_lp);
+   _sval:=exec('get','#profile',_upf,_sect,_acr);
+   _val:=
+      {? _sval=''
+      || {? _acr='ID_DEL'
+         || 1
+         |? _acr='LOGLEVEL'
+         || 2
+         || #_sval
+         ?}
+      || #_sval
+      ?};
+   ($('_a.'+_acr+':=_b'))(_tab,_val)
+!};
+_red:=_tab.mk_edit('Test wysyłania'@,0,'testsend');
+_tab.win_esep(_red,'Komunikacja'@);
+_tab.win_efld(_red,VAR1,'SYNC_PD','SYM','RSYM',,,,'Przeznaczenie danych'@);
+_tab.efld_opt(_red,'mark=1'+{? _pd='' || '' || ',editable=grayed' ?},VAR1,'SYNC_PD');
+_tab.win_efld(_red,,'ID_DEL',,,,,,,,,'check-box','left_label=1',"1","0");
+_tab.win_esep(_red,'Raportowanie'@);
+_tab.win_efld(_red,,'LOGLEVEL',,,,,,,,,'radio-buttons',
+   ,'Brak rejestrowania zdarzeń'@,"0"
+   ,'Rejestrowane wyłącznie błędy'@+' *',"1"
+   ,'Rejestrowane wszystkie wywołania'@,"2"
+   ,'Poziom rejestrowania bez zmian'@,"-1"
+);
+_tab.win_efld(_red,AH,'H',,,,,,'* '+'nie dotyczy błędów biznesowych'@);
+exec('ok_esc','#window',_tab,_red);
+_tab.win_edit(_red);
+VAR1.SYNC_PDR:='I';
+{? _pd<>'' || VAR1.SYNC_PD:=exec('FindInSet','#table','SYNC_PD','SYM',_pd,,,1) ?};
+{? _tab.edit("__CHK.record(VAR1,,'SYNC_PD')")
+|| {! _lp:=1 .. _tab.fld_num()
+   |! _acr:=_tab.fld_acr(_lp);
+      exec('set','#profile',_upf,_sect,_acr,$($('_a.'+_acr))(_tab))
+   !};
+   _log_level:=_tab.LOGLEVEL;
+   exec('process_send','sync_mwa',VAR1.SYNC_PD().SYM,_log_level,_tab.ID_DEL,,,,1)
+?};
+~~
+
+
+\process_receive
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Przetwarzanie odbierania danych
+::   WE: _a - SYNC_PD.SYM
+::       [_b] - poziom logowania ([-1],0,1,2)
+::       [_c] - Czy pobierać dane bez względu na warunek wynikający z przekazywanego parametru
+::       [_d] - akronim tabeli, której dotyczy przetwarzanie
+::       [_e] - czy wyświetlać progress [0]/1
+::       [_f] - czy inicjować i wyświetlać KOMM w tej formule (jeżeli nie, KOMM powinien być powołany na zewnątrz) [1]/0
+::       [_g] - metoda/metody API, dla których uruchomić obsługę
+::   WY: obj_new('SIZE','RESULT')
+::       SIZE: -1 / ilość definicji dla których uruchomiono przetwarzanie
+::       RESULT: 1-OK, 0-pojawiły się błędy
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('SIZE','RESULT');
+_result.SIZE:=-1;
+_result.RESULT:=1;
+
+{? var_pres('_f')=type_of(0)
+|| _komm:=_f
+|| _komm:=1
+?};
+
+{? _komm || KOMM.init(255,,'Odbieranie danych'@) ?};
+
+{? var_pres('_a')=type_of('')
+|| _sync_pd:=_a
+|| KOMM.add('Należy podać przeznaczenie danych (parametr %1).'['_a']);
+   {? _komm || KOMM.select() ?};
+   _result.RESULT:=0;
+   return(_result)
+?};
+
+:: Środowisko wywołania
+_env:=exec('env','sync_mwa');
+_env.Context:='receive';
+params_set('env',_env);
+{? var_pres('_b')=type_of(0)
+|| _env.LogLevel:=_b
+|| _env.LogLevel:=-1
+?};
+
+{? var_pres('_c')=type_of(0)
+|| _all:=_c
+|| _all:=0
+?};
+
+{? var_pres('_d')=type_of('')
+|| _tab_acr:=_d
+|| _tab_acr:=''
+?};
+
+{? var_pres('_e')=type_of(0)
+|| _progress:=_e
+|| _progress:=0
+?};
+
+{? var_pres('_g')=type_of('')
+|| _method:=_g;
+   {? _method<>''
+   || {? 1+_method<>',' || _method:=','+_method ?};
+      {? _method+1<>',' || _method:=_method+',' ?}
+   ?}
+|| _method:=''
+?};
+
+SYNC_MWA.cntx_psh();
+
+{? _tab_acr=''
+|| SYNC_MWA.index('START');
+   SYNC_MWA.prefix('T',exec('mwac_type_receive','synchro'),_sync_pd,)
+|| SYNC_MWA.index('TYP_TAB');
+   SYNC_MWA.prefix('T',exec('mwac_type_receive','synchro'),_sync_pd,_tab_acr,)
+?};
+
+_size:=SYNC_MWA.size();
+{? SYNC_MWA.first()
+|| {? _progress || FUN.prg_start(_size,'Pobieranie danych.'@,,,1) ?};
+   _result.SIZE:=0;
+   {!
+   |? {? (_method='' | _method*(','+SYNC_MWA.METHOD+',')>0)
+      ||
+         {? _progress
+         || FUN.prg_next(1,'Pobieranie danych do tabeli: %1, metoda: %2.'@[SYNC_MWA.TAB_ACR,SYNC_MWA.METHOD])
+         ?};
+         _env.MethodName:=SYNC_MWA.METHOD;
+         _env.TabAcr:=SYNC_MWA.TAB_ACR;
+         _result.SIZE+=1;
+::       Wywołanie zapytania i parsowanie wyniku
+         KOMM.sect_beg(
+            'Przetworzono metodę %1 (przeznaczenie danych %2).'@
+            [SYNC_MWA.METHOD,SYNC_MWA.SYNC_PD().SYM]
+         );
+         _env.Param:={? _all || '' || exec('sync_mwa_result_get','synchro',SYNC_MWA.ref()) ?};
+::       Jeżeli metoda parsująca ustawi _env.Loop, to następi zapętlenie zpytań
+         _env.Loop:=0;
+         {!
+         |? _res:=exec('run','sync_mwa');
+            SYNC_MWA.get();
+            _env.Param:=exec('sync_mwa_result_get','synchro',SYNC_MWA.ref());
+            _env.Loop
+         !};
+         {? type_of(_res)=type_of(0) & _res=0 || _result.RESULT:=0 ?};
+         KOMM.sect_end()
+      ?};
+      SYNC_MWA.next()
+   !};
+   {? _progress || FUN.prg_stop() ?}
+?};
+
+SYNC_MWA.cntx_pop();
+
+{? _komm || KOMM.select() ?};
+
+_result
+
+
+\test_receive
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Testowe uruchomienie odbierania danych
+::       Uruchamia wszystkie zaakceptowane funkcje typu 'Odbieranie' w ramach wskazanego przeznaczenia danych
+::   WE: [_a] - przeznaczenie danych SYNC_PD.SYM
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _pd:=_a
+|| _pd:=''
+?};
+
+_tab:=tab_tmp(
+   ,'ALL','INTEGER','Inicjować pobieranie wszystkich danych?'@
+   ,'LOGLEVEL','INTEGER','Poziom raportowania'@
+);
+_tab.LOGLEVEL:=-1;
+
+_upf:='mwa.upf';
+_sect:='RECEIVE';
+{! _lp:=1 .. _tab.fld_num()
+|! _acr:=_tab.fld_acr(_lp);
+   _sval:=exec('get','#profile',_upf,_sect,_acr);
+   _val:=
+      {? _sval=''
+      || {? _acr='LOGLEVEL'
+         || 2
+         || #_sval
+         ?}
+      || #_sval
+      ?};
+   ($('_a.'+_acr+':=_b'))(_tab,_val)
+!};
+_red:=_tab.mk_edit('Test odbierania'@,0,'testreceive');
+_tab.win_esep(_red,'Komunikacja'@);
+_tab.win_efld(_red,VAR1,'SYNC_PD','SYM','RSYM',,,,'Przeznaczenie danych'@);
+_tab.efld_opt(_red,'mark=1'+{? _pd='' || '' || ',editable=grayed' ?},VAR1,'SYNC_PD');
+_tab.win_efld(_red,,'ALL',,,,,,,,,'check-box','left_label=1',"1","0");
+_tab.win_esep(_red,'Raportowanie'@);
+_tab.win_efld(_red,,'LOGLEVEL',,,,,,,,,'radio-buttons',
+   ,'Brak rejestrowania zdarzeń'@,"0"
+   ,'Rejestrowane wyłącznie błędy'@+' *',"1"
+   ,'Rejestrowane wszystkie wywołania'@,"2"
+   ,'Poziom rejestrowania bez zmian'@,"-1"
+);
+_tab.win_efld(_red,AH,'H',,,,,,'* '+'nie dotyczy błędów biznesowych'@);
+exec('ok_esc','#window',_tab,_red);
+_tab.win_edit(_red);
+VAR1.SYNC_PDR:='I';
+{? _pd<>'' || VAR1.SYNC_PD:=exec('FindInSet','#table','SYNC_PD','SYM',_pd,,,1) ?};
+{? _tab.edit("__CHK.record(VAR1,,'SYNC_PD')")
+|| {! _lp:=1 .. _tab.fld_num()
+   |! _acr:=_tab.fld_acr(_lp);
+      exec('set','#profile',_upf,_sect,_acr,$($('_a.'+_acr))(_tab))
+   !};
+   _log_level:=_tab.LOGLEVEL;
+   exec('process_receive','sync_mwa',VAR1.SYNC_PD().SYM,_log_level,_tab.ALL,,1)
+?};
+~~
+
+
+\run_mwac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Uruchomienie komunikacji dla pojedynczego zapisu
+::   WE: _a - przeznaczenie danych
+::       _b - metoda
+::       _c - czy inicjować i wyświetlać KOMM w tej formule (jeżeli nie, KOMM powinien być powołany na zewnątrz)
+::            1 - inicjować, 0 - nie inicjować, -1 - nie inicjować i nie dodawać "systemowej" sekcji
+::       [_d] - poziom logowania ([-1],0,1,2)
+::       [_e] - parametry (takie, których spodziewa się implementacja) - przekazane dalej w argumecie _args.Param
+::   WY: ~~ - coś się nie powiodło albo wycofano się z przetwarzania
+::       0 - namierzony błąd
+::       ANY - cokolwiek innego traktujemy jako poprawne uruchomienie
+::----------------------------------------------------------------------------------------------------------------------
+_sync_pd:=_a;
+_method_name:=_b;
+_komm:=_c;
+
+{? var_pres('_d')=type_of(0)
+|| _log_level:=_d
+|| _log_level:=-1
+?};
+
+:: Środowisko wywołania
+_env:=exec('env','sync_mwa');
+_env.Context:='run';
+params_set('env',_env);
+_env.LogLevel:=_log_level;
+_env.Param:={? var_pres('_e')>0 || _e || ~~ ?};
+
+_result:=~~;
+
+{? _komm>0 || KOMM.init(,,'TEST'@) ?};
+
+SYNC_MWA.cntx_psh();
+SYNC_MWA.index('PD_METH1');
+SYNC_MWA.prefix(_sync_pd,exec('mwac_type_exec','synchro'),_method_name,'T');
+{? SYNC_MWA.first()
+|| {? _komm>=0
+   || KOMM.sect_beg('Przetworzono metodę %1 (przeznaczenie danych %2).'@[_method_name,_sync_pd])
+   ?};
+   _result:=exec('run','sync_mwa');
+   {? _komm>=0
+   || KOMM.sect_end()
+   ?}
+|| KOMM.error(
+      'Brak aktywnej metody %1 typu %2 dla przeznaczenia danych %3.'@
+      [_method_name,exec('mwac_type_exec','synchro'),_sync_pd],0
+   );
+   _result:=0
+?};
+SYNC_MWA.cntx_pop();
+{? _komm>0 || KOMM.select() ?};
+
+_result
+
+
+\chk_run_mwac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14]
+:: OPIS: Sprawdzenie, czy można będzie uruchomoć metodę
+::   WE: _a - przeznaczenie danych
+::       _b - metoda
+::----------------------------------------------------------------------------------------------------------------------
+_sync_pd:=_a;
+_method_name:=_b;
+
+_result:=1;
+
+SYNC_MWA.cntx_psh();
+SYNC_MWA.index('PD_METH1');
+SYNC_MWA.prefix(_sync_pd,exec('mwac_type_exec','synchro'),_method_name,'T');
+{? ~SYNC_MWA.first()
+|| FUN.emsg(
+      'Brak aktywnej metody %1 typu %2 dla przeznaczenia danych %3.'@
+      [_method_name,exec('mwac_type_exec','synchro'),_sync_pd]
+   );
+   _result:=0
+?};
+SYNC_MWA.cntx_pop();
+
+_result
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Uruchamia zapytanie API - w kontekście rekordu SYNC_MWA
+::       Przed uruchomieniem należy utworzyć środowisko exec('env','sync_mwa')
+::   WE: [_a] - nazwa metody do podmiany
+::       [_b] - typ obsługi do podmiany
+::   WY: ~~ - coś się nie powiodło albo wycofano się z przetwarzania
+::       0 - namierzony błąd
+::       ANY - cokolwiek innego traktujemy jako poprawne uruchomienie
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_env:=params_get().env;
+
+::-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+:: Generowanie losowego błędu '500', np. 0.8 oznacza 80% "dobrych" wywołań
+_random_error:=0;
+_random:=0.8;
+::-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+_force_method:={? var_pres('_a')=type_of('') || _a || '' ?};
+_force_type:={? var_pres('_b')=type_of('') || _b || '' ?};
+
+:: Podmiana obiektu KOMM w celu rozszerzenia jego funkcjonalności (kolejne metody dopisać w razie konieczności)
+_komm:=KOMM;
+VAR_DEL.delete('KOMM');
+KOMM:=obj_new('env','KOMM','init','add','error','msg','info','ask','sect_beg','sect_end','is_inited');
+KOMM.env:=_env;
+KOMM.KOMM:=_komm;
+KOMM.init:="
+   {? var_pres('_a')<0 || _a:=~~ ?};
+   {? var_pres('_b')<0 || _b:=~~ ?};
+   {? var_pres('_c')<0 || _c:=~~ ?};
+   .KOMM.init(_a,_b,_c)
+";
+KOMM.add:="
+   {? var_pres('_a')<0 || _a:=~~ ?};
+   {? var_pres('_b')<0 || _b:=~~ ?};
+   {? var_pres('_c')<0 || _c:=~~ ?};
+   {? var_pres('_d')<0 || _d:=~~ ?};
+   {? var_pres('_e')<0 || _e:=~~ ?};
+   .env.logApp(,_a);
+   .KOMM.add(_a,_b,_c,_d,_e)
+";
+KOMM.error:="
+   {? var_pres('_a')<0 || _a:=~~ ?};
+   {? var_pres('_b')<0 || _b:=~~ ?};
+   {? var_pres('_c')<0 || _c:=~~ ?};
+   {? .env.AppStatus*'|X|'=0
+   || .env.logApp('X|',_a)
+   || .env.logApp(,_a)
+   ?};
+   .env.Error:=1;
+   .KOMM.error(_a,_b,_c)
+";
+KOMM.msg:="
+   {? var_pres('_a')<0 || _a:=~~ ?};
+   {? var_pres('_b')<0 || _b:=~~ ?};
+   {? var_pres('_c')<0 || _c:=~~ ?};
+   .env.logApp(,_a);
+   .KOMM.msg(_a,_b,_c)
+";
+KOMM.info:="
+   {? var_pres('_a')<0 || _a:=~~ ?};
+   {? var_pres('_b')<0 || _b:=~~ ?};
+   {? var_pres('_c')<0 || _c:=~~ ?};
+   .env.logApp(,_a);
+   .KOMM.info(_a,_b,_c)
+";
+KOMM.ask:="
+   {? var_pres('_a')<0 || _a:=~~ ?};
+   {? var_pres('_b')<0 || _b:=~~ ?};
+   {? var_pres('_c')<0 || _c:=~~ ?};
+   .env.logApp(,_a);
+   .KOMM.ask(_a,_b,_c)
+";
+KOMM.sect_beg:="
+   {? var_pres('_a')<0 || _a:=~~ ?};
+   {? var_pres('_b')<0 || _b:=~~ ?};
+   {? var_pres('_c')<0 || _c:=~~ ?};
+   {? var_pres('_d')<0 || _d:=~~ ?};
+   .KOMM.sect_beg(_a,_b,_c,_d)
+";
+KOMM.sect_end:="
+   .KOMM.sect_end()
+";
+KOMM.is_inited:="
+   .KOMM.is_inited()
+";
+
+:: Funkcja wyjścia - przywrócenie oryginalnego obiektu KOMM
+_return:="
+   VAR_DEL.delete('KOMM');
+   KOMM:=_a;
+   ~~
+";
+
+:: Poziom logowania - jeżeli w środowisku przekazany inny niż -1, to nadpisuje poziom wskazany w definicji wywołania
+{? var_pres('LogLevel',_env)<>type_of(0)
+|| _env.LogLevel:=-1
+?};
+{? _env.LogLevel=-1
+|| {? SYNC_MWA.LOGLEVEL=-1
+   || _log_level:=exec('FindAndGet','#table',SYNC_MWA,SYNC_MWA.PARENT,,"SYNC_MWA.LOGLEVEL",-1)
+   || _log_level:=SYNC_MWA.LOGLEVEL
+   ?}
+||  _log_level:=_env.LogLevel
+?};
+
+{? _env.Inited=0
+|| _f_init:=exec('FindAndGet','#table',SYNC_MWA,SYNC_MWA.PARENT,,"SYNC_MWA.F_INIT",'');
+   {? | _f_init<>''
+   || ($_f_init)()
+   ?};
+   _env.Inited:=1
+?};
+
+_env.MethodName:={? _force_method='' || SYNC_MWA.METHOD || _force_method ?};
+_env.TabAcr:=SYNC_MWA.TAB_ACR;
+_env.Type:={? _force_type='' || SYNC_MWA.TYPE || _force_type ?};
+{? var_pres('Adds',_env)>100 || obj_del(_env.Adds) ?};
+{? var_pres('Method',_env)>100 || obj_del(_env.Method) ?};
+
+_env.AppStatus:='';
+_env.AppText:='';
+
+:: Klient
+_filepath:=pth_dir(SYNC_MWA.MWAC)+exec('sep','#file',1)+SYNC_MWA.MWAC;
+_tC:=var_pres('MWAC_CLIENT',@.CLASS);
+_vp:=var_pres('Client',_env);
+{? _tC<0 | _vp<>_tC | _env.Client.FilePath<>_filepath
+|| {? _vp>100
+   || obj_del(_env.Client)
+   ?};
+   _env.Client:=exec('client','__mwac',SYNC_MWA.MWAC);
+   {? ~_env.Client.Valid || _return(_komm); return(0) ?}
+?};
+
+_env.Client.resetHeaders();
+
+:: Poziom logowania
+_env.Client.setLogLevel(_log_level);
+
+:: Dodatki klienta
+{? | SYNC_MWA.F_CLIENT<>''
+|| _f_client:=SYNC_MWA.F_CLIENT
+|| _f_client:=exec('FindAndGet','#table',SYNC_MWA,SYNC_MWA.PARENT,,"SYNC_MWA.F_CLIENT",'')
+?};
+{? | _f_client<>''
+|| {? ~($_f_client)() || _return(_komm); return(0) ?}
+?};
+
+:: Metoda
+_env.Method:=_env.Client.getMethod(_env.MethodName);
+{? ~_env.Method.Valid || _return(_komm); return(0) ?};
+
+:: Część "systemowa" statusu biznesowego (przeznaczenie danych + firma)
+_env.logApp('|%1|F:%2|'[SYNC_MWA.SYNC_PD().SYM,__Firma]);
+
+_env.RequestTemplate:=_env.Method.getRequestTemplate();
+_env.ResponseTemplate:=_env.Method.getResponseTemplate('values');
+
+:: Formuła parametrów
+{? | SYNC_MWA.F_PARAM<>''
+|| _f_param:=SYNC_MWA.F_PARAM
+|| _f_param:=exec('FindAndGet','#table',SYNC_MWA,SYNC_MWA.PARENT,,"SYNC_MWA.F_PARAM",'')
+?};
+_env.Error:=0;
+_param:=($_f_param)();
+
+:: Jak pusto, to może parametr przyszedł z zewnątrz (w szczególności dla typu 'Uruchamianie')
+::{? type_of(_param)=0 || _param:=_env.Param ?};
+
+:: Jeżeli namierzony błąd krytyczny
+{? _env.Error>0
+|| _return(_komm); return(0)
+?};
+_env.Error:=0;
+
+:: Jeżeli ~~, to kontrolowana rezygnacja z przetwarzania
+{? var_pres('_param')=type_of(~~)
+|| _return(_komm); return()
+?};
+
+_tARRAY:=exec('type_of_array','#var');
+{? var_pres('_param')=_tARRAY & obj_ntab(_param)
+:: Parametry, o ile jest to tablica nazwana, traktujemy jako listę parametrów o określonej nazwie:
+:: dla "starego" WADL-a / MWAC-a będzie to 'in', dla "nowych" struktur - 'call'.
+|| _par_name:={? var_pres('in',_env.Method.Definition.Params)=_tARRAY || 'in' || 'call' ?};
+   _env.Method.addParams(_param,_par_name)
+
+|? var_pres('_param')=_tARRAY & obj_len(_param)=2
+:: Parametry, o ile tablica dwuelementowa, to...
+
+|| {? var_pres('[1]',_param)>100 & obj_ntab(_param[1]) & var_pres('[2]',_param)=type_of('')
+   || _env.Method.addParams(_param[1],_param[2])
+   ?}
+?};
+
+:: Dodatki metody
+{? | SYNC_MWA.F_METHOD<>''
+|| _f_method:=SYNC_MWA.F_METHOD
+|| _f_method:=exec('FindAndGet','#table',SYNC_MWA,SYNC_MWA.PARENT,,"SYNC_MWA.F_METHOD",'')
+?};
+{? | _f_method<>''
+|| {? ~($_f_method)() || _return(_komm); return(0) ?}
+?};
+
+:: Przygotowanie zapytania (podany tekst albo plik z zawartością)
+{? var_pres('_param')=type_of('') | var_pres('_param')=exec('type_of_file','#var')
+|| {? ~_env.Method.prepare(_param) || _return(_komm); return() ?}
+|| {? ~_env.Method.prepare() || _return(_komm); return() ?}
+?};
+
+:: Dodatki do INETa
+{? | SYNC_MWA.F_INET<>''
+|| _f_inet:=SYNC_MWA.F_INET
+|| _f_inet:=exec('FindAndGet','#table',SYNC_MWA,SYNC_MWA.PARENT,,"SYNC_MWA.F_INET",'')
+?};
+{? | _f_inet<>''
+|| {? ~($_f_inet)() || _return(_komm); return(0) ?}
+?};
+
+:: Wywołanie zapytania, przejęcie odpowiedzi (zawsze do pliku)
+_env.Method.call(null());
+{? var_pres('InetResponse',_env)>100 || obj_del(_env.InetResponse) ?};
+_env.InetResponse:=_env.Method.Inet.Response;
+
+::-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+:: Podmiana zawartości w celu testowania błędnych wywołań
+{? _random_error & rand()>_random
+|| _env.InetResponse.Status:=500
+?};
+::-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+:: Parsowanie wyniku wywołania
+_result:=~~;
+{? | SYNC_MWA.F_PARSE<>''
+|| _f_parse:=SYNC_MWA.F_PARSE
+|| _f_parse:=exec('FindAndGet','#table',SYNC_MWA,SYNC_MWA.PARENT,,"SYNC_MWA.F_PARSE",'')
+?};
+_result:=($_f_parse)();
+
+:: Utrwalenie statusu i opisu biznesowego
+_env.logApp();
+
+:: Ostatni wynik - jeśli tekstowy - utrwalony w rekordzie definicji w kontekście firmy
+::   (implementacja decyduje o tym, do czego zostanie użyte)
+{? type_of(_result)=type_of('')
+|| exec('sync_mwa_result_save','synchro',SYNC_MWA.ref(),_result)
+?};
+
+:: Przywrócenie oryginalnego obiektu KOMM
+_return(_komm);
+
+_result
+
+
+\env
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Środowisko wywołania
+::----------------------------------------------------------------------------------------------------------------------
+_env:=obj_new(
+:: Obiekt MWA_CLIENT
+   'Client',
+:: Obiekt MWA_METHOD
+   'Method',
+:: Szablon zapytania
+   'RequestTemplate',
+:: Szablon odpowiedzi
+   'ResponseTemplate',
+:: Typ wywołania: exec('mwac_type_*','synchro')
+   'Type',
+:: Parametr wywołania:
+::   dla 'Wysyłanie' i 'Usuwanie' - uidref() rekordu, który był przetwarzany
+::   dla 'Pobieranie' - przechowana wartość wyniku poprzedniego wywołania (np. w celu wyznaczenia znacznika czasowego)
+::   dla 'Uruchamianie' - wartość parametru przekazana w formule uruchamiającej (dowolny typ)
+   'Param',
+:: Poziom logowania ([-1],0,1,2)
+   'LogLevel',
+:: Inet.Response - wynik przetwarzania (dla formuł parsujących) - pole obiektu MWA_METHOD
+   'InetResponse',
+:: Nazwa metody API
+   'MethodName',
+:: Akronim tabeli, której dotyczy wywołanie
+   'TabAcr',
+:: Dodatkowe pola do wykorzystania we własnej impelementacji
+   'Adds',
+:: Informacja, czy została wykonana formuła unicjująca dla przeznaczenia danych
+   'Inited',
+:: Status biznesowy i opis biznesowy wywołania (do umieszczenia w rejestrze zdarzeń),
+:: Identyfikator przetwarzanego rekordu, funkcja do ustawiania statusu
+   'AppStatus',
+   'AppText',
+   'AppId',
+   'logApp',
+:: Sterowanie zapętleniem przy pobieraniu danych (ostrożnie z ustawianiem na 1)
+   'Loop',
+:: Kontekst uruchomienia środowiska: 'start' (wysyłka początkowa), 'receive' (odbieranie),
+:: 'send' (bieżące wysyłanie), 'run' (uruchomienie przez \run_mwac), '' (inne nieprzewidziane)
+   'Context',
+:: Czy podczas wywoływania obsługi zgłoszony był błąd krytyczny
+   'Error'
+);
+_env.Client:=~~;
+_env.Method:=~~;
+_env.RequestTemplate:='';
+_env.ResponseTemplate:='';
+_env.Type:='';
+_env.Param:=~~;
+_env.LogLevel:=-1;
+_env.InetResponse:=~~;
+_env.Method:='';
+_env.TabAcr:='';
+_env.Adds:=~~;
+_env.Inited:=0;
+_env.AppStatus:='';
+_env.AppText:='';
+_env.AppId:='';
+_env.logApp:="
+   {? var_pres('_a')=type_of('') || .AppStatus+=_a ?};
+   {? var_pres('_b')=type_of('') || .AppText+={? .AppId='' || '%1\n'[_b] || '%1 -> %2\n'[_b,.AppId] ?} ?};
+   {? type_of(.Method)>100 || .Method.logApp(.AppStatus,.AppText) ?}
+";
+_env.Loop:=0;
+_env.Context:='';
+_env.Error:=0;
+_env
+
+
+\init_send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Inicjowanie wysyłki - ustalanie znaczników synchronizacji w celu umożliwienia wysłania wszystkich danych
+::       W przypadku podanego parametru _a - ustalanie wszystkich znaczników dla wskazanego przeznaczenia danych
+::   WE: [_a] - przeznaczenie danych SYNC_PD.SYM
+::       [_b] - czy uruchomienie z dialogami 0/[1]
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _pd:=_a
+|| _pd:=exec('pd_select','sync_mwa')
+?};
+{? var_pres('_b')=type_of(0)
+|| _dialog:=_b
+|| _dialog:=1
+?};
+
+{? _pd<>''
+||
+   {? _dialog
+   || _choice:=FUN.choice(
+         'Czy inicjować tabele przeznaczenia %1?\n\n'
+         'UWAGA: działanie funkcji może być czasochłonne.'@[_pd]
+         ,2,'Wszystkie tabele'@,'W&ybrane tabele'@
+      );
+      {? _choice=1
+      || exec('tables_idput','sync_mwa',,_pd,0)
+      |? _choice=2
+      || exec('tables_idput','sync_mwa',,_pd,1)
+      ?}
+   || exec('tables_idput','sync_mwa',,_pd,0)
+   ?}
+?};
+~~
+
+
+\init_send_reset
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Inicjowanie wysyłki - resetowanie znaczników synchronizacji w celu umożliwienia wysłania wszystkich danych
+::       W przypadku podanego parametru _a - resetowanie wszystkich znaczników dla wskazanego przeznaczenia danych
+::   WE: [_a] - przeznaczenie danych SYNC_PD.SYM
+:: ~OST: INWINBTN
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _pd:=_a;
+   _dialog:=0
+|| _pd:=exec('pd_select','sync_mwa');
+   _dialog:=1
+?};
+{? _pd<>''
+|| SYNC_PD.cntx_psh();
+   SYNC_PD.index('SYM');
+   SYNC_PD.prefix(_pd,);
+   {? SYNC_PD.first()
+   || _tab:=sql('
+         select distinct
+            SYNC_MWA.TAB_ACR,
+            \':_b\' as ACCESS
+         from SYNC_MWA
+         where SYNC_MWA.SYNC_PD=:_a and SYNC_MWA.TAB_ACR<>\'\'
+         order by TAB_ACR
+      ',SYNC_PD.ref(),{? _dialog || 'N' || 'T' ?});
+      _wer:=_tab.mk_sel('Wybierz tabele przeznaczenia %1'@[_pd],'P',,'#wybtabtoclear',,,20,,'U');
+      _tab.win_fld(_wer,,'TAB_ACR',,,20,,,'Tabela'@);
+      _formula:="_tab:=cur_tab(1,1); _tab.ACCESS:='T'; _tab.put(); sel_exit()";
+      _tab.win_act(_wer,,'Formuła','&Wybierz'@@,,,_formula,,1,1,,,'W');
+      _tab.win_btn(_wer,'text='+'&Wybierz'@+',btn_label_align=center,panel=bottom,align=end',
+         'menu:W',,,,,,'noempty'
+      );
+      _tab.win_btn(_wer,'text='+'A&nuluj'@+',btn_label_align=center,panel=bottom,align=end',
+         'key:Esc'
+      );
+      _tab.win_sel(_wer);
+      {? ~_dialog | _tab.select()
+      || {? _tab.first()
+         || {!
+            |? {? _tab.ACCESS='T'
+               || SYNCNIDP.cntx_psh();
+                  SYNCNIDP.index('ACR');
+                  SYNCNIDP.prefix(REF.FIRMA().SYMBOL,SYNC_PD.ref(),_tab.TAB_ACR,);
+                  _loop:=SYNCNIDP.first();
+                  {!
+                  |? _loop
+                  |! _loop:=SYNCNIDP.del()
+                  !};
+                  SYNCNIDP.cntx_pop()
+               ?};
+               _tab.next()
+            !}
+         ?}
+      ?}
+   ?};
+   SYNC_PD.cntx_pop()
+?};
+~~
+
+
+\pd_select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Formuła służąca do redagowania parametru PD czynności ZUI_CLI_AGER
+::       oraz do pobierania przeznaczenia danych w innych kontekstach pracy systemu
+::   WE: [_a] - aktualnie ustawiona wartość parametru
+::   WY: SYNC_PD.SYM / ''
+::----------------------------------------------------------------------------------------------------------------------
+_pd:='';
+SYNC_PD.cntx_psh();
+SYNC_PD.index('RSYM');
+SYNC_PD.prefix('I');
+{? var_pres('_a')=type_of('') || SYNC_PD.find_key(_a) ?};
+_wer:=SYNC_PD.mk_sel('Przeznaczenia danych'@,,,'syncpdslo',,,15,,'U');
+SYNC_PD.win_fld(_wer,,'SYM');
+SYNC_PD.win_act(_wer,,'Formuła','Wybierz'@@,,,"sel_exit()",,1,,,,'W');
+SYNC_PD.win_sel(_wer);
+{? SYNC_PD.select(,1,5) || _pd:=SYNC_PD.SYM ?};
+SYNC_PD.cntx_pop();
+_pd
+
+
+\datafile
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Zamienia zawartość obiektu _result.Data na plik w unikodzie do odczytu
+::   WE: _a - _response.Data - tablica stringów albo plik binarny (wynik pracy klienta webserwisów)
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=exec('type_of_file','#var')
+|| _datafile:=_a.copy('ur')
+|| _file:=fopen(null(),'Uw',,,1);
+   {? var_pres('_a')>100 & var_pres('[1]',_a)=type_of('')
+   || _file.fwrite(_a[1])
+   || _file.fwrite('Niespodziewany błąd.')
+   ?};
+   _datafile:=_file.copy('ur');
+   obj_del(_file)
+?};
+_datafile
+
+
+\manager
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Uruchomienie menadżera z możliwością bezpośredniego załadowania pliku WADL oraz zapisu pliku MWAC
+::----------------------------------------------------------------------------------------------------------------------
+popup(0,'Załadować WADL dla zastosowania:'@
+   ,'Businesslink'@,,"exec('manager','businesslink3')"
+   ,'Businesslink — zapis pliku MWAC',,"exec('manager','businesslink3',1)"
+   ,'Businesslink wewnętrzny [wymaga autoryzacji]'@,,"exec('manager_internal','businesslink3')"
+   ,'--',,""
+   ,'Portal HR'@,,"exec('manager','portal_engine')"
+   ,'Portal HR — zapis pliku MWAC',,"exec('manager','portal_engine',1)"
+   ,'Portal HR wewnętrzny [wymaga autoryzacji]'@,,"exec('manager_internal','portal_engine')"
+   ,'--',,""
+   ,'Nie ładować'@,,"params_set('LogCustomFilterFormula',\"exec('mwac_log_search', '#mwac')\");exec('manager','__mwac')"
+);
+~~
+
+
+\tables_idput
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.42]
+:: OPIS: Funkcja służy do zainicjowania wysyłki danych w bieżącej firmie; działa w dwóch wariantach:
+::       1) Wykonuje put()-y dla rekordów wybranych tabel w celu utworzenia wysyłki inicjującej.
+::          Obróbce podlegają tylko rekordy spełniające warunek w definicji wymiany danych.
+::          Dodatkowo przed uruchomieniem funkcji w mechaniźmie wymiany danych zostaje ustawiony znacznik czasowy,
+::          od którego momentu mają być pobierane rekordy danej tabeli. Dzięki temu w późniejszym zasilaniu nie
+::          będą brane pod uwagę rekordy, które nie zostały obrobione.
+::          Skutek uboczny mechanizmu jest taki, że zostanie wymuszone pobranie rekordów tabel wspólnych (globalnych),
+::          co spowoduje ich pobranie w pozostałych firmach.
+::       2) W mechaniźmie wymiany danych zostaje zainicjowany znacznik czasowy, od którego momentu mają być pobierane
+::          rekordy danej tabeli. Dzięki temu w późniejszym zasilaniu będą brane pod uwagę wszystkie rekordy tabeli.
+::   WE: [_a] - rozmiar "paczki" (standardowo 500 rekordów) - OBECNIE PARAMETR NIE JEST UŻYWANY
+::       [_b] - przeznaczenie danych [PORTAL]
+::       [_c] - czy uruchomienie z dialogami ([1]/0) - w trybie bezdialogowym obrabiane są wszystkie tabele
+::              wybranego przeznaczenia danych
+::       [_d] - wariant przetwarzania danych: 1,[2] (dla innych wartości działanie będzie puste)
+:: ~OST: INWINBTN
+::----------------------------------------------------------------------------------------------------------------------
+::_pack_size:={? var_pres('_a')=type_of(0) || _a || 500 ?};
+_pd:={? var_pres('_b')=type_of('') || _b || 'PORTAL' ?};
+_dialog:={? var_pres('_c')=type_of(0) || _c || 1 ?};
+_variant:={? var_pres('_d')=type_of(0) || _d || 2 ?};
+{? _variant<>1 & _variant<>2 || FUN.emsg('Błędna wartość parametru %1.'@['_d']); return() ?};
+
+SYNC_PD.cntx_psh();
+SYNC_PD.index('SYM');
+SYNC_PD.prefix(_pd,);
+{? SYNC_PD.first()
+|| _tab_wyb:=sql('
+      select distinct
+         SYNC_MWA.TAB_ACR,
+         case when SYNC_DEF.WAR_FORM=\'\' then \'1\' else SYNC_DEF.WAR_FORM end as WAR_FORM,
+         \':_b\' as ACCESS
+      from SYNC_MWA
+      join SYNC_PD using(SYNC_MWA.SYNC_PD,SYNC_PD.REFERENCE)
+      join SYNC_DEF using(SYNC_DEF.SYNC_PD,SYNC_PD.REFERENCE)
+      where SYNC_MWA.SYNC_PD=:_a and SYNC_MWA.TAB_ACR<>\'\' and SYNC_MWA.TAB_ACR=SYNC_DEF.ACR_TAB
+      order by TAB_ACR
+   ',SYNC_PD.ref(),{? _dialog || 'N' || 'T' ?});
+   _wer:=_tab_wyb.mk_sel('Wybierz tabele przeznaczenia %1'@[_pd],'P',,'#wybtabtoput',,,20,,'U');
+   _tab_wyb.win_fld(_wer,,'TAB_ACR',,,20,,,'Tabela'@);
+   _tab_wyb.win_fld(_wer,,'WAR_FORM',,,50,,,'Warunek zapamiętywania'@);
+   _formula:="
+      _tab:=cur_tab(1,1);
+      {? _tab.WAR_FORM='' || _tab.WAR_FORM:='1' ?};
+      _tab.ACCESS:='T';
+      _tab.put();
+      sel_exit()
+   ";
+   _tab_wyb.win_act(_wer,,'Formuła','&Wybierz'@@,,,_formula,,1,1,,,'W');
+   _tab_wyb.win_btn(_wer,'text='+'&Wybierz'@+',btn_label_align=center,panel=bottom,align=end',
+      'menu:W',,,,,,'noempty'
+   );
+   _tab_wyb.win_btn(_wer,'text='+'A&nuluj'@+',btn_label_align=center,panel=bottom,align=end',
+      'key:Esc'
+   );
+   _tab_wyb.win_sel(_wer);
+
+   _time_start:='';
+   {? ~_dialog | _tab_wyb.select()
+   || {? _tab_wyb.first()
+      || {!
+         |? {? _tab_wyb.ACCESS='T'
+            || {? _variant=1
+               ||
+::                Ustalenie startowego znacznika czasowego dla rekordów tabeli
+                  SYNCNIDP.cntx_psh();
+                  SYNCNIDP.index('ACR');
+                  SYNCNIDP.prefix(REF.FIRMA().SYMBOL,SYNC_PD.ref(),_tab_wyb.TAB_ACR,);
+                  {? SYNCNIDP.first()
+                  || SYNCNIDP.IDPUT:=time_ident_to_utc(time_ident(date(),time()));
+                     {? _tab_wyb.TAB_ACR='PKALSYNC' || _time_start:=SYNCNIDP.IDPUT ?};
+                     SYNCNIDP.put()
+                  || SYNCNIDP.FIRMA:=REF.FIRMA().SYMBOL;
+                     SYNCNIDP.SYNC_PD:=SYNC_PD.ref();
+                     SYNCNIDP.ACR:=_tab_wyb.TAB_ACR;
+                     SYNCNIDP.IDPUT:=time_ident_to_utc(time_ident(date(),time()));
+                     {? _tab_wyb.TAB_ACR='PKALSYNC' || _time_start:=SYNCNIDP.IDPUT ?};
+                     SYNCNIDP.add()
+                  ?};
+                  SYNCNIDP.cntx_pop();
+
+::                Podbicie IDPUT w rekordach tabeli spełniających warunek wymiany danych
+                  _tab:=($_tab_wyb.TAB_ACR)();
+                  _tab.trig_off('*','*');
+                  _args:=obj_new('tab','war_form');
+                  _args.tab:=_tab;
+                  _args.war_form:=$_tab_wyb.WAR_FORM;
+                  params_set('args',_args);
+                  _formula:="
+                     _args:=params_get().args;
+                     {? _args.war_form('put',__Firma,REF.FIRMA)
+                     || _args.tab.put(,1)
+                     ?};
+                     ~~
+                  ";
+                  params_exec('for_each','#table',_tab,_formula);
+                  obj_del(_args);
+                  _tab.trig_on('*','*');
+                  obj_del(_tab)
+               |? _variant=2
+               ||
+::                Ustalenie startowego znacznika czasowego dla rekordów tabeli
+                  SYNCNIDP.cntx_psh();
+                  SYNCNIDP.index('ACR');
+                  SYNCNIDP.prefix(REF.FIRMA().SYMBOL,SYNC_PD.ref(),_tab_wyb.TAB_ACR,);
+                  _loop:=SYNCNIDP.first();
+                  {!
+                  |? _loop
+                  |! _loop:=SYNCNIDP.del()
+                  !};
+                  SYNCNIDP.cntx_pop();
+
+::                Specjalna obsługa dla kalendarzy
+                  {? _tab_wyb.TAB_ACR='PKALSYNC' || _time_start:=time_ident(date(1971,1,1),time(0,0,0)) ?}
+               ?}
+            ?};
+            _tab_wyb.next()
+         !};
+::        przypadek szczególny dla tabeli PKALSYNC
+         _tab_wyb.prefix('PKALSYNC');
+         {? _tab_wyb.first() & _tab_wyb.ACCESS='T'
+         || exec('PKALSYND_init','pkalsync',_time_start)
+         ?}
+      ?}
+   ?}
+?};
+SYNC_PD.cntx_pop();
+~~
+
+
+\mwac_log_error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Funkcja zapisu informacji o błędzie base_id() do rejestru zadarzeń MWAC
+::   WE: [_a] - Opis błędu do umieszczenia w logu
+::----------------------------------------------------------------------------------------------------------------------
+_env:=params_get().env;
+
+{? var_pres('_a')=type_of('') || _desc:=_a || _desc:='' ?};
+
+_log:=exec('mwac_log','#mwac'
+   ,_env.MethodName
+   ,_env.Client.BaseUrl
+   ,'POST'
+   ,0
+   ,utc_get()
+   ,utc_get()
+   ,''
+   ,''
+   ,''
+   ,''
+);
+exec('mwac_log_app','#mwac'
+   ,_log
+   ,'|%1|F:%2|X|R:0|'[SYNC_MWA.SYNC_PD().SYM,__Firma]
+   ,_desc
+);
+~~
+
+
+\toggle_activ_4tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [22.26]
+:: OPIS: Włącza / wyłącza aktywność wybranych metod API dla wskazanych tabel
+::   WE: _a [STRING] - przeznaczenie danych - symbol
+::       _b [STRING] - akronim tabeli
+::       _c [STRING] - czy aktywować? ('T' / 'N')
+::      [_d][TABLE]  - tabela z polem UIDREF - w zależności od wartości prametru _e:
+::                     1. add - odpisywane są do tej tabeli te rekordy, które wymagały włączenia/wyłączenia w SYNC_MWA
+::                     2. check - modyfikowane są w tabeli SYNC_MWA, tylko te rekordy, które znajdują się
+::                        w przekazanej w parametrze _d tabeli
+::      [_e][STRING] - tryb obsługi tabeli ('add' / 'check')
+::   WY: -1/0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=-1;
+ _pd_sym:={? var_pres('_a')=type_of('') || _a || return(_result) ?};
+_tab_acr:={? var_pres('_b')=type_of('') || _b || return(_result) ?};
+    _akt:={? var_pres('_c')=type_of('') & (_c='N' | _c='T')
+          || _c
+          || return(_result)
+          ?};
+    _TAB:={? var_pres('_d')=type_of(SYSLOG) || _d || tab_tmp(,'UIDREF','STRING[48]','Uidref rekordu') ?};
+   _tryb:={? var_pres('_e')=type_of('') & _e='add' | _e='check' || _e || '' ?};
+
+_result:=1;
+
+SYNC_MWA.cntx_psh();
+:: index 'PD_TAB' nie bardzo nadaje się do zmiany aktywnościm więc zakładamy nowy
+_ndx:=SYNC_MWA.ndx_tmp('',1,'SYNC_PD','SYM',0,'TAB_ACR',,0);
+SYNC_MWA.index(_ndx);
+SYNC_MWA.prefix(_pd_sym,_tab_acr,);
+{? SYNC_MWA.first()
+|| _size:=SYNC_MWA.size();
+   _l_mod:=0;
+
+   _mydo:=do_state()=0;
+   {? _mydo || do() ?};
+
+   {!
+   |? _zmiana:=SYNC_MWA.AKT<>_akt;
+      {? _tryb='add' & _zmiana
+      || _TAB.UIDREF:=SYNC_MWA.uidref();
+         _TAB.add(1)
+      ?};
+      {? _tryb<>'check' | (_tryb='check' & _TAB.find_tab(,'UIDREF',,'=',SYNC_MWA.uidref()))
+      || SYNC_MWA.AKT:=_akt
+      ?};
+      _l_mod+=SYNC_MWA.put(1);
+      SYNC_MWA.next()
+   !};
+   _result:=_l_mod=_size;
+
+   {? ~_result  || undo() ?};
+   {? _mydo || end() ?}
+
+?};
+SYNC_MWA.cntx_pop();
+SYNC_MWA.ndx_drop(_ndx);
+
+_result
+
+
+\sync_log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Funkcja zapisu informacji o rekordach pobranych przez mechanizm synchronizacji
+::   WE: _a - SYNC_PD.SYM
+::       _b - replika
+::       _c - akronim tabeli
+::       [_d] - dodatkowy opis
+::       [_e] - tabela z pobranymi rekordami
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('') || _pd:=_a || _pd:='?' ?};
+{? var_pres('_b')=type_of(0) || _repl:=$_b |? var_pres('_b')=type_of('') || _b || '?' ?};
+{? var_pres('_c')=type_of('') || _acr:=_c || _acr:='?' ?};
+{? var_pres('_d')=type_of('') || _desc:=_d || _desc:='' ?};
+
+{? var_pres('_e')>100
+|| _tab:=_e;
+
+   _jman:=exec('json_man','__jsonm','[]');
+   _jman1:=_jman.new('{}');
+::    Wzorzec elementu
+      _jman1.load('{}');
+      _jman1.setValue(_jman1.addChildElement('','uidref'),'');
+      _jman1.setValue(_jman1.addChildElement('','rodz'),'');
+
+   {? _tab.first()
+   || {!
+      |?
+         _jman1.setValue('uidref',8-_tab.TR1-1);
+         _jman1.setValue('rodz',_tab.RODZ);
+         _jman.setObject(_jman.addChildElement(''),_jman1.getJSON());
+         _tab.next()
+      !};
+      _response:=_jman.getJSON();
+      _log:=exec('mwac_log','#mwac'
+         ,'Synchro'
+         ,'localhost'
+         ,'GET'
+         ,103
+         ,utc_get()
+         ,utc_get()
+         ,''
+         ,_response
+         ,''
+         ,'Content-Type: application/json;charset=utf-8'
+      );
+      exec('mwac_log_app','#mwac'
+         ,_log
+         ,'|%1|F:%2|Tab:%3|Repl:%4|Rek:%5|'[_pd,__Firma,_acr,_repl,$_tab.size()]
+         ,_desc
+      )
+   ||
+      _log:=exec('mwac_log','#mwac'
+         ,'Synchro'
+         ,'localhost'
+         ,'GET'
+         ,103
+         ,utc_get()
+         ,utc_get()
+         ,''
+         ,''
+         ,''
+         ,'Content-Type: application/json;charset=utf-8'
+      );
+      exec('mwac_log_app','#mwac'
+         ,_log
+         ,'|%1|F:%2|Tab:%3|Repl:%4|Rek:0|'[_pd,__Firma,_acr,_repl]
+         ,_desc
+      )
+   ?}
+||
+   _log:=exec('mwac_log','#mwac'
+      ,'Synchro'
+      ,'localhost'
+      ,'GET'
+      ,103
+      ,utc_get()
+      ,utc_get()
+      ,''
+      ,''
+      ,''
+      ,'Content-Type: application/json;charset=utf-8'
+   );
+   exec('mwac_log_app','#mwac'
+      ,_log
+      ,'|%1|F:%2|Tab:%3|Repl:%4|Rek:~~|'[_pd,__Firma,_acr,_repl]
+      ,_desc
+   )
+?};
+~~
+
+:Sign Version 2.0 jowisz:1045 2024/02/06 19:59:17 4c96ee3fa7a7c69b9755c24a6234e7e6a33b454a6d82b30f3285bbe06688aec115648e328e5b7b01a85070dfc0adfbcfc408e63ed552e02d27bd4763411793b0e98768bc83e49bddce49a531da5263e263014231be752d12ed0b7fefa62054dec75fb648638b1df37a0cbffd9c7e993d90eaf38c588fd88db3e6045f2bccb95f

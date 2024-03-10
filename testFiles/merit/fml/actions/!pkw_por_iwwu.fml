@@ -1,0 +1,918 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkw_por_iwwu.fml
+:: Utworzony: 25.07.2016
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Obsługa czynności webTerm-owej PKW_POR_IWWU - Weryfikacja wniosku o urlop.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Weryfikacja wniosku o urlop (webTerm) - obsługa procesowości główna formuła czynności.
+::       Opis statusów wniosków znajduje się w procedurze \status/wnioski_urlopowe.fml.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# access=exec('access','!pkw_por_iwwu')
+::# properties=TODOTRIG
+::
+::# kind=WE, symbol=NWU, type=_NWU, name=Wskazanie wniosku, required=T, keyref=T
+::# kind=WE, symbol=BLK_NWU, type=STRING, name=Blokada zmiany osoby akceptującej [T/N*], required=N, keyref=N, fml_val="exec('edit_boolean','#edit',{? _a=~~ || 'N' || _a ?}, 'Blokada zmiany osoby akceptującej')"
+::
+::# kind=WY, symbol=NWU_AZ, type=STRING, name=Status wniosku, required=N
+::
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+_context:=_par.context;
+_akcja:=_mp.akcja();
+
+{? _akcja='webTermProcCancel'
+|| return(~~)
+?};
+
+_result:='';
+
+{? exec('ref2uid','#table',_in.NWU)=''
+|| _result:=exec('error','!pkw_por_iwwu','#NWU')
+
+|? ~(obj_ntab(_context) & var_pres('BTN',_context)=type_of(''))
+|| _result:=exec('error','!pkw_por_iwwu','#CNTX#BTN')
+
+|? _ret:=exec('zweryfikuj','!pkw_por_iwwu',_in.NWU,_context.BTN);
+   (_result:=_ret.ERROR)=''
+|| _out.NWU_AZ:=_ret.AZ;
+   _mp.save(,_out);
+   _mp.done()
+?};
+
+{? _result<>''
+::  Obsługa błędów.
+|| _mp.error(_result);
+   FUN.emsg(_result)
+?};
+
+~~
+
+
+\web_main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Weryfikacja wniosku o urlop (webTerm) - główna formuła czynności.
+::   WE:  _a  [STRING]    - Miejsce wywołania (Proc, Todo, Area).
+::       [_b] [REFERENCE] - Wskazanie na instancję procesu (dla Proc i Todo).
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('') & (_a='Area' | _a='Proc' | _a='Todo')
+|| _path:=_a
+|| return()
+?};
+
+_fcontext:=
+   "  _context:=obj_new('BTN');
+      _context.BTN:=_a;
+   ";
+
+{? _path='Area'
+:: Uruchomienie z obszaru roboczego. - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+|| _web_params:=web_params_get(1);
+
+   {? ref_tab(_web_params.B_PREL)=BI_PREL
+::    Kontynuacja czynności.
+   || _bi_prel:=exec('FindAndGet','#table',BI_PREL,_web_params.B_PREL);
+      _b_ele:=exec('FindAndGet','#table',BI_PREL,_bi_prel,,"B_PREL().B_ELE",null());
+
+      _kind_in:=exec('kind_in','#b_port');
+      _in:=exec('getPorts','#b_port',_b_ele,_kind_in,_bi_prel);
+      exec('fillPorts','#bi_port',_bi_prel,_kind_in,_in)
+
+::    Mikroczynność lub start procesu.
+   || _bi_prel:=null();
+      _b_prel:=exec('FindAndGet','#table',B_PREL,_web_params.B_PREL);
+      _b_ele:=exec('FindAndGet','#table',B_PREL,_b_prel,,"B_ELE",null());
+      _in:=exec('get_act_proc_params','#b__box',_web_params.ACT_UID,_b_prel,_web_params.PORTS_IN)
+   ?};
+
+   _args:=exec('nwu_web_edit_par','!pkw_por_iwwu');
+   _args.NWU:=exec('ref2uid','#table',_in.NWU);
+   _args.FML:=
+      _fcontext+
+      "  _web_params:=web_params_get(0);
+         exec('web_run','#b__box',_web_params.B_PREL,_web_params.AKCJA,_web_params.PORTS_IN,'web_Area',,_context)
+      ";
+
+   exec('nwu_web_edit','!pkw_por_iwwu',_args)
+
+|? _path='Todo'
+:: Uruchomienie z listy zadań (czynność w procesie, wywołana z parametrem - wskazaniem wniosku do weryfikacji).  - - - -
+|| {? var_pres('_b')=type_of(null()) & _b<>null() & ref_tab(_b)=BI_PREL
+   || _bi_prel:=_b
+   || return()
+   ?};
+
+:: Startujemy z listy zadań - konieczne jest ustawienie środowiska.
+   {? exec('set_env','pkw_por',0)
+   || NWU.prefix();
+
+      _b_ele:=exec('FindAndGet','#table',BI_PREL,_bi_prel,,"B_PREL().B_ELE",null());
+
+      _kind_in:=exec('kind_in','#b_port');
+      _in:=exec('getPorts','#b_port',_b_ele,_kind_in,_bi_prel);
+      exec('fillPorts','#bi_port',_bi_prel,_kind_in,_in);
+
+      _args:=exec('nwu_web_edit_par','!pkw_por_iwwu');
+      _args.NWU:=exec('ref2uid','#table',_in.NWU);
+      _args.FML:=
+         _fcontext+
+         "  _bi_prel:=exec('FindAndGet','#table',BI_PREL,'"+$_bi_prel+"',,,null());
+            exec('web_run','#b__box',_bi_prel,'ZWERYFIKUJ',,'web_Todo',,_context)
+         ";
+
+      exec('nwu_web_edit','!pkw_por_iwwu',_args)
+   ?}
+
+|? _path='Proc'
+:: Uruchomienie z pulpitu (czynność startowa).   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+:: Czynność wymaga parametru wejściowego - nie może być czynnością startową.
+|| ~~
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Weryfikacja wniosku o urlop (webTerm) - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_tab:=exec('init_desc_tab','pracownik');
+_addTab:=obj_new(
+:: Status wniosku urlopowego
+   'NWU_AZ',
+:: Wniosek urlopowy - data od
+   'NWU_OD',
+:: Wniosek urlopowy - data do
+   'NWU_DO',
+:: Kod składnika płacowego
+   'R_RN',
+:: Opis składnika płacowego
+   'R_RT'
+);
+:: inicjalizacja tablicy dodatkowej
+{! _ii..obj_len(_addTab) |! _addTab[_ii]:='' !};
+
+UD_SKL.cntx_psh();
+UD_SKL.prefix();
+STN.cntx_psh();
+STN.prefix();
+OSOBA.cntx_psh();
+OSOBA.prefix();
+P.cntx_psh();
+P.prefix();
+NWU.cntx_psh();
+NWU.prefix();
+{? type_of(_in.NWU)=type_of(null()) & _in.NWU<>null() & NWU.seek(_in.NWU)
+|| NWU.P().OSOBA();
+   _mp.keyRef(NWU.uidref(),0,0);
+   _mp.keyRef(P.uidref(),0,0);
+   _mp.keyRef(OSOBA.uidref(),0,0);
+   _tab.ZAW_DANE:='T';
+   _tab.NAZWISKO:=OSOBA.NAZWISKO;
+   _tab.PIERWSZE:=OSOBA.PIERWSZE;
+   _tab.T:=P.T;
+   _tab.UD_SKL:=P.WYDZIAL().SYMBOL;
+   _tab.STN:=P.ST().ST;
+   _addTab.NWU_AZ:=NWU.AZ;
+   _addTab.NWU_OD:=NWU.OD$1;
+   _addTab.NWU_DO:=NWU.DO$1;
+   _addTab.R_RN:=$NWU.R().RN;
+   _addTab.R_RT:=NWU.R().RT
+|| _tab.ZAW_DANE:='N'
+?};
+NWU.cntx_pop();
+P.cntx_pop();
+OSOBA.cntx_pop();
+STN.cntx_pop();
+UD_SKL.cntx_pop();
+
+{? _addTab.NWU_AZ='D'
+|| {? _tab.ZAW_DANE='T'
+   || 'Zweryfikuj wycofanie wniosku o urlop: %1 %2, Numer teczki - %3, Jednostka - %4, Stanowisko %5 | %6 - %7 (%8 - %9)'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.T,_tab.UD_SKL,_tab.STN,_addTab.NWU_OD,_addTab.NWU_DO,_addTab.R_RN,_addTab.R_RT]
+   || 'Zweryfikuj wycofanie wniosku o urlop'@@
+   ?}
+|| {? _tab.ZAW_DANE='T'
+   || 'Zweryfikuj wniosek o urlop: %1 %2, Numer teczki - %3, Jednostka - %4, Stanowisko %5 | %6 - %7 (%8 - %9)'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.T,_tab.UD_SKL,_tab.STN,_addTab.NWU_OD,_addTab.NWU_DO,_addTab.R_RN,_addTab.R_RT]
+   || 'Zweryfikuj wniosek o urlop'@@
+   ?}
+?}
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Słownik komunikatów o błędach.
+::   WE: [_a] [STRING] - Dodatkowy komunikat lub kod błędu.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_err:={? var_pres('_a')=type_of('') || _a || '' ?};
+_ret:='Weryfikacja wniosku o urlop niemożliwa.'@;
+{? _err='#NWU'
+|| _ret+='\n'+'Nie znaleziono wniosku do weryfikacji.'@
+|? _err='#NWU.put()'
+|| _ret+='\n'+'Zapisywanie danych nie powiodło się.'@
+|? _err='#NWU.AZ'
+|| _ret+='\n'+'Status wniosku nie pozwala na wykonanie akcji.'@
+|? _err='#CNTX#BTN'
+|| _ret+='\n'+'Brak informacji o podjętej decyzji.'@
+|? _err='#ENV'
+|| _ret+='\n'+'Ustawienie kontekstu pracy zalogowanego użytkownika nie powiodło się.'@
+?};
+_ret
+
+
+\access
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła uprawnień, decyduje o tym, czy dany użytkownik może uruchomić bieżącą instancję czynności.
+::   WE:
+::   WY: 0 - Użytkownik nie ma uprawnień do wykonania bieżącej instancji czynności.
+::       1 - Użytkownik ma uprawnienia do wykonania bieżącej instancji czynności.
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+:: Użytkownik weryfikowany (być może zastępujący).
+_user:=_par.user;
+:: Użytkownik zastępowany lub ~~.
+_user_r:=_par.user_r;
+:: Blokować aktualizację
+_blk_nwu:=var_pres('BLK_NWU',_in)=type_of('') & _in.BLK_NWU='T';
+_ret:=0;
+
+_usr:={? _user_r=~~ || _user || _user_r ?};
+_osoba:=exec('FindAndGet','#table',USERS,_usr,,"OSOBA",null());
+{? _osoba=null()
+|| return(_ret)
+?};
+
+exec('set_env','pkw_por');
+
+NWU.cntx_psh();
+NWU.prefix();
+P.cntx_psh();
+P.prefix();
+{? var_pres('NWU',_in)=type_of(null()) & _in.NWU<>null() &
+   NWU.seek(_in.NWU) & (NWU.AZ='?' | NWU.AZ='D') &
+   P.seek(NWU.P)
+:: Dla obsługi webTermowej nie będziemy sprawdzali uprawnień użytkownika do form współpracy czy jednostek
+:: organizacyjnych. Zakładamy, że ustalanie przełożonego jest wystarczającym sprawdzianem. Pozwala to nam zrezygnować
+:: ze żmudnego ustalania uprawnień pod jTermem dla użytkowników wyłącznie webowych.
+|| _slo:='TYPPOZ';
+   _kod:='AKCWNIO';
+
+:: Bezpośredni przełożeni - bez zastępstw i bez względu na nieobecności.
+   _TAB0:=exec('prac_nad','stanprac',NWU.P,'dodatkowe=1,zastępstwa=0,nieobecni=1',_slo,_kod);
+   {? _TAB0.first() & P.seek(_TAB0.P_SQL)
+   || {? NWU.AO<>P.OSOBA
+      || NWU.AO:=P.OSOBA;
+         NWU.put()
+      ?};
+      _TAB0.prefix(_TAB0.L);
+      {!
+      |? _ret+=P.OSOBA=_osoba;
+         ~_ret & _TAB0.next() & P.seek(_TAB0.P_SQL)
+      !}
+   ?};
+   obj_del(_TAB0);
+
+   {? ~_ret
+::    Faktyczni weryfikatorzy - z uwzglednieniem zastępstw i nieobecności.
+   || _TAB1:=exec('prac_nad','stanprac',NWU.P,'dodatkowe=1,zastępstwa=1,nieobecni=0',_slo,_kod);
+      {? _TAB1.first() & P.seek(_TAB1.P_SQL)
+      || _TAB1.prefix(_TAB1.L);
+         {!
+         |? _ret+=P.OSOBA=_osoba;
+            ~_ret & _TAB1.next() & P.seek(_TAB1.P_SQL)
+         !}
+      ?};
+      obj_del(_TAB1)
+   ?};
+
+   {? ~_ret & _blk_nwu & NWU.KTO_WER
+::    Osoba weryfikująca wniosek została ustalona wcześniej (głównie dlatego, aby wiedzieć komu wysłać powiadomienie).
+::    Tutaj potwierdzamy tylko, że ma ona prawo do uruchomienia tej instancji czynności.
+   || _ret+=NWU.KTO_WER=_osoba
+   ?}
+
+:: Jeżeli jest jakiś problem z parametrem wejściowym (np. rekord wniosku urlopowego został usunięty), to
+:: na uruchomienie czynności pozwólmy każdemu. Tylko w ten sposób możemy sprawić, aby czynność zwinęła się.
+|| _ret:=1
+?};
+P.cntx_pop();
+NWU.cntx_pop();
+
+_ret
+
+
+\wt_nwu_modb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Przed modyfikacją rekordu.
+::       Formuła wywoływana z wyzwalaczy "Dołącz - przed" i "Popraw - przed" dla tabeli WT_NWU.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? WT_NWU.NWU=null()
+|| return(0)
+?};
+
+:: Obsługa anomalii.
+NWU.cntx_psh();
+NWU.prefix();
+P.cntx_psh();
+P.use('pracowni');
+P.prefix();
+WT_NWU.P:=WT_NWU.NWU().P;
+WT_NWU.F_ZATR:=WT_NWU.NWU().P().F_ZATR;
+WT_NWU.WYDZIAL:=WT_NWU.NWU().P().WYDZIAL;
+WT_NWU.OSOBA:=WT_NWU.NWU().P().OSOBA;
+WT_NWU.R:=WT_NWU.NWU().R;
+WT_NWU.ST:=WT_NWU.NWU().P().ST;
+P.cntx_pop();
+NWU.cntx_pop();
+
+1
+
+
+\wt_nwu_addb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wyzwalacz "Dołącz - przed" dla tabeli WT_NWU.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('wt_nwu_modb','!pkw_por_iwwu')
+
+
+\wt_nwu_putb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wyzwalacz "Popraw - przed" dla tabeli WT_NWU.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('wt_nwu_modb','!pkw_por_iwwu')
+
+
+\todo_triggers
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa wyzwalaczy dla tabeli BI_TODO, dotycząca instancji bieżącej czynności.
+::   WE: _a  [STRING] - Rodzaj wyzwalacza ('add_przed','add_po','put_przed','put_po','del_przed','del_po').
+::      [_b] [NUMBER] - Dla wyzwalaczy wykonywanych 'po' parametr jest wynikiem właściwej akcji.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? _a='add_po'
+|| {? ~_b | do_state()<>1
+   || return()
+   ?};
+   {? BI_TODO.USERS
+   || _bi_prel:=$BI_TODO.BI_PREL;
+      BI_PREL.cntx_psh();
+      B_PREL.cntx_psh();
+      _b_ele:=BI_TODO.BI_PREL().B_PREL().B_ELE;
+      B_PREL.cntx_pop();
+      BI_PREL.cntx_pop();
+
+      _kind_in:=exec('kind_in','#b_port');
+      _in:=exec('getPorts','#b_port',_b_ele,_kind_in,BI_TODO.BI_PREL);
+      exec('fillPorts','#bi_port',BI_TODO.BI_PREL,_kind_in,_in);
+
+      NWU.cntx_psh();
+      NWU.prefix();
+      {? type_of(_in.NWU)=type_of(null()) & _in.NWU<>null() & ref_tab(_in.NWU)=NWU & NWU.seek(_in.NWU)
+      || OSOBA.cntx_psh();
+         OSOBA.prefix();
+         WT_NWU.cntx_psh();
+         WT_NWU.index('NUB');
+         WT_NWU.prefix();
+
+         _dodaj:=1;
+         _osoby:=',';
+         _TAB0:=exec('prac_nad','stanprac',NWU.P,'dodatkowe=1,zastępstwa=0,nieobecni=1',,'AKCWNIO');
+         {? _TAB0.first()
+         || _poziom:=_TAB0.L;
+            {!
+            |? {? OSOBA.seek(_TAB0.OSOBA) & _osoby*',%1,'[$_TAB0.OSOBA]=0
+               || _osoby+='%1,'[$_TAB0.OSOBA];
+                  _au:=exec('osoba2user','users',OSOBA.ref());
+                  {? _au<>null()
+                  || _dodaj*=BI_TODO.USERS<>_au;
+                     {? WT_NWU.find_key(NWU.ref(),_au)
+::                      Rekord w widoku dla bezpośredniego przełożonego istnieje ...
+                     || {? WT_NWU.BI_PREL<>_bi_prel
+::                         ... być może należy jedynie zaktualizować informację o instancji czynności.
+                        || WT_NWU.BI_PREL:=_bi_prel;
+                           WT_NWU.put()
+                        ?}
+
+::                      Rekord w widoku dla bezpośredniego przełożonego nie istnieje - należy go utworzyć.
+                     || WT_NWU.blank();
+                        WT_NWU.USER:=_au;
+                        WT_NWU.BI_PREL:=_bi_prel;
+                        WT_NWU.NWU:=NWU.ref();
+                        WT_NWU.add()
+                     ?}
+                  ?}
+               ?};
+               _TAB0.next() & _poziom=_TAB0.L
+            !}
+         ?};
+         obj_del(_TAB0);
+
+         {? _dodaj
+::          Jeżeli instancja czynności nie dotyczy użytkownika bezpośredniego przełożonego, to również jemu
+::          dodamy rekord do widoku.
+         || WT_NWU.blank();
+            WT_NWU.USER:=BI_TODO.USERS;
+            WT_NWU.BI_PREL:=_bi_prel;
+            WT_NWU.NWU:=NWU.ref();
+            WT_NWU.add()
+         ?};
+
+         WT_NWU.cntx_pop();
+         OSOBA.cntx_pop()
+      ?};
+      NWU.cntx_pop()
+
+   ?}
+
+|? _a='put_po'
+|| {? ~_b | do_state()<>1
+   || return()
+   ?};
+
+   _przed:=bfld('USERS');
+   {? _przed<>BI_TODO.USERS
+::    Jeżeli zmienił sie użytkownik w instancji bieżącej czynności, to trzeba to uwzględnić w tabeli widoku.
+::    Taka sytuacja będzie miała miejsce, kiedy ktoś przejmie czynność.
+::    Może się jednak okazać, że w tabeli widoku były dwa rekordy związane z bieżącym wnioskiem:
+::       - bezpośredniego przełożonego (zawsze);
+::       - osoby zastępującej bezpośredniego przełożonego.
+::    W takim przypadku nie dokonujemy zmiany użytkownika, tylko usuwamy jeden z rekordów.
+   || _bi_prel:=$BI_TODO.BI_PREL;
+      BI_PREL.cntx_psh();
+      B_PREL.cntx_psh();
+      _b_ele:=BI_TODO.BI_PREL().B_PREL().B_ELE;
+      B_PREL.cntx_pop();
+      BI_PREL.cntx_pop();
+
+      _kind_in:=exec('kind_in','#b_port');
+      _in:=exec('getPorts','#b_port',_b_ele,_kind_in,BI_TODO.BI_PREL);
+      exec('fillPorts','#bi_port',BI_TODO.BI_PREL,_kind_in,_in);
+
+      NWU.cntx_psh();
+      NWU.prefix();
+      {? type_of(_in.NWU)=type_of(null()) & _in.NWU<>null() & ref_tab(_in.NWU)=NWU & NWU.seek(_in.NWU)
+      || _ao:=0;
+::       Czy "stary" użytkownik jest bezpośrednim przełożonym?
+         _TAB0:=exec('prac_nad','stanprac',NWU.P,'dodatkowe=1,zastępstwa=0,nieobecni=1',,'AKCWNIO');
+         OSOBA.cntx_psh();
+         OSOBA.prefix();
+         {? _TAB0.first()
+         || _osoby:=',';
+            _poziom:=_TAB0.L;
+            {!
+            |? {? OSOBA.seek(_TAB0.OSOBA) & _osoby*',%1,'[$_TAB0.OSOBA]=0
+               || _osoby+='%1,'[$_TAB0.OSOBA];
+                  _au:=exec('osoba2user','users',OSOBA.ref());
+                  _ao:=_au<>null() & _au=_przed
+               ?};
+               _ao=0 & _TAB0.next() & _poziom=_TAB0.L
+            !}
+         ?};
+         OSOBA.cntx_pop();
+         obj_del(_TAB0);
+
+         _firma:=exec('ref_firma','ustawienia');
+
+         WT_NWU.cntx_psh();
+         WT_NWU.index('UBN');
+         WT_NWU.prefix(_firma,BI_TODO.USERS,$BI_TODO.BI_PREL,NWU.ref());
+         {? WT_NWU.first()
+::          Rekord w tabeli widoku dla "nowego" użytkownika już istnieje. Trzeba usunąć rekord "starego" użytkownika,
+::          jeżeli "stary" nie jest przełożonym.
+         || {? ~_ao
+            || WT_NWU.prefix(_firma,_przed,$BI_TODO.BI_PREL,NWU.ref());
+               {? WT_NWU.first()
+               || WT_NWU.del()
+               ?}
+            ?}
+
+::          Rekord w tabeli widoku dla "nowego" użytkownika nie istnieje. Jeżeli "stary" użytkownik jest bezpośrednim
+::          przełożonym, to na podstawie jego rekordu w widoku dodajemy nowy (zmieniając jedynie użytkownika).
+::          Jeżeli "stary" użytkownik nie jest bezpośrednim przełożonym, to w jego rekordzie w widoku
+::          wystarczy zmienić użytkownika.
+         || WT_NWU.prefix(_firma,_przed,$BI_TODO.BI_PREL,NWU.ref());
+            {? WT_NWU.first()
+            || WT_NWU.prefix();
+               WT_NWU.USER:=BI_TODO.USERS;
+               {? _ao
+               || WT_NWU.add()
+               || WT_NWU.put()
+               ?}
+            ?}
+         ?};
+         WT_NWU.index('NUB');
+::       Jeżeli "nowym" użytkownikiem instancji czynności będzie użytkownik związany z bezpośrednim przełożonym,
+::       to możliwe jest istnienie w widoku rekordu "odwiązanego" od instancji czynności. Możemy go zatem już usunąć.
+::       Jego rolę przejmie rekord, który poprawiliśmy kilka linii wyżej.
+         WT_NWU.prefix(NWU.ref(),BI_TODO.USERS,'',);
+         {? WT_NWU.first()
+         || WT_NWU.del()
+         ?};
+         WT_NWU.cntx_pop()
+
+      ?};
+      NWU.cntx_pop()
+   ?}
+
+|? _a='del_przed'
+|| _bi_prel:=$BI_TODO.BI_PREL;
+   WT_NWU.cntx_psh();
+   WT_NWU.index('UBN');
+   WT_NWU.prefix();
+   {? WT_NWU.find_key(exec('ref_firma','ustawienia'),BI_TODO.USERS,_bi_prel,)
+   || NWU.cntx_psh();
+      NWU.prefix();
+      {? NWU.seek(WT_NWU.NWU)
+      || _ao:=0;
+::       Czy użytkownik jest bezpośrednim przełożonym?
+         _TAB0:=exec('prac_nad','stanprac',NWU.P,'dodatkowe=1,zastępstwa=0,nieobecni=1',,'AKCWNIO');
+         OSOBA.cntx_psh();
+         OSOBA.prefix();
+         {? _TAB0.first()
+         || _osoby:=',';
+            _poziom:=_TAB0.L;
+            {!
+            |? {? OSOBA.seek(_TAB0.OSOBA) & _osoby*',%1,'[$_TAB0.OSOBA]=0
+               || _osoby+='%1,'[$_TAB0.OSOBA];
+                  _au:=exec('osoba2user','users',OSOBA.ref());
+                  _ao:=_au<>null() & _au=BI_TODO.USERS
+               ?};
+               _ao=0 & _TAB0.next() & _poziom=_TAB0.L
+            !}
+         ?};
+         OSOBA.cntx_pop();
+         obj_del(_TAB0);
+
+         {? _ao
+::          Usuwane jest zadanie dla bezpośredniego przełożonego.
+::          Nie chcemy, aby z widoku zginęła informacja o tym wniosku - nie usuwamy więc rekordu z tabeli WT_NWU,
+::          a jedynie "odwiązujemy" go od zadania.
+         || WT_NWU.BI_PREL:='';
+            WT_NWU.put()
+         || WT_NWU.del()
+         ?};
+
+         USERS.cntx_psh();
+         {? NWU.KTO_WER=BI_TODO.USERS().OSOBA
+         || NWU.KTO_WER:=null();
+            NWU.put()
+         ?};
+         USERS.cntx_pop()
+      ?};
+      NWU.cntx_pop()
+   ?};
+   WT_NWU.cntx_pop()
+
+?};
+~~
+
+
+\wt_nwu_status_ikona
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła "Ikona - przed" dla pola POLA_GRP.TXT_2 w oknie WEB_WER tabeli WT_NWU.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='xwin16.png:110';
+{? WT_NWU.BI_PREL=''
+|| NWU.cntx_psh();
+   WT_NWU.NWU();
+   {? NWU.AZ='?' | NWU.AZ='D'
+   || _ret:='xwin16.png:33'
+   ?};
+   NWU.cntx_pop()
+?};
+_ret
+
+
+\wt_nwu_web_wer_ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Po odświeżeniu" okna WEB_WER tabeli WT_NWU.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~WT_NWU.get()
+|| return()
+?};
+
+exec('env_wt','b_proces');
+
+:: Dostępność przycisków.
+_ag:='';
+NWU.cntx_psh();
+NWU.prefix();
+WT_NWU.NWU();
+{? OPERATOR.USER<>WT_NWU.USER | ~(NWU.AZ='?' | NWU.AZ='D')
+:: Jeżeli użytkownik nie jest właścicielem widoku lub status wniosku nie pozwala na jego weryfikację, to blokujemy
+:: akcję "Weryfikuj".
+|| _ag+='W'
+?};
+NWU.cntx_pop();
+
+WT_NWU.web_win_opt('WEB_WER',,'grayed='+_ag)
+
+
+\wt_nwu_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: "Rekord - przed" dla tabeli WT_NWU.
+::   WE: _a [NUMBER] - Rekord bieżący? [0 - nie / 1 - tak]
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Status wniosku.
+NWU.cntx_psh();
+EDIT_VAR.NWU_STAT:=exec('status','wnioski_urlopowe',WT_NWU.NWU().AZ);
+NWU.cntx_pop();
+~~
+
+
+\wt_nwu_szczegoly_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Szczegóły" dla tabeli WT_NWU.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('exist','#record') || return(~~) ?};
+
+exec('set_env','pkw_por');
+
+NWU.cntx_psh();
+NWU.prefix();
+{? ~NWU.seek(WT_NWU.NWU)
+|| FUN.info('Brak dostępu do wniosku urlopowego.'@)
+||
+:: Czy nieobecność może być nieobecnością na część dnia?
+::    0 - Nie;
+::    1 - Tak, ale decyduje operator;
+   exec('web_global_params_set','pkw','NWU','PartDay',0);
+:: Czy wyświetlać check-box'a pozwalającego na przekroczenie limitu?
+   exec('web_global_params_set','pkw','NWU','OverLimit',0);
+
+:: Jednostka miary limitowania nieobecności.
+   exec('web_global_params_set','pkw','NWU','JM','');
+
+   _we:='WT_REDW';
+
+:: aktualizacja 22.26_NRU01
+   exec('nwopo_set_and_save','wnioski_urlopowe');
+
+   exec('update','wnioski_urlopowe',1,NWU.ref(),0);
+   exec('nwu_web_efld_opt','wnioski_urlopowe','*',NWU,_we);
+   _title:='Wniosek urlopowy'@+' - '+exec('status','wnioski_urlopowe',NWU.AZ);
+   NWU.web_ewin_init(_we,,'title="%1"' [_title]);
+   NWU.web_display(_we,,"web_top_tab().web_eclose(web_top_win())")
+?};
+NWU.cntx_pop();
+~~
+
+
+\wt_nwu_weryfikuj_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa akcji "Weryfikuj - po" w oknie WEB_WER tabeli WT_NWU.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('exist','#record') || return(~~) ?};
+
+NWU.cntx_psh();
+NWU.prefix();
+{? ~NWU.seek(WT_NWU.NWU)
+|| FUN.info('Brak dostępu do wniosku urlopowego.'@)
+|? ~(NWU.AZ='?' | NWU.AZ='D')
+|| FUN.info('Status wniosku nie pozwala na jego weryfikację.'@)
+|? exec('env_wt','b_proces')
+|| _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='PKW_POR_IWWU';
+   _params.UIDREF:=NWU.uidref();
+   _params.AKCJA:='WERYFIKUJ';
+   _params.PORTS_IN:=$(
+      "  _uid:='"+_params.ACT_UID+"';
+         _refNWU:=exec('FindAndGet','#table',NWU,'"+NWU.uidref()+"',,,null());
+         _ports_in:=exec('portsIn','#b__box',_uid);
+         exec('portsInSet','#b__box',_ports_in,_uid,'NWU',_refNWU);
+         _ports_in
+      "
+   );
+   exec('mp_run','#b__box',_params)
+?};
+NWU.cntx_pop();
+~~
+
+
+\nwu_web_edit_par
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła tworzy tablicę parametrów nazwanych dla formuły edytującej rekord wniosku urlopowego.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par:=obj_new('NWU','REFRESH','FML');
+:: Wskazanie (uidref) redagowanego rekordu (w poprzedniej sesji).
+_par.NWU:=~~;
+:: Czy po redagowaniu odświeżać okno wertowania?
+_par.REFRESH:=1;
+:: Formuła wykonywana po (prawidłowym) uzupełnieniu wymaganych pól. Odpowiada za obsługę procesowości. Do formuły
+:: przekazywane są dwa parametry:
+::    _a [STRING]    - Identyfikator przycisku (AKCEPTUJ / ODRZUĆ).
+_par.FML:="";
+
+_par
+
+
+\nwu_web_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła odpowiedzialna za weryfikację wniosku o urlop lub wniosku o wycofanie urlopu (dialog i jego obsługa).
+::   WE: _a [ARRAY] - Tablica z elementami nazwanymi będącymi parametrami. Struktura określona przez \nwu_web_edit_par.
+::                    Poprawność parametrów nie jest sprawdzana.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par:=_a;
+
+exec('maski','#b_proman');
+exec('set_env','pkw_por',0);
+
+NWU.index('OD');
+NWU.prefix();
+
+{? ~(type_of(_par.NWU)=type_of('') & NWU.seek(_par.NWU))
+|| ($(_par.FML))('ANULUJ');
+   {? _par.REFRESH
+   || web_top_refresh()
+   ?};
+   return()
+?};
+
+:: Czy nieobecność może być nieobecnością na część dnia?
+::    0 - Nie;
+::    1 - Tak, ale decyduje operator;
+exec('web_global_params_set','pkw','NWU','PartDay',0);
+:: Czy wyświetlać check-box'a pozwalającego na przekroczenie limitu?
+exec('web_global_params_set','pkw','NWU','OverLimit',0);
+
+:: Jednostka miary limitowania nieobecności.
+exec('web_global_params_set','pkw','NWU','JM','');
+
+web_params_set(
+   exec('obj_ntab_set','#array',
+      web_params_get(1),
+      'NWU',_par.NWU,
+      'FML',_par.FML,
+      'REFRESH',_par.REFRESH
+   )
+);
+
+_we:='WT_REDW';
+
+:: aktualizacja 22.26_NRU01
+exec('nwopo_set_and_save','wnioski_urlopowe');
+
+exec('update','wnioski_urlopowe',1,NWU.ref(),1);
+exec('nwu_web_efld_opt','wnioski_urlopowe','*',NWU,_we);
+_title:=
+   {? NWU.AZ='D'
+   || 'Zweryfikuj wycofanie wniosku o urlop'@
+   || 'Zweryfikuj wniosek o urlop'@
+   ?};
+
+:: Chwilowa poprawka DEF-a.
+NWU.web_efld_init(_we,,'editable=0',,'R','RN');
+
+BI_TODO.web_cntx_save(1);
+WT_NWU.web_cntx_save(1);
+NWU.web_ewin_init(_we,,'title="%1"' [_title]);
+NWU.web_edit(_we,~_we,,,
+   "  web_params_set(_web_params:=web_params_get());
+::    Środowisko jest ustawiane przez formułę "Przed obsługą".
+      {? _a<>'ANULUJ'
+      || _ret:=exec('nwu_check','wnioski_urlopowe',2+(_a='ODRZUĆ'));
+         {? _ret.FLD<>''
+         || return()
+         || {? _ret.ASK<>''
+            || web_params_set(exec('obj_ntab_set','#array',_web_params,'status',_a));
+               NWU.web_cntx_save(1);
+               BI_TODO.web_cntx_save(1);
+               WT_NWU.web_cntx_save(1);
+               web_ask(\"exec('nwu_ask','!pkw_por_iwwu',_a)\",_ret.ASK+'\n'+'Kontynuować?'@,FUN.TYT)
+            || ($(_web_params.FML))(_a)
+            ?}
+         ?}
+      ?};
+      {? ~(_a<>'ANULUJ' & _ret.ASK<>'')
+      || NWU.web_eclose();
+         BI_TODO.web_cntx_load(1);
+         WT_NWU.web_cntx_load(1);
+         {? _web_params.REFRESH
+         || web_top_refresh(1)
+         ?}
+      ?}
+   "
+)
+
+
+\zweryfikuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła odpowiedzialna za zmianę statusu wniosku urlopowego.
+::   WE: _a [REFERENCE] - Wskazanie wniosku urlopowego.
+::       _b [STRING]    - Kod decyzji (AKCEPTUJ / ODRZUĆ).
+::   WY: '' lub komunikat o błędzie.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=obj_new('AZ','ERROR');
+_ret.AZ:=_ret.ERROR:='';
+
+{? exec('set_env','pkw_por',0)
+|| NWU.cntx_psh();
+   NWU.prefix();
+   {? ~NWU.seek(_a)
+   || _ret.ERROR:=exec('error','!pkw_por_iwwu','#NWU')
+
+   |? ~(NWU.AZ='?' | NWU.AZ='D')
+   || _ret.ERROR:=exec('error','!pkw_por_iwwu','#NWU.AZ')
+
+   |? NWU.AD:=date();
+      NWU.AZ:=
+         {? NWU.AZ='?'
+         || {? _b='AKCEPTUJ'
+            || 'T'
+            || 'N'
+            ?}
+         |? NWU.AZ='D'
+         || {? _b='AKCEPTUJ'
+            || 'W'
+            || 'T'
+            ?}
+         ?};
+      USERS.cntx_psh();
+      NWU.KTO_WER:=OPERATOR.USER().OSOBA;
+      USERS.cntx_pop();
+      NWU.put(1)
+   || _ret.AZ:=NWU.AZ
+   || _ret.ERROR:=exec('error','!pkw_por_iwwu','#NWU.put()')
+   ?};
+   NWU.cntx_pop()
+|| _ret.ERROR:=exec('error','!pkw_por_iwwu','#ENV')
+?};
+_ret
+
+
+\nwu_ask
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.14]
+:: OPIS: Formuła dla wprowadzania wniosków, uzależniająca wprowadzenie od decyzji użytkownika (w sytuacji gdy funkcja
+::       sprawdzająca zwróciła jakiś informacyjny komunikat.
+::   WE: _a [STRING] - Status wniosku
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ask:=_a;
+web_params_set(_web_params:=web_params_get());
+{? _ask=1 & NWU.web_cntx_load(1)
+|| ($(_web_params.FML))(_web_params.status);
+
+   NWU.web_eclose();
+   BI_TODO.web_cntx_load(1);
+   WT_NWU.web_cntx_load(1);
+   {? _web_params.REFRESH
+   || web_top_refresh(1)
+   ?}
+|| return()
+?}
+
+:Sign Version 2.0 jowisz:1045 2023/07/21 13:25:24 a9f5045f564216c1531072a91681c7bd8e5369c70b8ed6b6cfe81bf2f8df4cdba33aa2e1521371fb3c8858f47a947d1e5640224dac491e6fed87b2d6f7ece295053ea9f95e7ded64574ece3d23b7e6763f18d7782fa68b3617aa4c3b6906290e5c0559a82e4db86b843d0d64b867dc99271d08311b056391f4e4f0a3ff5a444e

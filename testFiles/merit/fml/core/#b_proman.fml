@@ -1,0 +1,4039 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #b_proman.fml
+:: Utworzony: 30.12.2014 [17.00]
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi procesowości - Proces Manager
+::======================================================================================================================
+
+
+\proMan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Menadżer procesu
+::   WE:  _a - B_PREL.ref() lub BI_PREL.ref()
+::        _b - Akcja okna
+::       [_c] - [obj_new] - Porty wejściowe
+::        _d - ścieżka uruchomienia (Todo, Proc, Proc_force, Area, web_Proc, web_Todo)
+::       [_e] - uruchomienie w trybie usługowym - B_WORKER.ref()
+::       [_f] - obj_new - dodatkowe argumenty kontekstowe które przesłać do czynności
+::       [_g] - czy akcja dla grupy rekordów (komunikaty przekierowane do KOMM)
+::       [_h] - BI_PREL.UID zdarzenia sygnałowego, do ostemplowania uruchuchomionego zdarzenia przechwytującego
+::       [_i] - wartości parametrów przekazywane przez sygnał (tablica) albo parametr zdarzenia warunkowego (any)
+::       [_j] - uruchomienie w trybie cichym
+::       [_k] - uruchom automatycznie czynność w webTem
+::       [_l] - uid czynności
+::----------------------------------------------------------------------------------------------------------------------
+    _prel:={? var_pres('_a')=type_of(null())         || _a || return() ?};
+ _win_act:={? var_pres('_b')=type_of('')             || _b || return() ?};
+ _portsIn:={? var_pres('_c')=type_of(obj_new('obj')) || _c
+           |? var_pres('_c')=type_of("")             || (_c)() || ~~   ?};
+    _path:={? var_pres('_d')=type_of('')             || _d || FUN.error('Nie przekazano ścieżki wywołania.'@); return() ?};
+_b_worker:={? var_pres('_e')=type_of(null())         || _e || null()   ?};
+ _context:={? var_pres('_f')=type_of(obj_new('obj')) || _f
+           |? var_pres('_f')=type_of("")             || (_f)() || ~~   ?};
+   _grupa:={? var_pres('_g')=type_of('')             || _g || 'N'      ?};
+ _sig_uid:={? var_pres('_h')=type_of('')             || _h || ''       ?};
+ _sig_val:={? var_pres('_i')>=0                      || _i || ~~       ?};
+   _quiet:={? var_pres('_j')=type_of('')             || _j || 'N'      ?};
+_web_auto:={? var_pres('_k')=type_of('')             || _k || 'N'      ?};
+     _uid:={? var_pres('_l')=type_of('')             || _l || ''       ?};
+
+_signal:=0;
+{? _sig_uid<>''
+|| _signal:=1
+?};
+
+_force:=0;
+{? _path='Proc_force'
+|| _force:=1;
+   _path:='Proc'
+?};
+
+{? type_of(_portsIn)=type_of(~~) || _portsIn:=obj_new(1); _portsIn[1]:=~~ ?};
+
+_is_snon:=0;
+{? ref_tab(_prel)=B_PREL
+||
+   _b_ele:=exec('FindAndGet','#table',B_PREL,_prel,,"B_PREL.B_ELE",null());
+   _is_snon:=exec('is_event','#b_event',_b_ele,'startowe','nieokreślone')>0
+||
+   _b_ele:=exec('FindAndGet','#table',B_PREL,exec('FindAndGet','#table',BI_PREL,_prel,,"BI_PREL.B_PREL",null()),,
+      "B_PREL.B_ELE",null())
+?};
+_b_action_uid_in:=_uid;
+{? _b_action_uid_in=''
+||
+   _b_action_uid_in:=exec('FindInSet','#table','B_ACTION','B_ELE',_b_ele,,"B_ACTION.UID",,,'')
+?};
+
+_jTerm:=app_info('web_sesid')='';
+_webTerm:=~_jTerm;
+
+{? _webTerm
+|| exec('env_wt','b_proces','parses');
+   {? _path='Proc' & _is_snon &
+      {? Perm.hasAny(OPERATOR.USER) & exec('auth_domain','#b__box','OBG,OBE,CTR,FKS','B,W')
+      || exec('spr_parses_www','zws')<>''
+      ?}
+   || return()
+   ?}
+|? _path='Proc' & _is_snon
+||
+   {? ~__PARSES.isSetAll() || return() ?}
+?};
+
+_result:=~~;
+
+_class:={? __develop || @.Class.cProMan || @.CLASS.cProMan ?};
+
+_uid:='';
+_proMan:=obj_new(_class);
+_uid:=_proMan.uid;
+
+_ts:=exec('uid','#blank');
+
+:: Zwracam globalne środowisko pracy menadżera
+_proenv:=exec('proenv','#b_proman');
+_stos_ini:=_proenv.STOS_INI;
+
+exec('maski','#b_proman');
+
+:: _path='Cleaner' dotyczy wywołania z czynności ZPR_CLE_ANER
+_cleaner:=_path='Cleaner';
+_web_auto:=_web_auto='T';
+_new:=0;
+{? ref_name(_prel)=B_PREL.name(1)
+:: nowa instancja procesu
+|| _new:=1;
+   _proMan.biNew:=_new;
+   _proMan.runProc(_prel,_win_act,_portsIn,_stos_ini,_ts,_grupa='T',_sig_uid,_sig_val)
+|? ref_name(_prel)=BI_PREL.name()
+:: kontynuacja procesu
+||
+   _web_auto:=_web_auto & _webTerm;
+:: Sprawdzam czy w kolejce nie ma przypadkiem takiego BI_PRELa już - jeśli jest to go usuwam
+   {? exec('delete4biprel','#bi_queue',_prel)>0
+   ||
+      _buffer:=exec('buffer','#bi_queue');
+      _buffer.BI_PREL:=_prel;
+      _buffer.TM_STAMP:=FIRMA.tm_stamp();
+      _buffer.SES_ID:=FIRMA.ses_id();
+      _buffer.TCID:='';
+      _buffer.WIN_ACT:=_win_act;
+      _buffer.ALERT:='N';
+      _buffer.UID:=_proMan.uid;
+      exec('add','#bi_queue',_buffer)
+   ?}
+?};
+:: logowanie kolejki BI_QUEUE
+:: _log_on=0 - wyłączone
+:: _log_on=1 - logowanie głównej kolejki i webowych czynności automatycznych
+:: _log_on=2 - to co 1 + logowanie czyszczenia kolejki
+:: _log_on=3 - to co 2 + szczegóły głównej kolejki
+_log_on:=0;
+_log_name:='%1_%2_%3.log'['bi_queue',{? _webTerm || 'webterm' || 'jterm' ?},hash(FIRMA.ses_id(),'md5')];
+_log_lp:=0;
+:: kolejka menadżera procesu
+:: usuwanie nieaktywnych pozycji
+BI_QUEUE.cntx_psh();
+BI_QUEUE.index('TM_STAMP');
+BI_QUEUE.prefix();
+_date:=date(); _tm_stamp:=tm_stamp(_date~1,_date~2,_date~3);
+_date:=date()-3; _tm_stamp:=_tm_stamp-tm_stamp(_date~1,_date~2,_date~3);
+_loop:=BI_QUEUE.find_le(FIRMA.tm_stamp()-_tm_stamp);
+{!
+|? _loop
+|!
+   {? _log_on>=2
+   ||
+      _log:=fopen(_log_name,'Ua',1,,1);
+      {? _log.is_open()
+      ||
+         _txt:='REF_DEL';
+         _symbol:=exec('FindAndGet','#table',BI_QUEUE,BI_QUEUE.ref(),,"uidref()",$BI_QUEUE.ref());
+         fwrite(_log,'%1\t%2\t%3\t%4'[_proMan.uid,form(_log_lp,-2),_txt,_symbol])
+      ?}
+   ?};
+   {? BI_QUEUE.SES_ID<>'' & BI_QUEUE.ses_info(BI_QUEUE.SES_ID,'exist')=0
+   || BI_QUEUE.del()
+   ?};
+   _loop:=BI_QUEUE.prev()
+!};
+:: przetwarzanie
+BI_QUEUE.index('SES_ID');
+BI_QUEUE.prefix('',FIRMA.ses_id(),_proMan.uid);
+_loop:=BI_QUEUE.first();
+{? _loop=0 & _new=1
+||
+:: Jeśli nic się nie dodało do kolejki, to znak że procesu nie udało się uruchomić i trzeba zwrócić 0
+   _result:=0
+?};
+{!
+|? _loop
+|!
+   {? _log_on>=1
+   ||
+      _log_lp+=1;
+      _log:=fopen(_log_name,'Ua',1,,1);
+      {? _log.is_open()
+      ||
+         _txt:='REF';
+         _symbol:=exec('FindAndGet','#table',BI_QUEUE,BI_QUEUE.ref(),,"uidref()",$BI_QUEUE.ref());
+         fwrite(_log,'%1\t%2\t%3\t%4'[_proMan.uid,form(_log_lp,-2),_txt,_symbol])
+      ?};
+      obj_del(_log);
+      _b_prel:=exec('FindAndGet','#table',BI_PREL,BI_QUEUE.BI_PREL,,"B_PREL",null());
+      _b_ele:=exec('FindAndGet','#table',B_PREL,_b_prel,,"B_ELE",null());
+      _symbol:=exec('FindAndGet','#table',B_ELE,_b_ele,,"SYMBOL",'')
+   ?};
+   {? var_pres('_proMan')=type_of(_class)
+   || _sig_auto:=_proMan.sigAuto;
+      _new:=_proMan.biNew;
+      obj_del(_proMan)
+   || _sig_auto:='X';
+      _new:=1
+   ?};
+   _proMan:=obj_new(_class);
+   {? _uid<>''
+   || _proMan.uid:=_uid
+   ?};
+   _bi_prel:=BI_QUEUE.BI_PREL;
+   _win_act:=BI_QUEUE.WIN_ACT;
+   _b_ele:=BI_QUEUE.BI_PREL().B_PREL().B_ELE;
+   BI_QUEUE.del();
+   _b_action_uid:=exec('FindInSet','#table','B_ACTION','B_ELE',_b_ele,,"B_ACTION.UID",,,'');
+   _proMan.biNew:=_new;
+   _path1:=gsub(_path,'web_','');
+   _proMan.service:=(_b_worker<>null() | _quiet='T');
+   _proMan.Path:={? _path1<>'Proc' || _path1 || {? _new | _proMan.service || 'Proc' || 'Todo' ?} ?};
+   _proMan.b_worker:=_b_worker;
+   _proMan.context:=
+      {? _b_action_uid=_b_action_uid_in | (4+_path)='web_'
+      || _context
+      || ~~
+      ?};
+   _proMan.group:=_grupa='T';
+   _proMan.sigUid:=_sig_uid; _sig_uid:='';
+   _proMan.sigVal:=_sig_val;
+   _proMan.sigAuto:=_sig_auto;
+   _proMan.CLEANER:=_cleaner;
+   {? (_path='Proc' | _path='Todo') & _webTerm
+:: Obsługa webTerm ścieżka Proc, Todo
+   ||
+      {? _log_on>=3
+      ||
+         _log:=fopen(_log_name,'Ua',1,,1);
+         {? _log.is_open()
+         ||
+            _txt:='Obsługa webTerm ścieżka Proc, Todo';
+            fwrite(_log,'%1\t%2\t%3\t%4'[_proMan.uid,form(_log_lp,-2),_txt,_symbol])
+         ?};
+         obj_del(_log)
+      ?};
+      _fml:='!'+(-_b_action_uid);
+      {? _path='Proc'
+::    Proc
+      ||
+         {? _fml='!'
+::       B_ELE nie jest czynnością więc kontynuacja procesu
+         || _res:=_proMan.runBiPrel(_bi_prel,_win_act)
+         |? exec('env_wt_core','#web_srv')
+            & exec('FindAndGet','#table',BI_PREL,_bi_prel,,"BI_PREL.BI_STAT")=__Status.OCZEKUJACA
+::       B_ELE jest czynnością oczekującą
+         || BI_TODO.cntx_psh(); {? BI_TODO.name()='' || BI_TODO.use('bi_t____') ?};
+            BI_TODO.index('UNIQUE'); BI_TODO.prefix(_bi_prel,OPERATOR.USER);
+            {? BI_TODO.first()
+            || B_PREL.cntx_psh();
+               _b_prel_act:=BI_TODO.BI_PREL().B_PREL;
+               B_PREL.cntx_pop();
+               _proMan.Path:='webTermProcCancel';
+::             Zwinięcie procesu
+               _proMan.runBiPrel(_bi_prel,'webTermProcCancel');
+::             web_main
+               _web_auto:=0;
+               params_set('PATH',_path,'PREL',_prel,'PREL_ACT',_b_prel_act);
+               {? exec('lic','#b_action',_b_action_uid)>0
+               || exec('web_main',_fml,_path,_prel,_b_prel_act)
+               || _txt:='Czynność: %1 — brak licencji.'@[_b_action_uid];
+                  FUN.info(_txt)
+               ?}
+            ?};
+            BI_TODO.cntx_pop()
+         |? exec('env_wt_core','#web_srv')
+            & exec('FindAndGet','#table',BI_PREL,_bi_prel,,"BI_PREL.BI_STAT")=__Status.ZAWIESZONA
+::       B_ELE jest czynnością zawieszoną
+         ||
+::          Zwinięcie procesu
+            _proMan.runBiPrel(_bi_prel,'webTermProcCancel')
+         ?}
+::    Todo
+      ||
+::       web_main
+         {? exec('env_wt_core','#web_srv')
+         || _web_auto:=0;
+            params_set('PATH',_path,'PREL',_bi_prel);
+            {? exec('lic','#b_action',_b_action_uid)>0
+            || exec('web_main',_fml,_path,_bi_prel)
+            || _txt:='Czynność: %1 — brak licencji.'@[_b_action_uid];
+               FUN.info(_txt)
+            ?}
+         ?}
+      ?};
+      _res:=1
+:: Obsługa jTerm
+:: Obsługa webTerm ścieżka Area
+   ||
+      {? _log_on>=3
+      ||
+         _log:=fopen(_log_name,'Ua',1,,1);
+         {? _log.is_open()
+         ||
+            _txt:='Obsługa jTerm';
+            _symbol:=exec('FindAndGet','#table',BI_QUEUE,BI_QUEUE.ref(),,"uidref()",$BI_QUEUE.ref());
+            fwrite(_log,'%1\t%2\t%3\t%4'[_proMan.uid,form(_log_lp,-2),_txt,_symbol])
+         ?};
+         obj_del(_log)
+      ?};
+      _res:=_proMan.runBiPrel(_bi_prel,_win_act)
+   ?};
+   _cleaner:=0;
+   {? var_pres('_result')=type_of(~~) || _result:=_res ?};
+:: Aktualizacja opisów zadań
+   exec('descTodoUpdate','#b_proman','T');
+   _loop:=BI_QUEUE.first()
+!};
+BI_QUEUE.cntx_pop();
+
+:: Jeżeli nowo powołany proces został uruchomiony przez wymuszenie ze zdarzenia czasowego,
+:: czyli mimo tego, że inna jego instancja była jeszcze aktywna, to odpowiednio stempluję proces
+{? _new>0 & _proMan.bi_proc<>null() & _force>0
+|| BI_PROC.cntx_psh(); {? BI_PROC.name()='' || BI_PROC.use('bi_p____') ?};
+   BI_PROC.index('UID'); BI_PROC.prefix();
+   {? BI_PROC.seek(_proMan.bi_proc)
+   || BI_PROC.FORCED:=1;
+      BI_PROC.put()
+   ?};
+   BI_PROC.cntx_pop()
+?};
+
+{? _new>0 & _proMan.bi_proc<>null() & _b_worker=null()
+||
+:: Sprawdzam czy nowo uruchomiony proces nie zawiesił się przypadkiem, jeśli tak to wyświetlam
+:: komunikat
+   B_PROC.cntx_psh();
+   BI_PROC.cntx_psh(); {? BI_PROC.name()='' || BI_PROC.use('bi_p____') ?};
+   BI_PROC.index('UID'); BI_PROC.prefix();
+   {? BI_PROC.seek(_proMan.bi_proc)
+   || _status:=BI_PROC.BI_STAT;
+      _micro:=BI_PROC.B_PROC().MICRO;
+      {? _status=__Status.ZAWIESZONY & _micro='N'
+      || _what:=exec('B_PROC','#to_string',BI_PROC.B_PROC);
+         _msg:='';
+         {? _signal>0
+         || _msg:='Proces: %1 wyzwolony sygnałem uruchomił się, ale został zawieszony.\n'
+                  'Może to oznaczać problem z uprawnieniami użytkowników lub konfiguracją procesu.'@[_what]
+         || _msg:='Proces: %1 uruchomił się, ale został zawieszony.\n'
+                  'Może to oznaczać problem z uprawnieniami użytkowników lub konfiguracją procesu.'@[_what]
+         ?};
+         FUN.emsg(_msg)
+      ?}
+   ?};
+   BI_PROC.cntx_pop();
+   B_PROC.cntx_pop()
+?};
+
+:: zdjęcie ze stosu uruchomionych elementów startowych
+_stos_ini.pop(_ts);
+
+:: automatyczne uruchomienie czynności w webTerm
+{? _web_auto
+||
+   _tcid:=app_info('web_tcid');
+   _sesid:=app_info('web_mbid');
+   _bi_proc:=exec('FindAndGet','#table',BI_PREL,_prel,,"BI_PREL.BI_PROC",null());
+   _uid:=$_bi_proc;
+   BI_QUEUE.cntx_psh();
+   BI_QUEUE.index('SES_ID');
+   BI_QUEUE.prefix(_tcid,_sesid,_uid,);
+   {? BI_QUEUE.first()
+   ||
+      {? _log_on>=1
+      ||
+         _log_lp:=0;
+         _log:=fopen(_log_name,'Ua',1,,1);
+         {? _log.is_open()
+         ||
+            _txt:='REF_WEB_AUTO'; _symbol:=$BI_QUEUE.ref();
+            fwrite(_log,'%1\t%2\t%3\t%4'[_proMan.uid,form(_log_lp,-2),_txt,_symbol])
+         ?};
+         obj_del(_log)
+      ?};
+      BI_PREL.cntx_psh();
+      B_PREL.cntx_psh();
+      exec('proMan','#b_proman',BI_QUEUE.BI_PREL,'',,'Todo');
+      B_PREL.cntx_pop();
+      BI_PREL.cntx_pop()
+
+   |? type_of(web_top_tab())=type_of(BI_TODO) & web_top_tab()=BI_TODO & web_top_win()='WER_WEB'
+   ||
+      exec('bitodo_zakres_www','#bi_todo'); BI_TODO.first();
+      BI_TODO.web_refresh('WER_WEB')
+   ?};
+   BI_QUEUE.cntx_pop()
+?};
+
+_result
+
+
+\cPmStos
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Kontekst menadzera procesu
+::----------------------------------------------------------------------------------------------------------------------
+_cl_name:='cPmStos';
+{? var_pres(_cl_name,@.CLASS)<=0
+||
+   obj_decl(_cl_name,
+:: --POLA--
+    obj_fld('this'      ,'wskazanie na siebie'     ; null() ),
+    obj_fld('STACK'     ,'stos'                    ; null() ),
+    obj_fld('NDX1'      ,'Indeks stosu: TM_STAMP'  ; null() ),
+    obj_fld('NDX2'      ,'Indeks stosu: ACT_NAME'  ; null() ),
+    obj_fld('NDX3'      ,'Indeks stosu: BI_PREL'   ; null() ),
+
+:: --KONSTRUKTOR/DESTRUKTOR--
+   obj_meth('__init','inicjalizacja obiektu';
+            "_a.this:=_a;
+            .STACK:=tab_tmp(1
+               ,'TM_STAMP' ,'STRING[15]'  ,'Znacznik czasowy'
+               ,'B_PREL'   ,'STRING[16]'  ,'$B_PREL.ref()'
+               ,'BI_PREL'  ,'STRING[16]'  ,'$BI_PREL.ref()'
+               ,'ACT_UID'  ,'STRING[12]'  ,'B_ACTION.UID'
+               ,'B_DOMAIN' ,'STRING[16]'  ,'$B_DOMAIN.ref()'
+               ,'DOM_SYM'  ,'STRING[255]' ,'B_DOMAIN.SYMBOL'
+             );
+             .NDX1:=.STACK.ndx_tmp(,,'TM_STAMP',,);
+             .NDX2:=.STACK.ndx_tmp(,,'ACT_UID',,);
+             .NDX3:=.STACK.ndx_tmp(,,'BI_PREL',,);
+             1"),
+
+:: --METODY-PUBLICZNE (umownie)-----------------------------------------------------------------------------------------
+   obj_meth('push','Odlozenie na stos';"
+::          _a - tm_stamp
+::          _b - BI_PREL.ref()
+
+            _tm_stamp:=_a;
+            _bi_prel:=_b;
+
+            _tab:=.STACK;
+            _tab.blank();
+            _tab.TM_STAMP:=_tm_stamp;
+
+            BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+            BI_PREL.index('UID'); BI_PREL.clear();
+            B_PREL.cntx_psh();B_PREL.clear();
+
+            {? BI_PREL.seek(_bi_prel)
+            || _tab.BI_PREL:=$BI_PREL.ref();
+               {? B_PREL.seek(BI_PREL.B_PREL)
+               || _tab.B_PREL:=$B_PREL.ref();
+                  {? B_PREL.CLASS='B_ACTION'
+                  || B_DOMAIN.cntx_psh();
+                     B_ACTION.cntx_psh();
+                     B_ACTION.index('B_ELE');
+                     B_ACTION.prefix(B_PREL.B_ELE);
+                     {? B_ACTION.first()
+                     || _tab.ACT_UID:=B_ACTION.UID;
+                        _tab.B_DOMAIN:=$B_ACTION.B_DOMAIN;
+                        _tab.DOM_SYM:=B_ACTION.B_DOMAIN().SYMBOL
+                     ?};
+                     B_DOMAIN.cntx_pop();
+                     B_ACTION.cntx_pop()
+                  ?}
+               ?}
+            ?};
+            B_PREL.cntx_pop();
+            BI_PREL.cntx_pop();
+
+            _tab.add()
+            ",type_of(''),type_of(null()),-1),
+
+   obj_meth('pop','Zdjecie ze stosu';"
+::          _a - tm_stamp
+            _wyn:=null();
+            _tab:=.STACK;
+            _tab.cntx_psh();
+            _tab.index(.NDX1);
+            _tab.prefix(_a,);
+            {? _tab.first()
+            || _wyn:=exec('FindAndGet','#table',B_PREL,_tab.B_PREL,,,null());
+               _tab.del()
+            ?};
+            _tab.cntx_pop();
+            _wyn
+            ",type_of(''),-1),
+
+   obj_meth('topBiPrel','Pobranie BI_PREL.ref() ze szczytu stosu';"
+            _wyn:=null();
+
+            _tab:=.STACK;
+            _tab.cntx_psh();
+            _tab.index(.NDX1);
+            _tab.clear();
+            {? _tab.last()
+            || _wyn:=exec('FindAndGet','#table',BI_PREL,_tab.BI_PREL,,,null())
+            ?};
+            _tab.cntx_pop();
+            _wyn
+            ",-1),
+
+   obj_meth('topPrel','Pobranie B_PREL.ref() ze szczytu stosu';"
+            _wyn:=null();
+
+            _tab:=.STACK;
+            _tab.cntx_psh();
+            _tab.index(.NDX1);
+            _tab.clear();
+            {? _tab.last()
+            || _wyn:=exec('FindAndGet','#table',B_PREL,_tab.B_PREL,,,null())
+            ?};
+            _tab.cntx_pop();
+            _wyn
+            ",-1),
+
+   obj_meth('topDom','Pobranie B_DOMAIN.ref() ze szczytu stosu';"
+            _wyn:=null();
+
+            _tab:=.STACK;
+            _tab.cntx_psh();
+            _tab.index(.NDX1);
+            _tab.clear();
+            {? _tab.last()
+            || _wyn:=exec('FindAndGet','#table',B_DOMAIN,_tab.B_DOMAIN,,,null())
+            ?};
+            _tab.cntx_pop();
+            _wyn
+            ",-1),
+
+   obj_meth('topDomSym','Pobranie B_DOMAIN.SYMBOL ze szczytu stosu';"
+            _wyn:='';
+
+            _tab:=.STACK;
+            _tab.cntx_psh();
+            _tab.index(.NDX1);
+            _tab.clear();
+            {? _tab.last()
+            || _wyn:=_tab.DOM_SYM
+            ?};
+            _tab.cntx_pop();
+            _wyn
+            ",-1),
+
+   obj_meth('topActUid','Pobranie B_ACTION.UID ze szczytu stosu';"
+            _wyn:='';
+
+            _tab:=.STACK;
+            _tab.cntx_psh();
+            _tab.index(.NDX1);
+            _tab.clear();
+            {? _tab.last()
+            || _wyn:=_tab.ACT_UID
+            ?};
+            _tab.cntx_pop();
+            _wyn
+            ",-1),
+
+   obj_meth('countBiPrel','Sprawdza ile razy na stosie występuje ten sam BI_PREL';"
+::          _a - BI_PREL.ref()
+            _wyn:=0;
+            _bi_prel:=_a;
+
+            _tab:=.STACK;
+            _tab.cntx_psh();
+            _tab.index(.NDX3);
+            _tab.prefix($_bi_prel,);
+            _wyn:=_tab.size();
+            _tab.cntx_pop();
+            _wyn
+            ",type_of(null()),-1),
+
+   obj_meth('chkAction','Sprawdza czy podana akcja znajduje sie na stosie';"
+            _wyn:=0;
+            _act_name:=_a;
+
+            _tab:=.STACK;
+            _tab.cntx_psh();
+            _tab.index(.NDX2);
+            _tab.prefix(_act_name,);
+            {? _tab.first()
+            || _wyn:=1
+            ?};
+            _tab.cntx_pop();
+            _wyn
+            ",type_of(''),-1),
+
+           )
+?};
+~~
+
+
+\cProMan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Deklaracja klasy PROMAN
+::----------------------------------------------------------------------------------------------------------------------
+{? __develop
+|| _cl_name:=@.Class.get_name('cProMan')
+|| _cl_name:='cProMan'
+?};
+{? var_pres(_cl_name,@.CLASS)<=0
+||
+   obj_decl(_cl_name,
+:: --POLA--
+    obj_fld('this'      ,'wskazanie na siebie'                                                  ; null() ),
+    obj_fld('jTerm'     ,'czy uruchomione z jTerma'                                             ; 0      ),
+    obj_fld('procEnab'  ,'czy włączona jest procesowość'                                        ; 1      ),
+    obj_fld('b_prel'    ,'wskazanie na element w procesie'                                      ; null() ),
+    obj_fld('bi_prel'   ,'wskazanie na instancję elementu w procesie'                           ; null() ),
+    obj_fld('b_proc'    ,'wskazanie na proces'                                                  ; null() ),
+    obj_fld('bi_proc'   ,'wskazanie na instancję procesu'                                       ; null() ),
+    obj_fld('b_worker'  ,'wskazanie na kolejkę roboczą usługi'                                  ; null() ),
+    obj_fld('buf_act'   ,'bufor rekordu b_action'                                               ; ~~     ),
+    obj_fld('buf_eve'   ,'bufor rekordu b_event'                                                ; ~~     ),
+    obj_fld('buf_prel'  ,'bufor rekordu b_prel'                                                 ; ~~     ),
+    obj_fld('buf_dom'   ,'bufor rekordu b_domain'                                               ; ~~     ),
+    obj_fld('buf_bip'   ,'bufor rekordu bi_prel'                                                ; ~~     ),
+    obj_fld('user'      ,'użytkownik'                                                           ; null() ),
+    obj_fld('tabKey'    ,'tabela z kluczowymi rekordami dodanymi funkcją addKey'                ; null() ),
+    obj_fld('micro'     ,'czy czynność jest uruchamiana w ramach mikroprocesu'                  ; 0      ),
+    obj_fld('biNew'     ,'czy instancja jest nowa (1), czy kontynuowana (0)'                    ; 0      ),
+    obj_fld('portsIn'   ,'obiekt z przekazanymi już podczas uruchomienia portami wejściowymi'   ; ~~     ),
+    obj_fld('akcjaOkna' ,'napis okreslajacy akcje okienka'                                      ; ''     ),
+    obj_fld('automat'   ,'czynność uruchomiona automatycznie'                                   ; 1      ),
+    obj_fld('TRIGS'     ,'tabela tymczasowa zawierająca listę tabel na którą założono triggery' ; null() ),
+    obj_fld('Path'      ,'sciezka uruchomienia czynnosci: Todo, Proc, Area'                     ; ''     ),
+    obj_fld('service'   ,'tryb pracy jako usługa'                                               ; 0      ),
+    obj_fld('err_txt'   ,'tresc zgloszonego bledu _d.error(_tresc)'                             ; ''     ),
+    obj_fld('context'   ,'obiekt z przekazanymi argumentami kontekstowymi'                      ; ~~     ),
+    obj_fld('group'     ,'akcja dla grupy rekordów (komunikaty do KOMM)'                        ; 0      ),
+    obj_fld('uid'       ,'tm_stamp identyfikujący instancję Menadżera'                          ; 0      ),
+    obj_fld('sigUid'    ,'UID zdarzenia sygnałowego'                                            ; ''     ),
+    obj_fld('sigVal'    ,'wartości parametrów przekazywane przez sygnał'                        ; 0      ),
+    obj_fld('sigAuto'   ,'wartość flagi AUTOMAT na sygnale odbierającym'                        ; 'X'    ),
+    obj_fld('can_unlock','czy po zakończeniu formuły czynnościowej można odblokować bi_prel'    ; 1      ),
+    obj_fld('desctodo'  ,'tryb opisu todo: N-natychmiastowy, T-w transakcji, O-opóźniony'       ; 'N'    ),
+    obj_fld('BLOBS'     ,'tabela z przechowywanymi blobami dla parametrów wyjściowych'          ; ~~     ),
+    obj_fld('GRPKEY'    ,'klucz grupujący'                                                      ; ''     ),
+    obj_fld('GGRPKEY'   ,'klucz grupujący'                                                      ; ''     ),
+    obj_fld('CLEANER'   ,'0-przetwarzanie standardowe, 1-przetwarznie w czynności ZPR_CLE_ANER' ; 0      ),
+
+:: --KONSTRUKTOR/DESTRUKTOR--
+   obj_meth('__init','inicjalizacja obiektu';
+            "_a.this:=_a;
+::          Tworze unikalny identyfikator dla tej instancji Menadżera
+            .uid:=exec('uid','#blank');
+            _cli_ver:=exec('cli_ver','#system');
+            {? _cli_ver*'term'>0
+            || .jTerm:=1
+            || .jTerm:=0
+            ?};
+            .user:=exec('operatorUser','#users');
+            .TRIGS:=tab_tmp(2,'TABLE','STRING[8]','Akronim tabeli','NR','INTEGER','Numer triggera');
+            .BLOBS:=tab_tmp(2
+                              ,'PARAM','STRING[31]','Parametr'
+                              ,'TYP','STRING[3]','Typ'
+                              ,'BLOB','BLOBRAW','Załącznik'
+                              ,'DESC','SYS_MEMO','Opis załącznika');
+            .init();
+             1"),
+
+:: --METODY-PRYWATNE (umownie)------------------------------------------------------------------------------------------
+   obj_meth('init','';"
+            {? _tab:=.tabKey; var_pres('_tab')>100
+            || obj_del(.tabKey); .tabKey:=null();
+               obj_del(_tab); _tab:=null()
+            ?};
+            _tab:=tab_tmp(1,'REF','STRING[16]','');
+            {? type_of(_tab)=type_of(SYSLOG)
+            || .tabKey:=_tab
+            ?};
+            .buf_prel:=exec('buffer','#b_prel');
+            .buf_dom:=exec('buffer','#b_domain');
+            .buf_bip:=exec('buffer','#bi_prel')
+            ",-1),
+
+   obj_meth('setCntx','Ustawia kontekst menadzera na podstawie SQL refa BI_PREL';"
+            _bi_prel:=_a;
+
+            _result:=0;
+
+            BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+            BI_PREL.index('UID'); BI_PREL.clear();
+            {? BI_PREL.seek(_bi_prel)
+            || _result:=.setCntx()
+            ?};
+            BI_PREL.cntx_pop();
+            _result
+            ",type_of(''),-1),
+
+   obj_meth('setCntx','Ustawia kontekst menadzera na podstawie refa BI_PREL';"
+            _bi_prel:=_a;
+
+            _result:=0;
+
+            BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+            BI_PREL.index('UID'); BI_PREL.clear();
+            {? BI_PREL.seek(_bi_prel)
+            || _result:=.setCntx()
+            ?};
+            BI_PREL.cntx_pop();
+            _result
+            ",type_of(SYSLOG.ref()),-1),
+
+   obj_meth('setCntx','Ustawia kontekst menadzera na podstawie aktualnego kontekstu BI_PREL';"
+            _result:=1;
+
+            BI_PROC.cntx_psh(); {? BI_PROC.name()='' || BI_PROC.use('bi_p____') ?};
+            BI_PROC.index('UID'); BI_PROC.prefix();
+            B_PREL.cntx_psh();
+            B_PROC.cntx_psh();
+            .bi_prel:=BI_PREL.ref();
+            .bi_proc:=BI_PREL.BI_PROC;
+            .b_prel:=BI_PREL.B_PREL;
+            .b_proc:=BI_PREL.BI_PROC().B_PROC;
+
+            {? BI_PROC.B_PROC().MICRO='T'
+            || .micro:=1
+            || .micro:=0
+            ?};
+
+            .buf_prel.cntx_get(BI_PREL.B_PREL);
+            .buf_bip.cntx_get(BI_PREL.ref());
+            {? type_of(.buf_act)=type_of(obj_new('obj')) || obj_del(.buf_act) ?};
+            .buf_act:=exec('findAction4Ele','#b_proman',BI_PREL.B_PREL().B_ELE);
+            {? .buf_act.Ref<>null()
+            || .buf_dom.cntx_get(.buf_act.B_DOMAIN)
+            ?};
+
+            B_PROC.cntx_pop();
+            B_PREL.cntx_pop();
+            BI_PROC.cntx_pop();
+            _result
+            ",-1),
+
+   obj_meth('bufEveSet','';"
+            B_EVENT.cntx_psh();
+            B_EVENT.index('ELEMENT');
+            B_EVENT.prefix(_a);
+            {? B_EVENT.first()
+            || .buf_eve:=exec('buffer','#b_event');
+               .buf_eve.get()
+            ?};
+            B_EVENT.cntx_pop()
+            ",type_of(null()),-1),
+
+   obj_meth('biProcAdd','Nowa instancja procesu';"
+            _wyn:=null();
+            _b_proc:=.b_proc;
+            {? _b_proc<>null()
+            || _buffer:=exec('fillAndAdd','#bi_proc',_b_proc);
+               _wyn:=_buffer.ref()
+            ?};
+            _wyn
+            ",-1),
+
+   obj_meth('biPrelAdd','Nowa instancja elementu procesu';"
+            _wyn:=null();
+            _bi_proc:=.bi_proc;
+            _b_prel:=.b_prel;
+            {? _bi_proc & _b_prel
+            || _buffer:=exec('fillAndAdd','#bi_prel',_bi_proc,_b_prel,.user);
+               _wyn:=_buffer.ref();
+               {? _wyn & .buf_prel.CLASS='B_ACTION' | .buf_prel.CLASS='B_EVENT'
+               || exec('copyPorts','#bi_port',_wyn)
+               ?}
+            ?};
+            _wyn
+            ",-1),
+
+   obj_meth('descTodo','Aktualizuje opis todo';"
+            _result:=0;
+            {? .buf_prel.CLASS='B_ACTION'
+            || _descTodo:={? do_state() || 'T' || 'N' ?};
+               _desc:={? _descTodo='N' || .getDesc() || '' ?};
+               {? _desc<>'' | _descTodo='T'
+               ||
+                  _priority:=exec('get_priority','#b_keyref',.bi_prel);
+                  exec('descTODO','#b_proman',.bi_prel,_desc,{? .desctodo='O' & _descTodo='T' || 'O' || _descTodo ?},_priority);
+                  _result:=1
+               ?}
+            ?};
+            _result
+            ",-1),
+
+   obj_meth('getDesc','Zwraca opis todo';"
+            _result:='';
+            {? .buf_prel.CLASS<>'B_ACTION' || return(_result) ?};
+            {? .bi_proc<>null() & .bi_prel<>null() & .buf_act.UID<>''
+            || _desc:=exec('descProcPrel','#b_proman',.bi_prel);
+
+::             Ustawienie parametrów
+               params_set('mp',.this);
+::             Wywołanie formuły na opis TODO z Buildera
+               {? .buf_act.WDR_DESC='T' & .buf_act.FWTODO<>''
+               || _descff:=($.buf_act.FWTODO)()
+               |? .buf_act.FMTODO<>''
+               || _descff:=mb_exec(.buf_act.FMTODO)
+               ?};
+               {? var_pres('_descff')=type_of('') & _descff<>'' || _desc:=_descff ?};
+               {? _desc<>''
+               || _result:=_desc
+               ?}
+            ?};
+            _result
+            ",-1),
+
+   obj_meth('lock','blokuje instancję czynności';"
+            .can_unlock:=0;
+            ~~
+            ",-1),
+
+   obj_meth('unlock','odblokowuje instancję czynności';"
+            {? .buf_prel.CLASS<>'B_ACTION' || return() ?};
+            {? .bi_proc<>null() & .bi_prel<>null() & .buf_act.UID<>''
+            ||
+               _proenv:=exec('proenv','#b_proman');
+               _stos_all:=_proenv.STOS_ALL;
+               exec('unlock','#bi_prel',.bi_prel,_stos_all)
+            ?};
+            ~~
+            ",-1),
+
+   obj_meth('runEvent','Uruchamia zdarzenie';"
+            _wyn:=0;
+            .bufEveSet(.buf_prel.B_ELE);
+
+::          Aktualizacja opisów zadań - tryb opóźniony
+            .desctodo:='O';
+
+::          zdarzenia startowe
+            {? .buf_eve.TYPE=exec('type_start','#b_event')
+            ||
+::             odebrany sygnał - stempluje instancję zdarzenia przechwytującego UID-em zdarzenia rzucającego
+::             oraz zachowuje wartości portów wyjściowych zdarzenia przechwytującego sygnał
+               {? .buf_eve.KIND=exec('kind_signal','#b_event')
+               || exec('save_signal','#b_signal',.);
+::                Gdy nastąpiła zmiana firmy, to dodatkowo gaszenie flagi autouruchamiania kolejnych czynności
+                  {? .sigUid<>'' & .sigUid<>'forced_uid'
+                  || _firma:=exec('FindInSet','#table','BI_PREL','UID',.sigUid,,\"BI_PREL.FIRMA\",1,,null());
+                     {? _firma<>REF.FIRMA
+                     || .buf_prel.AUTOMAT:='N'
+                     ?}
+                  ?};
+                  .sigAuto:=.buf_prel.AUTOMAT
+               ?};
+::             warunek - zachowuje wartość portu wyjściowego, o ile wystąpił w definicji zdarzenia
+               {? .buf_eve.KIND=exec('kind_condition','#b_event')
+               || {? exec('save_condition','#b_econd',.)>0
+                  || .coreDone();
+                     _wyn:=1
+                  || .err_txt:='Błędny typ parametru wyjściowego dla zdarzenia warunkowego startowego ''%1'' procesu ''%2''.'
+                        [.buf_prel.SYMBOL,exec('FindAndGet','#table',B_PROC,.buf_prel.B_PROC,,\"SYMBOL\",'')];
+                     .coreError()
+                  ?}
+::             nieokreślone, czasowe, warunek lub przejęcia sygnału - kończy obsługę zdarzenia
+               |? .buf_eve.KIND=exec('kind_none','#b_event') |
+                  .buf_eve.KIND=exec('kind_timer','#b_event') |
+                  .buf_eve.KIND=exec('kind_signal','#b_event') & .buf_eve.CATEGORY=exec('category_catch','#b_event')
+               || .coreDone();
+                  _wyn:=1
+               ?}
+
+::          zdarzenia pośrednie
+            |? .buf_eve.TYPE=exec('type_intermed','#b_event')
+            ||
+::             Sprawdzenie, czy zdarzenie jest elementem bramy sterowanej zdarzeniami pośrednimi, czyli
+::             zdarzenie pośrednie przechwytujące (sygnałowe, warunkowe, czasowe) wystąpiło po bramie EVENT.
+               _event_based_gateway:=0;
+               {? .buf_eve.CATEGORY=exec('category_catch','#b_event')
+               || {? .buf_eve.KIND=exec('kind_signal','#b_event') |
+                     .buf_eve.KIND=exec('kind_condition','#b_event') |
+                     .buf_eve.KIND=exec('kind_timer','#b_event')
+                  || BI_CONN.cntx_psh(); {? BI_CONN.name()='' || BI_CONN.use('bi_c____') ?};
+                     _gate:=null();
+                     BI_CONN.index('TO');
+                     BI_CONN.prefix(.bi_proc,.bi_prel);
+                     {? BI_CONN.first()
+                     || {? exec('is_gate','#b_gate',BI_CONN.SRC_BELE,exec('type_event','#b_gate'))>0
+                        || _event_based_gateway:=1
+                        ?}
+                     ?};
+                     BI_CONN.cntx_pop()
+                  ?}
+               ?};
+
+::             wysłany komunikat (e-mail)
+               {? .buf_eve.KIND=exec('kind_message','#b_event') & .buf_eve.CATEGORY=exec('category_throw','#b_event')
+               || exec('add_email','#b_msg',.)
+               ?};
+::             wysłany sygnał
+               {? .buf_prel.ENABLED<>'N' & .buf_eve.KIND=exec('kind_signal','#b_event') & .buf_eve.CATEGORY=exec('category_throw','#b_event')
+               || exec('broadcast','#b_signal',.)
+               ?};
+::             odebrany sygnał (tylko wtedy, gdy uruchomiony przez rozgłoszenie)
+               {? .buf_eve.KIND=exec('kind_signal','#b_event') & .buf_eve.CATEGORY=exec('category_catch','#b_event') & .sigUid<>''
+               || exec('save_signal','#b_signal',.);
+::                Gdy nastąpiła zmiana firmy, to dodatkowo gaszenie flagi autouruchamiania kolejnych czynności
+                  {? .sigUid<>'' & .sigUid<>'forced_uid'
+                  || _firma:=exec('FindInSet','#table','BI_PREL','UID',.sigUid,,\"BI_PREL.FIRMA\",1,,null());
+                     {? _firma<>REF.FIRMA
+                     || .buf_prel.AUTOMAT:='N'
+                     ?}
+                  ?};
+                  .sigAuto:=.buf_prel.AUTOMAT
+               ?};
+::             czasowe pośrednie - pierwsze uruchomienie ustawia harmonogram, uruchomienie z harmonogramu popycha proces
+               {? .buf_eve.KIND=exec('kind_timer','#b_event')
+               || B_HARM.cntx_psh();
+                  B_HARM.index('BI_PREL');
+                  B_HARM.prefix(.bi_prel);
+                  {? B_HARM.first()
+                  || .coreDone();
+                     _wyn:=1
+                  || exec('add_bi_prel','#b_harm',.bi_prel)
+                  ?};
+                  B_HARM.cntx_pop()
+               ?};
+::             warunkowe pośrednie - sprawdza warunek
+               {? .buf_eve.KIND=exec('kind_condition','#b_event')
+               ||
+                  _ports:=exec('getPorts','#b_port',.buf_eve.B_ELE,'IN',.b_prel);
+                  _portsIn:=exec('fillPorts','#bi_port',.bi_prel,'IN',_ports);
+                  {? .err_txt<>'' || FUN.info(.err_txt); return(_wyn) ?};
+                  {? var_pres('_ports')>0 || obj_del(_ports) ?};
+                  _ports:=exec('getPorts','#b_port',.buf_eve.B_ELE,'INT',null());
+                  _portsWew:=exec('fillPorts','#bi_port',.bi_prel,'INT',_ports,,.);
+                  {? .err_txt<>'' || FUN.info(.err_txt); return(_wyn) ?};
+                  {? var_pres('_ports')>0 || obj_del(_ports) ?};
+                  _ports:=exec('getPorts','#b_port',.buf_eve.B_ELE,'OUT',.b_prel);
+                  _portsOut:=exec('fillPorts','#bi_port',.bi_prel,'OUT',_ports,,.);
+                  {? .err_txt<>'' || FUN.info(.err_txt); return(_wyn) ?};
+                  {? var_pres('_ports')>0 || obj_del(_ports) ?};
+
+::                Ustawienie parametrów
+                  params_set('in',_portsIn,'int',_portsWew,'out',_portsOut);
+::                Sprawdzenie warunku
+                  _result:=exec('run_condition','#b_econd',.b_prel);
+                  _saved:={? type_of(_portsOut)>100 || .save(,_portsOut)>0 || 1 ?};
+                  {? _result.OK=1 & _result.RES>0
+                  || {? _saved
+                     || .coreDone();
+                        _wyn:=1
+                     || .err_txt:='Błędny typ parametru wyjściowego zdarzenia warunkowego pośredniego ''%1'' procesu ''%2''.'
+                           [.buf_prel.SYMBOL,exec('FindAndGet','#table',B_PROC,.buf_prel.B_PROC,,\"SYMBOL\",'')];
+                        .coreError()
+                     ?}
+                  |? _result.OK=-1
+                  || .err_txt:='Błąd interpretacji formuły dla zdarzenia warunkowego pośredniego ''%1'' procesu ''%2''.'
+                        [.buf_prel.SYMBOL,exec('FindAndGet','#table',B_PROC,.buf_prel.B_PROC,,\"SYMBOL\",'')];
+                     .coreError()
+                  |? _result.OK=-2
+                  || .err_txt:=_result.RES;
+                     .coreError()
+                  |? _result.OK=-3
+                  || .err_txt:='Błędny typ wyniku formuły dla zdarzenia warunkowego pośredniego ''%1'' procesu ''%2''.'
+                        [.buf_prel.SYMBOL,exec('FindAndGet','#table',B_PROC,.buf_prel.B_PROC,,\"SYMBOL\",'')];
+                     .coreError()
+                  |? _result.OK=-4
+                  || .err_txt:='Błędna wartość wejściowego parametru złączeniowego dla zdarzenia warunkowego pośredniego ''%1'' procesu ''%2''.'
+                        [.buf_prel.SYMBOL,exec('FindAndGet','#table',B_PROC,.buf_prel.B_PROC,,\"SYMBOL\",'')];
+                     .coreError()
+                  ||
+::                   Obsługa ewentualnego odłożenia warunku do późniejszej obsługi
+                     {? exec('FindAndGet','#table',B_PROC,.buf_prel.B_PROC,,\"A_IDTIME\",'')<server_start_idtime()
+                     || exec('event_delayed','#b_econd',.bi_prel)
+                     ?}
+                  ?};
+                  obj_del(_result)
+               ?};
+::             nieokreślone, czasowe, wysłany sygnał, wysłany komunikat
+::             lub odebrany sygnał (tylko wtedy, gdy wyzwolony przez rozgłoszenie albo nieaktywny)
+               {? .buf_eve.KIND=exec('kind_none','#b_event') |
+                  (.buf_eve.KIND=exec('kind_signal','#b_event') & .buf_eve.CATEGORY=exec('category_throw','#b_event')) |
+                  (.buf_eve.KIND=exec('kind_signal','#b_event') & .buf_eve.CATEGORY=exec('category_catch','#b_event')
+                    & (.sigUid<>'' | .buf_prel.ENABLED='N' & _event_based_gateway=0)) |
+                  (.buf_eve.KIND=exec('kind_message','#b_event') & .buf_eve.CATEGORY=exec('category_throw','#b_event'))
+               || .coreDone();
+                  _wyn:=1
+               ?};
+
+::             Jeżeli jest to element bramy sterowanej zdarzeniami pośrednimi,
+::             to usuwane są pozostałe zdarzenia przez nią obsługiwane.
+               {? _wyn=1 & _event_based_gateway>0
+               || BI_CONN.cntx_psh(); {? BI_CONN.name()='' || BI_CONN.use('bi_c____') ?};
+                  _gate:=null();
+                  BI_CONN.index('TO');
+                  BI_CONN.prefix(.bi_proc,.bi_prel);
+                  {? BI_CONN.first()
+                  || {? exec('is_gate','#b_gate',BI_CONN.SRC_BELE,exec('type_event','#b_gate'))>0
+                     || _gate:=BI_CONN.FROM
+                     ?}
+                  ?};
+                  {? _gate<>null()
+                  || _ref:=tab_tmp(1,'REF','STRING[16]','BI_PREL.ref()');
+                     BI_CONN.index('FROM');
+                     BI_CONN.prefix(.bi_proc,_gate);
+                     {? BI_CONN.first()
+                     || {!
+                        |? {? BI_CONN.TO<>.bi_prel || _ref.REF:=$BI_CONN.TO; _ref.add() ?};
+                           BI_CONN.next()
+                        !}
+                     ?};
+                     {? _ref.first()
+                     || {!
+                        |? exec('delete','#bi_prel',exec('FindAndGet','#table',BI_PREL,_ref.REF));
+                           _ref.next()
+                        !}
+                     ?}
+                  ?};
+                  BI_CONN.cntx_pop()
+               ?}
+
+::          zdarzenia końcowe
+            |? .buf_eve.TYPE=exec('type_end','#b_event')
+            ||
+::             wysłany komunikat (e-mail)
+               {? .buf_eve.KIND=exec('kind_message','#b_event')
+               || exec('add_email','#b_msg',.)
+               ?};
+::             wysłany sygnał
+               {? .buf_prel.ENABLED<>'N' & .buf_eve.KIND=exec('kind_signal','#b_event')
+               || exec('broadcast','#b_signal',.)
+               ?};
+::             nieokreślone, wysłany sygnał lub wysłany komunikat
+               {? .buf_eve.KIND=exec('kind_none','#b_event') |
+                  .buf_eve.KIND=exec('kind_signal','#b_event') |
+                  .buf_eve.KIND=exec('kind_message','#b_event')
+               ||
+                  exec('setStatus','#bi_prel',.bi_prel,__Status.ZAKONCZONA);
+::                sprawdzamy czy można zakończyc proces
+                  {? exec('canEndBiProc','#b_proman',.bi_proc)
+                  || exec('setStatus','#bi_proc',.bi_proc,__Status.ZAKONCZONY)
+                  ?};
+                  _wyn:=1
+               ?}
+            ?};
+
+::          w trybie serwisowym zapisuje użytkownika uruchamiającego bi_prela
+            {? .isService()
+            || _bi_prelBuffer:=exec('buffer','#bi_prel');
+               _bi_prelBuffer.cntx_get(.bi_prel);
+               _bi_prelBuffer.USERS:=.user;
+               exec('put','#bi_prel',_bi_prelBuffer);
+               obj_del(_bi_prelBuffer)
+            ?};
+
+::          Aktualizacja opisów zadań
+            exec('descTodoUpdate','#b_proman','_'+SYSLOG.ses_id());
+::          Aktualizacja opisów zadań - tryb natychmiastowy
+            .desctodo:='N';
+            _wyn
+            ",-1),
+
+   obj_meth('runAction','Uruchamia akcje';"
+::          Zwinięcie procesu - techniczne uruchomienie z pulpitu webterm w celu sprawdzenia uprawnień
+            {? .akcjaOkna='webTermProcCancel'
+            || .cancel();
+               .coreCancel()
+            ?};
+::          Ustawiamy bufor czynnosci i obszaru
+            .buf_act:=exec('findAction4Ele','#b_proman',.buf_prel.B_ELE);
+::          Aktualizacja opisów zadań - tryb opóźniony
+            .desctodo:='O';
+            _jTerm:=app_info('web_sesid')='';
+            {? .buf_act.Ref<>null()
+            || {? .buf_act.B_DOMAIN<>null()
+               || .buf_dom.cntx_get(.buf_act.B_DOMAIN)
+               || _txt:='Czynność: %1 nie jest przypisana do żadnego obszaru. Należy sprawdzić definicję czynności.'@
+                        [.buf_act.UID];
+                  {? .isGroup()
+                  || KOMM.add(_txt,7)
+                  || FUN.info(_txt)
+                  ?};
+                  return()
+               ?};
+::             Sprawdzenie licencji, dla czynności usługowej .error() wywołany jest później, pozostałe tutaj return()
+               _no_lic:=0;
+               {? exec('lic','#b_action',.buf_act.Ref)=0
+               || {? .isService()
+                  || _no_lic:=1
+                  || _txt:='Czynność: %1 — brak licencji.'@[.buf_act.UID];
+                     {? .isGroup()
+                     || KOMM.add(_txt,7)
+                     || FUN.info(_txt)
+                     ?};
+                     return()
+                  ?}
+               ?};
+               _b_can:={? .buf_act.MANUAL='T' & .buf_prel.B_CAN<>'' || .buf_prel.B_CAN || .buf_act.B_CAN ?};
+               {? .CLEANER=0
+                     &
+                  (  (_jTerm & _b_can<>'M' & _b_can<>'B') |
+                     (~_jTerm & _b_can<>'W' & _b_can<>'B')
+                  )
+               || FUN.info('Niewłaściwy sposób wywołania.'@);
+                  return()
+               ?};
+::             Czynność usługowa uruchamiana poza trybem usługowym - nie jest wykonywana
+               {? .buf_prel.TYPE='S' & ~.isService()
+               || return()
+               ?};
+::             Czynność usługowa przypisana do innej kolejki niż bieżąca - nie jest wykonywana
+               {? .buf_prel.TYPE='S' & .isService() & exec('FindAndGet','#table',BI_PREL,.bi_prel,,\"B_WORKER\")<>.b_worker
+               || return()
+               ?};
+::             Dla czynności usługowej uruchamianej w trybie usługowym nie sprawdzamy uprawnień
+               {? .CLEANER=0
+                     &
+                  ~(.buf_prel.TYPE='S' & .isService())
+               || {? ~Perm.hasPermissions(.buf_act.Ref)
+                  || return()
+                  ?}
+               ?};
+               {? .buf_act.PROC<>'T'
+               || _txt:='Czynność: %1 nie występuje w procesie i Menadżer Procesów nie może jej uruchomić.\n'
+                        'Należy sprawdzić definicję czynności.'@[.buf_act.UID];
+                  {? .isGroup()
+                  || KOMM.add(_txt,7)
+                  || FUN.info(_txt)
+                  ?};
+                  return()
+               ?};
+::               {? exec('FindInSet','#table','B_ACTPRO','FIRMA',.buf_act.UID,REF.FIRMA,\"B_ACTPRO.RUNNPROC\",1,,'')='T'
+::               || _txt:='Czynność: %1 skonfigurowana jest do uruchamiania bez udziału menadżera procesów.\n'
+::                        'Należy sprawdzić definicję czynności.'@[.buf_act.UID];
+::                  {? .isGroup()
+::                  || KOMM.add(_txt,7)
+::                  || FUN.info(_txt)
+::                  ?};
+::                  return()
+::               ?};
+               ~~
+            ?};
+            _result:=~~;
+
+::          Zwracam globalne środowisko pracy menadżera
+            _proenv:=exec('proenv','#b_proman');
+            _stos_all:=_proenv.STOS_ALL;
+            _dom_inits:=_proenv.DOM_INITS;
+
+            {? .bi_prel<>null()
+            ||
+::             Jeżeli w przekazanych wartościach portów jest kluczowy rekord to automatycznie go dodajemy
+::             (tylko dla mikroczynności, bo w procesie jest już wcześniej ustawione)
+               {? .isMicro() || exec('addKey4NextAct','#b_keyref',.bi_prel,.user) ?};
+
+::             Sprawdza czy użytkownik może uruchomić tę instancję elementu
+::             (w cleanerze nie sprawdza, w trybie usługi nie sprawdza dla czynności usługowych i czynności wysłania)
+               {? .CLEANER
+               || ~~
+               |? ~((.buf_prel.TYPE='S' | .buf_prel.TYPE='E') & .isService())
+               || _chk_access:=1;
+                  {? .biNew>0
+                  ||
+::                   Jeżeli start procesu to nie uruchamiam
+::                   ponownie formuł na access, bo są uruchomione wcześniej
+                     _chk_access:=0
+                  ?};
+                  _can_continue:=exec('canRunBiPrel','#bi_todo',.bi_prel,.user,,_chk_access);
+                  {? _can_continue<=1
+                  || {? .biNew<>1
+                     ||
+::                      Jeżeli nie można uruchomić pierwszej czynności procesu a jest ścieżka
+::                      nowo powołanego procesu to nie wyświetlam komunikatu
+                        exec('no_access_msg','#bi_prel',.user,.bi_prel)
+                     ?};
+                     return()
+                  ?}
+               ?};
+::             Blokuje BI_PREL na czas wykonywania formuł
+               _dialog:=0;
+               {? .isGroup() & .jTerm>0
+               || _dialog:=2
+               |? .jTerm>0
+               || _dialog:=1
+               ?};
+               {? exec('lock','#bi_prel',.bi_prel,_dialog)>0
+               ||
+::                obsługa statusu czynności na wejściu
+                  _run:=1;
+                  _stat:=exec('getStatus','#bi_prel',.bi_prel);
+                  {? .CLEANER
+                  || ~~
+                  |? _stat=__Status.OCZEKUJACA | _stat=__Status.BLAD
+                  || exec('setStatus','#bi_prel',.bi_prel,__Status.FL_CANCEL)
+                  |? _stat=__Status.FL_CANCEL | _stat=__Status.FL_DONE
+                  || _run:=0
+                  ?};
+
+::                zapisuje użytkownika uruchamiającego bi_prela
+                  _bi_prelBuffer:=exec('buffer','#bi_prel');
+                  _bi_prelBuffer.cntx_get(.bi_prel);
+                  _bi_prelBuffer.USERS:=.user;
+                  exec('put','#bi_prel',_bi_prelBuffer);
+                  obj_del(_bi_prelBuffer);
+
+::                uruchomienie czynnosci jesli odpowiedni status
+                  {? _run
+                  ||
+::                   Sprawdzam czy wymagane argumenty sa wypełnione, jesli nie to nie
+::                   wykonuje formuły głównej i oznaczam element procesu i proces specjalnym
+::                   statusem
+                     {? exec('chk_req','#bi_port',.bi_prel,1)>0
+                     ||
+::                      zmienne
+::                        _apos:=\"'\";
+
+                        _ports:=exec('getPorts','#b_port',.buf_act.B_ELE,'IN',.b_prel);
+                        _portsIn:=exec('fillPorts','#bi_port',.bi_prel,'IN',_ports,,.);
+                        {? .err_txt<>''
+                        || FUN.info('%1\nZadanie zostanie usunięte z listy.'@[.err_txt]);
+                           exec('todoError','#bi_msg',-1,.err_txt);
+                           return(_result)
+                        ?};
+                        {? var_pres('_ports')>0 || obj_del(_ports) ?};
+                        _ports:=exec('getPorts','#b_port',.buf_act.B_ELE,'INT',null());
+                        _portsWew:=exec('fillPorts','#bi_port',.bi_prel,'INT',_ports,,.);
+                        {? .err_txt<>'' || FUN.info(.err_txt); return(_result) ?};
+                        {? var_pres('_ports')>0 || obj_del(_ports) ?};
+                        _ports:=exec('getPorts','#b_port',.buf_act.B_ELE,'OUT',.b_prel);
+                        _portsOut:=exec('fillPorts','#bi_port',.bi_prel,'OUT',_ports,,.);
+                        {? .err_txt<>'' || FUN.info(.err_txt); return(_result) ?};
+                        {? var_pres('_ports')>0 || obj_del(_ports) ?};
+
+::                      Ustawienie parametrów
+                        params_set('in',_portsIn,'int',_portsWew,'out',_portsOut,'mp',.this,'context',.context);
+::                      zapamiętanie tytułu przed wykonaniem czynności
+                        _st_t:=ST.T;
+                        {? _st_t='' || _st_t:='\'\'\'\'' ?};
+::                      wywołanie funkcji inicjującej obszar
+                        {? .buf_dom.FM<>~~ & .buf_dom.FM<>''
+                        ||
+::                         Sprawdzam czy init obszarowy był już wykonany i jeśli tak to go nie robię
+                           _dom_inits.prefix(.buf_dom.FM);
+                           {? _dom_inits.first()=0
+                           || _dom_inits.blank();
+                              _dom_inits.SYMBOL:=.buf_dom.FM;
+                              _dom_inits.add(1);
+                              mb_exec(.buf_dom.FM)
+                           ?}
+                        ?};
+::                      umieszczenie w tytule informacji o czynności
+                        ST.T:='\'\' >>'+.buf_prel.SYMBOL+'<< \'\'';
+                        {? var_pres('AreaTitle')>0 & AreaTitle.area*'#PROC'>0
+                        || AreaTitle.setProc(exec('record','#to_string',.b_proc))
+                        |? _jTerm & __develop
+                        ||
+::                         Jak ktoś ruszy wywołanie tego title() to nie ręczę za siebie
+                           title(($ST.T)(),'title_left',0)
+                        ?};
+::                      Odkładam czynność na stos wszystkich aktywnych czynności
+                        _stamp:=exec('uid','#blank');
+                        _stos_all.push(_stamp,.bi_prel);
+::                      statystyki użycia
+                        exec('stat_add','st_common','A_DOMAIN',_stos_all.topDomSym());
+                        _a_auto:=.isService() | .isAutoRun() | .isGroup();
+                        {? _a_auto || exec('stat_add','st_common','A_AUTO','T') ?};
+                        _st_act_uid:=_stos_all.topActUid();
+                        _st_act_name:=exec('FindAndGet','#table',B_PREL,_stos_all.topPrel(),,\"B_PREL.SYMBOL\",'');
+                        exec('stat_add','st_common','A_ACTION',_st_act_uid,_st_act_name);
+
+::                      zapamiętanie parametrów pracy
+                        {? _jTerm
+                        || __PARSES.pushEnv()
+                        || __PARSES.setMode('W')
+                        ?};
+
+                        _parses:=exec('FindAndGet','#table',BI_PREL,$.bi_prel,,\"BI_PREL.PARSES\",'');
+                        {? .CLEANER & _parses<>'' & exec('FindAndGet','#table',PARSES,_parses,,,null())=null()
+                        || _parses:=''
+                        ?};
+                        _parsesIsNull:=_parses='';
+                        _parsesSet:=_parsesIsNull=0;
+
+                        {? _parsesIsNull
+::                      utworzenie parametrów pracy instancji czynności
+                        || _parses:=__PARSES.clone('C','U');
+                           BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+                           BI_PREL.index('UID'); BI_PREL.prefix();
+                           {? +_parses=48 & BI_PREL.seek(.bi_prel)
+                           || BI_PREL.PARSES:=_parses;
+                              {? BI_PREL.put()
+                              || _parsesSet:=1
+                              ?}
+                           ?};
+                           BI_PREL.cntx_pop()
+                        ?};
+
+                        {? _parsesSet
+                        || _biPrel_uid:=exec('FindAndGet','#table',BI_PREL,$.bi_prel,,\"BI_PREL.UID\",null());
+::                         przełączenie na parametry pracy czynności
+                           {? __PARSES.setMode('C',_parses,_biPrel_uid)
+                           || {? _parsesIsNull & .buf_act.FPARSES<>''
+::                               aktualizacja paremetrów pracy wg formuły czynności
+                              || _ff:='params_set(''in'',_a,''int'',_b,''out'',_c,''mp'',_d,''context'',_e); ';
+                                 _ff+=.buf_act.FPARSES;
+                                 __PARSES.setACF(0);
+                                 _parsesSet:=($_ff)(_portsIn,_portsWew,_portsOut,.this,.context);
+                                 __PARSES.setACF(1)
+                              ?};
+
+                              {? _parsesSet
+                              || {? .buf_act.FMMAIN<>''
+                                 ||
+::                                  ustawinie środowiska na podstawie parametrów pracy czynności
+                                    {? +app_info('web_sesid') | __PARSES.setEnv(.buf_act.UID)
+
+                                    ||
+::                                     ustawienie kontekstu dokumentacji dla czynności
+                                       {? .isAutoRun()=0 & .isService()=0
+                                       || _path:=exec('set_help','#help',.buf_act.UID);
+                                          _jTerm:=app_info('web_sesid')='';
+                                          {? _jTerm || set_help(_path) || web_set_help(_path) ?}
+                                       ?};
+
+::                                     Odpis do statystyk użycia czynności
+                                       exec('add_usehis','#b_stats',.user,.buf_act,.micro);
+
+                                       {? _no_lic
+                                       || .error('Czynność: '+.buf_act.UID+' — brak licencji.')
+                                       || errno();
+::                                        !!! Wywolanie funkcji glownej czynności z Buildera !!!
+                                          _result:=
+                                             {? .CLEANER
+                                             || _fml:='params_exec(\'\'clean\'\',\'\'!'+(-.buf_act.UID)+'\'\')';
+                                                ($_fml)();
+                                                ~~
+                                             || params_exec('b_exec','#b_proman',.buf_act.FMMAIN)
+                                             ?};
+                                          {?.isService() & errno()=1194
+                                          || .error('Brak formuły głównej czynności serwisowej ''%1'' procesu ''%2'' w definicji systemu.'
+                                                    [.buf_prel.SYMBOL,exec('FindAndGet','#table',B_PROC,.buf_prel.B_PROC,,\"SYMBOL\",'')]
+                                             )
+                                          ?}
+                                       ?};
+
+::                                     Zerwanie transakcji jeśli nie została zakończona w formule czynności
+                                       {? do_state()
+                                       || undo();
+                                          end();
+                                          FUN.info('Wycofano transakcję ponieważ formuła czynności'
+                                             '\n%1'
+                                             '\njej nie zakończyła.'@[exec('record','#to_string',.bi_prel)])
+                                       ?}
+                                    ?}
+                                 || FUN.info('Brak zdefiniowanej formuły głównej dla czynności: %1.'@[.buf_act.UID])
+                                 ?}
+                              || FUN.info('Nie udało się ustawić środowiska potrzebnego do uruchomienia: %1.'@
+                                    [.buf_act.UID])
+                              ?}
+                           ?}
+                        || FUN.info('Nie udało się ustawić środowiska potrzebnego do uruchomienia: %1.'@[.buf_act.UID])
+                        ?};
+
+::                      przywrócenie parametrów pracy
+                        {? _jTerm
+                        || __PARSES.popEnv()
+                        ?};
+
+::                      Po wykonaniu formuly proces przestaje byc "nowy"
+                        .biNew:=0;
+::                      statystyki użycia
+                        exec('stat_add','st_common','A_ACTIONE',_st_act_uid,_st_act_name);
+::                      Po wykonaniu formuly glownej zdejmuje ze stosu aktywnych czynnosci
+                        _stos_all.pop(_stamp);
+::                      statystyki użycia
+                        {? .pathArea() & BD_EXEC.get()
+                        ||
+                           exec('stat_add','st_common','A_DOMAIN',{? BD_EXEC.DOMAIN='' || 'ZPR' || BD_EXEC.DOMAIN ?})
+                        ||
+                           exec('stat_add','st_common','A_DOMAIN','')
+                        ?};
+                        {? _a_auto || exec('stat_add','st_common','A_AUTO','N') ?};
+::                      przywrocenie tytulu po wykonaniu akcji - obecnie czyszczenie
+                        ST.T:='\'\'\'\'';
+                        {? _jTerm
+                        || {? var_pres('AreaTitle')>0 & .pathArea()
+                           || AreaTitle.setTitle(0)
+                           ?}
+                        ?};
+::                      Usuwam automatyczne triggery ktore ktos mogl utworzyc w formule glownej
+::                      za pomoca metody trigRef
+                        .delTrigs()
+                     ?}
+                  ?};
+
+::                obsluga statusu czynnosci na wyjsciu
+                  _stat:=exec('getStatus','#bi_prel',.bi_prel);
+                  {? _stat=__Status.FL_KEEP     || .coreKeep()
+                  |? _stat=__Status.FL_DONE     || .coreDone()
+                  |? _stat=__Status.FL_CANCEL   || .coreCancel()
+                  |? _stat=__Status.FL_ERROR    || {? .isMicro() || .coreCancel() || .coreError() ?}
+                  ?};
+
+::                kasowanie parametrów pracy
+                  {? .bi_prel
+                  || _stat:=exec('getStatus','#bi_prel',.bi_prel);
+                     {? _stat=__Status.ZAKONCZONA
+                        | _stat=__Status.OCZEKUJACA
+                     || {? _stos_all.countBiPrel(.bi_prel)=0
+                        || exec('delParses','#bi_prel',.bi_prel)
+                        ?}
+                     ?}
+                  ?};
+
+::                zmiana statusu TODO automatycznych
+                  exec('FindAndGet','#table',BI_PREL,.bi_prel,,\"
+                     {? BI_PREL.AUTOMAT='T' || BI_PREL.AUTOMAT:='A'; BI_PREL.put() ?}
+                  \",0);
+
+::                Aktualizacja opisów zadań
+                  exec('descTodoUpdate','#b_proman','_'+SYSLOG.ses_id());
+::                Aktualizacja opisów zadań - tryb natychmiastowy
+                  .desctodo:='N';
+
+::                Po wykonaniu formul odblokowuje BI_PREL
+                  {? .can_unlock>0
+                  ||
+                     exec('unlock','#bi_prel',.bi_prel,_stos_all)
+                  ?}
+               || _result:=0
+               ?}
+            ?};
+            _result
+            ",-1),
+
+   obj_meth('runGate','Uruchamia bramke';"
+::            msg('runGate');
+            _result:=0;
+::          Aktualizacja opisów zadań - tryb opóźniony
+            .desctodo:='O';
+
+::          Najpierw sprawdzam jakiego typu brama jest uruchomiony element procesu
+            _type:=exec('get_type','#b_gate',.buf_prel.B_ELE);
+            _kind:=exec('get_kind','#b_gate',.buf_prel.B_ELE);
+
+::          Blokuje brame na czas jej obslugi
+            _dialog:=0;
+            {? .isGroup() & .jTerm>0
+            || _dialog:=2
+            |? .jTerm>0
+            || _dialog:=1
+            ?};
+            {? exec('lock','#bi_prel',.bi_prel,_dialog)>0
+            ||
+::             BRAMA ROZDZIELAJACA "<"
+               {? _kind=exec('kind_split','#b_gate')
+               ||
+::                Uruchamiam tylko jesli status nie zakonczony
+                  _status:=exec('getStatus','#bi_prel',.bi_prel);
+                  {? ~exec('isEndStatus','#bi_proc',_status)
+                  ||
+::                   zmiana statusu BI_PREL
+                     exec('setStatus','#bi_prel',.bi_prel,exec('URUCHOMIONA','#bi_stat'));
+
+::                   Wykonuje formuly dla kazdego polaczenia wychodzacego, zbieram refy tych elementow
+::                   do polaczen ktorych formuly zwrocily wartosc 1
+                     _nextEl:=exec('run','#b_choice',.bi_prel,.this);
+
+::                   Sprawdzam czy brama puściła coś dalej - jeśli nie to znak ze proces sie zakleszczył
+                     _can_continue:=0;
+                     {! _it:=1..obj_len(_nextEl)
+                     |? _can_continue=0
+                     |! {? _nextEl[_it]<>null()
+                        || _can_continue:=1
+                        ?}
+                     !};
+                     {? _can_continue>0
+                     ||
+::                      Nawijam kolejne instancje czynnosci
+                        .nextStep(_nextEl);
+
+::                      zmiana statusu BI_PREL
+                        exec('setStatus','#bi_prel',.bi_prel,__Status.ZAKONCZONA)
+                     ||
+::                      Nie ide dalej, bo zadna z formul nie zwrocila 1 i brak byl domyslnego wyjscia
+::                      Ustawiam statusy na bramie i na instancji procesu
+                        exec('setStatus','#bi_prel',.bi_prel,__Status.ZAWIESZONA);
+                        exec('setStatus','#bi_proc',.bi_proc,__Status.ZAWIESZONY);
+
+::                      Dodaje komunikat do BI_PRELa bramy
+                        _msg:='Wszystkie warunki bramy: '+.buf_prel.SYMBOL+' okazały się nieprawdziwe - brama zawiesiła się.';
+                        exec('updateBiMsg','#bi_msg',.bi_prel,'G',_msg,,__Status.ZAWIESZONA);
+                        ~~
+                     ?};
+::                   Uruchamiam ponownie wszystkie bramy zbierające URUCHOMIONE
+                     {? _type<>exec('type_and','#b_gate')
+                     || B_CONN.cntx_psh();
+                        B_CONN.index('FROM');
+                        B_CONN.prefix(.b_proc,.b_prel);
+                        {? obj_len(_nextEl)<>B_CONN.size()
+::                      Aktywujemy bramy tylko jeśli część połączeń wzbudzona
+::                      Innymi słowy jeśli przepływ poszedł przez wszystkie wyjścia bramy to nie ma potrzeby
+::                      weryfikacji bram
+                        || exec('run_all_gates','#b_gate',.bi_proc,.uid)
+                        ?};
+                        B_CONN.cntx_pop()
+                     ?}
+                  ?};
+                  ~~
+
+::             BRAMA ZBIERAJACA ">"
+               |? _kind=exec('kind_merge','#b_gate')
+               ||
+::                Uruchamiam tylko jesli status nie zakonczony
+                  _status:=exec('getStatus','#bi_prel',.bi_prel);
+                  {? ~exec('isEndStatus','#bi_proc',_status)
+                  ||
+::                   zmiana statusu BI_PREL
+                     exec('setStatus','#bi_prel',.bi_prel,__Status.URUCHOMIONA);
+
+::                   Znajduje element za bramą
+                     _ref_next:=exec('first_conn_aft','#bi_prel',.bi_prel);
+
+::                   BRAMA zbierająca typu "AND"
+                     {? _type=exec('type_and','#b_gate')
+                     ||
+                        _gate_ready:=1;
+                        BI_CONN.cntx_psh(); {? BI_CONN.name()='' || BI_CONN.use('bi_c____') ?};
+                        BI_CONN.index('B_CONN');
+                        B_CONN.cntx_psh();
+                        B_CONN.index('TO');
+                        B_CONN.prefix(.buf_prel.B_PROC,.b_prel);
+
+::                      Sprawdzam czy kazdy B_CONN wchodzacy do bramy ma BI_CONNa konczacego sie w bramie
+                        {? B_CONN.first()
+                        || {!
+                           |? BI_CONN.prefix(B_CONN.ref(),.bi_prel);
+                              {? BI_CONN.size()=0
+                              || _gate_ready:=0
+                              ?};
+                              B_CONN.next() & _gate_ready>0
+                           !}
+                        ?};
+                        B_CONN.cntx_pop();
+
+                        {? _gate_ready>0
+                        ||
+::                         Sprawdzam czy kazdy BI_CONN prowadzi do zakonczonego elementu
+                           BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+                           BI_CONN.index('TO');
+                           BI_CONN.prefix(.bi_proc,.bi_prel);
+                           {? BI_CONN.first()
+                           || {!
+                              |? {? BI_CONN.FROM().BI_STAT<>__Status.ZAKONCZONA
+                                 ||  _gate_ready:=0
+                                 ?};
+                                 BI_CONN.next() & _gate_ready>0
+                              !}
+                           ?};
+                           BI_PREL.cntx_pop()
+                        ?};
+                        BI_CONN.cntx_pop();
+
+                        {? _gate_ready>0
+                        ||
+::                         Można puszczać proces dalej
+                           _nextEl:=obj_new(1);
+                           _nextEl[1]:=_ref_next;
+::                         Nawijam kolejne instancje czynnosci
+                           .nextStep(_nextEl);
+
+::                         Zmieniam status na bramie
+                           exec('setStatus','#bi_prel',.bi_prel,__Status.ZAKONCZONA)
+
+::                         Uruchamiam ponownie wszystkie bramy zbierające URUCHOMIONE
+::                           exec('run_all_gates','#b_gate',.bi_proc,.uid)
+                        ?}
+
+::                   BRAMA zbieracjąca typu "OR"
+                     |? _type=exec('type_or','#b_gate')
+                     ||
+::                      Najpierw zbieram refy B_PRELi na ktore musze poczekac
+                        _biprels:=exec('biprels_tab','#bi_prel');
+
+::                      Sprawdzenie czy istnieje uruchomiony element procesu na ktory czeka bramka
+                        exec('collect','#bi_prel',.bi_proc,.bi_prel,.b_proc,.b_prel,_biprels,1);
+
+                        _gate_ready:=1;
+
+::                      Sprawdzam czy tabela _biprels cos zawiera - jesli tak to znak
+::                      ze przed brama znajduja sie jakies instancje URUCHOMIONE albo OCZEKUJACE
+                        _biprels.clear();
+                        {? _biprels.size()>0
+                        || _gate_ready:=0
+                        ?};
+
+                        {? _gate_ready>0
+                        ||
+::                         Można puszczać proces dalej
+                           _nextEl:=obj_new(1);
+                           _nextEl[1]:=_ref_next;
+::                         Nawijam kolejne instancje czynnosci
+                           .nextStep(_nextEl);
+
+::                         Zmieniam status na bramie
+                           exec('setStatus','#bi_prel',.bi_prel,__Status.ZAKONCZONA)
+
+::                         Uruchamiam ponownie wszystkie bramy zbierające URUCHOMIONE
+::                           exec('run_all_gates','#b_gate',.bi_proc,.uid)
+                        ?};
+
+                        ~~
+
+::                   BRAMA zbieracjąca typu "COMPLEX"
+                     |? _type=exec('type_complex','#b_gate')
+                     ||
+::                      Sprwdzamy czy zostało zwrócone połaczenie za bramą bo wszystkie formuły bramy zwróciły 1
+                        _ports:=exec('getPorts','#b_port',.buf_prel.B_ELE,'IN',.b_prel);
+                        _portsIn:=exec('fillPorts','#bi_port',.bi_prel,'IN',_ports,,.);
+::                      Ustawienie parametrów
+                        params_set('in',_portsIn,'mp',.this);
+::                      Wykonanie formuły bramy
+                        _gate_ready:=($.buf_prel.FMANMAIN)();
+
+::                      Deklaracja tabeli na refy B_PRELi na ktore czeka brama
+                        _biprels:=exec('biprels_tab','#bi_prel');
+
+::                      Jeśli formuła warunku bramy zwróci zero
+::                      lub jeśli brama ma anulować niezakończone instancje przed bramą
+::                      szukamy niezakończonych instacji na ktore czeka brama
+                        {? _gate_ready=0 | .buf_prel.G_CANCEL='T'
+                        ||
+                           exec('collect','#bi_prel',.bi_proc,.bi_prel,.b_proc,.b_prel,_biprels,0);
+                           _biprels.clear()
+                        ?};
+
+                        {? _gate_ready=0
+                        ||
+                           {? _biprels.size()=0
+                           ||
+::                            Brama nie oczekuje już na żadne instancje a formuła warunku zwróciła zero
+::                            dlatego zmieniam status bramy i status procesu
+                              exec('setStatus','#bi_prel',.bi_prel,__Status.ZAWIESZONA);
+                              exec('setStatus','#bi_proc',.bi_proc,__Status.ZAWIESZONY);
+
+::                            Dodaje komunikat do BI_PRELa bramy
+                              _msg:='Warunek, bramy '+.buf_prel.SYMBOL+', okazał się nieprawdziwy - brama zawiesiła się.';
+                              exec('updateBiMsg','#bi_msg',.bi_prel,'G',_msg,,__Status.ZAWIESZONA)
+                           ?}
+                        |? _gate_ready>0
+                        ||
+                           {? .buf_prel.G_CANCEL='T'
+                           ||
+::                            Anulowanie niezakończonych instancji na które czeka brama
+                              _result:=exec('closeBiprels','#bi_prel',_biprels)
+                           ?};
+
+                           {? _result
+                           ||
+::                            Można puszczać proces dalej
+                              _nextEl:=obj_new(1);
+                              _nextEl[1]:=_ref_next;
+::                            Nawijam kolejne instancje czynnosci
+                              .nextStep(_nextEl);
+
+::                            Zmieniam status na bramie
+                              exec('setStatus','#bi_prel',.bi_prel,__Status.ZAKONCZONA)
+                           ||
+::                            Zmieniam status na bramie
+                              exec('setStatus','#bi_prel',.bi_prel,__Status.ZAWIESZONA);
+                              exec('setStatus','#bi_proc',.bi_proc,__Status.ZAWIESZONY);
+
+::                            Dodaje komunikat do BI_PRELa bramy
+                              _msg:='Nie powiodło się anulowanie elementów przed bramą.';
+                              exec('updateBiMsg','#bi_msg',.bi_prel,'G',_msg,,__Status.ZAWIESZONA)
+                           ?}
+
+::                         Urumiam ponownie wszystkie bramy zbierające URUCHOMIONE
+::                           exec('run_all_gates','#b_gate',.bi_proc,.uid)
+                        ?};
+
+                        ~~
+
+::                   BRAMA zbierająca typu "XOR" albo "XOR_EVENT"
+                     |? _type=exec('type_xor','#b_gate') | _type=exec('type_xor_event','#b_gate')
+                     ||
+                        .coreDone()
+
+::                      Uruchamiam ponownie wszystkie bramy zbierające URUCHOMIONE
+::                        exec('run_all_gates','#b_gate',.bi_proc,.uid)
+                     ||
+::                      Każda inna zbierajaca brama nieznanego jeszcze typu
+
+                        .coreDone()
+
+::                      Uruchamiam ponownie wszystkie bramy zbierające URUCHOMIONE
+::                        exec('run_all_gates','#b_gate',.bi_proc,.uid)
+                     ?}
+                  ?};
+                  ~~
+               ||
+::                Nie brama, albo brama nieznanego rodzaju
+                  FUN.info('Metoda runGate() została uruchomiona dla elementu, który nie jest obsługiwanym rodzajem bramy.'@)
+               ?};
+
+::             w trybie serwisowym zapisuje użytkownika uruchamiającego bi_prela
+               {? .isService()
+               || _bi_prelBuffer:=exec('buffer','#bi_prel');
+                  _bi_prelBuffer.cntx_get(.bi_prel);
+                  _bi_prelBuffer.USERS:=.user;
+                  exec('put','#bi_prel',_bi_prelBuffer);
+                  obj_del(_bi_prelBuffer)
+               ?};
+
+::             Aktualizacja opisów zadań
+               exec('descTodoUpdate','#b_proman','_'+SYSLOG.ses_id());
+::             Aktualizacja opisów zadań - tryb natychmiastowy
+               .desctodo:='N';
+::             Po obsłudze bramy odblokowuje BI_PREL
+               exec('unlock','#bi_prel',.bi_prel)
+            ?};
+            _result
+            ",-1),
+
+:: --METODY-CZYNNOSCI (umownie)-----------------------------------------------------------------------------------------
+   obj_meth('isAutoRun','zwraca informacje 0-uruchomiona recznie 1-uruchomiona automatycznie';"
+            .automat
+            ",-1),
+
+   obj_meth('isService','zwraca informacje 1-uruchomienie jako usługa 0-standardowo';"
+            .service
+            ",-1),
+
+   obj_meth('akcja','zwraca akcję okienka wywołującego czynność';"
+            .akcjaOkna
+            ",-1),
+
+   obj_meth('isMicro','zwraca informacje 1-mikroproces 0-proces';"
+            .micro
+            ",-1),
+
+   obj_meth('isBiNew','zwraca informacje, czy instancja jest nowa (1) czy kontynuowana (0)';"
+            .biNew
+            ",-1),
+
+   obj_meth('isGroup','zwraca informacje, czy akcja dla grupy rekordów (komunikaty do KOMM)';"
+            .group
+            ",-1),
+
+   obj_meth('pathTodo','zwraca informacje, czy czynnosc uruchomiona z listy zadan (1) czy nie (0)';"
+            .Path='Todo'
+            ",-1),
+
+   obj_meth('pathProc','zwraca informacje, czy czynnosc uruchomiona z procesu (1) czy nie (0)';"
+            .Path='Proc'
+            ",-1),
+
+   obj_meth('pathArea','zwraca informacje, czy czynnosc uruchomiona z wywolywacza (1) czy nie (0)';"
+            .Path='Area'
+            ",-1),
+
+   obj_meth('pathArea','zwraca informacje, czy czynnosc uruchomiona z obszaru _a (1) czy nie (0)';"
+            {? .Path='Area'
+            || {? var_pres('AreaTitle')>0
+               || AreaTitle.area=_a
+               || 1
+               ?}
+            ?}
+            ",type_of('')),
+
+   obj_meth('path','zwraca sciezke uruchomienia czynosci: Todo, Proc, Area';"
+            .Path
+            ",-1),
+
+   obj_meth('load','pobiera aktualne parametry wejściowe/wewnętrzne/wyjściowe - wynik tablica nazwana';"
+            _portsRes:=~~;
+            _can_continue:=1;
+            {? _<1 | ~(var_pres('_a')=type_of(''))
+            || _can_continue:=0
+            || _kind:=_a;
+               _can_continue:=((exec('kind_typeports','#b_port')*(_kind+';')))
+            ?};
+            {? _can_continue>0
+            || {? .bi_prel<>null()
+               || _b_prel:={? _kind='IN' || .b_prel || null() ?};
+                  _ports:=exec('getPorts','#b_port',.buf_prel.B_ELE,_kind,_b_prel);
+                  _portsRes:=exec('fillPorts','#bi_port',.bi_prel,_kind,_ports);
+                  {? var_pres('_ports')>0 || obj_del(_ports) ?}
+               ?}
+            ?};
+            _portsRes
+            ",type_of('')),
+
+   obj_meth('save','zachowuje parametry wejścia _b dla instancji elementów _a w procesie';"
+::          _a - BI_PREL.ref()
+::          _b - wartosci portow wejsciowych
+            _bi_prel:=_a;
+            _ports:=_b;
+            _result:=0;
+            _can_continue:=1;
+::          Jesli nie podano argumentow to zwracam -1
+            {? var_pres('_ports')<100
+            || _result:=-1;
+               _can_continue:=0
+            ?};
+
+            {? _can_continue>0 & _bi_prel<>null()
+            || {? var_pres('_ports')=117
+               || {? exec('saveToPorts','#bi_port',_bi_prel,'IN',_ports,.BLOBS)>0
+                  || _result:=1
+                  ?}
+               ?};
+               .descTodo()
+            ?};
+            _result
+            ",type_of(null()),type_of(obj_new('str')),-1),
+
+   obj_meth('save','zachowuje parametry _b typu _c dla instancji elementów _a w procesie';"
+::          _a - BI_PREL.ref()
+::          _b - wartosci portow wejsciowych
+            _bi_prel:=_a;
+            _ports:=_b;
+            _kind:=_c;
+            _result:=0;
+            _can_continue:=1;
+::          Jesli nie podano argumentow to zwracam -1
+            {? var_pres('_ports')<100
+            || _result:=-1;
+               _can_continue:=0
+            ?};
+
+            {? _can_continue>0 & _bi_prel<>null()
+            || {? var_pres('_ports')=117
+               || {? exec('saveToPorts','#bi_port',_bi_prel,_kind,_ports,.BLOBS)>0
+                  || _result:=1
+                  ?}
+               ?};
+               .descTodo()
+            ?};
+            _result
+            ",type_of(null()),type_of(obj_new('str')),type_of('str'),-1),
+
+   obj_meth('save','zachowuje parametry wewnetrzne/wyjścia dla instancji elementów w procesie';"
+            _result:=0;
+            _can_continue:=1;
+::          Jesli nie podano argumentow to zwracam -1
+            {? var_pres('_a')<100 & var_pres('_b')<100
+            || _result:=-1;
+               _can_continue:=0
+            ?};
+
+            {? _can_continue>0 & .bi_prel<>null()
+            || {? var_pres('_a')=117
+               || {? exec('saveToPorts','#bi_port',.bi_prel,'INT',_a,.BLOBS)>0
+                  || _result:=1
+                  ?}
+               ?};
+               {? var_pres('_b')=117
+               || {? exec('saveToPorts','#bi_port',.bi_prel,'OUT',_b,.BLOBS)>0
+                  || _result:=1
+                  ?}
+               ?};
+               .descTodo()
+            ?};
+            _result
+            "),
+
+   obj_meth('save','zachowuje parametr wewnętrzny lub wyjściowy dla instancji elementów w procesie';"
+            _result:=0;
+            _can_continue:=1;
+::          Jesli nie podano argumentow to zwracam -1
+            {? _<3
+            || _result:=-1;
+               _can_continue:=0
+            ?};
+
+            {? _can_continue>0
+            || _rodzaj:=_a;
+               {? .bi_prel<>null() & (_rodzaj='INT' | _rodzaj='OUT')
+               || _ports:=obj_new(_b);
+                  _ports[1]:=_c;
+                  {? exec('saveToPorts','#bi_port',.bi_prel,_rodzaj,_ports,.BLOBS)>0
+                  || _result:=1
+                  ?};
+                  .descTodo()
+               ?}
+            ?};
+            _result
+            ",type_of(''),type_of('')),
+
+   obj_meth('keyRef','dodaje informację o kluczowm rekordzie dla instancji procesu';"
+            _ref:=_a;
+
+::          _b - Parametr sterujacy automatycznym wykonywaniem keep()
+            _auto_keep:=1;
+            {? var_pres('_b')=type_of(0)
+            || _auto_keep:=_b
+            ?};
+
+::          _c - Parametr sterujacy automatycznym wykonywaniem descTodo()
+            _auto_desc:=1;
+            {? var_pres('_c')=type_of(0)
+            || _auto_desc:=_c
+            ?};
+
+::          dodać sprawdzenie czy czynność może zablokować rekord
+            {? .bi_proc<>null() & .bi_prel<>null()
+            || _status:=exec('getStatus','#bi_prel',.bi_prel);
+               _ok:=0;
+               {? ~exec('isEndStatus','#bi_proc',_status)
+               || {? +_ref<>48 & (1+_ref)<>'_'
+                  || _ok:=1
+                  || _ok:=exec('addKeyRef','#b_keyref',.bi_proc,.bi_prel,.user,.buf_act.UID,_ref);
+
+::                   Automatyczne wykonanie keep()
+                     {? _ok>0 & _auto_keep>0 & _status=__Status.FL_CANCEL || .keep() ?};
+::                   Automatyczne wykonanie descTodo()
+                     {? _ok>0 & _auto_desc>0 || .descTodo() ?}
+                  ?};
+                  {? ~_ok & do_state()=0
+                  ||
+::                   TODO - Dodać obsługę w przypadku niepowodzenia
+                     {? .jTerm
+                     || FUN.info('Rekord wykorzystywany w innej instancji tej czynności.\n'
+                                 'Nie można przypisać rekordu do czynności.'@)
+                     ?}
+                  ?}
+               ?};
+               _ok
+            || 0
+            ?}
+            ", type_of('')),
+
+   obj_meth('trigRef','zakłada trigger na podaną tabelę, który będzie tworzył automatycznie keyRefy';"
+            _tab_acr:=_a;
+
+::          _b - Parametr sterujacy automatycznym wykonywaniem keep()
+            _auto_keep:=1;
+            {? var_pres('_b')=type_of(0)
+            || _auto_keep:=_b
+            ?};
+::          _c - Parametr sterujacy wykonywaniem keyRefa po put()
+            _put:=0;
+            {? var_pres('_c')=type_of(0)
+            || _put:=_c
+            ?};
+::          _d - Parametr sterujacy automatycznym wykonywaniem descTodo()
+            _auto_desc:=1;
+            {? var_pres('_d')=type_of(0)
+            || _auto_desc:=_d
+            ?};
+::          _e - Rodzaj portu
+            _port_kind:='';
+            {? var_pres('_e')=type_of('')
+            || _port_kind:=_e
+            ?};
+::          _f - Symbol portu
+            _port:='';
+            {? var_pres('_f')=type_of('')
+            || _port:=_f
+            ?};
+::          _g - Rekord kluczowy
+            _keyref:='';
+            {? var_pres('_g')=type_of('')
+            || _keyref:=_g
+            ?};
+::          _h - Formuła na warunek logiczny
+            _ff_log:=\"1\";
+            {? var_pres('_h')=type_of(\"\")
+            || _ff_log:=gsub($_h,'\'\'','\'\'\'\'')
+            ?};
+::          _i - grpkey - uzupełniać pozycje [0-nie, 1-tak]
+            _grpkeyOn:=0;
+            _grpkey:='';
+            {? var_pres('_i')=type_of(0) & .GRPKEY<>''
+            || _grpkeyOn:=_i;
+               _grpkey:=gsub(.GRPKEY,'\'\'','\'\'\'\'');
+               _grpkey:=gsub(_grpkey,'\\\\','\\\\\\\\')
+            ?};
+
+            _result:=0;
+            _can_continue:=1;
+
+::          Prefix nazwy triggera
+            _trig_id_prefix:='proman_trig_';
+
+::          Ze STRINGa robie prawdziwa tabele
+            _table:=($_tab_acr)();
+
+::          Dodaje tabele do tymczasowki w ktorej trzymam akronimy tabel ktorym zalozylem
+::          triggera, po to aby wiedziec ktorym tabelom zdjac pozniej te triggery
+            .TRIGS.prefix(_tab_acr,);
+            .TRIGS.blank();
+            .TRIGS.TABLE:=_tab_acr;
+            .TRIGS.NR:={? .TRIGS.last() || .TRIGS.NR+1 || 1 ?};
+            _can_continue:=.TRIGS.add();
+            {? _can_continue>0
+            || _result:=1
+            ?};
+
+            {? _can_continue>0
+            ||
+::             Nazwa triggera
+               _trig_id:=_trig_id_prefix+form(.TRIGS.NR,-2);
+
+::             Tworze formuly do wywolania w triggerze, przekazuje jej na sztywno SQL ref BI_PRELa
+               _fml_add:='exec(\'\'trigRef_after\'\',\'\'#b_keyref\'\',_a,\'\'add\'\',\'\''+$.bi_prel+'\'\''
+                  +',\'\''+_tab_acr+'\'\''
+                  +','+$_auto_keep+','+$_auto_desc
+                  +',\'\''+_port_kind+'\'\',\'\''+_port+'\'\''
+                  +',\'\''+_keyref+'\'\''
+                  +',$\'\''+_ff_log+'\'\''
+                  +',\'\''+.desctodo+'\'\''
+                  +',\'\''+_grpkey+'\'\''
+                  +','+$_grpkeyOn+')';
+               _fml_put:='exec(\'\'trigRef_after\'\',\'\'#b_keyref\'\',_a,\'\'put\'\',\'\''+$.bi_prel+'\'\''
+                  +',\'\''+_tab_acr+'\'\''
+                  +','+$_auto_keep+','+$_auto_desc
+                  +',\'\''+_port_kind+'\'\',\'\''+_port+'\'\''
+                  +',\'\''+_keyref+'\'\''
+                  +',$\'\''+_ff_log+'\'\''
+                  +',\'\''+.desctodo+'\'\''
+                  +',\'\''+_grpkey+'\'\''
+                  +','+$_grpkeyOn+')';
+               _fml_del:='exec(\'\'trigRef_before\'\',\'\'#b_keyref\'\',\'\'del\'\',\'\''+$.bi_prel+'\'\''
+                  +',\'\''+_tab_acr+'\'\''
+                  +','+$_auto_keep+','+$_auto_desc
+                  +',\'\''+_port_kind+'\'\',\'\''+_port+'\'\''
+                  +',\'\''+_keyref+'\'\''
+                  +',$\'\''+_ff_log+'\'\''
+                  +',\'\''+.desctodo+'\'\''
+                  +',\'\''+_grpkey+'\'\''
+                  +','+$_grpkeyOn+')';
+
+::             Zakladam triggery
+               _table.trig_a('add',$_fml_add,_trig_id);
+               _table.trig_b('del',$_fml_del,_trig_id);
+               {? _put>0
+               || _table.trig_a('put',$_fml_put,_trig_id)
+               ?}
+            ?};
+
+            _result
+            ", type_of('')),
+
+   obj_meth('delTrigs','usuwa wszystkie zalozone metoda trigRef triggery';"
+
+::          Prefix nazwy triggera
+            _trig_id_prefix:='proman_trig_';
+
+            _can_continue:=1;
+
+            .TRIGS.clear();
+            {? .TRIGS.first()
+            || {!
+               |?
+::                Ze STRINGa robie prawdziwa tabele
+                  _table:=($.TRIGS.TABLE)();
+
+::                Nazwa triggera
+                  _trig_id:=_trig_id_prefix+form(.TRIGS.NR,-2);
+
+::                Usuwam triggery
+                  _table.trig_a('add',$'',_trig_id);
+                  _table.trig_b('del',$'',_trig_id);
+                  _table.trig_a('put',$'',_trig_id);
+
+::                Usuwam rekord .TRIGS
+                  _can_continue:=.TRIGS.del(,1);
+                  obj_del(_table);
+
+                  .TRIGS.first() & _can_continue>0
+               !}
+            ?};
+
+            ~~
+            ", -1),
+
+   obj_meth('delRef','usuwa jeden kluczowy rekord dla instancji elementu procesu';"
+            _result:=1;
+            {? var_pres('_a')<>type_of('') || return(_result) ?};
+            _ref:=_a;
+
+::          _b - Parametr sterujacy pojawianiem sie komunikatow o niepowodzeniu
+            _komm:=1;
+            {? var_pres('_b')=type_of(0)
+            || _komm:=_b
+            ?};
+
+::          _c - Parametr sterujacy automatycznym wykonywaniem descTodo()
+            _auto_desc:=1;
+            {? var_pres('_c')=type_of(0)
+            || _auto_desc:=_c
+            ?};
+
+            {? .bi_proc<>null() & .bi_prel<>null()
+            || _status:=exec('getStatus','#bi_prel',.bi_prel);
+               {? exec('isEndStatus','#bi_proc',_status)<>1
+               || _result:=exec('delKeyRef','#b_keyref',.bi_prel,_ref);
+                  {? _result>0 & _auto_desc>0
+                  ||
+::                   Aktualizacja opisu na TODO
+                     .descTodo()
+                  ?}
+               ?}
+            ?};
+            {? _komm>0
+            || {? _result=0 & .jTerm
+               || FUN.info('Nie powiodło się usunięcie kluczowego rekordu: %1 dla elementu: %2'@[$_ref,.buf_prel.SYMBOL])
+               ?}
+            ?};
+            _result
+            ", type_of('')),
+
+   obj_meth('delRefs','usuwa wszystkie kluczowe rekordy dla elementu procesu';"
+            _result:=1;
+
+::          Parametr sterujacy pojawianiem sie komunikatow o niepowodzeniu
+            _komm:=1;
+            {? var_pres('_a')=type_of(0)
+            || _komm:=_a
+            ?};
+
+::          Parametr sterujacy automatycznym wykonywaniem descTodo()
+            _auto_desc:=1;
+            {? var_pres('_b')=type_of(0)
+            || _auto_desc:=_b
+            ?};
+
+            {? .bi_proc<>null() & .bi_prel<>null()
+            || _status:=exec('getStatus','#bi_prel',.bi_prel);
+               {? exec('isEndStatus','#bi_proc',_status)<>1
+               || _result:=exec('delKeyRef','#b_keyref',.bi_prel);
+                  {? _result>0 & _auto_desc>0
+                  ||
+::                   Aktualizacja opisu na TODO
+                     .descTodo()
+                  ?}
+               ?}
+            ?};
+            {? _komm>0
+            || {? _result=0 & .jTerm
+               || FUN.info('Nie powiodło się usunięcie kluczowych rekordów dla elementu: %1'@[.buf_prel.SYMBOL])
+               ?}
+            ?};
+            _result
+            "),
+
+   obj_meth('getRefs','zwraca kluczowe rekordy dla instancji procesu';"
+            exec('getRef4InstProc','#b_keyref',.bi_prel)
+            ", -1),
+
+   obj_meth('grpkey_core','generuje klucz grupujący';"
+            _return:=1;
+            _grpkey:=
+               {? _a<>''
+               || _a
+               || _a:=exec('FindAndGet','#table',BI_PREL,.bi_prel,,\"BI_PREL.uidref()\",'');
+                  {? _a<>'' || _a+tm_stamp() || '' ?}
+               ?};
+            {? {? _b || .GRPKEY='' || .GGRPKEY='' ?}
+            || {? _grpkey=''
+               || FUN.info('Nie powiodło się generowanie klucza grupującego.'@);
+                  _return:=0
+               || .save(exec('kind_out','#b_port'),{? _b || 'GRPKEY' || 'GGRPKEY' ?},_grpkey);
+                  {? _b || .GRPKEY:=_grpkey || .GGRPKEY:=_grpkey ?};
+                  _return:=1
+               ?}
+            |? {? _b || .GRPKEY<>_grpkey || .GGRPKEY<>_grpkey ?}
+            || FUN.info('Podano już inny klucz grupujący.'@);
+               _return:=0
+            ?};
+            {? _return
+            || {? _b || .GRPKEY || .GGRPKEY ?}
+            || ~~
+            ?}
+            ",type_of(''),type_of(0),-1),
+
+   obj_meth('grpkey','generuje klucz grupujący';"
+            .grpkey_core(_a,1)
+            ",type_of(''),-1),
+
+   obj_meth('grpkey','generuje klucz grupujący';"
+            {? _a<>'' || .grpkey(_a) || .grpkey(_b) ?}
+            ",type_of(''),type_of(''),-1),
+
+   obj_meth('grpkey','generuje klucz grupujący';"
+            .grpkey(_a)
+            ",type_of(''),type_of(~~),-1),
+
+   obj_meth('grpkey','generuje klucz grupujący';"
+            .grpkey(_b)
+            ",type_of(~~),type_of(''),-1),
+
+   obj_meth('grpkey','generuje klucz grupujący';"
+            .grpkey('')
+            ",type_of(~~),type_of(~~),-1),
+
+   obj_meth('grpkey','generuje klucz grupujący';"
+            .grpkey('')
+            ",type_of(~~),-1),
+
+   obj_meth('grpkey','generuje klucz grupujący';"
+            .grpkey('')
+            ",-1),
+
+   obj_meth('ggrpkey','generuje klucz grupujący';"
+            .grpkey_core(_a,0)
+            ",type_of(''),-1),
+
+   obj_meth('ggrpkey','generuje klucz grupujący';"
+            .ggrpkey(_a)
+            ",type_of(''),type_of(''),-1),
+
+   obj_meth('ggrpkey','generuje klucz grupujący';"
+            {? _a<>'' || .ggrpkey(_a) || .ggrpkey(_b) ?}
+            ",type_of(''),type_of(~~),-1),
+
+   obj_meth('ggrpkey','generuje klucz grupujący';"
+            .ggrpkey(_b)
+            ",type_of(~~),type_of(''),-1),
+
+   obj_meth('ggrpkey','generuje klucz grupujący';"
+            .ggrpkey('')
+            ",type_of(~~),type_of(~~),-1),
+
+   obj_meth('ggrpkey','generuje klucz grupujący';"
+            .ggrpkey('')
+            ",type_of(~~),-1),
+
+   obj_meth('ggrpkey','generuje klucz grupujący';"
+            .ggrpkey('')
+            ",-1),
+
+   obj_meth('grpkeyAdd_core','dodaje pozycje klucza grupującegp';"
+            _return:=0;
+            {? {? _b || .GRPKEY='' || .GGRPKEY='' ?}
+            || FUN.info('Brak klucza grupującego.'@); 0
+            |? _a=''
+            || FUN.info('Niewypełniona pozycja klucza grupującego.'@); 0
+            || exec('add','#b_grpkey',{? _b || .GRPKEY || .GGRPKEY ?},_a)
+            ?}
+            ",type_of(''),type_of(0),-1),
+
+   obj_meth('grpkeyAdd','dodaje pozycje klucza grupującego';"
+            .grpkeyAdd_core(_a,1)
+            ",type_of(''),-1),
+
+   obj_meth('ggrpkeyAdd','dodaje pozycje klucza grupującego';"
+            .grpkeyAdd_core(_a,0)
+            ",type_of(''),-1),
+
+   obj_meth('grpkeyGet','zwraca pozycje klucza grupujący';"
+            exec('get','#b_grpkey',.GRPKEY)
+            ",-1),
+
+   obj_meth('grpkeyFind','sprawdza istnienie pozycji w kluczu grupującym';"
+            exec('findItem','#b_grpkey',.GRPKEY,_a)
+            ",type_of(''),-1),
+
+   obj_meth('grpkeyGetAll','zwraca pierwszą pozycję klucza grupującego';"
+            exec('getAll','#b_grpkey',.GRPKEY)
+            ",-1),
+
+   obj_meth('grpkeyDel','usuwa pierwszą pozycję klucza grupującego';"
+            exec('delFirst','#b_grpkey',.GRPKEY)
+            ",-1),
+
+   obj_meth('grpkeyDel','usuwa _a pozycję klucza grupującego';"
+            {? _a=''
+            || FUN.info('Niewypełniona pozycja klucza grupującego.'@); 0
+            || exec('del','#b_grpkey',.GRPKEY,_a)>0
+            ?}
+            ",type_of(''),-1),
+
+   obj_meth('grpkeyDelAll','usuwa wszystkie pozycje klucza grupującego';"
+            exec('delAll','#b_grpkey',.GRPKEY)
+            ",-1),
+
+   obj_meth('coreCancel','informuje proces o anulowaniu czynności';"
+::          Wyjście jeśli czynność i bieżący status różny od FL_CANCEL lub FL_ERROR
+            _stat:=exec('getStatus','#bi_prel',.bi_prel);
+            {? .buf_prel.CLASS='B_ACTION' & _stat<>__Status.FL_CANCEL & _stat<>__Status.FL_ERROR
+            || return(0)
+            ?};
+
+            _can_continue:=1;
+            _result:=0;
+
+::          Odblokowuje czynnosc zanim bede ja cancelowal
+            exec('unlock','#bi_prel',.bi_prel);
+            {? exec('canDelete','#bi_proc',.bi_proc,.bi_prel)
+            ||
+::             Jesli czynnosc ktora jest anulowana jest czynnoscia startowa w procesie
+::             to usuwany jest caly proces
+               _can_continue:=exec('delete','#bi_proc',.bi_proc);
+               {? _can_continue>0
+               || .bi_proc:=null();
+                  .bi_prel:=null()
+               ?}
+            ||
+::             Jesli czynnosc nie jest startowa to tylko ustawiamy status
+               _can_continue:=exec('setStatus','#bi_prel',.bi_prel,__Status.OCZEKUJACA)
+            ?};
+            {? _can_continue>0
+            || _result:=1
+            ?};
+            _result
+            ", -1),
+
+   obj_meth('nextStep','Tworzy instancje następnych czynności i przepisuje wartości arg';"
+::          Tablica zawierająca refy następnych B_CONNów którym nawinąć instancje
+            _nextEl:=_a;
+
+::          Opcja - ref BI_PREL z którego tylko i wyłącznie pobierać wartości parametrów wyjściowych (wykorzystywane
+::          w przypadku bram zbierających - wtedy czynności za bramą należy przekazać argumenty z ostatnio zakończonej
+::          czynności przed bramą)
+            _args_from:=null();
+            {? var_pres('_b')=type_of(SYSLOG.ref())
+            || _args_from:=_b
+            ?};
+
+::          Zabezpieczenie przed przepełnieniem się tabel
+            {? BPMN.MAX_EL>0
+            || BI_PROC.cntx_psh(); BI_PROC.prefix();
+               {? BI_PROC.seek(.bi_proc)
+               || {? BI_PROC.count()>BPMN.MAX_EL
+                  || {? .err_txt=''
+                     || .err_txt:='Przekroczono maksymalną dostępną liczbę elementów dla jednej instancji procesu: %1'@[$BPMN.MAX_EL];
+                        .coreError()
+                     ?};
+                     BI_PROC.cntx_pop();
+                     return(0)
+                  ?}
+               ?};
+               BI_PROC.cntx_pop();
+               ~~
+            ?};
+
+            _result:=1;
+
+::          pobieram kluczowe rekordy dla kończonej czynności
+            _keyRefs:=.getRefs();
+
+::          Klasa elementu
+            _class:=.buf_prel.CLASS;
+::          Element startowy
+            _start:=.buf_prel.START;
+            {? _start='N' & _class='B_GATE' & .buf_prel.GATEKIND='>'
+            || {? exec('after_start','#b_proman',.bi_prel) || _start:='T' ?}
+            ?};
+::          Bufor kolejki menadzera procesu
+            _buf_que:=exec('buffer','#bi_queue');
+::          Bufor powiazan miedzy instancjami elementow
+            _buf_bic:=exec('buffer','#bi_conn');
+::          Bufor powiazan miedzy elementami w procesie
+            _buf_conn:=exec('buffer','#b_conn');
+
+            _size:=obj_len(_nextEl);
+            {! _ind:=1.._size
+            |!
+               _buf_conn.blank();
+
+               _ref_conn:=_nextEl[_ind];
+
+               {? _ref_conn<>null()
+               ||
+                  _buf_conn.cntx_get(_ref_conn);
+                  _ref_next:=_buf_conn.TO;
+
+                  {? _ref_next<>null()
+                  ||
+                     {? var_pres('_nextPrelBuffer')>0 || obj_del(_nextPrelBuffer) ?};
+
+::                   Tworze bufor nastepnego B_PRELa
+                     _nextPrelBuffer:=exec('buffer','#b_prel');
+                     _nextPrelBuffer.cntx_get(_ref_next);
+                     {? var_pres('_nextBiPrel')>0 || obj_del(_nextBiPrel) ?};
+
+                     _new_biprel:=1;
+::                   Jeśli następny rekord jest bramą zbierającą typu: AND,OR
+::                   to sprawdzam czy istnieje już instancja takiej bramy po to aby nie powielać
+::                   tych instancji
+                     _gat_type:='';
+::                     _b_ele:=exec('get_bele','#b_prel',_ref_next);
+                     {? _nextPrelBuffer.GATEKIND='>'
+                     || _gat_type:=_nextPrelBuffer.GATETYPE;
+                        {? _gat_type=exec('type_and','#b_gate') | _gat_type=exec('type_or','#b_gate')
+                           | _gat_type=exec('type_complex','#b_gate')
+                        || _new_biprel:=0
+                        ?}
+                     ?};
+
+                     {? _new_biprel>0
+                     ||
+::                      Tworze rekord nowego BI_PRELa
+                        _nextBiPrel:=exec('fillAndAdd','#bi_prel',.bi_proc,_ref_next,.user)
+                     ||
+                        _bi_prel:=null();
+::                      Jesli nie znajde takiego BI_PRELa to i tak zakladam nowego
+::                        {? exec('is_gate','#b_gate',_b_ele,exec('type_and','#b_gate'),exec('kind_merge','#b_gate'))
+                        {? _nextPrelBuffer.GATEKIND='>' & _nextPrelBuffer.GATETYPE='AND'
+                        ||
+::                         Następnym elementem jest brama zbierająca AND
+
+::                         Zwracam ref istniejacej instancji bramy jesli istnieje oraz nie ma w niej jeszcze polaczen
+::                         miedzy instancjami do biezacego elementu procesu
+                           BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+                           BI_PREL.index('TM_BORN');
+                           BI_PREL.prefix(.bi_proc,_ref_next);
+                           {? BI_PREL.first()
+                           || {!
+                              |? {? exec('has_conn2prel','#bi_conn',BI_PREL.ref(),.b_prel)<>null()
+                                 || _bi_prel:=null()
+                                 || _bi_prel:=BI_PREL.ref()
+                                 ?};
+                                 BI_PREL.next() & _bi_prel=null()
+                              !}
+                           ?};
+                           BI_PREL.cntx_pop()
+::                        |? exec('is_gate','#b_gate',_b_ele,exec('type_or','#b_gate'),exec('kind_merge','#b_gate'))
+::                           | exec('is_gate','#b_gate',_b_ele,exec('type_complex','#b_gate'),exec('kind_merge','#b_gate'))
+                        |? _nextPrelBuffer.GATEKIND='>' & _nextPrelBuffer.GATETYPE='OR' |
+                           _nextPrelBuffer.GATEKIND='>' & _nextPrelBuffer.GATETYPE='COMPLEX'
+                        ||
+::                         Nastepnym elementem jest brama zbierajaca OR lub COMPLEX
+
+::                         Zwracam ref istniejacej instancji bramy o statusie URUCHOMIONA lub OCZEKUJACA
+                           _bi_prel:=exec('findPrel4BiProc','#bi_prel',.bi_proc,_ref_next,__Status.URUCHOMIONA);
+
+                           {? _bi_prel=null()
+                           || _bi_prel:=exec('findPrel4BiProc','#bi_prel',.bi_proc,_ref_next,__Status.OCZEKUJACA)
+                           ?}
+                        ?};
+
+                        {? _bi_prel<>null()
+                        ||
+::                         Istnieje już taki BI_PREL, zwracam go
+                           _nextBiPrel:=exec('buffer','#bi_prel');
+                           _nextBiPrel.cntx_get(_bi_prel)
+                        ||
+::                         Nie ma jeszcze takiego - zakładam nowy
+                           _nextBiPrel:=exec('fillAndAdd','#bi_prel',.bi_proc,_ref_next,.user)
+                        ?}
+                     ?};
+
+                     {? _nextBiPrel.ref()<>null()
+                     ||
+::                      Tworze rekord nowego BI_CONNa
+                        _buf_bic.blank();
+                        _buf_bic.BI_PROC:=.bi_proc;
+                        _buf_bic.FROM:=.bi_prel;
+                        _buf_bic.TO:=_nextBiPrel.ref();
+                        _buf_bic.B_CONN:=_buf_conn.ref();
+                        _buf_bic.TM_BORN:=BI_CONN.tm_stamp();
+                        _buf_bic.SRC_BELE:=.buf_prel.B_ELE;
+                        _buf_bic.DST_BELE:=exec('FindAndGet','#table',B_PREL,#_nextBiPrel.B_PREL,ref_name(_nextBiPrel.B_PREL),$'B_ELE','');
+                        _buf_bic.SRC_PREL:=.buf_prel.ref();
+                        _buf_bic.DST_PREL:=_nextBiPrel.B_PREL;
+
+                        {? exec('can_add','#bi_conn',_buf_bic)>0
+                        || exec('add','#bi_conn',_buf_bic)
+                        ?};
+                        ~~
+                     ?};
+
+::                   Tworzymy BI_PORTY
+                     exec('copyPorts','#bi_port',_nextBiPrel.ref());
+
+::                   Przekazujemy wartości BI_PORTom
+                     exec('fill_values','#bi_port',.bi_prel,_nextBiPrel.ref(),_ref_conn);
+
+::                   Jeżeli w przekazanych wartościach portów jest kluczowy rekord to automatycznie go dodajemy
+                     exec('addKey4NextAct','#b_keyref',_nextBiPrel.ref(),.user);
+
+                     {? var_pres('_nextBPrel')=type_of(obj_new('obj')) || obj_del(_nextBPrel) ?};
+                     _nextBPrel:=exec('buffer','#b_prel');
+                     _nextBPrel.cntx_get(_nextBiPrel.B_PREL);
+
+::                   Jeśli następna czynność (ale nie czynność wysłania)
+::                   jest po zdarzeniu sygnałowym (nie przepychającym automatu), warunkowym albo czasowym,
+::                   to automatyczne uruchamianie jest wyłączane
+::                   oraz czyszczona jest flaga, że czynność startowa.
+                     {? _nextBPrel.CLASS='B_ACTION' & _nextBPrel.TYPE<>'E'
+                     || _after_start_event:=(exec('is_event','#b_event',.buf_prel.B_ELE
+                           ,exec('type_start','#b_event'),exec('kind_none','#b_event'))>0);
+                        _after_signal:=(exec('is_event','#b_event',.buf_prel.B_ELE
+                           ,,exec('kind_signal','#b_event'),exec('category_catch','#b_event'))>0
+                           & ~(.buf_prel.AUTOMAT='T' & _nextBPrel.AUTOMAT='T'));
+                        _after_timer:=(exec('is_event','#b_event',.buf_prel.B_ELE
+                           ,,exec('kind_timer','#b_event'),exec('category_catch','#b_event'))>0);
+                        _after_condition:=(exec('is_event','#b_event',.buf_prel.B_ELE
+                           ,,exec('kind_condition','#b_event'),exec('category_catch','#b_event'))>0);
+                        _after_gate:=(exec('is_gate','#b_gate',.buf_prel.B_ELE)>0);
+                        {? _after_start_event | _after_signal | _after_timer | _after_condition
+                        || _nextBiPrel.AUTOMAT:='N';
+                           exec('put','#bi_prel',_nextBiPrel);
+                           {? ~_after_start_event || _start:='N' ?}
+
+::                      Jeśli następna czynność (ale nie czynność wysłania)
+::                      jest po dowolnej bramie,
+::                      która jest po zdarzeniu sygnałowym (nie przepychającym automatu), warunkowym albo czasowym,
+::                      to automatyczne uruchamianie jest wyłączane
+::                      oraz czyszczona jest flaga, że czynność startowa.
+                        |? _after_gate
+                        || BI_CONN.cntx_psh(); {? BI_CONN.name()='' || BI_CONN.use('bi_c____') ?};
+                           BI_CONN.index('TO');
+                           BI_CONN.prefix(.bi_proc,.bi_prel);
+                           {? BI_CONN.first()
+                           || _b_ele:=BI_CONN.FROM().B_PREL().B_ELE;
+                              _after_start_event:=(exec('is_event','#b_event',_b_ele
+                                 ,exec('type_start','#b_event'),exec('kind_none','#b_event'))>0);
+                              _after_signal:=(exec('is_event','#b_event',_b_ele
+                                 ,,exec('kind_signal','#b_event'),exec('category_catch','#b_event'))>0
+                                 & ~(BI_CONN.FROM().B_PREL().AUTOMAT='T' & _nextBPrel.AUTOMAT='T'));
+                              _after_timer:=(exec('is_event','#b_event',_b_ele
+                                 ,,exec('kind_timer','#b_event'),exec('category_catch','#b_event'))>0);
+                              _after_condition:=(exec('is_event','#b_event',_b_ele
+                                 ,,exec('kind_condition','#b_event'),exec('category_catch','#b_event'))>0)
+                           || _after_start_event:=_after_signal:=_after_timer:=_after_condition:=0
+                           ?};
+                           BI_CONN.cntx_pop();
+                           {? _after_start_event | _after_signal | _after_timer | _after_condition
+                           || _nextBiPrel.AUTOMAT:='N';
+                              exec('put','#bi_prel',_nextBiPrel);
+                              {? ~_after_start_event || _start:='N' ?}
+                           |? _after_gate & (.sigAuto='N' | .sigAuto='T')
+                           || _nextBiPrel.AUTOMAT:=.sigAuto;
+                              .sigAuto:='X';
+                              exec('put','#bi_prel',_nextBiPrel)
+                           ?}
+                        ?}
+                     ?};
+                     {? var_pres('_users')>100
+                     || obj_del(_users)
+                     ?};
+                     _users:=~~;
+                     _chk_access:=1;
+                     {? _nextBPrel.CLASS='B_ACTION'
+                     || {? var_pres('_nextAction')=type_of(obj_new('obj')) || obj_del(_nextAction) ?};
+                        _nextAction:=exec('findAction4Ele','#b_proman',_nextBPrel.B_ELE);
+                        {? _nextAction.LOOP='T'
+                        ||
+::                         Jeśli następna czynność się zapętla i były jej już wywołania to nawijam jej licznik pętli
+                           {? var_pres('_args_loop')=type_of(obj_new('obj')) || obj_del(_args_loop) ?};
+                           _args_loop:=exec('back2biprel_a','#bi_prel');
+                           _args_loop.BI_PREL:=_nextBiPrel.Ref;
+                           _args_loop.B_PREL:=_nextBPrel.Ref;
+                           _args_loop.MAX_DISTANCE:=2;
+                           exec('back2biprel','#bi_prel',_args_loop);
+                           {? type_of(_args_loop.RESULT)>100
+                           || _nextBiPrel.LOOP_NUM:=_args_loop.RESULT.LOOP_NUM+1;
+                              _nextBiPrel.LOOPTODO:=_args_loop.RESULT.LOOPTODO;
+                              exec('put','#bi_prel',_nextBiPrel)
+                           ?}
+                        ?};
+::                      Badam czy użytkownik który zakończył bieżący element ma uprawnienia do następnego elementu procesu
+::                      po to żeby przyspieszyć genenerowanie BI_TODO i nie sprawdzać ponownie accessów o ile następne
+::                      zadanie może być od razu przydzielone
+                        {? _nextBPrel.ASSIGNTD='T'
+                        ||
+                           _users:=exec('usersAction','#b_desktop',_nextBiPrel.ref(),,.buf_bip.USERS);
+                           {? _users.size()>0
+                           || _chk_access:=0
+                           ||
+::                            Brak uprawnień, kasuję zmienną i w create\#bi_todo zostanie wyznaczona mozolnie lista
+::                            uprawnionych userów
+                              {? var_pres('_users')>100
+                              || obj_del(_users)
+                              ?};
+                              _users:=~~;
+                              ~~
+                           ?};
+                           ~~
+                        ?}
+                     ?};
+
+::                   Tworze zapisy na listach TODO (dla czynności, o ile nie jest usługowa)
+                     _can_todo:=exec('can_create_todo','#bi_todo',_nextBiPrel.ref());
+                     {? _can_todo>0
+                     || exec('create','#bi_todo',_nextBiPrel.ref(),.desctodo,,_users,,.Path)
+                     ?};
+
+::                   Dodaje element do kolejki BI_QUEUE
+::                   (wszystkie zdarzenia i bramy oraz czynności startowe i automatyczne,
+::                    a jeżeli w trybie usługowym, to zdarzenia, bramy i tylko automatyczne czynności wysłania)
+                     _startact:=.startact(_nextBPrel,_nextBiPrel.B_PREL);
+                     _auto:=
+                        {? .isService()
+                        ||
+::                           h_echo('>>>next:'+.buf_prel.SYMBOL+':auto:'+_nextBiPrel.AUTOMAT+':typ:'+_nextBPrel.TYPE+'\n');
+                           _nextBiPrel.AUTOMAT='T' & _nextBPrel.TYPE='E'
+                        ||
+                           (_nextBiPrel.AUTOMAT='T' | _nextBiPrel.LOOP_NUM>0 | _startact='T')
+                              &
+                           exec('canRunBiPrel','#bi_todo',_nextBiPrel.ref(),.user,,_chk_access)>0
+                        ?};
+                     {? _start='T' | _nextBPrel.CLASS<>'B_ACTION' | _auto
+                     ||
+                        _jTerm:=app_info('web_sesid')='';
+                        _webTerm:=~_jTerm;
+                        _web_auto:=_webTerm & _auto & _start='N' & _startact='N';
+                        _log_on:=0;
+                        {? _log_on>=1
+                        ||
+                           _log_lp:=0;
+                           _log_name:='%1_%2_%3.log'['bi_queue',{? _webTerm || 'webterm' || 'jterm' ?},hash(FIRMA.ses_id(),'md5')];
+                           _log:=fopen(_log_name,'Ua',1,,1);
+                           {? _log.is_open()
+                           ||
+                              _txt:='REF_ADD'; _symbol:=$BI_QUEUE.ref();
+                              fwrite(_log,'%1\t%2\t%3\t%4\t%5\t%6\t%7%8'[.uid,form(_log_lp,-2),_txt,_symbol,
+                                 _start,_nextBPrel.CLASS,$_auto,$_web_auto])
+                           ?};
+                           obj_del(_log)
+                        ?};
+                        _buf_que.blank();
+                        _buf_que.BI_PREL:=_nextBiPrel.ref();
+                        _buf_que.TM_STAMP:=FIRMA.tm_stamp();
+                        _buf_que.SES_ID:={? _web_auto || app_info('web_mbid') || FIRMA.ses_id() ?};
+                        _buf_que.TCID:={? _web_auto || app_info('web_tcid') || '' ?};
+                        _buf_que.WIN_ACT:=
+                           {? _auto
+                                 &
+                              exec('FindAndGet','#table',B_PREL,.b_prel,,\"START\",'N')='N'
+                                 &
+                              _startact='N'
+                           || ''
+                           || .akcjaOkna
+                           ?};
+                        _buf_que.ALERT:='N';
+                        _buf_que.UID:=
+                           {? _web_auto
+                           || exec('FindAndGet','#table',BI_PREL,_nextBiPrel.ref(),,\"$BI_PREL.BI_PROC\",'')
+                           || .uid
+                           ?};
+                        exec('add','#bi_queue',_buf_que)
+                     ?};
+
+::                   Sprawdzamy czy wymagane parametry wejściowe zostały przekazane
+                     {? exec('chk_req','#bi_port',_nextBiPrel.ref())<=0
+                     || {? _auto>0
+                        ||
+::                         Jeśli wymagane parametry wejściowe nie przekazane i czynność automatyczna
+::                         to usuwam ją z kolejki BI_QUEUE żeby się niepotrzebnie nie zaczęła uruchamiać
+                           exec('delete4biprel','#bi_queue',_nextBiPrel.ref())
+                        ?}
+                     ?}
+                  ?}
+               ?}
+            !};
+            _result
+            ",type_of(obj_new(1))),
+
+   obj_meth('startact','sprawdza czy czynność jest startowa';"
+            _nextBPrel:=_a;
+            _b_prel:=_b;
+            _startact:='N';
+            {? _nextBPrel.STARTACT='T'
+            ||
+               BI_PREL.cntx_psh();
+               BI_PREL.index('PREL');
+               BI_PREL.prefix(.bi_proc,_b_prel);
+               {? BI_PREL.first() & ~BI_PREL.next()
+               ||
+                  _count_eve:=0;
+::                tylko jedno instancja zdarzenia startowego nieokreślonego dla instancji czynności
+                  B_PREL.cntx_psh();
+                  B_ACTSTA.cntx_psh();
+                  B_ACTSTA.index('PREL_ACT');
+                  B_ACTSTA.prefix(_b_prel);
+                  _loop:=B_ACTSTA.first();
+                  {!
+                  |? _loop
+                  |!
+                     {? exec('is_event','#b_event',B_ACTSTA.PREL_EVE().B_ELE,'startowe','nieokreślone')>0
+                     ||
+                        BI_PREL.index('PREL');
+                        BI_PREL.prefix(.bi_proc,B_ACTSTA.PREL_EVE);
+                        _loop:=BI_PREL.first();
+                        {!
+                        |? _loop
+                        |!
+                           _count_eve+=1;
+                           _loop:=_count_eve<2 & BI_PREL.next()
+                        !}
+                     ?};
+                     _loop:=_count_eve<2 & B_ACTSTA.next()
+                  !};
+                  {? _count_eve=1 || _startact:='T' ?};
+                  B_ACTSTA.cntx_pop();
+                  B_PREL.cntx_pop()
+               ?};
+               BI_PREL.cntx_pop()
+            ?};
+            _startact
+            "),
+
+   obj_meth('coreDone','informuje proces o zakończeniu czynności';"
+::          Wyjście jeśli czynność i bieżący status różny od FL_DONE
+            _stat:=exec('getStatus','#bi_prel',.bi_prel);
+            {? .buf_prel.CLASS='B_ACTION' & _stat<>__Status.FL_DONE || return(0) ?};
+
+            _result:=0;
+
+::          Jezeli BI_PREL jest juz zakocznony, to nic nie robie
+            _ended:=exec('FindAndGet','#table',BI_PREL,$.bi_prel,,\"BI_STAT=__Status.ZAKONCZONA\",1);
+            {? _ended || return(_result) ?};
+
+::          Ref BI_PREL z którego tylko i wyłącznie pobierać wartości parametrów wyjściowych
+::          w przypadku bram zbierających element ten jest przekazywany i jest to ostatnio zakonczony element przed brama
+::          w przypadku czynnosci ustawiam go na siebie samego
+::          jesli _args_from nie bedzie podane, bo argumenty beda pobierane zgodnie z utworzonymi B_POCONNami
+            {? .buf_prel.CLASS='B_ACTION'
+            ||
+::             Jesli aktualnie konczony jest czynnoscia to kolejne elementy beda mialy przekazane argumenty z aktualnego
+               _args_from:=.bi_prel
+            ||
+::             Jesli nie jestem czynnoscia to nie wymuszam pobierania argumentow z konkretnego zrodla
+               _args_from:=null()
+            ?};
+            {? var_pres('_a')=type_of(SYSLOG.ref())
+            || _args_from:=_a
+            ?};
+
+            {? .bi_prel<>null() & .bi_proc<>null()
+            ||
+               _do:=do_state()=0;
+               {? _do || do() ?};
+
+               .descTodo();
+
+::             Tworzymy instancję następnych czynności (B_PREL) i przepisujemy do nich porty
+               _nextConn:=exec('getNext','#b_conn',.b_proc,.b_prel);
+               .nextStep(_nextConn,_args_from);
+
+::             zmiana statusu BI_PREL
+               _result:=exec('setStatus','#bi_prel',.bi_prel,__Status.ZAKONCZONA);
+
+::             konczenie micro procesu jesli to mozliwe
+               {? .micro
+               || {? exec('canEndBiProc','#b_proman',.bi_proc)
+                  || exec('delete','#bi_proc',.bi_proc)
+                  ?}
+               ?};
+
+               {? _do || _end:=end(); {? _result || _result:=_end ?} ?}
+            ?};
+            _result
+            "),
+
+   obj_meth('coreKeep','informuje proces o uruchomieniu czynnosci';"
+::          Wyjście jeśli czynność i bieżący status różny od FL_KEEP
+            _stat:=exec('getStatus','#bi_prel',.bi_prel);
+            {? .buf_prel.CLASS='B_ACTION' & _stat<>__Status.FL_KEEP || return(0) ?};
+
+            exec('setStatus','#bi_prel',.bi_prel,__Status.URUCHOMIONA)
+            "),
+
+   obj_meth('coreError','informuje proces o bledzie w czynnosci';"
+::          Wyjście jeśli czynność i bieżący status różny od FL_ERROR
+            _stat:=exec('getStatus','#bi_prel',.bi_prel);
+            {? .buf_prel.CLASS='B_ACTION' & _stat<>__Status.FL_ERROR || return(0) ?};
+            _result:=0;
+            _can_continue:=1;
+
+            _stat:=exec('BLAD','#bi_stat');
+            _todo:=null();
+            exec('setStatus','#bi_prel',.bi_prel,_stat);
+::          zmiana statusu TODO
+            BI_TODO.cntx_psh(); {? BI_TODO.name()='' || BI_TODO.use('bi_t____') ?};
+            BI_TODO.index('ELEMENT');
+            BI_TODO.prefix(.bi_prel,__Status.TODO_MOJE);
+            _todorefs:=exec('ref_table','#table');
+            {? BI_TODO.first()
+            || _todorefs.add(BI_TODO.ref());
+               BI_TODO.prefix();
+               BI_TODO.BI_STAT:=__Status.TODO_ERROR;
+               BI_TODO.TM_LANG:=0;
+               _can_continue:=BI_TODO.put()
+            ?};
+            {? _can_continue>0
+            ||
+               BI_TODO.prefix(.bi_prel,__Status.TODO_WOLNE);
+               {? BI_TODO.first()
+               || {!
+                  |? _next:=0;
+                     _ref_nxt:=null();
+                     _todorefs.add(BI_TODO.ref());
+                     BI_TODO.cntx_psh();
+                     {? BI_TODO.next()
+                     || _ref_nxt:=BI_TODO.ref()
+                     ?};
+                     BI_TODO.cntx_pop();
+
+                     BI_TODO.cntx_psh();
+                     BI_TODO.prefix();
+                     BI_TODO.BI_STAT:=__Status.TODO_ERROR;
+                     BI_TODO.TM_LANG:=0;
+                     _can_continue:=BI_TODO.put();
+                     BI_TODO.cntx_pop();
+
+                     {? _ref_nxt<>null()
+                     || _next:=BI_TODO.seek(_ref_nxt)
+                     ?};
+                     _next>0 & _can_continue>0
+                  !}
+               ?}
+            ?};
+            BI_TODO.cntx_pop();
+
+            {? _can_continue>0 & .bi_proc<>null() & .CLEANER>0
+            || BI_PROC.cntx_psh(); BI_PROC.prefix();
+               {? BI_PROC.seek(.bi_proc)
+               || BI_PROC.CLEANERR:='T';
+                  _can_continue:=BI_PROC.put()
+               ?};
+               BI_PROC.cntx_pop();
+               BI_PROC.get()
+            ?};
+
+            _tab:=_todorefs.tab;
+            _tab.prefix();
+            {? _can_continue>0 & _tab.first()
+            || {!
+               |? _todo:=exec('FindAndGet','#table',BI_TODO,_tab.SQL,,,null());
+                  _can_continue:=exec('updateBiMsg','#bi_msg',.bi_prel,'A',.err_txt,_todo,_stat,.user,'T');
+                  _tab.next() & _can_continue>0
+               !}
+            || _can_continue:=exec('updateBiMsg','#bi_msg',.bi_prel,'A',.err_txt,,_stat,.user,'T')
+            ?};
+            {? _can_continue>0
+            || _result:=1
+            ?};
+            _result
+            "),
+
+   obj_meth('keep','ustawia flage trwania czynnosci';"
+            _stat:=exec('getStatus','#bi_prel',.bi_prel);
+            {? _stat<>__Status.ZAKONCZONA & (.CLEANER | _stat<>__Status.OCZEKUJACA) & _stat<>__Status.BLAD
+            || exec('setStatus','#bi_prel',.bi_prel,__Status.FL_KEEP)
+            ?}
+            "),
+
+   obj_meth('done','ustawia flage zakonczenia czynnosci';"
+            _stat:=exec('getStatus','#bi_prel',.bi_prel);
+            {? _stat<>__Status.ZAKONCZONA & (.CLEANER | _stat<>__Status.OCZEKUJACA) & _stat<>__Status.BLAD
+            || exec('setStatus','#bi_prel',.bi_prel,__Status.FL_DONE);
+               _id:=exec('FindAndGet','#table',BI_PREL,.bi_prel,,\"BI_PREL.uidref()\",'');
+               {? _id<>'' || ntc_eat(,_id) ?}
+            ?}
+            "),
+
+   obj_meth('cancel','ustawia flage anulowania czynnosci';"
+            _stat:=exec('getStatus','#bi_prel',.bi_prel);
+            {? _stat<>__Status.ZAKONCZONA & (.CLEANER | _stat<>__Status.OCZEKUJACA) & _stat<>__Status.BLAD
+            || exec('setStatus','#bi_prel',.bi_prel,__Status.FL_CANCEL)
+            ?}
+            "),
+
+   obj_meth('error','ustawia flage bledu czynnosci';"
+            _stat:=exec('getStatus','#bi_prel',.bi_prel);
+            {? _stat<>__Status.ZAKONCZONA & (.CLEANER | _stat<>__Status.OCZEKUJACA) & _stat<>__Status.BLAD
+            || .err_txt:={? var_pres('_a')=type_of('str') || {? 1+_a=%1 || translate(_a,1) || _a ?} || '' ?};
+               exec('setStatus','#bi_prel',.bi_prel,__Status.FL_ERROR)
+            ?}
+            "),
+
+:: --METODY-PUBLICZNE (umownie)-----------------------------------------------------------------------------------------
+   obj_meth('runProc','Uruchamia proces';"
+::          _a - B_PREL.ref()
+::          _b - akcja okna
+::          _c - porty wejsciowe
+::          _d - stos na który odłożyć element startowy
+::          _e - tm_stamp który posłuży do odłożenia elementu na stos
+::          _f - informuje, czy akcja dla grupy rekordów (komunikaty do KOMM)
+::          _g - UID sygnału
+::          _h - wartości parametrów sygnału
+            .b_prel:=_a;
+            .akcjaOkna:=_b;
+            .portsIn:=_c;
+            _stos_ini:=_d;
+            _ts:=_e;
+            .group:=_f;
+            .sigUid:=_g;
+            .sigVal:=_h;
+
+::          init
+            .b_proc:=exec('FindAndGet','#table',B_PREL,$.b_prel,,$'B_PREL.B_PROC',$'null()');
+            .buf_prel.cntx_get(.b_prel);
+
+            _can_continue:=exec('can_run','#b_proc',.buf_prel.B_PROC);
+            .buf_act:=exec('findAction4Ele','#b_proman',.buf_prel.B_ELE);
+
+            {? _can_continue>0
+            ||
+::             dodanie instancji procesu
+               .bi_proc:=.biProcAdd();
+
+               {? .bi_proc=null() || FUN.error('Brak instancji procesu.'@); return() ?};
+::             dodanie instancji pierwszego elementu procesu
+               .bi_prel:=.biPrelAdd();
+               {? .bi_prel=null()
+               || FUN.info('Brak instancji elementu procesu'@); return()
+               ||
+::                Element startowy wysyłam na stos uruchomionych elementów startowych
+                  _stos_ini.push(_ts,.bi_prel);
+                  B_PROC.cntx_psh();
+                  B_PREL.cntx_psh();
+                  BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+                  BI_PREL.index('UID'); BI_PREL.prefix();
+                  {? BI_PREL.seek(.bi_prel)
+                  || .b_prel:=BI_PREL.B_PREL;
+                     .b_proc:=BI_PREL.B_PREL().B_PROC;
+                     .micro:={? B_PREL.B_PROC().MICRO='T' || 1 || 0 ?}
+                  ?};
+                  B_PROC.cntx_pop();
+                  BI_PREL.cntx_pop();
+                  B_PREL.cntx_pop();
+
+                  {? .micro & type_of(.portsIn[1])<>type_of(~~)
+::                zapisanie parametrow wejsciowych dla czynnosci w micro procesie
+                  || _len:=obj_len(.portsIn);
+                     _save:=0;
+                     _ii:=1;
+                     {!
+                     |? _ii<=_len & _save=0
+                     |!
+                        {? .buf_prel.B_ELE=.portsIn[_ii].B_ELE
+                        || _save:=.save(.bi_prel,.portsIn[_ii].PORTS)=1
+                        ?};
+                        _ii+=1
+                     !}
+                  |? type_of(.portsIn[1])<>type_of(~~)
+::                zapisanie parametrow wejsciowych i wyjściowych dla zdarzenia startowego
+                  ||  _len:=obj_len(.portsIn);
+                     _ii:=1;
+                     {!
+                     |? _ii<=_len
+                     |!
+                        exec('copyPorts','#bi_port',.bi_prel,.portsIn[_ii].B_ELE,'IN');
+                        .save(.bi_prel,.portsIn[_ii].PORTS);
+                        exec('copyPorts','#bi_port',.bi_prel,null(),'OUT',,.portsIn[_ii].B_ELE);
+                        .save(.bi_prel,.portsIn[_ii].PORTS,'OUT');
+                        _ii+=1
+                     !}
+                  ?};
+                  _class:=.buf_prel.CLASS;
+                  {? _class='B_ACTION'
+                  ||
+::                   Tworzę zapisy na TODO dla pierwszego elementu
+                     _users:=exec('usersAction','#b_desktop',.bi_prel,,OPERATOR.USER);
+                     {? _users.size()>0
+                     || exec('create','#bi_todo',.bi_prel,.desctodo,,_users)
+                     || exec('no_access_msg','#bi_prel',.user,.bi_prel)
+                     ?};
+::                   exec('create','#bi_todo',.bi_prel,.desctodo);
+                     ~~
+                  ?}
+               ?};
+
+::             Zabezpieczenie przed przepełnieniem się tabel
+               {? BPMN.MAX_INS>0
+               || BI_PROC.cntx_psh();
+                  BI_PROC.index('PROBORN');
+                  BI_PROC.prefix(.buf_prel.B_PROC);
+                  _size:=BI_PROC.size();
+                  BI_PROC.cntx_pop();
+                  {? _size=BPMN.MAX_INS
+                  || _can_continue:=0;
+
+                     BI_PROC.cntx_psh(); BI_PROC.prefix();
+                     {? BI_PROC.seek(.bi_proc)
+                     ||
+::                      Stempluję czasy, żeby łatwiej odnaleźć w oknie z instancjami
+                        BI_PROC.START:=BI_PROC.tm_stamp();
+                        BI_PROC.START_D:=date();
+                        BI_PROC.START_T:=time();
+                        BI_PROC.put()
+                     ?};
+                     BI_PROC.cntx_pop();
+                     .err_txt:='Przekroczono maksymalną dostępną liczbę instancji procesów: %1'@[$BPMN.MAX_INS];
+                     .coreError()
+                  ?};
+                  ~~
+               ?};
+
+               {? _can_continue>0
+               ||
+::                dodanie instancji pierwszego elementu do kolejki menadzera procesu
+                  _buffer:=exec('buffer','#bi_queue');
+                  _buffer.BI_PREL:=.bi_prel;
+                  _buffer.TM_STAMP:=FIRMA.tm_stamp();
+                  _buffer.SES_ID:=FIRMA.ses_id();
+                  _buffer.TCID:='';
+                  _buffer.WIN_ACT:=.akcjaOkna;
+                  _buffer.ALERT:='N';
+                  _buffer.UID:=.uid;
+                  {? ~exec('add','#bi_queue',_buffer) || FUN.error('Błąd dodania instancji elementu do kolejki.'@) ?}
+               ?}
+            ?};
+            ~~
+            ",type_of(null()),type_of('str'),type_of(obj_new('obj'))),
+
+      obj_meth('runBiPrel','Uruchamia element instancji procesu';"
+::          _a - BI_PREL.ref()
+::          _b - akcja okna
+            .bi_prel:=_a;
+            .akcjaOkna:=_b;
+
+            BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+            BI_PREL.index('UID'); BI_PREL.prefix();
+            B_PREL.cntx_psh();
+            B_PREL.prefix();
+            B_PROC.cntx_psh();
+
+            _class:='';
+
+            {? BI_PREL.seek(.bi_prel)
+            ||
+               .bi_proc:=BI_PREL.BI_PROC;
+               .b_prel:=BI_PREL.B_PREL;
+               .b_proc:=BI_PREL.B_PREL().B_PROC;
+               BI_PREL.B_PREL().B_PROC();
+               .micro:={? B_PREL.B_PROC & B_PROC.MICRO='T' || 1 || 0 ?};
+               .automat:=exec('isAuto','#bi_todo',.bi_prel,.user);
+               _tr_mode:='';
+               {? B_PREL.B_PROC || _tr_mode:=B_PROC.TR_MODE ?};
+               {? .bi_prel=null() | .bi_proc=null() | .b_prel=null() | .b_proc=null()
+               || BI_PREL.cntx_pop();
+                  B_PREL.cntx_pop();
+                  B_PROC.cntx_pop();
+                  return()
+               ?};
+               .buf_prel.cntx_get(.b_prel);
+               .buf_bip.cntx_get(.bi_prel);
+
+::             Ustawiam czas pierwszego uruchomienia dla elementu procesu jeśli jeszcze nie nawinięty
+               {? .buf_bip.START=0
+               ||
+                  {? .buf_prel.TR_MODE='P'
+                  ||
+::                   BI_PREL.START:=
+                     .buf_bip.START:=BI_PREL.tm_stamp();
+                     .buf_bip.PL_END:=exec('get_pl_end','#bi_prel',.bi_prel,.buf_bip.START);
+::                   Zadaniom na listach TODO ustawiam termin realizacji
+                     BI_TODO.cntx_psh(); {? BI_TODO.name()='' || BI_TODO.use('bi_t____') ?};
+                     BI_TODO.index('UNIQUE');
+                     BI_TODO.prefix(.bi_prel);
+                     {? BI_TODO.first()
+                     || {!
+                        |? {? .buf_bip.DEADLINE>0
+                           || BI_TODO.DEADLINE:=exec('to_string','#tm_stamp',.buf_bip.DEADLINE)
+                           |? .buf_bip.PL_END>0
+                           || BI_TODO.DEADLINE:=exec('to_string','#tm_stamp',.buf_bip.PL_END)
+                           || BI_TODO.DEADLINE:=''
+                           ?};
+                           BI_TODO.put();
+                           BI_TODO.next()
+                        !}
+                     ?};
+                     BI_TODO.cntx_pop();
+                     exec('put','#bi_prel',.buf_bip)
+                  || BI_PREL.START:=BI_PREL.tm_stamp();
+                     BI_PREL.put()
+                  ?}
+               ?};
+
+               _class:=.buf_prel.CLASS;
+
+               {? _class='B_ACTION'
+               ||
+::                Jeśli uruchamiana jest czynność a proces nie ma jeszcze czasu uruchomienia
+::                to stempluje go obecnym czasem, w ten sposób proces dostanie czas startu
+::                jako czas uruchomienia pierwszej czynności
+::                BI_PROC.START:=
+::                BI_PROC.PL_END:=
+                  {? BI_PREL.BI_PROC<>null()
+                  || BI_PREL.BI_PROC();
+                     {? BI_PROC.START=0
+                     || BI_PROC.START:=B_PROC.tm_stamp();
+                        {? _tr_mode='P'
+                        || BI_PROC.PL_END:=exec('get_pl_end','#bi_proc',.bi_proc,BI_PROC.START)
+                        ?};
+                        BI_PROC.prefix();
+                        BI_PROC.put()
+                     ?}
+                  ?}
+               ?}
+            ?};
+            BI_PREL.cntx_pop();
+            B_PREL.cntx_pop();
+            B_PROC.cntx_pop();
+
+            {? _class='B_EVENT'  || .runEvent()
+            |? _class='B_ACTION' || .runAction()
+            |? _class='B_GATE'   || .runGate()
+            ?}
+            ",type_of(null()),type_of('str'),-1),
+
+      obj_meth('loop','zwraca numer pętli w przypadku wywołania wielokrotnego';"
+            _result:=.buf_bip.LOOP_NUM;
+            _result
+            "),
+
+      obj_meth('loop_continue','ustawia parametr wyjściowy LOOP';"
+            .save('OUT','LOOP','T')
+            "),
+      obj_meth('loop_todo','włącza/wyłącza dla zadań typu pętla obsługę TODO';"
+           _result:=0;
+           _on:=_a;
+            B_PREL.cntx_psh();
+            BI_PREL.cntx_psh(); BI_PREL.prefix();
+            {? BI_PREL.seek(.bi_prel)
+            || {? BI_PREL.B_PREL().LOOP='T'
+               || {? _on>0
+                  || BI_PREL.LOOPTODO:='T'
+                  || BI_PREL.LOOPTODO:='N'
+                  ?};
+                  _result:=BI_PREL.put()
+               ?}
+            ?};
+            BI_PREL.cntx_pop();
+            B_PREL.cntx_pop();
+            _result
+            ",type_of(0)),
+
+      obj_meth('gate_state','zwraca informacje o bramie';"
+            _Tab:=tab_tmp(1
+               ,'B_CONN'   ,'STRING[16]'  ,'$B_CONN.ref() - połączenie'
+               ,'FROM'     ,'STRING[16]'  ,'$B_PREL.ref() - skąd połączenie'
+               ,'COUNT'    ,'INTEGER'     ,'Ilość przebiegów dla połączenia');
+            {? exec('is_gate_prel','#b_gate',.b_prel,exec('type_complex','#b_gate'),exec('kind_merge','#b_gate'))
+            ||
+               B_CONN.cntx_psh();
+               B_CONN.index('TO');
+               B_CONN.prefix(.b_proc,.b_prel);
+               _loop:=B_CONN.first();
+               {!
+               |? _loop
+               |!
+                  BI_CONN.cntx_psh(); {? BI_CONN.name()='' || BI_CONN.use('bi_c____') ?};
+                  BI_CONN.index('B_CONN');
+                  BI_CONN.prefix(B_CONN.ref(),.bi_prel);
+                  _count:=0;
+                  _loop:=BI_CONN.first();
+                  {!
+                  |? _loop
+                  |!
+                     _count+=1;
+                     _loop:=BI_CONN.next()
+                  !};
+                  BI_CONN.cntx_pop();
+                  _Tab.B_CONN:=$B_CONN.ref();
+                  _Tab.FROM:=$B_CONN.FROM;
+                  _Tab.COUNT:=_count;
+                  _Tab.add();
+                  _loop:=B_CONN.next()
+               !};
+               B_CONN.cntx_pop()
+            ?};
+            _Tab
+            "),
+
+      obj_meth('chk_par','Metoda pomocnicza - sprawdza czy jest dostępny parametr o podanym identyfikatorze';"
+            _par:=.load(_b);
+            {? var_pres('_par')=0 | var_pres(_a,_par)=-1
+            || _txt:='Błędne wywołanie metody menadżera procesów — odwołanie do nie istniejącego parametru %1.'@[_a];
+               {? .isGroup()
+               || KOMM.add(_txt,7)
+               || FUN.emsg(_txt)
+               ?};
+               0
+            || 1
+            ?}
+            ",type_of(''),type_of('')),
+
+      obj_meth('bl_add','Dodaje załącznik. Parametry: nazwa parametru, typ, alias tabeli, akronim pola, ref rekordu tabeli, opis załącznika';"
+            _result:=0;
+            _desc:='';
+            {? var_pres('_f')=type_of('')
+            || _desc:=_f
+            ?};
+            {? .chk_par(_a,_b)
+            || _c.cntx_psh();
+               _c.prefix();
+               {? _c.seek(_e)
+               || .BLOBS.cntx_psh();
+                  .BLOBS.prefix();
+                  .BLOBS.PARAM:=_a;
+                  .BLOBS.TYP:=_b;
+                  .BLOBS.BLOB:=($('_a.'+_d))(_c);
+                  _result:=.BLOBS.add();
+                  {? _result>0 & _desc<>''
+                  || .BLOBS.memo_set(_desc,'DESC');
+                     _result:=.BLOBS.memo_put(,'DESC')
+                  ?};
+                  .BLOBS.cntx_pop()
+               ?};
+               _c.cntx_pop()
+            ?};
+            _result
+            ",type_of(''),type_of(''),118,type_of(''),type_of(null())),
+
+      obj_meth('bl_add','Dodaje załącznik. Parametry: nazwa parametru, typ, złączenie do BLOBa, sprawdź parametr, opis załącznika';"
+            _chk:=_d;
+            _result:=0;
+            _desc:='';
+            {? var_pres('_e')=type_of('')
+            || _desc:=_e
+            ?};
+            {? _chk=0 | .chk_par(_a,_b)
+            || .BLOBS.cntx_psh();
+               .BLOBS.prefix();
+               .BLOBS.PARAM:=_a;
+               .BLOBS.TYP:=_b;
+               .BLOBS.BLOB:=_c;
+               _result:=.BLOBS.add();
+               {? _result>0 & _desc<>''
+               || .BLOBS.memo_set(_desc,'DESC');
+                  _result:=.BLOBS.memo_put(,'DESC')
+               ?};
+               .BLOBS.cntx_pop()
+            ?};
+            _result
+            ",type_of(''),type_of(''),type_of(null()),type_of(0)),
+
+      obj_meth('bl_add','Dodaje załącznik. Parametry: nazwa parametru, typ, złączenie do BLOBa, opis załącznika';"
+            _desc:='';
+            {? var_pres('_d')=type_of('')
+            || _desc:=_d
+            ?};
+            .bl_add(_a,_b,_c,1,_desc)
+            ",type_of(''),type_of(''),type_of(null())),
+
+      obj_meth('bl_add','Dodaje załącznik. Parametry: nazwa parametru, typ, nazwa pliku, opis załącznika';"
+            _desc:='';
+            {? var_pres('_d')=type_of('')
+            || _desc:=_d
+            ?};
+            .bl_add(_a,_b,_c,0,_desc)
+            ",type_of(''),type_of(''),type_of('')),
+
+      obj_meth('bl_add','Dodaje załącznik. Parametry: nazwa parametru, typ, nazwa pliku, pth, opis załącznika';"
+            _result:=0;
+            _desc:='';
+            {? var_pres('_e')=type_of('')
+            || _desc:=_e
+            ?};
+            {? .chk_par(_a,_b)
+            || .BLOBS.cntx_psh();
+               .BLOBS.prefix();
+               .BLOBS.PARAM:=_a;
+               .BLOBS.TYP:=_b;
+               {? .BLOBS.add()
+               || _result:=.BLOBS.bl_put('BLOB',_c,_d);
+                  {? _result=0 || .BLOBS.del() ?};
+                  {? _result>0 & _desc<>''
+                  || .BLOBS.memo_set(_desc,'DESC');
+                     _result:=.BLOBS.memo_put(,'DESC')
+                  ?}
+               ?};
+               .BLOBS.cntx_pop()
+            ?};
+            _result
+            ",type_of(''),type_of(''),type_of(''),type_of(0)),
+
+      obj_meth('bl_add','Dodaje załącznik. Parametry: złączenie do BLOBa (użycie tylko w czynności ręcznej)';"
+            _result:=0;
+            .BLOBS.cntx_psh();
+            .BLOBS.prefix();
+            .BLOBS.memo_set('','DESC');
+            .BLOBS.PARAM:='OUT';
+            .BLOBS.TYP:=exec('kind_out','#b_port');
+            .BLOBS.BLOB:=_a;
+            _result:=.BLOBS.add();
+            .BLOBS.cntx_pop();
+            _result
+            ",type_of(null()),-1),
+
+      obj_meth('bl_add',"
+            _txt:='Błędne parametry wywołania metody %1 menadżera procesów.'@['bl_add()'];
+            {? .isGroup()
+            || KOMM.add(_txt,7)
+            || FUN.emsg(_txt)
+            ?};
+            0
+            "),
+
+      obj_meth('bl_get','Zwraca tabelę tymczasową z polem BLOBRAW zawierającą załączniki (parametr: BI_BLOB.ref())';"
+            _tab:=tab_tmp(1,'IDADD','IDADD','ID'
+                           ,'BLOB','BLOBRAW','Załącznik'
+                           ,'DESC','SYS_MEMO','Opis załącznika');
+            BI_BLOP.cntx_psh();
+            BI_BLOP.index('BI_BLOB');
+            BI_BLOP.prefix(_a);
+            {? BI_BLOP.first()
+            ||  {!
+                |? _tab.BLOB:=BI_BLOP.BLOB;
+                   {? _tab.add()
+                   || _txt:=BI_BLOP.memo_txt(,1,'DESC');
+                      _tab.memo_set(_txt,'DESC');
+                      _tab.memo_put(,'DESC')
+                   ?};
+                   BI_BLOP.next()
+                !}
+            ?};
+            BI_BLOP.cntx_pop();
+            _tab
+            ",type_of(null()),-1),
+
+      obj_meth('bl_get','Zwraca tabelę tymczasową z polem BLOBRAW zawierającą załączniki (parametr: nazwa parametru,typ)';"
+            {? .chk_par(_a,_b)
+            || _par:=.load(_b);
+               {? var_pres(_a,_par)=type_of(null())
+               || _ref:=($('_a.'+_a))(_par);
+                  .bl_get(_ref)
+               |? var_pres(_a,_par)=type_of(~~)
+               || _txt:='Błędne wywołanie metody menadżera procesów — pusta wartość parametru %1.'@[_a];
+                  {? .isGroup()
+                  || KOMM.add(_txt,7)
+                  || FUN.emsg(_txt)
+                  ?};
+                  .bl_get(null())
+               ?}
+            || .bl_get(null())
+            ?}
+            ",type_of(''),type_of(''),-1),
+
+      obj_meth('bl_get','Zwraca tabelę tymczasową z polem BLOBRAW zawierającą załączniki (parametr: nazwa parametru)';"
+            .bl_get(_a,exec('kind_in','#b_port'))
+            ",type_of(''),-1),
+
+      obj_meth('bl_get',"
+            _txt:='Błędne parametry wywołania metody %1 menadżera procesów.'@['bl_get()'];
+            {? .isGroup()
+            || KOMM.add(_txt,7)
+            || FUN.emsg(_txt)
+            ?};
+            .bl_get(null())
+            "),
+
+      obj_meth('set_deadline',"
+            _par:=obj_new(1); _par[1]:=_a;
+            exec('FindAndGet','#table',BI_PREL,.bi_prel,,
+               \" BI_PREL.DEADLINE:=_b[1];
+                  BI_PREL.put();
+                  BI_TODO.cntx_psh();
+                  BI_TODO.index('UNIQUE');
+                  BI_TODO.prefix(ref());
+                  {? BI_TODO.first()
+                  || {!
+                     |? {? BI_PREL.DEADLINE>0
+                        || BI_TODO.DEADLINE:=exec('to_string','#tm_stamp',BI_PREL.DEADLINE)
+                        |? BI_PREL.PL_END>0
+                        || BI_TODO.DEADLINE:=exec('to_string','#tm_stamp',BI_PREL.PL_END)
+                        || BI_TODO.DEADLINE:=''
+                        ?};
+                        BI_TODO.put();
+                        BI_TODO.next()
+                     !}
+                  ?};
+                  BI_TODO.cntx_pop();
+                  ~~
+               \",~~,_par
+            )
+            ",type_of(0),-1),
+
+      obj_meth('set_deadline',"
+            .set_deadline(_a,time(0,0,0))
+            ",type_of(date()),-1),
+
+      obj_meth('set_deadline',"
+            _deadline:=tm_stamp(_a~1,_a~2,_a~3,_b~1,_b~2,_b~3);
+            .set_deadline(_deadline)
+            ",type_of(date()),type_of(time()),-1),
+
+      )
+
+?};
+{? __develop
+|| @.Class.setclass('cProMan',_cl_name)
+?};
+~~
+
+
+\findAction4Ele
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Formuła wyszukująca akcję na podstawie elementu
+::   WE: _a - [REFERENCE] - wskazanie na element
+::   WY: tablica nazwana _buffer dla B_ACTION
+::----------------------------------------------------------------------------------------------------------------------
+_b_ele:={? var_pres('_a')=type_of(null) || _a || return(~~) ?};
+_buffer:=exec('buffer','#b_action');
+B_ACTION.cntx_psh();
+B_ACTION.index('B_ELE');
+B_ACTION.prefix(_b_ele);
+{? B_ACTION.first()
+|| _buffer.get()
+?};
+B_ACTION.cntx_pop();
+_buffer
+
+
+\runAction
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Formuła uruchamiająca akcję
+::----------------------------------------------------------------------------------------------------------------------
+_ope:=exec('operatorUser','#users');
+_b_prel:=null();
+
+B_PREL.cntx_psh();
+B_PREL.index('MICRO');
+B_PREL.prefix('T',B_ACTION.B_ELE);
+{? B_PREL.first()
+|| B_USRROL.cntx_psh();
+   B_USRROL.index('UNIK');
+   B_ACTROL.cntx_psh();
+   B_ACTROL.index('ACTION');
+   B_ACTROL.prefix(B_ACTION.ref());
+   _loop:=B_ACTROL.first();
+   {!
+   |? _loop
+   |!
+      B_USRROL.prefix(REF.FIRMA,B_ACTROL.B_ROLE,_ope);
+      _loop:=
+         {? B_USRROL.first()
+         || _b_prel:=B_PREL.ref();
+            0
+         || B_ACTROL.next()
+         ?}
+   !};
+   B_ACTROL.cntx_pop();
+   B_USRROL.cntx_pop()
+?};
+B_PREL.cntx_pop();
+
+_type:=B_ACTION.USER='T';
+_lic:=exec('lic','#b_action',B_ACTION.ref());
+
+{? _type & _b_prel & _lic
+|| exec('proMan','#b_proman',_b_prel,'',,'Proc')
+|| {? _type=0
+   || FUN.info('Uruchamiać można tylko czynności użytkownika.'@)
+   |? _lic=0
+   || FUN.info('Brak licencji dla czynności.'@)
+   |? _b_prel=0
+   || FUN.info('Brak uprawnień do uruchomienia czynności.'@)
+   ?}
+?}
+
+
+\isFirstInProces
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Funkcja sprawdzająca czy element procesu jest elementem startowym w wybranym procesie
+::   WE: _a - [REFERENCE] - wskazanie na element B_PREL
+::   WY: 0 lub 1
+::----------------------------------------------------------------------------------------------------------------------
+_b_prel:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+
+_res:=0;
+
+B_PREL.cntx_psh();
+B_PREL.clear();
+
+{? B_PREL.seek(_b_prel)
+|| {? B_PREL.B_PROC().MICRO='T'
+   || _res:=1
+   |? B_PREL.START='T'
+   || _res:=1
+   ?}
+?};
+
+B_PREL.cntx_pop();
+_res
+
+
+\canEndBiProc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Funkcja sprawdzająca czy można zakończyć instację procesu
+::   WE: _a - [REFERENCE]  - wskazanie na instancję procesu BI_PROC
+::   WY: 0 lub 1
+::----------------------------------------------------------------------------------------------------------------------
+_bi_proc:={? var_pres('_a')=type_of(null) || _a || return(0) ?};
+_res:=1;
+
+BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+BI_PREL.index('BISTATUS');
+_ii:=0;
+_loop:=1;
+{!
+|? _loop
+|!
+   _ii+=1;
+   _stat:=
+      {? _ii=1 || __Status.OCZEKUJACA
+      |? _ii=2 || __Status.URUCHOMIONA
+      |? _ii=3 || __Status.BLAD
+      |? _ii=4 || __Status.FL_KEEP
+      |? _ii=5 || __Status.FL_DONE
+      |? _ii=6 || __Status.FL_CANCEL
+      |? _ii=7 || __Status.FL_ERROR
+      |? _ii=8 || __Status.ZAWIESZONA
+      ?};
+   BI_PREL.prefix(_bi_proc,_stat);
+   _res:=~BI_PREL.first();
+   _loop:=_ii<9 & _res
+!};
+
+BI_PREL.cntx_pop();
+_res
+
+
+\descTODO
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła uruchamiająca akcję na podstawie instancji elementu
+::   WE: _a - BI_PREL.ref
+::       _b - STRING - opis
+::       _c - STRING - znacznik aktualizacji zadania
+::       [_d] - INTEGER - priorytet rekordu
+::       [_e] - INTEGER - [0]/1 czy wywołanie rekurencyjne
+::       [_f] - INTEGER - wartość parametru no_msg dla funkcji r_lock
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_can_continue:=1;
+
+_err:=0;
+ _bi_prel:={? var_pres('_a')=type_of(null()) || _a || _can_continue:=0 ?};
+    _desc:={? var_pres('_b')=type_of('')     || _b || _can_continue:=0 ?};
+_descTodo:={? var_pres('_c')=type_of('')     || _c || _can_continue:=0 ?};
+_priority:=0;
+{? var_pres('_d')=type_of(0)
+|| _priority:=_d
+?};
+
+_rec:=0;
+{? var_pres('_e')=type_of(0)
+|| _rec:=_e
+?};
+_r_no_msg:=1;
+{? var_pres('_f')=type_of(0)
+|| _r_no_msg:=_f
+?};
+
+{? _can_continue>0
+|| BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+   BI_PREL.index('UID'); BI_PREL.clear();
+   {? BI_PREL.seek(_bi_prel)
+   || {? BI_PREL.r_lock(1,_r_no_msg,1)
+      || {? _descTodo='N' & (BI_PREL.DESC<>_desc | BI_PREL.DESCTODO='T' | 1+BI_PREL.DESCTODO='_')
+         || _desc_org:=BI_PREL.DESC_ORG+BI_PREL.DESC1ORG;
+            _desc_tra:=translate(_desc,1);
+            {? _desc<>_desc_tra
+            || BI_PREL.DESC_ORG:=255+_desc;
+               BI_PREL.DESC1ORG:=255-_desc
+            || BI_PREL.DESC_ORG:=exec('descProcPrel','#b_proman',BI_PREL.ref());
+               BI_PREL.DESC1ORG:=''
+            ?};
+            BI_PREL.DESC:=translate(BI_PREL.DESC_ORG+BI_PREL.DESC1ORG,1);
+            BI_PREL.TM_DUPD:=BI_PREL.tm_stamp();
+            BI_PREL.DESCTODO:='N';
+            BI_PREL.PRIOR_R:=_priority;
+            _can_continue:=BI_PREL.put(1)
+         |? _descTodo='T' & BI_PREL.DESCTODO<>'T'
+         || BI_PREL.DESCTODO:='T';
+            BI_PREL.PRIOR_R:=_priority;
+            _can_continue:=BI_PREL.put()
+         |? _descTodo='O'
+         || BI_PREL.DESCTODO:='_'+SYSLOG.ses_id();
+            BI_PREL.PRIOR_R:=_priority;
+            _can_continue:=BI_PREL.put()
+         |? _priority<>BI_PREL.PRIOR_R
+         || BI_PREL.PRIOR_R:=_priority;
+            _can_continue:=BI_PREL.put()
+         ?};
+         BI_PREL.r_unlock()
+      || _can_continue:=0;
+         {? _rec=0
+         || _repeat:=1;
+            _delay:=exec('delay','#b_proman');
+            _repeat_num:=exec('repeat','#b_proman');
+            {? _repeat_num>0
+            ||
+               {! _it:=1.._repeat_num
+               |? _repeat>0
+               |! {? _delay>0
+                  || delay(,_delay)
+                  ?};
+                  _rec_no_msg:=1;
+                  {? _it=_repeat_num
+                  || _rec_no_msg:=0
+                  ?};
+::                !!! REKURENCJA !!!
+                  {? exec('descTODO','#b_proman',_bi_prel,_desc,_descTodo,_priority,1,_rec_no_msg)>0
+                  || _repeat:=0
+                  ?}
+               !};
+               {? _repeat>0
+               || _can_continue:=0;
+                  _msg:='Błąd krytyczny Menedżera Procesów: aktualizacja opisu TODO nie powiodła się.'@;
+::                  FUN.emsg(_msg);
+::                  msg(_msg);
+                  ~~
+               || _can_continue:=1
+               ?}
+            ?}
+         ?}
+      ?}
+   ?};
+   BI_PREL.cntx_pop()
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\descProcPrel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: zwraca opis czynnosci na podstawie BI_PREL-a
+::   WE: _a    - BI_PREL.ref
+::   WY: opis czynnosci
+::--------------------------------------------------------------------------------------------------------------------
+_err:=0;
+_desc:='';
+_bi_prel:={? var_pres('_a')=type_of(null()) || _a || _err:=1 ?};
+
+{? ~_err
+||
+   BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+   BI_PREL.index('UID'); BI_PREL.prefix();
+   B_PREL.cntx_psh();
+   B_PROC.cntx_psh();
+   {? BI_PREL.seek(_bi_prel)
+   || _desc:=BI_PREL.B_PREL().B_PROC().NAME+' - '+B_PREL.SYMBOL
+   ?};
+   B_PROC.cntx_pop();
+   B_PREL.cntx_pop();
+   BI_PREL.cntx_pop()
+?};
+_desc
+
+
+\proenv
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Jesli nie ma to deklaruje srodowisko pracy Menadzera Procesow, jesli jest to nie deklaruje tylko zwraca
+::   WY: obj_new() - tablica nazwana - srodowisko menadzera
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__proenv')<0
+||
+:: UWAGA: _fld, i _mth to formulki pomocnicze, zeby wygodniej tworzyc tablice i komentowac poszczegolne jej elementy
+:: powiedzmy, ze to bedzie pole
+   _fld:="31+form(_a)";
+:: powiedzmy, ze to bedzie metoda
+   _mth:="31+form(_a)";
+   exec('cPmStos','#b_proman');
+   _cl_stos:=@.CLASS.cPmStos;
+
+:: Tworze obiekt srodowiska, poniewaz jeszcze nie zadeklarowany
+   __proenv:=obj_new( _fld('STOS_INI' ,'Stos uruchomionych B_PRELi startowych (inicjujących proces)')
+      ,_fld('STOS_ALL'     ,'Stos uruchomionych czynności (wszystkich)')
+      ,_fld('DOM_INITS'    ,'Tabela tymczasowa zawierająca symbole wszystkich uruchomionych initów obszarowych')
+      ,_fld('DOM_LIC'      ,'Tabela tymczasowa zawierająca licencjonowane obszary')
+      ,_fld('NDX_LIC'      ,'indeks tabeli tymczasowej DOM_LIC')
+      );
+:: Powoluje obiekty stosów
+   __proenv.STOS_INI:=obj_new(_cl_stos);
+   __proenv.STOS_ALL:=obj_new(_cl_stos);
+
+:: Powoluje tablicę zapamiętującą jakie inity obszarowe już wykonałem, żeby nie robić ich ponownie
+   __proenv.DOM_INITS:=tab_tmp(1,
+      'SYMBOL','STRING[20]','Symbol wykonanego inita'
+   );
+
+:: Pobieram licencje na obszary
+   __proenv.DOM_LIC:=exec('domain_lic','#b_domain');
+   __proenv.NDX_LIC:=__proenv.DOM_LIC.ndx_tmp(,,'SYMBOL',,);
+   ~~
+?};
+__proenv
+
+
+\task_access
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła ustawiająca dostęp do czynności
+::       Kontekst wywołania: ustawiona firma (REF.FIRMA)
+::   WE: _a - tabela tymczasowa z polami: TASK (STRING[12]), ACCESS (INTEGER)
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+:: specjalna obsługa dla webTerma - formuła task_access jest wyjątkowa bo nie mamy jak ustawić przed jej wywołaniem
+:: środowiska pracy - stąd odczytujemy użytkownika z app_info i ustawiamy firmę przy każdym sprawdzaniu
+{? app_info('web_sesid')<>''
+|| exec('env_wt_core','#web_srv')
+?};
+
+{? _tab.first()
+|| {!
+   |? {? exec('lic','#b_domain',3+_tab.TASK) &
+         exec('chk_role','#b__box',OPERATOR.USER,_tab.TASK) &
+         exec('b_action_access','#b_action',_tab.TASK)
+      || _tab.ACCESS:=1;
+         _tab.put()
+      ?};
+      _tab.next()
+   !}
+?};
+~~
+
+
+\user_access_fml
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Uruchamia formułę sprawdzającą dostęp użytkownika do danych dla danej instancji elementu
+::   WE: _a - USERS.ref() - użytkownik dla którego wywołać formułę dostępu
+::       [_b] - BI_PREL.ref lub aktualny rekord
+::       [_c] - zastepowany użytkownik
+::       [_d] - Ścieżka uruchomienia czynności
+::       [_e] - obj_new - obiekt menadżera procesów
+::       [_f] - obj_new - tablica z parametrami wejściowymi
+::       [_g] - obj_new - tablica z parametrami wyjściowymi
+::   WY: 0 - brak dostępu
+::       1 - jest dostęp
+::  TAG: <PUBLICZNA><MODELER><PROCES><UŻYTKOWNIK><UPRAWNIENIA><CHK>
+::----------------------------------------------------------------------------------------------------------------------
+_user:=_a;
+
+_ref:=null();
+{? var_pres('_b')=type_of(SYSLOG.ref())
+|| _ref:=_b
+?};
+
+_user_r:=~~;
+{? var_pres('_c')=type_of(USERS.ref()) & _c<>_user
+|| _user_r:=_c
+?};
+
+_path:={? var_pres('_d')=type_of('') || _d || '' ?};
+
+_proMan:=~~;
+{? var_pres('_e')>100
+|| _proMan:=_e
+?};
+
+_portsIn:=~~;
+{? var_pres('_f')>100
+|| _portsIn:=_f
+?};
+
+_portsOut:=~~;
+{? var_pres('_g')>100
+|| _portsOut:=_g
+?};
+
+_result:=0;
+_can_continue:=1;
+
+BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?}; BI_PREL.index('UID');
+{? _ref<>null()
+|| BI_PREL.clear();
+   {? BI_PREL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   B_PREL.cntx_psh();
+   _b_action:=exec('FindInSet','#table','B_ACTION','B_ELE',BI_PREL.B_PREL().B_ELE);
+   {? ~Perm.hasPermissions(_b_action,0,0,_user)
+   || _result:=0
+   |? BI_PREL.B_PREL().FMACCESS<>''
+   ||
+      {? type_of(_proMan)=0
+      ||
+::       Inicjuje obiekt Menadżera Procesów
+         _class:={? __develop || @.Class.cProMan || @.CLASS.cProMan ?};
+         _proMan:=obj_new(_class);
+         _proMan.setCntx(BI_PREL.ref());
+         _proMan.Path:=_path
+      ?};
+      {? type_of(_portsIn)=0
+      ||
+::       Ustawienie parametrów wejściowych
+         _ports:=exec('getPorts','#b_port',BI_PREL.B_PREL().B_ELE,'IN',BI_PREL.B_PREL);
+         _portsIn:=exec('fillPorts','#bi_port',BI_PREL.ref(),'IN',_ports)
+      ?};
+
+      {? type_of(_portsOut)=0
+      ||
+::       Ustawienie parametrów wyjściowych
+         {? var_pres('_ports')>0 || obj_del(_ports) ?};
+         _ports:=exec('getPorts','#b_port',BI_PREL.B_PREL().B_ELE,'OUT',BI_PREL.B_PREL);
+         _portsOut:=exec('fillPorts','#bi_port',BI_PREL.ref(),'OUT',_ports)
+      ?};
+
+      params_set('in',_portsIn,'user',_user,'mp',_proMan,'user_r',_user_r,'out',_portsOut);
+
+::    Uruchomienie formuły
+      _fml:='params_set(params_get());'+BI_PREL.B_PREL().FMACCESS;
+      _res:=($_fml)();
+
+      {? type_of(_res)=type_of(0)
+      || _result:=_res
+      ?}
+   || _result:=1
+   ?};
+   B_PREL.cntx_pop();
+   ~~
+?};
+BI_PREL.cntx_pop();
+_result
+
+
+\after_start
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Sprawdza, czy element instancji procesu (brama zbierająca) znajduje się za elementem startowym w procesie.
+::   WE: _a - BI_PREL.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_bi_prel:=_a;
+
+_result:=0;
+
+_b_prel:=exec('FindAndGet','#table',BI_PREL,_bi_prel,,"B_PREL",null());
+:: Wystarczy, że jest to brama XOR_EVENT, występowanie po zdarzeniu startowym sprawdzane jest na etapie modelowania
+{? exec('is_gate_prel','#b_gate',_b_prel,exec('type_xor_event','#b_gate'))
+|| _result:=1
+?};
+
+_result
+
+
+\web_main_run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Funkcja uruchamiająca web_main czynności w obszarze po wyborze procesu z listy pod webterm
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+B_TAB_WT.web_close();
+
+_get:=web_params_get();
+_get.B_PREL:=B_TAB_WT.REF_PREL;
+web_params_set(_get);
+exec('env_wt_core','#web_srv');
+
+_fml:='!'+(-_get.ACT_UID);
+{? exec('lic','#b_action',_get.ACT_UID)>0
+|| exec('web_main',_fml,'Area')
+|| _txt:='Czynność: %1 — brak licencji.'@[_get.ACT_UID];
+   FUN.info(_txt);
+   ~~
+?}
+
+
+\log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Zapisuje dane do log'a
+::   WE: _a - tekst do zapisania
+::       _b - instrukcja
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_txt:={? var_pres('_a')=type_of('') || _a || '' ?};
+_ins:={? var_pres('_b')=type_of('') || _b || 'concatenate' ?};
+
+{? var_pres('__MP_LOG')<0 || __MP_LOG:='' ?};
+
+{? _ins='concatenate'
+|| __MP_LOG+=' >>> '+_txt
+|? _ins='clear'
+|| __MP_LOG:=_txt
+|? _ins='write'
+|| {? _txt<>'' || __MP_LOG+=' >>> '+_txt ?};
+   _log:=fopen('proman.log','a',1,0,1);
+   {? _log.is_open()
+   || fwrite(_log,__MP_LOG)
+   ?}
+?}
+
+
+\descTodoUpdate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Aktualizacja opisów zadań z zakresu _a
+::   WE: _a - zakres zadań do aktualizacji opisów
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+B_PREL.cntx_psh();
+BI_PREL.cntx_psh(); {? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+BI_PREL.index('DESCTODO');
+BI_PREL.prefix(_a);
+_loop:=BI_PREL.first();
+{!
+|? _loop
+|!
+   _bi_prel:=BI_PREL.ref();
+   _loop:=
+      {? BI_PREL.r_lock(1,1,1)
+      || {? exec('lock','#bi_prel',_bi_prel,0)>0
+         || BI_PREL.cntx_psh();
+            _next:={? BI_PREL.next() || BI_PREL.ref() || null() ?};
+            BI_PREL.cntx_pop();
+            {? BI_PREL.B_PREL().CLASS='B_ACTION'
+            || _desc:=exec('desc','#bi_todo',_bi_prel);
+               BI_PREL.r_unlock()
+            ?};
+            exec('unlock','#bi_prel',_bi_prel);
+            BI_PREL.seek(_next)
+         || BI_PREL.r_unlock();
+            BI_PREL.next()
+         ?}
+      || BI_PREL.next()
+      ?}
+!};
+BI_PREL.cntx_pop();
+B_PREL.cntx_pop()
+
+
+\maski
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.14]
+:: OPIS: Otwieranie masek tabel BI_...
+::----------------------------------------------------------------------------------------------------------------------
+{? BI_PREL.name()='' || BI_PREL.use('bi_e____') ?};
+{? BI_PORT.name()='' || BI_PORT.use('bi_o____') ?};
+{? BI_TODO.name()='' || BI_TODO.use('bi_t____') ?};
+{? BI_PROC.name()='' || BI_PROC.use('bi_p____') ?};
+{? BI_CONN.name()='' || BI_CONN.use('bi_c____') ?};
+{? BI_MSG.name()='' || BI_MSG.use('bi_m____') ?}
+
+
+\b_exec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [18.42]
+:: OPIS: _a - identyfikator formuły z definicji systemu
+::----------------------------------------------------------------------------------------------------------------------
+mb_exec(_a)
+
+
+\repeat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [22.26]
+:: OPIS: Zwraca ilość powtórzeń jakie robić w oczekiwaniu na odblokowanie się rekordu np BI_PREL
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? BPMN.REPEAT=-1
+|| BPMN.REPEAT:=exec('get','#params',100935,type_of(0))
+?};
+BPMN.REPEAT
+
+
+\delay
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [22.26]
+:: OPIS: Zwraca czas jaki czekać na odblokowanie się rekordu np BI_PREL
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? BPMN.DELAY=-1
+|| BPMN.DELAY:=exec('get','#params',100936,type_of(0))
+?};
+BPMN.DELAY
+
+
+\log_analiza
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [22.26]
+:: OPIS: Analiza log'a kolejki menadżera procesu
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_Dane:=tab_tmp(3
+   ,'KANAL','STRING[10]',
+   ,'SESJA','STRING[32]',
+   ,'MP_UID','STRING[15]',
+   ,'BI_QUEUE','STRING[48]',);
+_Files:=files('bi_queue*.log');
+_loop:=_Files.first();
+{!
+|? _loop
+|!
+   _fname_info:=spli_str(_Files.FILENAME,'_');
+   _file:=fopen(_Files.FILENAME,'Ur',,,1);
+   {? _file.is_open()
+   ||
+      {! |? (_txt:=fread(_file))<>'\n'
+      |!
+         _txt_info:=spli_str(_txt,'\t');
+         _Dane.KANAL:=_fname_info[3];
+         _Dane.SESJA:=_fname_info[4];
+         _Dane.MP_UID:=_txt_info[1];
+         _Dane.BI_QUEUE:=_txt_info[4];
+         _Dane.add();
+         obj_del(_txt_info)
+      !}
+   ?};
+   obj_del(_fname_info);
+   obj_del(_file);
+   _loop:=_Files.next()
+!};
+_Analiza:=sql($"
+   select
+      SESJA,
+      MP_UID,
+      BI_QUEUE,
+      COUNT(*) IL
+   from
+      :_a
+   group by
+      SESJA,
+      MP_UID,
+      BI_QUEUE
+",_Dane);
+_wer:=_Analiza.mk_sel(,,1,,,,,,'U');
+_Analiza.win_act(_wer,,'Kolejność');
+_Analiza.win_sel(_wer);
+_Analiza.select()
+
+
+\n_main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Uruchomienie wariantu nieprocesowego czynności procesowej
+::   WE: _a - UID czynności
+::       _b - parametry wejściowe
+::       _c - parametry kontekstowe
+::       _d - akcja w oknie
+::----------------------------------------------------------------------------------------------------------------------
+_type_of_array:=exec('type_of_array','#var');
+
+{? var_pres('_b')=_type_of_array & var_pres('[1]',_b)=_type_of_array & _b[1].UID=_a
+|| _in:=_b[1].PORTS
+|| _in:=~~
+?};
+
+{? var_pres('_c')=_type_of_array || _context:=_c || _context:=~~ ?};
+
+{? var_pres('_d')=type_of('') || _akcja:=_d || _akcja:='' ?};
+
+params_set('in',_in,'context',_context,'akcja',_akcja);
+exec('n_main','!%1'[-_a]);
+~~
+
+:Sign Version 2.0 jowisz:1045 2023/11/09 13:52:05 542e97c3369c92084cad2989fabfbbaf7955bbddcf1b29db856196555fd80cddb17c508969ce5d292cd8eb881bc18b7f1b58c16e3eafb179784d70ea9ff2a6cb167a1785f2956871b3a79e739df4a382bc4dfac633ffb8c832079ebb70deb0a6f1cc1975f78164437bafcdbf43ce1693866c7abdd1e1c7d434a3a3b24400e1aa

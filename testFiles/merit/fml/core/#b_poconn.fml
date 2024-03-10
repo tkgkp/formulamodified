@@ -1,0 +1,3995 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #b_poconn.fml
+:: Utworzony: 05.01.2015 [17.00]
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi tabeli B_POCONN (powiązania między portami procesów)
+::======================================================================================================================
+
+
+\buffer
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Tworzy bufor tabeli B_POCONN
+::   WY: obj_new() - tablica nazwana - reprezentacja rekordu B_POCONN
+::----------------------------------------------------------------------------------------------------------------------
+exec('B_POCONN','#buffer')
+
+
+\add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Dodaje do tabeli B_POCONN jeden rekord
+::   WE: _a - obj_new - tablica nazwana będąca buforem tabeli exec('buffer','#b_poconn')
+::   WY: B_POCONN.ref() lub null
+::----------------------------------------------------------------------------------------------------------------------
+_buffer:={? var_pres('_a')>100
+         || _a
+         || exec('buffer','#b_poconn')
+         ?};
+_result:=null();
+
+B_POCONN.cntx_psh();
+B_POCONN.index('UNIK');
+B_POCONN.clear();
+B_POCONN.blank();
+_buffer.set();
+{? B_POCONN.find_key(_buffer.B_CONN,_buffer.PREL_SRC,_buffer.PREL_DST,_buffer.FROM, _buffer.TO)
+|| _result:=B_POCONN.ref()
+|| {? B_POCONN.add()>0
+   || _result:=B_POCONN.ref()
+   ?}
+?};
+B_POCONN.cntx_pop();
+_result
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Kasuje podany rekord tabeli B_POCONN (wykonywane w transakcji!!!)
+::   WE: _a - B_POCONN.ref()
+::       [_b] - 0-nie usuwać dynamicznego parametru wejściowego, 1-usuwać dynamiczny parametr wejściowy
+::   WY: >0 -wyczyszczone,
+::      <=0 -niewyczyszczone
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystapić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_b')<>type_of(0) || _b:=1 ?};
+:: jeżeli transakcja została zerwana, to nie ma sensu przetwarzać formuły
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+VAR_DEL.delete('__b_proc','__prel_src','__prel_dst');
+_port_dst:=null();
+
+:: sprawdzam, czy to w tej formule będę zakładał transakcję, czy już jest założona
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+B_POCONN.cntx_psh(); B_POCONN.clear();
+{? B_POCONN.seek(_ref)
+||
+   _port_dst:=B_POCONN.TO;
+   __b_proc:=B_POCONN.B_PROC;
+   __prel_src:=B_POCONN.PREL_SRC;
+   __prel_dst:=B_POCONN.PREL_DST;
+   {? exec('clean','#b_poconn',_ref)>0
+   || {? B_POCONN.del(,1)>0
+      || _result:=1
+      || undo();
+         _result:=-3
+      ?}
+   || _result:=-2
+   ?}
+|| _result:=0
+?};
+B_POCONN.cntx_pop();
+{? _result<0
+|| undo()
+|| {? _b
+   ||
+::    Usunięcie dynamicznego parametru wejściowego
+      exec('FindAndGet','#table',B_PORT,$_port_dst,,"
+         @.B_PREL.cntx_psh(); B_SIGPRT.cntx_psh();
+         {? B_PORT.B_PREL & B_PORT.B_PREL().ISTDEF=null()
+         ||
+            {? ~exec('isConn','#b_prel',__prel_src,__prel_dst,null(),'',null(),null(),1)
+            ||
+               B_POCONN.cntx_psh();
+               B_POCONN.index('TO');
+               B_POCONN.prefix(B_PORT.ref(),__b_proc);
+               _loop:=B_POCONN.first();
+               {!
+               |? _loop
+::             Iteracja po połączeniach do parametru docelowego
+               |!
+::                Usunięcie połączenia
+                  exec('delete','#b_poconn',B_POCONN.ref());
+                  _loop:=B_POCONN.next()
+               !};
+               B_POCONN.cntx_pop()
+            ?};
+
+            B_SIGPRT.index('PRELTYP');
+            B_SIGPRT.prefix(B_PORT.B_PREL);
+
+            _deleted:=0;
+            _b_sigprt:=null();
+::          Przed usunięciem B_PORTa dynamicznego czyszczę powiązania na B_SIGPRT (spawarka, bo możliwość usunięcia
+::          B_PORTa jest sprawdzana niżej za pomocą count() co jest strasznie słabe)
+            {? B_SIGPRT.first()
+            || _b_sigprt:=B_SIGPRT.ref();
+               B_SIGPRT.B_PORT:=null();
+               B_SIGPRT.put()
+            ?};
+            {? B_PORT.count()=0
+            ||
+               {? B_PORT.del(1,1)
+               || _deleted:=1
+               ?}
+            || 0
+            ?};
+            {? _deleted=0
+            ||
+::             Z jakiś przyczyn nie udało się usunąć B_PORTa dynamicznego więc przywracam powiązanie na sygnale
+               B_SIGPRT.prefix();
+               {? B_SIGPRT.seek(_b_sigprt)
+               || B_SIGPRT.B_PORT:=B_PORT.ref();
+                  B_SIGPRT.put()
+               ?}
+            ?}
+         ?};
+         @.B_PREL.cntx_pop(); B_SIGPRT.cntx_pop()
+      ",0)
+   ?}
+?};
+VAR_DEL.delete('__b_proc','__prel_src','__prel_dst');
+
+{? _mydo || end() ?};
+_result
+
+
+\delete4port
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Kasuje powiązania międzyargumentowe dla przekazanego portu
+::   WE: _a - B_PORT.ref
+::       _b - B_PREL.ref
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <MODELER><PROCES><POWIĄZANIA><PARAMETR><DEL>
+::----------------------------------------------------------------------------------------------------------------------
+_b_port:=_a;
+_b_prel:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+B_PREL.cntx_psh();
+B_PORT.cntx_psh(); B_PORT.clear();
+B_POCONN.cntx_psh();
+{? B_PORT.seek(_b_port) & B_PREL.seek(_b_prel)
+||
+   B_POCONN.index('TO');
+   B_POCONN.prefix(B_PORT.ref(),B_PREL.B_PROC,B_PREL.ref());
+   {? B_POCONN.first()
+   || {!
+      |? _can_continue:=exec('delete','#b_poconn',B_POCONN.ref());
+         B_POCONN.first() & _can_continue>0
+      !}
+   ?};
+   {? _can_continue>0
+   ||
+      B_POCONN.index('FROM');
+      B_POCONN.prefix(B_PORT.ref(),B_PREL.B_PROC,B_PREL.ref());
+      {? B_POCONN.first()
+      || {!
+         |? _can_continue:=exec('delete','#b_poconn',B_POCONN.ref());
+            B_POCONN.first() & _can_continue>0
+         !}
+      ?}
+   ?}
+?};
+B_PREL.cntx_pop();
+B_POCONN.cntx_pop();
+B_PORT.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\delete4prel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.28]
+:: OPIS: Kasuje powiazania międzyargumentowe dla wszystkich połączeń wchodzących/wychodzących z
+::       podanego B_PRELa
+::   WE: [_a] - B_PREL.ref() - element procesu lub bieżący rekord
+::       [_b] - STRING - tryb: 'TO' - wchodzące, ['FROM'] - wychodzące
+::   WY:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(B_PREL.ref())
+|| _ref:=_a
+?};
+_mode:='FROM';
+{? var_pres('_b')=type_of('')
+|| _mode:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+B_PREL.cntx_psh();
+{? _ref<>null()
+|| B_PREL.prefix();
+   {? B_PREL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _num:=0;
+   B_POCONN.cntx_psh();
+   B_POCONN.index('B_CONN');
+   B_CONN.cntx_psh();
+:: Niejawne użycie indeksu B_CONN.index('FROM') oraz B_CONN.index('TO')
+   B_CONN.index(_mode);
+   B_CONN.prefix(B_PREL.B_PROC,B_PREL.ref());
+   {? B_CONN.first()
+   || {!
+      |? B_POCONN.prefix(B_CONN.ref());
+         {? B_POCONN.first()
+         || {!
+            |? _num+=1;
+               _next:=0;
+               _ref_nxt:=null();
+               B_POCONN.cntx_psh();
+               {? B_POCONN.next()
+               || _ref_nxt:=B_POCONN.ref()
+               ?};
+               B_POCONN.cntx_pop();
+
+               _can_continue:=exec('delete','#b_poconn',B_POCONN.ref());
+               {? _can_continue=0
+               || _what:=exec('B_POCONN','#to_string');
+                  KOMM.add('Nie udało się usunąć połączenia parametru: %1'@[_what],2,,1)
+               ?};
+               {? _ref_nxt<>null()
+               || _next:=B_POCONN.seek(_ref_nxt)
+               ?};
+               _next>0
+            !}
+         ?};
+         B_CONN.next()
+      !}
+   ?};
+   {? _num=0
+   || _can_continue:=0
+   ?};
+   B_CONN.cntx_pop();
+   B_POCONN.cntx_pop()
+?};
+B_PREL.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+:: UTW: WH [17.00]
+:: OPIS: Czysci powiazania do rekordu tabeli B_POCONN
+:: WE: _a - B_POCONN.ref()
+:: WY: >0 -wyczyszczone,
+:: <=0 -niewyczyszczone
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystapić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+:: --- powiązania do ---
+
+exec('route_delete4bpoconn','#b_proute',_ref);
+
+:: --- wszystkie powiazania usuniete? ---
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end()?};
+
+_result
+
+
+\env
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Środowisko obsługi wiązania portow
+::   WY: obj_new - tablica nazwana zawierajaca wszystko co potrzebne
+::----------------------------------------------------------------------------------------------------------------------
+
+::UWAGA: _fld, i _mth to formułki pomocnicze, zeby wygodniej tworzyć tablice i komentowac poszczegolne jej elementy
+::       powiedzmy, ze to bedzie pole
+         _fld:="8+form(_a)";
+::       powiedzmy, ze to bedzie metoda
+         _mth:="8+form(_a)";
+
+_env:=obj_new( _fld('PREL_SRC' ,'Element procesu źródłowy, jego porty wyjściowe będą ładowane')
+               ,_fld('PREL_DST','Element procesu docelowy, jego porty wejściowe będą ładowane')
+               ,_fld('B_PORT','Port do powiązania')
+               ,_fld('B_CONN'  ,'Połączenie dla ktorego będą tworzone B_POCONNy')
+               ,_fld('SEL_CONN','Zaznaczone pozwiazanie')
+               ,_fld('SEL_FROM','Zaznaczony port źródłowy')
+               ,_fld('SEL_TO'  ,'Zaznaczony port docelowy')
+               ,_fld('ACCEPTED','Czy okno zostalo poprawnie zaakceptowane')
+               ,_fld('EDITABLE','Czy mozliwe jest tworzenie powiazan, czy tylko podglad')
+               ,_fld('TO_USED' ,'Czy ładować porty wejsciowe, ktore mają już powiazania w procesie?')
+               ,_fld('DEVELOP' ,'Tryb developera')
+               ,_fld('REQ_TOP' ,'Ref elementu na samej gorze w tabeli .TAB_REQ')
+               ,_fld('CAN_ANUL','Czy akcja anuluj i krzyzyk pozwalaja zamknac okno')
+               ,_fld('CONTEXT' ,'Kontekst wywołania okna: 1 - tworzenie nowego połączenia, 2 - akcja powiazania Arg')
+               ,_fld('NR_ROOT','Numer root-a komunikatów')
+::             identyfikatory okienek
+               ,_fld('wid_main' ,'ID okienka glownego')
+               ,_fld('wid_conn' ,'ID okienka z polaczeniami')
+               ,_fld('wid_from' ,'ID okienka portow zrodlowych')
+               ,_fld('wid_to'   ,'ID okienka portow docelowych')
+               ,_fld('wid_ctr'  ,'ID okienka kontrolki')
+               ,_fld('wid_req'  ,'ID okienka wymaganych powiazan')
+               ,_fld('wid_nco'  ,'ID okienka zakazanych polaczen')
+
+               ,_fld('ctr_id'  ,'Nazwa kontrolki w oknie')
+               ,_fld('ctr_conn','ID przycisku tworzenia polaczen')
+
+::             tytuly okienek
+               ,_fld('tit_main' ,'Tytul okienka glownego')
+               ,_fld('tit_conn' ,'Tytul okienka z polaczeniami')
+               ,_fld('tit_from' ,'Tytul okienka portow zrodlowych')
+               ,_fld('tit_to'   ,'Tytul okienka portow docelowych')
+               ,_fld('tit_ctr'  ,'Tytul okienka z kontrolka')
+
+::             tabele tymczasowe
+               ,_fld('TAB_CONN' ,'Tabela tymczasowa zawierająca polaczenia')
+               ,_fld('TAB_FROM' ,'Tabela tymczasowa zawierająca porty zrodlowe')
+               ,_fld('TAB_TO'   ,'Tabela tymczasowa zawierająca porty docelowe')
+               ,_fld('TAB_NCO'  ,'Tabela tymczasowa zawierajaca zakazane B_CONNy')
+               ,_fld('TAB_REQ'  ,'Tabela tymczasowa wymagane powiazania dla portow docelowych')
+               ,_fld('TAB_DEL'  ,'Tabela tymczasowa polaczenia do usuniecia')
+
+
+::             indeksy tymczasowych tabel
+               ,_fld('IN_CONN1' ,'Indeks tabeli polaczen: REF_CONN')
+               ,_fld('IN_CONN2' ,'Indeks tabeli polaczen: ACCEPTED, EL_FROM')
+               ,_fld('IN_CONN3' ,'Indeks tabeli polaczen: REF_POT')
+               ,_fld('IN_CONN4' ,'Indeks tabeli polaczen: REF_POT','REF_PREF','REF_PRET')
+               ,_fld('IN_CONN5' ,'Indeks tabeli polaczen: EL_FROM','SYM_TYPF','EL_TO','SYM_TYPT')
+               ,_fld('IN_FROM1' ,'Indeks tabeli zrodel: SYM_ELEM')
+               ,_fld('IN_FROM2' ,'Indeks tabeli celow: REF_BELE')
+               ,_fld('IN_FROM3' ,'Indeks tabeli celow: REF_TYP')
+               ,_fld('IN_FROM4' ,'Indeks tabeli celow: REF_PREL,REF_PORT')
+               ,_fld('IN_FROM5' ,'Indeks tabeli celow: LEVEL,SYM_ELEM')
+               ,_fld('IN_TO1'   ,'Indeks tabeli zrodel: SYM_ELEM')
+               ,_fld('IN_TO2'   ,'Indeks tabeli celow: REF_BELE')
+               ,_fld('IN_TO3'   ,'Indeks tabeli celow: REF_TYP')
+               ,_fld('IN_TO4'   ,'Indeks tabeli celow: REF_PREL,REF_PORT')
+               ,_fld('IN_TO5'   ,'Indeks tabeli celow: REF_PREL,REQUIRED')
+               ,_fld('IN_REQ1'  ,'Indeks tabeli wymagan: REF_DST,SYM_SRC')
+               ,_fld('IN_REQ2'  ,'Indeks tabeli wymagan: PARENT,SYMBOL')
+               ,_fld('IN_REQ3'  ,'Indeks tabeli wymagan: REF_SRC,REF_DST')
+               ,_fld('IN_REQ4'  ,'Indeks tabeli wymagan: GRP_PREL,SYMBOL')
+               ,_fld('IN_REQ5'  ,'Indeks tabeli wymagan: REF_PORT,REF_SRC')
+               ,_fld('IN_REQ6'  ,'Indeks tabeli wymagan: PARENT,REF_DST,REF_PORT')
+               ,_fld('IN_REQ7'  ,'Indeks tabeli wymagan: PARENT,REF_SRC')
+               ,_fld('IN_NCO1'  ,'Indeks tabeli zakazanych polaczen: REF_DST,REF_PORT,REF_CONN')
+               ,_fld('IN_NCO2'  ,'Indeks tabeli zakazanych polaczen: REF_DST,REF_PORT,REF_SRC')
+
+::             uchwyty do okien
+               ,_fld('WIN_MAIN' ,'Glowne okno grupowe')
+               ,_fld('WIN_CONN' ,'Okno z polaczeniami')
+               ,_fld('WIN_FROM' ,'Okno z portami zrodlowymi')
+               ,_fld('WIN_TO'   ,'Okno z portami docelowymi')
+               ,_fld('WIN_CTR'  ,'Okno z kontrolka')
+               ,_fld('WIN_REQ'  ,'Okno z wymaganymi powiązaniami')
+               ,_fld('WIN_NCO'  ,'Okno z zakazanymi polaczeniami dla portow')
+
+::             identyfikatory przyciskow
+               ,_fld('btn_akc' ,'Przycisk akceptacji')
+               ,_fld('btn_anul','Przycisk anulowania')
+               ,_fld('btn_del' ,'Przycisk usuwania')
+               ,_fld('btn_undo','Przycisk przywracania')
+
+::             METODY
+               ,_mth('select'   ,'Wyswietla okno kreatora powiazan')
+               ,_mth('load4con','Laduje zawartosc kreatora powiazan, tworzy struktury')
+               ,_mth('load4pro','Laduje zawartosc kreatora powiazan, tworzy struktury')
+               );
+_env.PREL_SRC:=null();
+_env.PREL_DST:=null();
+_env.B_CONN:=null();
+_env.REQ_TOP:=null();
+_env.B_PORT:=null();
+
+_env.SEL_CONN:=null();
+_env.SEL_FROM:=null();
+_env.SEL_TO:=null();
+
+_env.ACCEPTED:='N';
+_env.EDITABLE:=1;
+_env.TO_USED:=1;
+_env.CAN_ANUL:=1;
+_env.CONTEXT:=0;
+_env.NR_ROOT:=0;
+
+_env.DEVELOP:=__develop;
+
+_env.wid_main:='#b_poco_main';
+_env.wid_conn:='#b_poco_conn';
+_env.wid_from:='#b_poco_from';
+_env.wid_to:='#b_poco_to';
+_env.wid_ctr:='#b_poco_ctr';
+_env.wid_req:='#b_poco_req';
+_env.wid_nco:='#b_poco_nco';
+
+_env.ctr_id:='b_poconn';
+_env.ctr_conn:='1md4l4d3ed1104fj8c5hilf4fj89g';
+
+_env.tit_main:='Kreator powiązań argumentów czynności';
+_env.tit_conn:='Powiązania między argumentami';
+_env.tit_from:='Dostępne argumenty wyjściowe';
+_env.tit_to:='Dostępne argumenty wejściowe';
+
+_env.btn_akc:='';
+_env.btn_anul:='';
+_env.btn_del:='';
+_env.btn_undo:='';
+
+_env.WIN_MAIN:='';
+_env.WIN_CONN:='';
+_env.WIN_FROM:='';
+_env.WIN_TO:='';
+_env.WIN_CTR:='';
+
+_env.WIN_REQ:='';
+_env.WIN_NCO:='';
+
+_env.select:="
+::    Tworzymy okna do tabel tymczasowych
+      .WIN_FROM:=exec('win_from','#b_poconn',.);
+::    Tworzymy okno glowne
+      {? .B_PORT=null()
+      ||
+
+::       Tworzymy okna do tabel tymczasowych
+         .WIN_CONN:=exec('win_conn','#b_poconn',.);
+         exec('conn_view','#b_poconn',.)
+      ||
+::       Domyślny port
+         _default:=0;
+         _sym_to:=exec('FindAndGet','#table',B_PORT,.B_PORT,,\"SYMBOL\",'');
+         .TAB_FROM.index(.IN_FROM5);
+         _loop:=.TAB_FROM.first();
+         {!
+         |? _loop
+         |!
+            {? .TAB_FROM.SYM_PORT=_sym_to || _default:=.TAB_FROM.ref() ?};
+            _loop:=~_default & .TAB_FROM.next()
+         !};
+::       Pokazujemy okno
+         .TAB_FROM.win_sel(.WIN_FROM);
+         {? ~.TAB_FROM.first()
+         ||
+            FUN.info('Brak parametrów wyjściowych do powiązania.'@)
+         ||
+            {? _default || .TAB_FROM.seek(_default) || .TAB_FROM.first() ?};
+            {? .TAB_FROM.select(,1,{? .TAB_FROM.size()<15 || .TAB_FROM.size() || 15 ?})
+            ||
+::             Aktualizujemy powiązanie parametru
+               .ACCEPTED:=exec('delete4bconn','#b_poconn',.B_CONN,.PREL_DST,.B_PORT);
+               {? .ACCEPTED='T'
+               ||
+                  _loop:=.TAB_FROM.first();
+                  {!
+                  |? _loop
+                  |!
+                     {? .TAB_FROM.SEL='T'
+                     ||
+                        B_POCONN.cntx_psh();
+                        B_POCONN.prefix();
+                        B_POCONN.blank();
+                        B_POCONN.B_PROC:=exec('FindAndGet','#table',B_PREL,.PREL_SRC,,\"B_PROC\",null());
+                        B_POCONN.B_CONN:=.B_CONN;
+                        B_POCONN.FROM:=exec('FindAndGet','#table',B_PORT,.TAB_FROM.REF_PORT,,,null());
+                        B_POCONN.TO:=.B_PORT;
+                        B_POCONN.PREL_SRC:=exec('FindAndGet','#table',B_PREL,.TAB_FROM.REF_PREL,,,null());
+                        B_POCONN.PREL_DST:=.PREL_DST;
+                        B_POCONN.add();
+                        B_POCONN.cntx_pop()
+                     ?};
+                     _loop:=.TAB_FROM.next()
+                  !}
+               ?}
+            ?}
+         ?}
+      ?};
+
+      ~~
+";
+_env.load4con:="
+      .B_CONN:=_a;
+
+::    Tworzymy tabele tymczasowe
+      {? type_of(.TAB_FROM)=0
+      || .TAB_FROM:=exec('tab_from','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_TO)=0
+      || .TAB_TO:=exec('tab_to','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_CONN)=0
+      || .TAB_CONN:=exec('tab_conn','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_REQ)=0
+      || .TAB_REQ:=exec('tab_req','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_NCO)=0
+      || .TAB_NCO:=exec('tab_nco','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_DEL)=0
+      || .TAB_DEL:=exec('tab_del','#b_poconn',.)
+      ?};
+
+      {? exec('merging_nojoin','#b_gate',.PREL_SRC)<>1
+      || _b_ele:=exec('FindAndGet','#table',B_PREL,#.PREL_SRC,ref_name(.PREL_SRC),$'B_ELE',null());
+         {? exec('is_gate','#b_gate',_b_ele,exec('type_and','#b_gate'),exec('kind_merge','#b_gate'))>0
+         ||
+::          jesli brama zbierajaca AND to laduje tylko niewykorzystane jeszcze porty wejsciowe
+            .TO_USED:=0
+         ?}
+      ?};
+
+      {? exec('load_creator','#b_poconn',.,.PREL_SRC,.PREL_DST,.B_CONN,0)<=0
+      || FUN.emsg('Nie powiodło się załadowanie zawartości kreatora powiązań międzyargumentowych.'@)
+      ?};
+      ~~
+";
+
+_env.load4pro:="
+
+      _b_proc:=_a;
+::    Tworzymy tabele tymczasowe
+      {? type_of(.TAB_FROM)=0
+      || .TAB_FROM:=exec('tab_from','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_TO)=0
+      || .TAB_TO:=exec('tab_to','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_CONN)=0
+      || .TAB_CONN:=exec('tab_conn','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_REQ)=0
+      || .TAB_REQ:=exec('tab_req','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_NCO)=0
+      || .TAB_NCO:=exec('tab_nco','#b_poconn',.)
+      ?};
+      {? type_of(.TAB_DEL)=0
+      || .TAB_DEL:=exec('tab_del','#b_poconn',.)
+      ?};
+
+::    Ladujemy elementy zrodlowe i docelowe
+      B_PREL.cntx_psh();
+      B_PREL.index('SYMBOL');
+      B_PREL.prefix(_b_proc);
+      {? B_PREL.first()
+      || {!
+         |?
+            exec('load_from','#b_poconn',.,B_PREL.ref(),B_PREL.ref(),$B_PREL.ref());
+            exec('load_to','#b_poconn',.,B_PREL.ref());
+            B_PREL.next()
+         !}
+      ?};
+      B_PREL.cntx_pop();
+
+::    Ladujemy utworzone juz powiazania
+      B_CONN.cntx_psh();
+      B_CONN.index('PROC');
+      B_CONN.prefix(_b_proc);
+      {? B_CONN.first()
+      || {!
+         |? exec('load_poconns','#b_poconn',.,B_CONN.ref());
+            B_CONN.next()
+         !}
+      ?};
+      B_CONN.cntx_pop();
+      ~~
+";
+
+_env
+
+
+\select4proc
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Pokazuje konfigurator połączeń miedzyargumentowych
+::   WE: _a - B_PROC.ref - proces dla ktorego pokazac
+::   WY: 0 - powiązania nie zostały poprawnie zaakceptowane, użytkownik wyszedł z okna
+::       1 - powiązania zostały poprawnie zaakceptowane
+::----------------------------------------------------------------------------------------------------------------------
+_b_proc:=_a;
+
+_result:=0;
+
+B_PROC.cntx_psh(); B_PROC.clear();
+{? B_PROC.seek(_b_proc)
+||
+   VAR_DEL.delete('PO_CREATE');
+   _pocreate:=exec('env','#b_poconn');
+   PO_CREATE:=_pocreate;
+   _pocreate.EDITABLE:=0;
+   _pocreate.load4pro(B_PROC.ref());
+   _pocreate.select();
+   {? _pocreate.ACCEPTED='T'
+   || _result:=1
+   ?};
+   VAR_DEL.delete('PO_CREATE')
+?};
+B_PROC.cntx_pop();
+_result
+
+
+\tab_conn
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy tabelke tymczasowa zawierajacą utworzone powiazania
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=tab_tmp( 1
+               ,'EL_FROM'  ,'STRING[50]'  ,'Symbol elementu zrodlowego'@
+               ,'EL_TO'    ,'STRING[50]'  ,'Symbol elementu docelowego'@
+               ,'SYM_TYPF' ,'STRING[50]'  ,'Symbol typu zrodlowego'@
+               ,'SYM_TYPT' ,'STRING[50]'  ,'Symbol typu docelowego'@
+               ,'NAM_TYPF' ,'STRING[100]' ,'Nazwa typu zrodlowego'@
+               ,'NAM_TYPT' ,'STRING[100]' ,'Nazwa typu docelowego'@
+               ,'REF_TYPF' ,'STRING[16]'  ,'Ref SQL typu zrodlowego'@
+               ,'REF_TYPT' ,'STRING[16]'  ,'Ref SQL typu docelowego'@
+               ,'REF_CONN' ,'STRING[16]'  ,'Ref SQL polaczenia miedzyelementami'@
+               ,'REF_POF'  ,'STRING[16]'  ,'Ref SQL portu zrodlowego'@
+               ,'REF_POT'  ,'STRING[16]'  ,'Ref SQL portu docelowego'@
+               ,'REF_PREF' ,'STRING[16]'  ,'Ref SQL elementu procesu zrodlowego'@
+               ,'REF_PRET' ,'STRING[16]'  ,'Ref SQL elementu procesu docelowego'@
+               ,'SYM_POF'  ,'STRING[100]' ,'Symbol portu zrodlowego'@
+               ,'SYM_POT'  ,'STRING[100]' ,'Symbol portu docelowego'@
+               ,'REQ_POF'  ,'STRING[1]'   ,'Czy port zrodlowy wymagany?'@
+               ,'REQ_POT'  ,'STRING[1]'   ,'Czy port docelowy wymagany?'@
+               ,'REF_POCO' ,'STRING[16]'  ,'Ref SQL powiazania miedzyargumentami'@
+               ,'ACCEPTED' ,'STRING[1]'   ,'Czy polaczenie zaakceptowane?'@
+               ,'ONE_TO'   ,'INTEGER'     ,'Czy port wejsciowy moze miec tylko jedno powiazanie'@
+               ,'LEVEL'    ,'INTEGER'     ,'Poziom zagłębienia'@
+               );
+_env.IN_CONN1:=_tab.ndx_tmp(,,'REF_CONN',,);
+_env.IN_CONN2:=_tab.ndx_tmp(,,'ACCEPTED',,,'EL_FROM',,);
+_env.IN_CONN3:=_tab.ndx_tmp(,,'REF_POT',,);
+_env.IN_CONN4:=_tab.ndx_tmp(,,'REF_POT',,,'REF_PREF',,,'REF_PRET',,);
+_env.IN_CONN5:=_tab.ndx_tmp(,,'EL_FROM',,,'SYM_TYPF',,,'EL_TO',,,'SYM_TYPT',,);
+_tab
+
+
+\win_conn
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy okno tymczasowe zawierajaca utworzone powiązania
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: STRING - uchwyt do okna
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_CONN;
+
+_wer:=_tab.mk_sel(_env.tit_conn,'P',0,_env.wid_conn,1,1,,,'U');
+_tab.win_fld(_wer,,'EL_FROM' ,,,33,,,'Źródło [elem.]'@,0);
+_tab.win_fld(_wer,,'SYM_POF' ,,,30,,,'Źródło [param.]'@,0);
+:: _tab.win_fld(_wer,,'REQ_POF' ,,,10,,,'Źródło [wym?]',0,,2,,"\'T\'","\'N\'");
+_tab.win_fld(_wer,,'SYM_TYPF' ,,,-12,,,'Źródło [typ]'@,0);
+
+_tab.win_fld(_wer,,'EL_TO'  ,,,33,,,'Cel [elem.]'@,0);
+_tab.win_fld(_wer,,'SYM_POT' ,,,20,,,'Cel [param.]'@,0);
+_tab.win_fld(_wer,,'REQ_POT' ,,,-10,,,'Cel [wym?]'@,0,,2,,"\'T\'","\'N\'");
+_tab.win_fld(_wer,,'SYM_TYPT' ,,,-12,,,'Cel [typ]'@,0);
+
+_tab.win_fld(_wer,,'ACCEPTED' ,,,-10,,,'Akceptacja'@,0,,2,,"\'T\'","\'N\'");
+
+
+{? _env.EDITABLE>0
+|| _formula:="exec('conns_undo_act','#b_poconn',PO_CREATE)";
+   _tab.win_act(_wer,1,'Formuła','Przywróć'@@,,,_formula,,,,,,'P')
+?};
+
+_gr1:="";
+_gr2:="";
+{? _env.EDITABLE>0
+|| _formula:="exec('conn_del_act','#b_poconn',PO_CREATE)";
+   _gr1:="exec('del_act_gr1','#b_poconn',PO_CREATE)";
+   _gr2:="exec('del_act_gr2','#b_poconn',PO_CREATE)";
+   _tab.win_act(_wer,0,'Formuła','Usuń'@@,,,_formula,,,1,_gr1,_gr2,'U')
+?};
+
+_tab.win_act(_wer,,'Kolejność');
+
+_tab.win_sel(_wer);
+_wer
+
+
+\tab_port
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy tabelke tymczasowa zawierajacą porty
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp( 1
+               ,'SYM_ELEM' ,'STRING[100]' ,'Symbol elementu do ktorego należy port'@
+               ,'REF_BELE' ,'STRING[16]'  ,'Ref SQL elementu ogólnego'@
+               ,'SYM_TYP'  ,'STRING[50]'  ,'Symbol typu'@
+               ,'NAM_TYP'  ,'STRING[50]'  ,'Nazwa typu'@
+               ,'REF_TYP'  ,'STRING[16]'  ,'Ref SQL typu zrodlowego'@
+               ,'REF_PORT' ,'STRING[16]'  ,'Ref SQL portu'@
+               ,'SYM_PORT' ,'STRING[31]'  ,'Symbol portu'@
+               ,'NAM_PORT' ,'STRING[250]' ,'Nazwa portu'@
+               ,'REF_PREL' ,'STRING[16]'  ,'Ref SQL elementu procesu'@
+               ,'ACTIVE'   ,'STRING[1]'   ,'Czy port aktywny czy nie'@
+               ,'REQUIRED' ,'STRING[1]'   ,'Czy port wymaga polaczenia'@
+               ,'REF_CONN' ,'STRING[16]'  ,'Ref SQL B_CONN ktore prowadzi do portu'@
+               ,'NUM_CONN' ,'REAL'        ,'Liczba utworzonych powiazan dla portu'@
+               ,'ONE_TO'   ,'INTEGER'     ,'Czy port wejsciowy moze miec tylko jedno powiazanie'@
+               ,'REF_REQ'  ,'INTEGER'     ,'Ref w tabeli wymaganych portow'@
+               ,'LEVEL'    ,'INTEGER'     ,'Poziom zagłębienia'@
+               ,'MANUAL'   ,'STRING[1]'   ,'Czy port posiada wartość określoną ręcznie'@
+               ,'SEL'      ,'STRING[1]'   ,'Pozycja zaznaczona'@
+               );
+_tab
+
+
+\tab_from
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy tabelke tymczasową zawierajacą porty źródłowe
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=exec('tab_port','#b_poconn');
+_env.IN_FROM1:=_tab.ndx_tmp(,,'SYM_ELEM',,);
+_env.IN_FROM2:=_tab.ndx_tmp(,,'REF_BELE',,);
+_env.IN_FROM3:=_tab.ndx_tmp(,,'REF_TYP',,);
+_env.IN_FROM4:=_tab.ndx_tmp(,,'REF_PREL',,,'REF_PORT',,);
+_env.IN_FROM5:=_tab.ndx_tmp(,,'LEVEL',,,'SYM_ELEM',,);
+_tab
+
+
+\win_from
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy okno tymczasowe zawierające porty źródłowe
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: STRING - uchwyt do okna
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_FROM;
+
+_title:='Powiązania'@;
+
+_wer:=
+   {? _env.B_PORT
+   ||
+      _tab.mk_sel(_env.tit_from,'P',0,_env.wid_from,1,1,,,'U')
+   ||
+      _tab.mk_sel(_env.tit_from,'P',0,_env.wid_from,1,1)
+   ?};
+_tab.win_fld(_wer,,'SYM_ELEM',,,20,,,'Element procesu'@,0);
+_tab.win_fld(_wer,,'SYM_PORT',,,-8,,,'Parametr [symbol]'@,0);
+_tab.win_fld(_wer,,'NAM_PORT',,,20,,,'Parametr [nazwa]'@,0);
+_tab.win_fld(_wer,,'SYM_TYP',,,-10,,,'Typ [symbol]'@,0);
+:: _tab.win_fld(_wer,,'REQUIRED' ,,,5,,,'Wymagany?',0,,2,,"\'T\'","\'N\'");
+
+{? _env.B_PORT
+||
+   _fb:="
+      _Tab:=cur_tab();
+      _Sel:=_Tab.sel_aget();
+      {? ~_Sel.first() || _Sel.REF:=#_Tab.ref(); _Sel.add() ?};
+      _loop:=_Sel.first();
+      {!
+      |? _loop
+      |!
+         {? _Tab.seek(_Sel.REF,)
+         ||
+            _Tab.SEL:='T';
+            _Tab.put()
+         ?};
+         _loop:=_Sel.next()
+      !};
+      _Tab.sel_adel();
+      sel_exit();
+      0
+   ";
+   _tab.win_act(_wer,,'Formuła','Wybierz',,,_fb,,1,1,_fb)
+?};
+_tab.win_act(_wer,,'Kolejność');
+
+_tab.win_sel(_wer);
+_wer
+
+
+\tab_to
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy tabelke tymczasową zawierajacą porty docelowe
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=exec('tab_port','#b_poconn');
+_env.IN_TO1:=_tab.ndx_tmp(,,'SYM_ELEM',,);
+_env.IN_TO2:=_tab.ndx_tmp(,,'REF_BELE',,);
+_env.IN_TO3:=_tab.ndx_tmp(,,'REF_TYP',,);
+_env.IN_TO4:=_tab.ndx_tmp(,,'REF_PREL',,,'REF_PORT',,);
+_env.IN_TO5:=_tab.ndx_tmp(,,'REF_PREL',,,'REQUIRED',,);
+_tab
+
+
+\win_to
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy okno tymczasowe zawierajace porty źródłowe
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: STRING - uchwyt do okna
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_TO;
+
+_title:='Powiązania'@;
+
+_wer:=_tab.mk_sel(_env.tit_to,'P',0,_env.wid_to,1,1);
+_tab.win_fld(_wer,,'SYM_ELEM',,,20,,,'Element procesu'@,0);
+_tab.win_fld(_wer,,'SYM_PORT',,,-8,,,'Parametr [symbol]'@,0);
+_tab.win_fld(_wer,,'NAM_PORT',,,20,,,'Parametr [nazwa]'@,0);
+_tab.win_fld(_wer,,'SYM_TYP',,,-10,,,'Typ [symbol]'@,0);
+_tab.win_fld(_wer,,'REQUIRED',,,-5,,,'Wymagany?'@,0,,2,,"\'T\'","\'N\'");
+_tab.win_fld(_wer,,'MANUAL',,,-5,,,'Wartość ręczna?'@,0,,2,,"\'T\'","\'N\'");
+
+_tab.win_act(_wer,,'Kolejność');
+
+_tab.win_sel(_wer);
+_wer
+
+
+\grp_make
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy okienko grupowe konfiguratora polaczen
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_FROM;
+{? _env.WIN_MAIN=''
+||
+   _grpbefor:="
+         _env:=PO_CREATE;
+         _env.TAB_FROM.index(_env.IN_FROM1);
+         _env.TAB_FROM.first(); grp_disp(_env.TAB_FROM,_env.WIN_FROM);
+         _env.TAB_TO.index(_env.IN_TO1);
+         _env.TAB_TO.first(); grp_disp(_env.TAB_TO,_env.WIN_TO,1);
+         _env.TAB_CONN.index(_env.IN_CONN5);
+         _env.TAB_CONN.first(); grp_disp(_env.TAB_CONN,_env.WIN_CONN);
+
+         _opt:=exec('set_options_a','#desktop');
+         _opt.FOCUS_RET:=0;
+         exec('load','#desktop',_env.ctr_id,'#'+_env.ctr_id+'.dsk',_opt);
+
+         {? _env.EDITABLE=0
+         || exec('set_enabled','#desktop','',_env.ctr_id,_env.ctr_conn,0)
+         ?};
+         ~~
+      ";
+
+   _close:="
+      _result:=1;
+      _result
+   ";
+
+   _title:=_env.tit_main;
+   {? _env.EDITABLE=0
+   || _title+=' — '+'PODGLĄD'@
+   ?};
+   _grp:=_tab.grp_make(_title,_grpbefor,_env.wid_main,1,1,_close);
+
+   _tab.grp_sel(_grp,_env.TAB_FROM,_env.WIN_FROM,,"exec('after_rfr_from','#b_poconn',PO_CREATE)",,,,,,,,'maximized_with_title');
+
+   _tab.grp_splt(_grp,'panel0','horizontal','dolny',20);
+   {? _env.DEVELOP=0
+   || _tab.grp_sel(_grp,_env.TAB_CONN,_env.WIN_CONN,,,,,,,,,,'maximized_with_title')
+   || _tab.grp_sel(_grp,_env.TAB_CONN,_env.WIN_CONN,'Powiązania'@,,,,,,,,,'maximized_with_title');
+      _tab.grp_sel(_grp,_env.TAB_REQ,_env.WIN_REQ,'Wymagane połączenia'@,,,,,,,,,'maximized_with_title');
+      _tab.grp_sel(_grp,_env.TAB_NCO,_env.WIN_NCO,'Zakazane powiazania'@,,,,,,,,,'maximized_with_title');
+      ~~
+   ?};
+
+   _tab.grp_splt(_grp,'panel0','vertical','boczny');
+   _env.WIN_CTR:=exec('create','#desktop',_tab,_env.ctr_id,_grp,10,25);
+
+   _tab.grp_splt(_grp,'boczny','vertical','boczny2');
+   _tab.grp_sel(_grp,_env.TAB_TO,_env.WIN_TO,,"exec('after_rfr_to','#b_poconn',PO_CREATE)",,,,,,,,'maximized_with_title');
+
+   _tab.win_sel(_grp);
+   _env.WIN_MAIN:=_grp;
+   ~~
+?};
+~~
+
+
+\after_rfr_from
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Po odświezeniu okna z portami źródłowymi
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_FROM;
+
+_env.SEL_FROM:=exec('FindAndGet','#table',B_PORT,_tab.REF_PORT,,,null());
+~~
+
+
+\after_rfr_to
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Po odświeżeniu okna z portami docelowymi
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_TO;
+
+_env.SEL_TO:=exec('FindAndGet','#table',B_PORT,_tab.REF_PORT,,,null());
+~~
+
+
+\load_from
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Ładuje zawartość okna z portami źródłowymi
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - B_PREL.ref() - wyjściowy element procesu
+::       _c - B_PREL.ref() - aktualnie przetwarzany element procesu
+::       _d - B_PREL.ref()-y - odwiedzone elementy procesu
+::       _e - B_CONN.ref() - połaczenie, które powiązać z portami i później powiazaniami miedzyportowymi
+::       _f - poziom zagłębienia
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+           _env:=_a;
+   _b_prel_root:=_b;
+        _b_prel:=_c;
+_b_prel_visited:=_d;
+        _b_conn:={? var_pres('_e')=type_of(B_CONN.ref()) || _e || null() ?};
+         _level:={? var_pres('_f')=type_of(0)            || _f || 1      ?};
+
+_result:=0;
+_can_continue:=1;
+B_PREL.cntx_psh(); B_PREL.clear();
+B_PORT.cntx_psh();
+B_ELE.cntx_psh();
+B_CONN.cntx_psh();
+
+{? B_PREL.seek(_b_prel)
+||
+:: Podczytanie B_ELE
+   B_PREL.B_ELE();
+
+:: Analiza wszystkich elementów poprzedzających
+   B_ELE.cntx_psh();
+   B_CONN.index('TO');
+   B_CONN.prefix(B_PREL.B_PROC,B_PREL.ref());
+   {? B_CONN.first()
+   || {!
+      |?
+         {? B_CONN.FROM<>_b_prel_root & (_b_prel_visited*($B_CONN.FROM))=0
+::       Poszukujemy wcześniejszych czynności !!! REKRURENCJA !!!
+         || exec('load_from','#b_poconn',_env,_b_prel_root,B_CONN.FROM,_b_prel_visited+$_b_prel,_b_conn,_level+1)
+         ?};
+         B_CONN.next()
+      !}
+   ?};
+   B_ELE.cntx_pop();
+
+:: Ładowanie portów czynności lub zdarzeń przechwytujących
+   {? B_ELE.CLASS='B_ACTION' | B_ELE.CLASS='B_EVENT' & exec('is_event','#b_event',B_ELE.ref(),,,exec('category_catch','#b_event'))>0
+   ||
+      _b_type:=exec('FindAndGet','#table',B_PORT,_env.B_PORT,,"B_TYPE",null());
+      B_PORT.index('B_ELE');
+      B_PORT.prefix('T',B_ELE.ref(),exec('kind_out','#b_port'),);
+      {? B_PORT.first()
+      ||
+         {!
+         |?
+            {? _env.B_PORT=null() | B_PORT.B_TYPE=_b_type
+            ||
+               _can_continue:=exec('port2tab','#b_poconn',_env,'TAB_FROM',B_PREL.ref(),_b_conn,1,_level)
+            ?};
+            B_PORT.next() & _can_continue>0
+         !}
+      ?};
+      B_PORT.index('UNIK');
+      B_PORT.prefix(null(),B_PREL.ref(),null(),exec('kind_out','#b_port'),);
+      {? B_PORT.first()
+      ||
+         {!
+         |?
+            {? _env.B_PORT=null() | B_PORT.B_TYPE=_b_type
+            ||
+               _can_continue:=exec('port2tab','#b_poconn',_env,'TAB_FROM',B_PREL.ref(),_b_conn,1,_level)
+            ?};
+            B_PORT.next() & _can_continue>0
+         !}
+      ?}
+   ?}
+?};
+B_CONN.cntx_pop();
+B_ELE.cntx_pop();
+B_PORT.cntx_pop();
+B_PREL.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\port2tab
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Dodaje jeden rekord do tabeli .TAB_FROM lub .TAB_TO na podstawie aktualnego rekordu
+::       tabeli B_PORT
+::       KONTEKST PRACY - B_PORT
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - STRING - nazwa tabeli do której dodwać
+::       _c - B_PREL.ref() - element procesu do ktorego nalezy port
+::       [_d] - B_CONN.ref() - połączenie z którym wiązac porty a później powiązania miedzyportowe
+::       [_e] - INTEGER -  1 - dodawać info do KOMMa jeśli się nie udało zablokować B_PORT
+::                        [0]- dodawać info na ekran
+::       [_f] - poziom zagłębienia
+::   WY: 0 - nie udało sie dodać
+::       1 - sukces, rekord zostal dodany
+::       2 - rekord nie zostal dodany bo taki port juz jest w tabeli
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab_sym:=_b;
+_b_prel:=_c;
+
+_b_conn:=null();
+{? var_pres('_d')=type_of(B_CONN.ref)
+|| _b_conn:=_d
+?};
+_komm:=0;
+{? var_pres('_e')=type_of(0)
+|| _komm:=_e
+?};
+_level:={? var_pres('_f')=type_of(0) || _f || 0 ?};
+
+_result:=1;
+_can_continue:=1;
+
+:: Sprawdzam czy mogę zablokowac B_PORTa
+
+{? _env.EDITABLE>0
+|| {? exec('lock','#b_port',B_PORT.ref(),0)=0
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   {? _tab_sym='TAB_FROM'
+   || _tab:=_env.TAB_FROM;
+      _ndx:=_env.IN_FROM4
+   |? _tab_sym='TAB_TO'
+   || _tab:=_env.TAB_TO;
+      _ndx:=_env.IN_TO4
+   ?};
+
+   B_ELE.cntx_psh();
+   B_TYPE.cntx_psh();
+
+   _tab.cntx_psh();
+   _tab.index(_ndx);
+   _tab.prefix($_b_prel,$B_PORT.ref());
+   {? _tab.size()=0
+   ||
+      _tab.blank();
+      _tab.REF_BELE:=$B_PORT.B_ELE;
+      _tab.REF_PREL:=$_b_prel;
+      _tab.SYM_ELEM:=exec('FindAndGet','#table',B_PREL,$_b_prel,,"SYMBOL",'');
+      _tab.REF_TYP:=$B_PORT.B_TYPE;
+      _tab.SYM_TYP:=B_PORT.B_TYPE().SYMBOL;
+      _tab.NAM_TYP:=B_TYPE.TYPE;
+      _tab.REF_PORT:=$B_PORT.ref();
+      _tab.SYM_PORT:=B_PORT.SYMBOL;
+      _tab.NAM_PORT:=B_PORT.NAME;
+      _tab.ACTIVE:=B_PORT.ACTIVE;
+      _tab.REF_CONN:=$_b_conn;
+      _tab.REQUIRED:=B_PORT.REQUIRED;
+      _tab.ONE_TO:=1;
+      _tab.LEVEL:=_level;
+      _tab.SEL:='N';
+
+      {? _tab_sym='TAB_TO'
+      ||
+::       Sprawdzam czy element do którego należy port docelowy posiada w swoich poprzednikach
+::       brame zbierajacą OR lub XOR - jeśli tak to umożliwiam tworzenie wielu połączeń
+::       do tego portu
+         _gate_or:=exec('has_gate_before','#b_gate',_b_prel,exec('type_or','#b_gate'),exec('kind_merge','#b_gate'));
+         _gate_xor:=exec('has_gate_before','#b_gate',_b_prel,exec('type_xor','#b_gate'),exec('kind_merge','#b_gate'));
+         _gate_and:=exec('has_gate_before','#b_gate',_b_prel,exec('type_and','#b_gate'),exec('kind_merge','#b_gate'));
+         _gate_complex:=exec('has_gate_before','#b_gate',_b_prel,exec('type_complex','#b_gate'),exec('kind_merge','#b_gate'));
+         {? _gate_or>0 | _gate_xor>0 | _gate_complex>0
+         || _tab.ONE_TO:=0
+         ?};
+
+::       Sprawdzam czy port wejściowy ma wartość podaną ręcznie w definicji procesu
+         {? exec('has_manual_val','#b_port',_b_prel)>0
+         || _tab.MANUAL:='T'
+         || _tab.MANUAL:='N'
+         ?}
+      ?};
+      _result:=_tab.add()
+   || {? _tab.LEVEL>_level
+      || _tab.LEVEL:=_level;
+         _tab.put()
+      ?};
+      _result:=2
+   ?};
+   exec('unlock','#b_port',B_PORT.ref());
+   _tab.cntx_pop();
+   B_TYPE.cntx_pop();
+   B_ELE.cntx_pop()
+|| B_ELE.cntx_psh();
+   _msg:='Parametr: \'%1\' jest zablokowany przez innego użytkownika i nie został wczytany (element źródłowy: \'%2\')'@[B_PORT.SYMBOL+' '+B_PORT.NAME,B_PORT.B_ELE().SYMBOL];
+   {? _komm>0
+   || KOMM.add(_msg,'xwin16.png:2')
+   || FUN.emsg(_msg)
+   ?};
+   B_ELE.cntx_pop()
+?};
+_result
+
+
+\poconn2tab
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Dodaje jeden rekord do tabeli .TAB_CONN na podstawie aktualnego rekordu
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_buffer:=exec('buffer_conncr','#b_poconn');
+
+B_PORT.cntx_psh();
+B_ELE.cntx_psh();
+
+_buffer.EL_FROM:=B_POCONN.PREL_SRC().SYMBOL;
+_buffer.EL_TO:=B_POCONN.PREL_DST().SYMBOL;
+_buffer.SYM_TYPF:=B_POCONN.FROM().B_TYPE().SYMBOL;
+_buffer.SYM_TYPT:=B_POCONN.TO().B_TYPE().SYMBOL;
+_buffer.NAM_TYPF:=B_POCONN.FROM().B_TYPE().TYPE;
+_buffer.NAM_TYPT:=B_POCONN.TO().B_TYPE().TYPE;
+_buffer.REF_TYPF:=$B_POCONN.FROM().B_TYPE;
+_buffer.REF_TYPT:=$B_POCONN.TO().B_TYPE;
+_buffer.REF_CONN:=$B_POCONN.B_CONN;
+_buffer.REF_POF:=$B_POCONN.FROM;
+_buffer.REF_POT:=$B_POCONN.TO;
+_buffer.REF_POCO:=$B_POCONN.ref();
+_buffer.SYM_POF:=B_POCONN.FROM().NAME;
+_buffer.SYM_POT:=B_POCONN.TO().NAME;
+_buffer.REQ_POF:=B_POCONN.FROM().REQUIRED;
+_buffer.REQ_POT:=B_POCONN.TO().REQUIRED;
+_buffer.REF_PREF:=$B_POCONN.PREL_SRC;
+_buffer.REF_PRET:=$B_POCONN.PREL_DST;
+_buffer.ACCEPTED:='T';
+_buffer.ONE_TO:=1;
+_buffer.LEVEL:=exec('b_prel_level','#b_poconn',B_POCONN.PREL_SRC,B_POCONN.PREL_DST);
+
+:: Sprawdzam czy element do ktorego prowadzi B_POCONN posiada w swoich poprzednikach
+:: brame zbierajaca OR lub XOR - jesli tak to umozliwiam tworzenie wielu polaczen
+:: do tego portu
+_gate_or:=exec('has_gate_before','#b_gate',B_POCONN.PREL_DST,exec('type_or','#b_gate'),exec('kind_merge','#b_gate'));
+_gate_xor:=exec('has_gate_before','#b_gate',B_POCONN.PREL_DST,exec('type_xor','#b_gate'),exec('kind_merge','#b_gate'));
+_gate_and:=exec('has_gate_before','#b_gate',B_POCONN.PREL_DST,exec('type_and','#b_gate'),exec('kind_merge','#b_gate'));
+{? _gate_or>0 | _gate_xor>0
+|| _buffer.ONE_TO:=0
+?};
+
+_can_continue:=exec('tab_conn_add','#b_poconn',_env,_buffer);
+
+B_ELE.cntx_pop();
+B_PORT.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\load_to
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Ładuje zawartość okna z portami źródłowymi
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - B_PREL.ref() - element procesu którego porty dodawać
+::   WY: 0 - porżzka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_b_prel:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+B_PORT.cntx_psh();
+B_PREL.cntx_psh(); B_PREL.clear();
+{? B_PREL.seek(_b_prel)
+||
+   B_PORT.index('B_ELE');
+   B_PORT.prefix('T',B_PREL.B_ELE,exec('kind_in','#b_port'),);
+   {? B_PORT.first()
+   || {!
+      |?
+         _load:=1;
+
+::         {? _env.TO_USED=0
+::         ||
+::          Ładuje port tylko jeżeli nie ma jeszcze do niego żadnych powiązań
+::            {? exec('has_poconns_we','#b_port',B_PORT.ref(),B_PREL.ref())>0
+::            ||
+::             Sa już jakieś powiązania do tego portu, nie ładuję go
+::               _load:=0
+::            ?}
+::         ?};
+         {? _load>0
+         || _can_continue:=exec('port2tab','#b_poconn',_env,'TAB_TO',B_PREL.ref(),,1)
+         ?};
+         B_PORT.next() & _can_continue>0
+      !}
+   ?};
+   B_PORT.index('UNIK');
+   B_PORT.prefix(null(),B_PREL.ref(),null(),exec('kind_in','#b_port'),);
+   {? B_PORT.first()
+   || {!
+      |?
+         {? B_PORT.ACTIVE='T'
+         ||
+            _load:=1;
+            {? _load>0
+            || _can_continue:=exec('port2tab','#b_poconn',_env,'TAB_TO',B_PREL.ref(),,1)
+            ?}
+         ?};
+         B_PORT.next() & _can_continue>0
+      !}
+   ?}
+?};
+B_PREL.cntx_pop();
+B_PORT.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\load_poconns
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Ładuje zawartość okna z powiązaniami miedzyargumentowymi
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - B_CONN.ref
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_b_conn:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+B_POCONN.cntx_psh();
+B_POCONN.index('B_CONN');
+B_POCONN.prefix(_b_conn);
+{? B_POCONN.first()
+|| {!
+   |? _can_continue:=exec('poconn2tab','#b_poconn',_env);
+      B_POCONN.next() & _can_continue>0
+   !}
+?};
+B_POCONN.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\create_conn_act
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Akcja 'Połącz' wywoływana z kontrolki
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_can_continue:=1;
+:: Sprawdzam czy sa zaznaczone porty w obu tabelkach
+{? _env.TAB_FROM.REF_PORT=''
+|| FUN.emsg('Nie zaznaczono argumentu źródłowego. Wiązanie argumentów anulowane.'@);
+   _can_continue:=0
+?};
+{? _env.TAB_TO.REF_PORT=''
+|| FUN.emsg('Nie zaznaczono argumentu docelowego. Wiązanie argumentów anulowane.'@);
+   _can_continue:=0
+?};
+_p_sym1:=exec('FindAndGet','#table',B_PORT,#_env.SEL_FROM,ref_name(_env.SEL_FROM),"NAME",'');
+_p_sym2:=exec('FindAndGet','#table',B_PORT,#_env.SEL_TO,ref_name(_env.SEL_TO),"NAME",'');
+
+_p_akt1:=exec('FindAndGet','#table',B_PORT,#_env.SEL_FROM,ref_name(_env.SEL_FROM),"ACTIVE",'');
+_p_akt2:=exec('FindAndGet','#table',B_PORT,#_env.SEL_TO,ref_name(_env.SEL_TO),"ACTIVE",'');
+
+{? _p_sym1=''
+|| _can_continue:=0;
+   FUN.emsg('Nie można utworzyć powiązania. Parametr źródłowy nie został odnaleziony.'@)
+?};
+{? _can_continue>0 & _p_sym2=''
+|| _can_continue:=0;
+   FUN.emsg('Nie można utworzyć powiązania. Parametr docelowy nie został odnaleziony.'@)
+?};
+
+{? _can_continue>0
+|| {? _p_akt1<>'T'
+   || _can_continue:=0;
+      FUN.emsg('Nie można utworzyć powiązania. Parametr źródłowy jest nieaktywny.'@)
+   ?};
+   {? _can_continue>0 & _p_akt2<>'T'
+   || _can_continue:=0;
+      FUN.emsg('Nie można utworzyć powiązania. Parametr docelowy jest nieaktywny.'@)
+   ?}
+?};
+
+{? _can_continue>0
+||
+:: Sprawdzam zgodnosc typow
+   _chk1:=exec('chk_type4port','#b_poconn',_env.SEL_FROM,_env.SEL_TO);
+   {? _chk1=0
+   || FUN.emsg('Nie można utworzyć powiązania: \'%1\' -> \'%2\': niezgodność typów.'@[_p_sym1,_p_sym2]);
+      _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0 & _env.B_CONN<>null()
+||
+:: Sprawdzam czy port wejściowy nie ma przypadkiem określonej wartości w definicji procesu
+   _prel_to:=exec('FindAndGet','#table',B_CONN,_env.B_CONN,,"TO",null());
+
+   {? exec('has_manual_val','#b_port',_prel_to,_env.SEL_TO)>0
+   || _can_continue:=0;
+      _msg:='Nie można utworzyć powiazania: \'%1\' -> \'%2\': parametr wejściowy ma określoną wartość.'@[_p_sym1,_p_sym2];
+      FUN.emsg(_msg)
+   ?}
+?};
+
+{? _can_continue>0
+|| _can_continue:=exec('create_conn','#b_poconn',_env,1)
+?};
+
+grp_disp(_env.TAB_FROM,_env.WIN_FROM,1);
+grp_disp(_env.TAB_TO,_env.WIN_TO,1);
+grp_disp(_env.TAB_CONN,_env.WIN_CONN,1);
+
+{? _env.DEVELOP>0
+|| grp_disp(_env.TAB_NCO,_env.WIN_NCO,1)
+?};
+~~
+
+
+\buffer_conncr
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Bufor tymczasowej tabeli .TAB_CONN
+::   WY: obj_new
+::----------------------------------------------------------------------------------------------------------------------
+
+_buffer:=obj_new( 'EL_FROM'
+                  ,'EL_TO'
+                  ,'SYM_TYPF'
+                  ,'SYM_TYPT'
+                  ,'NAM_TYPF'
+                  ,'NAM_TYPT'
+                  ,'REF_TYPF'
+                  ,'REF_TYPT'
+                  ,'REF_CONN'
+                  ,'REF_POF'
+                  ,'REF_POT'
+                  ,'REF_PREF'
+                  ,'REF_PRET'
+                  ,'SYM_POF'
+                  ,'SYM_POT'
+                  ,'REQ_POF'
+                  ,'REQ_POT'
+                  ,'REF_POCO'
+                  ,'ACCEPTED'
+                  ,'ONE_TO'
+                  ,'LEVEL'
+                  ,'blank'
+                  ,'get'
+                  ,'set'
+                  );
+_buffer.blank:="
+       .EL_FROM:='';
+       .EL_TO:='';
+       .SYM_TYPF:='';
+       .SYM_TYPT:='';
+       .NAM_TYPF:='';
+       .NAM_TYPT:='';
+       .REF_TYPF:='';
+       .REF_TYPT:='';
+       .REF_CONN:='';
+       .REF_POF:='';
+       .REF_POT:='';
+       .REF_PREF:='';
+       .REF_PRET:='';
+       .SYM_POF:='';
+       .SYM_POT:='';
+       .REQ_POF:='';
+       .REQ_POT:='';
+       .REF_POCO:='';
+       .ACCEPTED:='';
+       .ONE_TO:=1;
+       .LEVEL:=0;
+       ~~
+      ";
+:: metoda pobierajaca dane z tabeli do bufora
+_buffer.get:="
+               _tab:=_a;
+               .EL_FROM:=_tab.EL_FROM;
+               .EL_TO:=_tab.EL_TO;
+               .SYM_TYPF:=_tab.SYM_TYPF;
+               .SYM_TYPT:=_tab.SYM_TYPT;
+               .NAM_TYPF:=_tab.NAM_TYPF;
+               .NAM_TYPT:=_tab.NAM_TYPT;
+               .REF_TYPF:=_tab.REF_TYPF;
+               .REF_TYPT:=_tab.REF_TYPT;
+               .REF_CONN:=_tab.REF_CONN;
+               .REF_POF:=_tab.REF_POF;
+               .REF_POT:=_tab.REF_POT;
+               .REF_PREF:=_tab.REF_PREF;
+               .REF_PRET:=_tab.REF_PRET;
+               .SYM_POF:=_tab.SYM_POF;
+               .SYM_POT:=_tab.SYM_POT;
+               .REQ_POF:=_tab.REQ_POF;
+               .REQ_POT:=_tab.REQ_POT;
+               .REF_POCO:=_tab.REF_POCO;
+               .ACCEPTED:=_tab.ACCEPTED;
+               .ONE_TO:=_tab.ONE_TO;
+               .LEVEL:=_tab.LEVEL;
+               ~~
+             ";
+
+:: metoda zapisujaca dane z bufora do tabeli
+_buffer.set:="
+               _tab:=_a;
+               _tab.EL_FROM:=.EL_FROM;
+               _tab.EL_TO:=.EL_TO;
+               _tab.SYM_TYPF:=.SYM_TYPF;
+               _tab.SYM_TYPT:=.SYM_TYPT;
+               _tab.NAM_TYPF:=.NAM_TYPF;
+               _tab.NAM_TYPT:=.NAM_TYPT;
+               _tab.REF_TYPF:=.REF_TYPF;
+               _tab.REF_TYPT:=.REF_TYPT;
+               _tab.REF_CONN:=.REF_CONN;
+               _tab.REF_POF:=.REF_POF;
+               _tab.REF_POT:=.REF_POT;
+               _tab.REF_PREF:=.REF_PREF;
+               _tab.REF_PRET:=.REF_PRET;
+               _tab.SYM_POF:=.SYM_POF;
+               _tab.SYM_POT:=.SYM_POT;
+               _tab.REQ_POF:=.REQ_POF;
+               _tab.REQ_POT:=.REQ_POT;
+               _tab.REF_POCO:=.REF_POCO;
+               _tab.ACCEPTED:=.ACCEPTED;
+               _tab.ONE_TO:=.ONE_TO;
+               _tab.LEVEL:=.LEVEL;
+               ~~
+             ";
+_buffer.blank();
+_buffer
+
+
+\buffer_tmp2real
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Przekształca bufor tymczasowej tabeli .TAB_CONN w bufor rzeczywistej tabeli B_POCONN
+::   WE: _a - bufor tymczasowy - exec('buffer_conncr','#b_poconn')
+::   WY: obj_new - bufor tabeli rzeczywistej
+::----------------------------------------------------------------------------------------------------------------------
+_buf_tmp:=_a;
+
+_buf_real:=exec('buffer','#b_poconn');
+B_CONN.cntx_psh(); B_CONN.clear();
+{? B_CONN.seek(_buf_tmp.REF_CONN)
+|| _buf_real.B_PROC:=B_CONN.B_PROC;
+   _buf_real.B_CONN:=B_CONN.ref()
+?};
+B_CONN.cntx_pop();
+
+_buf_real.FROM:=exec('FindAndGet','#table',B_PORT,_buf_tmp.REF_POF,,,null());
+_buf_real.TO:=exec('FindAndGet','#table',B_PORT,_buf_tmp.REF_POT,,,null());
+_buf_real.PREL_SRC:=exec('FindAndGet','#table',B_PREL,_buf_tmp.REF_PREF,,,null());
+_buf_real.PREL_DST:=exec('FindAndGet','#table',B_PREL,_buf_tmp.REF_PRET,,,null());
+_buf_real
+
+
+\create_conn
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy rekord w tabeli tymczasowej .TAB_CONN
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       [_b] - INTEGER - czy wyświetlać komunikaty na ekran o nieudanych połączeniach
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_display:=0;
+{? var_pres('_b')=type_of(0)
+|| _display:=_b
+?};
+
+_tab:=_env.TAB_CONN;
+
+_result:=0;
+_can_continue:=1;
+
+_tab.cntx_psh();
+_tab.index(_env.IN_CONN3);
+_tab.prefix(_env.TAB_TO.REF_PORT);
+
+_buffer:=exec('buffer_conncr','#b_poconn');
+
+_can_add:=0;
+{? _env.TAB_TO.ONE_TO>0
+||
+:: Jeśli port wejsciowy może miec tylko jedno połączenie to sprawdzam czy na liście
+:: połączeń nie ma juz takiego połączenia
+   {? _tab.size()>0
+   || _can_add:=0;
+
+      {? _display>0
+      || _msg:='Argument wejściowy \''+_env.TAB_TO.SYM_PORT+'\' jest już powiązany.';
+         FUN.emsg(_msg)
+      ?}
+   || _can_add:=1
+   ?}
+||
+   _can_add:=1
+?};
+
+{? _can_add>0
+||
+::  W zadnym przypadku jeden port wejściowy nie może być połączony do więcej niz
+::  jednego porty wyjściowego tej samej czynności
+   _tab.index(_env.IN_CONN4);
+   _tab.prefix(_env.TAB_TO.REF_PORT,_env.TAB_FROM.REF_PREL);
+   {? _tab.size()>0
+   || _can_add:=0;
+
+      {? _display>0
+      || _msg:='Argument wejściowy \''+_env.TAB_TO.SYM_PORT+'\' jest już powiązany z elementem procesu \''+_env.TAB_FROM.SYM_ELEM+'\'.';
+         FUN.emsg(_msg)
+      ?}
+   || _can_add:=1
+   ?}
+?};
+
+{? _can_add>0
+||
+:: Sprawdzam czy port wejściowy nie został juz powiązany z grupa do której należy port
+:: wyjściowy'
+   _chk:=exec('check_nco','#b_poconn',_env
+                                    ,_env.TAB_FROM.REF_PREL
+                                    ,_env.TAB_FROM.REF_PORT
+                                    ,_env.TAB_TO.REF_PREL
+                                    ,_env.TAB_TO.REF_PORT
+                                    ,_env.TAB_FROM.REF_CONN);
+   {? _chk=0
+   || _can_add:=0;
+      {? _display>0
+      || _msg0:='';
+         _msg1:='Argument wejściowy \''+_env.TAB_TO.SYM_PORT+'\' elementu \''+_env.TAB_TO.SYM_ELEM+'\'';
+         _msg2:='nie może być ponownie łączony z arg. wyjściowymi, ze względu na występowanie ';
+         _msg3:='bram zbierających typu AND na prowadzącej do: '+_env.TAB_TO.SYM_ELEM+' ścieżce procesu.';
+         _msg_glued:=exec('form','#string','L',_msg1
+                                             ,_msg2
+                                             ,_msg3);
+         FUN.emsg(_msg_glued)
+      ?}
+   ?}
+?};
+
+
+{? _can_add>0
+|| _buffer.EL_FROM:=_env.TAB_FROM.SYM_ELEM;
+   _buffer.EL_TO:=_env.TAB_TO.SYM_ELEM;
+   _buffer.SYM_TYPF:=_env.TAB_FROM.SYM_TYP;
+   _buffer.SYM_TYPT:=_env.TAB_TO.SYM_TYP;
+   _buffer.NAM_TYPF:=_env.TAB_FROM.NAM_TYP;
+   _buffer.NAM_TYPT:=_env.TAB_TO.NAM_TYP;
+   _buffer.REF_TYPF:=_env.TAB_FROM.REF_TYP;
+   _buffer.REF_TYPT:=_env.TAB_TO.REF_TYP;
+   _buffer.REF_CONN:=_env.TAB_FROM.REF_CONN;
+   _buffer.REF_POF:=_env.TAB_FROM.REF_PORT;
+   _buffer.REF_POT:=_env.TAB_TO.REF_PORT;
+   _buffer.REF_PREF:=_env.TAB_FROM.REF_PREL;
+   _buffer.REF_PRET:=_env.TAB_TO.REF_PREL;
+   _buffer.SYM_POF:=_env.TAB_FROM.NAM_PORT;
+   _buffer.SYM_POT:=_env.TAB_TO.NAM_PORT;
+   _buffer.REQ_POF:=_env.TAB_FROM.REQUIRED;
+   _buffer.REQ_POT:=_env.TAB_TO.REQUIRED;
+   _buffer.ACCEPTED:='N';
+   _buffer.ONE_TO:=_env.TAB_TO.ONE_TO;
+   _buffer.LEVEL:=_env.TAB_FROM.LEVEL;
+
+   _can_continue:=exec('tab_conn_add','#b_poconn',_env,_buffer)
+?};
+_tab.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\tab_conn_add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Dodaje do tabeli tymczasowej .TAB_CONN jeden rekord
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - obj_new - bufor tabeli tymczasowej
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_buffer:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_CONN;
+
+_tab.blank();
+_buffer.set(_tab);
+_can_continue:=_tab.add();
+
+{? _can_continue>0
+||
+:: Dodaje info do tabeli z wymaganymi połąaczeniami że jedno z nich zostało utworzone
+   exec('req_conn_add','#b_poconn',_env,_buffer.REF_PREF,_buffer.REF_POF,_buffer.REF_PRET,_buffer.REF_POT);
+
+:: Dodaje info do zakazanych połączeń
+   exec('nco_conn_add','#b_poconn',_env,_buffer);
+
+:: Jeśli utworzono połaczenie to usuwam porty z górnych okien
+   _can_continue:=exec('port_del','#b_poconn',_env,_env.TAB_FROM,_buffer.REF_POF,_env.IN_FROM4,_buffer.REF_PREF);
+
+   {? _can_continue>0
+   || {? _buffer.ONE_TO=1
+      || _can_continue:=exec('port_del','#b_poconn',_env,_env.TAB_TO,_buffer.REF_POT,_env.IN_TO4,_buffer.REF_PRET)
+      || _can_continue:=exec('port_num_mod','#b_poconn',_env,_env.TAB_TO,_buffer.REF_PRET,_buffer.REF_POT,_env.IN_TO4,1);
+
+         {? exec('has_req_conns','#b_poconn',_env,_buffer.REF_PRET,_buffer.REF_POT)>0
+         ||
+::          Sa jakies wymagane polaczenia dla portu - sprawdzam czy wszystkie prawidlowo
+::          zaspokojone
+            _req_left:=exec('chk_req_conns','#b_poconn',_env,_buffer.REF_PRET,_buffer.REF_POT);
+            {? _req_left.size()=0
+            || _can_continue:=exec('port_del','#b_poconn',_env,_env.TAB_TO,_buffer.REF_POT,_env.IN_TO4,_buffer.REF_PRET)
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\port_del
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Usuwa jeden port z przekazanej tabeli
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - tab_tmp - tabela z portami z której usuwać
+::       _c - STRING[16] - ref portu
+::       _d - ndx_tmp - indeks tymczasowy jakiego użyć w tabeli
+::       _e - STRING[16] - ref prela któremu usunąć port
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_b;
+_ref_port:=_c;
+_ndx:=_d;
+_ref_prel:=_e;
+
+_result:=0;
+_can_continue:=1;
+
+_tab.cntx_psh();
+_tab.index(_ndx);
+_tab.prefix(_ref_prel,_ref_port);
+{? _tab.first()
+|| {!
+   |? _can_continue:=_tab.del(,1);
+      _tab.first() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_tab.cntx_pop();
+_result
+
+
+\port_num_mod
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Modyfikuje ilość utworzonych połączeń dla portu
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - tab_tmp - tabela z portami ktore modyfikowac
+::       _c - STRING[16] - ref B_PREL
+::       _d - STRING[16] - ref B_PORT
+::       _e - ndx_tmp - indeks tymczasowy jakiego użyc w tabeli
+::       _f - REAL - o ile zmniejszyć/zwiekszyć pole NUM_CONN
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_b;
+_b_prel:=_c;
+_ref_port:=_d;
+_ndx:=_e;
+_increment:=_f;
+
+_result:=0;
+_can_continue:=1;
+
+_tab.cntx_psh();
+_tab.index(_ndx);
+_tab.prefix(_b_prel,_ref_port);
+{? _tab.first()
+|| {!
+   |? _tab.NUM_CONN+=_increment;
+      _can_continue:=_tab.put();
+      _tab.next() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_tab.cntx_pop();
+_result
+
+
+\conn_del_act
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Akcja usuń w oknie tabeli tymczasowej .TAB_CONN
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=cur_tab(1,1);
+
+_group:=0;
+{? _tab.sel_size()>0
+|| _group:=1
+?};
+
+_choice:=1;
+:: zapytanie czy na pewno
+{? _group=0
+|| _choice:=FUN.ask('Czy usunąć powiązanie argumentów: %1 -> %2?'@[_tab.EL_FROM,_tab.EL_TO])
+?};
+
+{? _group=0
+|| KOMM.init(200,,'Usuwanie powiązań argumentów elementów czynności'@,'')
+?};
+
+{? _choice=1
+|| exec('conn_del','#b_poconn',_env,_tab.ref(),_group)
+?};
+
+:: jesli akcja nie byla grupowa to pokazuje okno z komunikatami i odżwieżam okna
+{? _group=0
+||
+   _env.TAB_FROM.first();
+   _env.TAB_TO.first();
+   {? var_pres('TAB_CONN',_env)>100
+   || grp_disp(_env.TAB_CONN,_env.WIN_CONN)
+   ?};
+   {? var_pres('TAB_FROM',_env)>100
+   || grp_disp(_env.TAB_FROM,_env.WIN_FROM,1)
+   ?};
+   {? var_pres('TAB_TO',_env)>100
+   || grp_disp(_env.TAB_TO,_env.WIN_TO,1)
+   ?};
+   {? _env.DEVELOP>0
+   || {? var_pres('TAB_NCO',_env)>100
+      || grp_disp(_env.TAB_NCO,_env.WIN_NCO,1)
+      ?}
+   ?};
+   KOMM.select(,,,,,0)
+?};
+~~
+
+
+\del_act_gr1
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Akcja usuń grupa przed w oknie wertowania tabeli .TAB_ZPAR
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0;
+_tab:=cur_tab(1,1);
+{? FUN.ask('Zaznaczono: %1 powiązań. Czy usunąć je wszystkie?'@[$_tab.sel_size()])
+|| _ok:=1;
+   KOMM.init(200,,'Usuwanie powiązań argumentów elementów czynności'@,'')
+?};
+_ok
+
+
+\del_act_gr2
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Akcja usuń grupa po w oknie wertowania tabeli .TAB_ZPAR
+::   WE: _a - _env - środowisko kreatora exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+{? var_pres('TAB_CONN',_env)>100
+|| grp_disp(_env.TAB_CONN,_env.WIN_CONN,1)
+?};
+{? var_pres('TAB_FROM',_env)>100
+|| grp_disp(_env.TAB_FROM,_env.WIN_FROM,1)
+?};
+{? var_pres('TAB_TO',_env)>100
+|| grp_disp(_env.TAB_TO,_env.WIN_TO,1)
+?};
+{? _env.DEVELOP>0
+|| {? var_pres('TAB_NCO',_env)>100
+   || grp_disp(_env.TAB_NCO,_env.WIN_NCO,1)
+   ?}
+?};
+KOMM.select(,,,,,0);
+~~
+
+
+\conn_del
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Usuwa z tabeli .TAB_CONN jeden rekord, a jeśli byl zaakceptowany to rowniez z tabeli
+::       B_POCONN
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - .TAB_CONN.ref - rekord ktory usunac
+::       _c - INTEGER - tryb wyświetlania komunikatów na ekran:
+::                         1 - dodawanie do komma
+::                        [0] - wysśietlanie na ekran
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_ref:=_b;
+
+_komm:=0;
+{? var_pres('_c')=type_of(0)
+|| _komm:=_c
+?};
+
+_tab:=cur_tab(1,1);
+
+_result:=0;
+_can_continue:=1;
+
+_tab.cntx_psh(); _tab.clear();
+{? _tab.seek(_ref)
+||
+:: Sprawdzam czy moge zablokowac porty
+   {? _env.EDITABLE>0
+   ||
+      B_PORT.cntx_psh();
+      B_PORT.clear();
+      {? B_PORT.seek(_tab.REF_POF)
+      || {? exec('lock','#b_port',B_PORT.ref(),0)=0
+         || _msg:='Parametr: \'%1\' jest zablokowany przez innego użytkownika.Usunięcie powiązania niemożliwe.'@[B_PORT.SYMBOL+' '+B_PORT.NAME];
+            {? _komm>0
+            || KOMM.add(_msg,'xwin16.png:2')
+            || FUN.emsg(_msg)
+            ?};
+            _can_continue:=0
+         ?}
+      ?};
+      {? _can_continue>0
+      || {? B_PORT.seek(_tab.REF_POT)
+         || {? exec('lock','#b_port',B_PORT.ref(),0)=0
+            || _msg:='Parametr: \'%1\' jest zablokowany przez innego użytkownika.Usunięcie powiązania niemożliwe.'@[B_PORT.SYMBOL+' '+B_PORT.NAME];
+               {? _komm>0
+               || KOMM.add(_msg,'xwin16.png:2')
+               || FUN.emsg(_msg)
+               ?};
+               _can_continue:=0
+            ?}
+         ?}
+      ?};
+      B_PORT.cntx_pop()
+   ?};
+
+   _verify:=1;
+:: Jesli jest odpowiednik rekordu rzeczywistego to zapamietuje rzeczywisty do usuniecia
+   {? _can_continue>0 & _tab.REF_POCO<>''
+   || _b_poconn:=exec('FindAndGet','#table',B_POCONN,_tab.REF_POCO,,,null());
+
+::    Weryfikuje przed usunieciem
+      _verify:=exec('verify','#b_poconn',_b_poconn);
+      _can_continue:=exec('save_to_del','#b_poconn',_env,$_b_poconn)
+   ?};
+
+:: Jesli usunalem rzeczywisty lub go nie bylo usuwam z tabelki
+   {? _can_continue>0
+   ||
+::    Zapamietuje w buforze rekord ktory usuwam
+      _buffer:=exec('buffer_conncr','#b_poconn');
+      _buffer.get(_tab);
+      _b_conn:=exec('FindAndGet','#table',B_CONN,_buffer.REF_CONN,,,null());
+
+      _can_continue:=_tab.del(,1);
+
+      {? _can_continue>0
+      ||
+::       Jeśli sie udalo usunac a rekord zostal pozytywnie zweryfikowany (o ile juz istnial)
+::       to przywracam porty do tabel tymczasowych z portami
+
+         {? _verify>0
+         ||
+            B_PORT.cntx_psh();B_PORT.clear();
+
+::          1. Port źródłowy
+            {? B_PORT.seek(_buffer.REF_POF)
+            || _b_prel:=exec('FindAndGet','#table',B_PREL,_buffer.REF_PREF,,,null());
+               exec('port2tab','#b_poconn',_env,'TAB_FROM',_b_prel,_b_conn,,_buffer.LEVEL)
+            ?};
+
+::          2. Port docelowy
+            {? B_PORT.seek(_buffer.REF_POT)
+            || _b_prel:=exec('FindAndGet','#table',B_PREL,_buffer.REF_PRET,,,null());
+               {? exec('port2tab','#b_poconn',_env,'TAB_TO',_b_prel)=2
+               ||
+::             Jesli nie dodalem portu docelowego bo juz byl to zmniejszam mu ilosc
+::             utworzonych polaczen
+                  exec('port_num_mod','#b_poconn',_env,_env.TAB_TO,_buffer.REF_PRET,_buffer.REF_POT,_env.IN_TO4,-1)
+               ?}
+            ?};
+            B_PORT.cntx_pop()
+         ?};
+
+::       Dodaje info do tabeli z wymaganymi połączeniami ze jedno z nich zostało usunięte
+         exec('req_conn_del','#b_poconn',_env,_buffer.REF_PREF,_buffer.REF_POF,_buffer.REF_PRET,_buffer.REF_POT);
+
+::       Usuwam z zakazanych połączeń takie powiązanie
+         exec('nco_conn_del','#b_poconn',_env,_buffer);
+         ~~
+      ?}
+   ?}
+?};
+_tab.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\accept_act
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Akcja 'Akceptuj' w oknie kreatora połączeń miedzyargumentowych
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_CONN;
+
+_can_continue:=0;
+
+KOMM.init(200,,'Weryfikacja powiązań międzyportowych');
+
+:: 1. Robie sprawdzenie zgodności typów
+_chk1:=exec('chk_types','#b_poconn',_env);
+
+:: 2. Sprawdzam czy wszystkie wymagane porty zostały powiazane
+_chk2:=exec('chk_required','#b_poconn',_env);
+
+{? _chk1>0 & _chk2>0
+||
+:: Usuwam rekordy które mam usunąć
+   _can_continue:=exec('del_while_akc','#b_poconn',_env);
+
+   {? _can_continue>0
+   ||
+      _tab.cntx_psh();
+      _tab.index(_env.IN_CONN2);
+      _tab.prefix('N');
+      {? _tab.first()
+      ||
+         _buf_tmp:=exec('buffer_conncr','#b_poconn');
+         {!
+         |?
+::          Wypełniam bufor tymczasowy
+            _buf_tmp.get(_tab);
+::          Przeksztalcam na bufor rzeczywisty
+            {? var_pres('_buf_real')>100
+            || obj_del(_buf_real)
+            ?};
+            _buf_real:=exec('buffer_tmp2real','#b_poconn',_buf_tmp);
+
+::          Dodaje rekord do tabeli
+            _can_continue:=exec('add','#b_poconn',_buf_real);
+            {? _can_continue>0
+            || _b_poconn:=exec('FindAndGet','#table',B_POCONN,_can_continue,,null());
+               B_POCONN.cntx_psh();
+               B_POCONN.prefix();
+               {? B_POCONN.seek(_b_poconn)
+               || _tab.cntx_psh(); _tab.clear();
+                  _tab.ACCEPTED:='T';
+                  _tab.REF_POCO:=$_b_poconn;
+                  _can_continue:=_tab.put();
+                  _tab.cntx_pop()
+               ?};
+               B_POCONN.cntx_pop()
+            ?};
+            _tab.first() & _can_continue>0
+         !}
+      ?};
+      _tab.cntx_pop()
+   ?}
+?};
+
+KOMM.select(,,,,,1);
+
+{? _can_continue>0
+|| _env.ACCEPTED:='T';
+   sel_exit()
+|| _env.ACCEPTED:='N'
+?};
+~~
+
+
+\cancel_act
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Akcja 'Anuluj' w oknie kreatora połączeń miedzyargumentowych
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+sel_exit();
+~~
+
+
+\chk_type4port
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy dwa porty maja typy zgodne ze soba - tzn czy je można połączyć
+::   WE: _a - B_PORT.ref()
+::       _b - B_PORT.ref()
+::   WY: 0 - typy niezgodne, nie można połączyć
+::       1 - typy zgodne, można połączyć
+::----------------------------------------------------------------------------------------------------------------------
+_port1:=_a;
+_port2:=_b;
+
+_result:=0;
+
+:: Pobieram typy
+_type1:=exec('FindAndGet','#table',B_PORT,#_port1,ref_name(_port1),"B_TYPE",null());
+_type2:=exec('FindAndGet','#table',B_PORT,#_port2,ref_name(_port2),"B_TYPE",null());
+
+{? $_type1=$_type2
+|| _result:=1
+?};
+_result
+
+
+\chk_types
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy wszystkie połączenia miedzyargumentowe które mają zostać utworzone mają
+::       poprawnie powiązane typy
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=1;
+_can_continue:=1;
+
+_tab:=_env.TAB_CONN;
+
+_tab.cntx_psh();
+_tab.index(_env.IN_CONN2);
+_tab.prefix('N');
+{? _tab.first()
+|| {!
+   |?
+::    Pobieram refy portów
+      _port1:=exec('FindAndGet','#table',B_PORT,_tab.REF_POF,,null());
+      _port2:=exec('FindAndGet','#table',B_PORT,_tab.REF_POT,,null());
+
+      _chk:=exec('chk_type4port','#b_poconn',_port1,_port2);
+      {? _chk=0
+      || _result:=0;
+         {? KOMM.is_inited()
+         || KOMM.add('Powiązanie argumentów: '+_tab.EL_FROM+' -> '+_tab.EL_TO+' jest niezgodne pod względem typów','xwin16.png:2')
+         ?}
+      ?};
+      _tab.next()
+   !}
+?};
+_tab.cntx_pop();
+_result
+
+
+\chk_required
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy wszystkie porty które mają wymagane powiązania zostały powiązane
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=1;
+_can_continue:=1;
+
+_tab_from:=_env.TAB_FROM;
+_tab_to:=_env.TAB_TO;
+_tab_req:=_env.TAB_REQ;
+_tab_conn:=_env.TAB_CONN;
+
+_tab_req.cntx_psh();
+_tab_req.index(_env.IN_REQ1);
+
+_tab_from.cntx_psh();
+_tab_from.clear();
+{? _tab_from.first()
+|| {!
+   |? {? _tab_from.REQUIRED='T'
+      || _result:=0;
+         {? KOMM.is_inited()
+         || KOMM.add('Argument wyjściowy elementu: '+_tab_from.SYM_ELEM+' typu: '+_tab_from.SYM_TYP+' musi być powiązany','xwin16.png:2')
+         ?}
+      ?};
+      _tab_from.next()
+   !}
+?};
+_tab_from.cntx_pop();
+
+_tab_to.cntx_psh();
+_tab_to.clear();
+{? _tab_to.first()
+|| {!
+   |? {? _tab_to.REQUIRED='T' & _tab_to.MANUAL<>'T'
+      ||
+         _has_conns:=0;
+         _has_req:=1;
+         {? _tab_to.ONE_TO=0
+         ||
+::          Jesli port wejsciowy moze miec wiele polaczen
+::          to sprawdzam liczbe utworzonych polaczen
+            {? _tab_to.NUM_CONN>0
+            || _has_conns:=1
+            ?};
+
+::          Sprawdzam czy port ma powiazania do wszystkich czynnosci do ktorych
+::          powinien miec powiazania
+
+            {? var_pres('_port_req')>100
+            || obj_del(_port_req)
+            ?};
+            _port_req:=exec('chk_req_conns','#b_poconn',_env,_tab_to.REF_PREL,_tab_to.REF_PORT);
+            {? _port_req.first()
+            || _result:=0;
+               _has_req:=0;
+
+::             Bez obsługi grup - wymieniam elementy z którymi musi być powiazany port
+               {!
+               |? {? KOMM.is_inited()
+                  || _msg:='Argument wejściowy: '+_tab_to.SYM_PORT+' elementu: ';
+                     _msg+=_tab_to.SYM_ELEM+' typu: '+_tab_to.SYM_TYP;
+                     _msg+=' powinien być powiązany z elementem: '+_port_req.SYMBOL;
+                     KOMM.add(_msg,'xwin16.png:2')
+                  ?};
+                  _port_req.next()
+               !}
+            ?}
+         ||
+::          Jeśli port wejsciowy może mieć tylko jedno połączenie
+::          to sam fakt istnienia tego portu na liscie portów nie powiązanych
+::          sprawia, że jest źle
+            _has_conns:=0
+         ?};
+
+         {? _has_conns=0 & _has_req>0
+         ||
+            _result:=0;
+            {? KOMM.is_inited()
+            || KOMM.add('Argument wejściowy elementu: '+_tab_to.SYM_ELEM+' typu: '+_tab_to.SYM_TYP+' musi być powiązany','xwin16.png:2')
+            ?}
+         ?}
+      ?};
+      _tab_to.next()
+   !}
+?};
+_tab_to.cntx_pop();
+_tab_req.cntx_pop();
+_result
+
+
+\auto_conn
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Probuje powiazac automatycznie argumenty. Kryteria:
+::       1. Zgodnosc typów
+::       2. Zgodnosc symboli portów
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       [_b] - INTEGER - tryb automatycznego wiązania:
+::                                                       [1] - wiązać wszystkie porty wejściowe
+::                                                        2 - wiązać tylko wymagane porty wejściowe
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_mode:=1;
+
+{? var_pres('_b')=type_of(0)
+|| _mode:=_b
+?};
+
+_result:=1;
+_can_continue:=1;
+
+_tab_from:=_env.TAB_FROM;
+_tab_to:=_env.TAB_TO;
+
+_tab_from_ndx:=_env.IN_FROM5;
+
+_tab_from.cntx_psh();
+_tab_to.cntx_psh();
+
+_tab_from.index(_tab_from_ndx);
+_tab_from.clear();
+_tab_to.clear();
+B_PORT.cntx_psh(); B_PORT.clear();
+
+{? _tab_from.first()
+|| {!
+   |?
+::    Pobieram port i symbol źródłowy
+      _type_from:=null;
+      _sym_from:='';
+
+      {? B_PORT.seek(_tab_from.REF_PORT)
+      || _sym_from:=B_PORT.SYMBOL;
+         _type_from:=B_PORT.B_TYPE
+      ?};
+
+::    Szukam w portach docelowych pasujacego
+      _can_continue:=1;
+      {? _tab_to.first()
+      || {!
+         |?
+::          Pobieram port i symbol docelowy
+            _type_to:=null;
+            _sym_to:='';
+            _req_to:='N';
+            {? B_PORT.seek(_tab_to.REF_PORT)
+            || _sym_to:=B_PORT.SYMBOL;
+               _type_to:=B_PORT.B_TYPE;
+               _req_to:=B_PORT.REQUIRED
+            ?};
+
+::          Sprawdzam czy można powiazać - zgodność typów i symboli
+            _connect:=0;
+            {? $_type_from=$_type_to & _sym_from=_sym_to
+            || _connect:=1
+            ?};
+
+::          Sprawdzam czy można powiązać - jeśli tryb określono na wiązanie tylko wymaganych
+::          to nic nie robie jeśli port docelowy niewymagany
+            {? _mode=2 & _req_to='N'
+            || _connect:=0
+            ?};
+
+::          Jeśli port docelowy ma wartość określoną ręcznie w definicji procesu to nie ma sensu
+::          robić powiązania
+            {? _tab_to.MANUAL='T'
+            || _connect:=0
+            ?};
+
+            {? _connect>0
+            ||
+::             Znalazlem pasujacy - robie powiązanie
+               {? exec('create_conn','#b_poconn',_env)>0
+               ||
+                  {? _tab_to.ONE_TO=1
+                  || _can_continue:=0
+                  ?}
+               || _result:=0
+               ?}
+            ?};
+            _tab_to.next() & _can_continue>0 & _result>0
+         !}
+      ?};
+      _tab_from.next() & _result>0
+   !}
+?};
+B_PORT.cntx_pop();
+_tab_to.cntx_pop();
+_tab_from.cntx_pop();
+_result
+
+
+\unlock_ports
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Odblokowuje wszystkie B_PORTy aktualnie załadowane do okienka
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+B_PORT.cntx_psh();
+B_PORT.clear();
+
+:: Odblokowuje porty w tabelce źródeł
+_tab_port:=_env.TAB_FROM;
+_tab_port.cntx_psh();
+_tab_port.clear();
+{? _tab_port.first()
+|| {!
+   |? {? B_PORT.seek(_tab_port.REF_PORT)
+      || exec('unlock','#b_port',B_PORT.ref())
+      ?};
+      _tab_port.next()
+   !}
+?};
+_tab_port.cntx_pop();
+
+:: Odblokowuje porty w tabelce celów
+obj_del(_tab_port);
+_tab_port:=_env.TAB_TO;
+_tab_port.cntx_psh();
+_tab_port.clear();
+{? _tab_port.first()
+|| {!
+   |? {? B_PORT.seek(_tab_port.REF_PORT)
+      || exec('unlock','#b_port',B_PORT.ref())
+      ?};
+      _tab_port.next()
+   !}
+?};
+_tab_port.cntx_pop();
+
+:: Odblokowuje porty w tabelce powiązań
+_tab_conn:=_env.TAB_CONN;
+_tab_conn.cntx_psh();
+_tab_conn.clear();
+{? _tab_conn.first()
+|| {!
+   |?
+      {? B_PORT.seek(_tab_conn.REF_POF)
+      || exec('unlock','#b_port',B_PORT.ref())
+      ?};
+      {? B_PORT.seek(_tab_conn.REF_POT)
+      || exec('unlock','#b_port',B_PORT.ref())
+      ?};
+      _tab_conn.next()
+   !}
+?};
+_tab_conn.cntx_pop();
+B_PORT.cntx_pop();
+~~
+
+
+\editable_poconn
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy dla połączenia pomiędzy dwoma elementami procesu można
+::       edytować powiązania miedzyargumentowe
+::   WE: [_a] - B_CONN.ref()
+::   WY: 0 - nie można edytować
+::       1 - można edytować
+::----------------------------------------------------------------------------------------------------------------------
+_b_conn:=B_CONN.ref();
+
+_result:=0;
+_can_continue:=1;
+
+B_CONN.cntx_psh();
+B_PREL.cntx_psh();
+
+{? var_pres('_a')=type_of(B_CONN.ref())
+|| _b_conn:=_a;
+   B_CONN.clear();
+   _can_continue:=B_CONN.seek(_b_conn)
+?};
+
+{? _can_continue>0
+|| {? (B_CONN.TO().CLASS='B_ACTION' | B_CONN.TO().CLASS='B_EVENT')
+      & exec('ports_count','#b_action',B_CONN.TO().B_ELE,exec('kind_in','#b_port'),B_CONN.TO)>0
+   || _result:=1
+   ?}
+?};
+B_PREL.cntx_pop();
+B_CONN.cntx_pop();
+_result
+
+
+\verify
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Weryfikuje B_POCONNa
+::   WE: _a - B_POCONN.ref()
+::       [_b] - obj_new - argumenty funkcji dla komunikatów - wynik działania exec('komm_args','#b_proc')
+::   WY: 0 - weryfikacja zakończona niepowodzeniem
+::       1 - B_POCONN jest ok
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+
+_b_poconn:=_a;
+
+_args:=~~;
+{? var_pres('_b')>100
+|| _args:=exec('obj_ntab_set','#array',_b)
+|| _args:=exec('komm_args','#b_proc')
+?};
+
+_result:=1;
+
+B_POCONN.cntx_psh(); B_POCONN.clear();
+B_PREL.cntx_psh();
+B_PORT.cntx_psh();
+{? B_POCONN.seek(_b_poconn)
+||
+:: Sprawdzam czy typy się zgadzają
+:: Jeśli B_POCONN.TO=null to przypadek łączeń parametrów wyjściowych do bramy
+   _chk_types:={? B_POCONN.TO || exec('chk_type4port','#b_poconn',B_POCONN.TO,B_POCONN.FROM) || 1 ?};
+   {? _chk_types=0
+   || _result:=0;
+      _sect:='Powiązania argumentów niezgodne pod względem typów';
+
+      _conn:=B_POCONN.FROM().NAME+' -> '+B_POCONN.TO().NAME;
+      _src:=B_POCONN.PREL_SRC().SYMBOL;
+      _dst:=B_POCONN.PREL_DST().SYMBOL;
+
+      _msg:='Powiązanie: \'%1\' (źródło: %2, cel: %3).'@[_conn,_src,_dst];
+
+      _args.SECT:=_sect;
+      _args.MSG:=_msg;
+      _args.GRAPH_UID:=B_POCONN.PREL_DST().UID;
+      exec('komm_add','#b_proc',_args)
+   ?}
+?};
+B_POCONN.cntx_pop();
+B_PREL.cntx_pop();
+B_PORT.cntx_pop();
+_result
+
+
+\tab_req
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy tabelke tymczasową zawierajacą wymagane połączenia dla portów docelowych
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=tab_tmp( 1
+               ,'PARENT'   ,'TREE_REF'    ,'Rodzic'
+               ,'SYMBOL'   ,'STRING[100]' ,'Symbol elementu'
+               ,'SYM_SRC'  ,'STRING[100]' ,'Symbol B_PRELa z ktorym nalezy powiazac porty'
+               ,'REF_SRC'  ,'STRING[16]'  ,'Ref SQL B_PRELa z ktorym nalezy powiazac porty'
+               ,'REF_DST'  ,'STRING[16]'  ,'Ref SQL B_PRELa ktory ma miec powiazane porty'
+               ,'SYM_DST'  ,'STRING[100]' ,'Symbol B_PRELA ktory ma miec powiazane porty'
+               ,'OPERATOR' ,'STRING[3]'   ,'Operator dla grupy'
+               ,'KIND'     ,'STRING[1]'   ,'Rodzaj elementu C-Calosc,E-element, G-grupa, P-port'
+               ,'GRP_PREL' ,'STRING[16]'  ,'SQL ref B_PRELa ktory spowodował grupowanie'
+               ,'REF_PORT' ,'STRING[16]'  ,'SQL ref B_PORTu docelowego'
+               ,'OK'       ,'INTEGER'     ,'Czy wymaganie spelnione'
+               );
+_env.IN_REQ1:=_tab.ndx_tmp(,,'REF_DST',,,'SYM_SRC',,);
+_env.IN_REQ2:=_tab.ndx_tmp(,,'PARENT',,,'SYMBOL',,);
+_env.IN_REQ3:=_tab.ndx_tmp(,,'PARENT',,,'REF_DST',,,'REF_SRC',,);
+_env.IN_REQ4:=_tab.ndx_tmp(,,'GRP_PREL',,,'SYMBOL',,);
+_env.IN_REQ5:=_tab.ndx_tmp(,,'REF_DST',,,'REF_PORT',,,'KIND',,,'REF_SRC',,);
+_env.IN_REQ6:=_tab.ndx_tmp(,,'PARENT',,,'REF_DST',,,'REF_PORT',,);
+_env.IN_REQ7:=_tab.ndx_tmp(,,'PARENT',,,'REF_SRC',,);
+
+_tab
+
+
+\win_req
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy okno tymczasowe zawierajace wymagane połączenia dla portów docelowych
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: STRING - uchwyt do okna
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_REQ;
+
+_title:='Wymagane powiązania'@;
+
+_wer:=_tab.mk_sel(_title,'P',0,_env.wid_req,1,1,,1);
+_tab.win_fld(_wer,,'SYMBOL'  ,,,40,,,'Symbol'@,0);
+_tab.win_fld(_wer,,'SYM_SRC' ,,,20,,,'Element źródłowy'@,0);
+_tab.win_fld(_wer,,'SYM_DST' ,,,20,,,'Element docelowy'@,0);
+_tab.win_fld(_wer,,'OPERATOR',,,3,,,'Operator'@,0);
+_tab.win_fld(_wer,,'OK'      ,,,3,,,'OK?'@,0);
+
+_tab.win_act(_wer,,'Kolejność');
+
+_tab.win_sel(_wer);
+_wer
+
+
+\fill_req
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Wypełnia tabele .TAB_REQ na podstawie aktualnie wczytywanego B_PRELa
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - B_PREL.ref() - element procesu którego porty wejściowe ładować
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_b_prel:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+_tab_req:=_env.TAB_REQ;
+
+B_PREL.cntx_psh(); B_PREL.clear();
+B_CONN.cntx_psh();
+B_CONN.index('TO');
+_tab_req.cntx_psh(); _tab_req.clear();
+_tab_req.index(_env.IN_REQ6);
+
+:: Zawsze dodaje element typu całość
+_tab_req.blank();
+_tab_req.SYMBOL:='Całość';
+_tab_req.KIND:='C';
+_tab_req.OPERATOR:='AND';
+{? _tab_req.add()>0
+|| _env.REQ_TOP:=_tab_req.ref()
+?};
+
+B_PORT.cntx_psh();
+{? B_PREL.seek(_b_prel)
+||
+   B_PORT.index('B_ELE');
+   B_PORT.prefix('T',B_PREL.B_ELE,exec('kind_in','#b_port'),);
+   {? B_PORT.first()
+   || {!
+      |?
+::       Dodaje port do wymaganych połączeń
+         _tab_req.prefix(_env.REQ_TOP,$_b_prel,$B_PORT.ref());
+         {? _tab_req.size()=0
+         || _tab_req.blank();
+            _tab_req.PARENT:=_env.REQ_TOP;
+            _tab_req.SYMBOL:=B_PORT.SYMBOL;
+            _tab_req.REF_DST:=$_b_prel;
+            _tab_req.REF_PORT:=$B_PORT.ref();
+            _tab_req.OPERATOR:='AND';
+            _tab_req.KIND:='P';
+            _can_continue:=_tab_req.add()
+         ?};
+
+         {? _can_continue>0
+         ||
+            B_CONN.prefix(B_PREL.B_PROC,B_PREL.ref());
+            {? B_CONN.first()
+            || {!
+               |? exec('add_req','#b_poconn',_env,B_CONN.FROM,_tab_req.ref(),$_b_prel,$B_PORT.ref());
+                  B_CONN.next()
+               !}
+            ?}
+         ?};
+         B_PORT.next() & _can_continue>0
+      !}
+   ?}
+?};
+B_PREL.cntx_pop();
+B_PORT.cntx_pop();
+_tab_req.cntx_pop();
+B_CONN.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\add_req
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Zakłada rekord w tabeli .TAB_REQ reprezentujacy brame (grupe) lub element lub zwraca ref juz istniejacej grupy
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - B_PREL.ref() - element procesu
+::       [_c] - .TAB_REQ.ref - ewentualny rodzic danej grupy
+::       [_d] - STRING - $B_PREL.ref() - ref elementu który ma port
+::       [_e] - STRING - $B_PORT.ref() - ref portu
+::   WY: .TAB_REQ.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_b_prel:=_b;
+
+_tab:=_env.TAB_REQ;
+
+_parent:=_env.REQ_TOP;
+{? var_pres('_c')=type_of(_tab.ref())
+|| _parent:=_c
+?};
+_port_el:='';
+{? var_pres('_d')=type_of('')
+|| _port_el:=_d
+?};
+
+_port_ref:='';
+{? var_pres('_e')=type_of('')
+|| _port_ref:=_e
+?};
+
+_result:=null();
+
+B_PREL.cntx_psh(); B_PREL.clear();
+_tab.cntx_psh();
+
+
+{? B_PREL.seek(_b_prel)
+||
+   {? exec('is_gate_prel','#b_gate',B_PREL.ref())>0
+   ||
+::    Brama
+      _kind:=exec('get_kind_prel','#b_gate',B_PREL.ref());
+      {? _kind=exec('kind_merge','#b_gate')
+      ||
+         _tab.index(_env.IN_REQ7);
+::       Brama zbierająca
+         _tab.prefix(_parent,$B_PREL.ref());
+         {? _tab.first()
+         || _result:=_tab.ref()
+         ||
+::          Nie ma jeszcze takiej grupy - zakladam ją
+            _tab.blank();
+            _tab.PARENT:=_parent;
+            _tab.SYMBOL:=B_PREL.SYMBOL;
+            _tab.GRP_PREL:=$B_PREL.ref();
+            _tab.REF_SRC:=$B_PREL.ref();
+            _tab.KIND:='G';
+            _tab.REF_DST:=_port_el;
+            _tab.REF_PORT:=_port_ref;
+
+            _type:=exec('get_type_prel','#b_gate',B_PREL.ref());
+            {? _type=exec('type_or','#b_gate') | _type=exec('type_xor','#b_gate')
+            || _tab.OPERATOR:='AND'
+            |? _type=exec('type_and','#b_gate')
+            || _tab.OPERATOR:='OR'
+            ?};
+            _tab.add();
+            _result:=_tab.ref()
+         ?}
+      ?};
+
+::    Jeśli brama to rekurencyjnie uruchamiam też dla innych bram przed tą bramą
+      B_CONN.cntx_psh();
+      B_CONN.index('TO');
+      B_CONN.prefix(B_PREL.B_PROC,B_PREL.ref());
+      {? B_CONN.first()
+      || {!
+         |?
+            {? B_CONN.FROM<>B_PREL.ref()
+            ||
+               _par:=null();
+               {? _result<>null()
+               || _par:=_result
+               || _par:=_parent
+               ?};
+               exec('add_req','#b_poconn',_env,B_CONN.FROM,_par,_port_el,_port_ref)
+            ?};
+            B_CONN.next()
+         !}
+      ?};
+      B_CONN.cntx_pop();
+      ~~
+   |? B_PREL.CLASS='B_ACTION'
+   ||
+::    Czynność
+      _tab.index(_env.IN_REQ7);
+      _tab.prefix(_parent,$B_PREL.ref());
+      {? _tab.size()=0
+      ||
+         _tab.blank();
+         _tab.PARENT:=_parent;
+         _tab.SYMBOL:=B_PREL.SYMBOL;
+         _tab.SYM_SRC:=B_PREL.SYMBOL;
+         _tab.REF_SRC:=$B_PREL.ref();
+         _tab.KIND:='E';
+         _tab.REF_DST:=_port_el;
+         _tab.REF_PORT:=_port_ref;
+         _tab.add();
+         _result:=_tab.ref()
+      ?}
+   ?}
+?};
+B_PREL.cntx_pop();
+_tab.cntx_pop();
+_result
+
+
+\chk_req_conns
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy dany port został powiązany z wszystkimi wymaganymi czynnościami
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - $B_PREL.ref() - element procesu do ktorego nalezy port
+::       _c - $B_PORT.ref() - SQL ref portu
+::   WY: tab_tmp - tabela tymczasowa zawierająca refy B_PRELi z którymi należy jeszcze
+::                 powiazać dany port - wynik exec('actions_tab','#b_gate')
+::                 jeśli pusta to znak ze wszystko powiazane jest prawidłowo
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_b_prel:=_b;
+_b_port:=_c;
+
+_result:=exec('actions_tab','#b_gate');
+
+_tab_req:=_env.TAB_REQ;
+_tab_req.cntx_psh();
+_tab_req.index(_env.IN_REQ5);
+_tab_req.clear();
+
+_tab_req.prefix(_b_prel,_b_port,'P');
+{? _tab_req.first()
+||
+:: Stoje na porcie - badam czy cały port jest OK
+   {? _tab_req.OK=0
+   ||
+      _tab_req.prefix(_b_prel,_b_port,'E');
+      {? _tab_req.first()
+      || {!
+         |?
+::          Stoje na elemencie z ktorym miałem powiazać port - sprawdzam czy jest powiązanie
+            {? _tab_req.OK=0
+            ||
+               _result.prefix(_tab_req.REF_SRC);
+               {? _result.size()=0
+               || _result.blank();
+                  _result.B_PREL:=_tab_req.REF_SRC;
+                  _result.SYMBOL:=_tab_req.SYM_SRC;
+                  _result.add()
+               ?}
+            ?};
+            _tab_req.next()
+         !}
+      ?}
+   ?}
+?};
+
+_tab_req.cntx_pop();
+_result.clear();
+_result
+
+
+\has_req_conns
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy dany port ma jakies wymagane połączenia
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::       _b - $B_PREL.ref() - element procesu do którego należy port
+::       _c - $B_PORT.ref() - SQL ref portu
+::   WY: 0 - brak wymaganych połączeń
+::       1 - istnieja jakies połączenia które należy zaspokoić
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_b_prel:=_b;
+_b_port:=_c;
+
+_result:=0;
+
+_tab_to:=_env.TAB_TO;
+_tab_req:=_env.TAB_REQ;
+_tab_to.cntx_psh();
+_tab_req.cntx_psh();
+_tab_req.index(_env.IN_REQ1);
+_tab_to.index(_env.IN_TO4);
+_tab_to.prefix(_b_prel,_b_port);
+
+{? _tab_to.first()
+||
+   _tab_req.prefix(_tab_to.REF_PREL);
+   {? _tab_req.size()>0
+   || _result:=1
+   ?}
+?};
+_tab_req.cntx_pop();
+_tab_to.cntx_pop();
+_result
+
+
+\tab_nco
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Zakazane połączenia dla portów
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=tab_tmp( 1
+               ,'SYMBOL'   ,'STRING[200]' ,'Symbol zakazu'
+               ,'SYM_PORT' ,'STRING[100]' ,'Symbol portu'
+               ,'REF_SRC'  ,'STRING[16]'  ,'Ref SQL B_PREL zrodlowego'
+               ,'REF_DST'  ,'STRING[16]'  ,'Ref SQL B_PREL docelowego'
+               ,'SYM_SRC'  ,'STRING[100]' ,'Sumbol B_PREL zrodlowego'
+               ,'SYM_DST'  ,'STRING[100]' ,'Sumbol B_PREL docelowego'
+               ,'REF_PORT' ,'STRING[16]'  ,'Ref SQL B_PORTu'
+               ,'REF_CONN' ,'STRING[16]'  ,'Ref SQL B_CONN'
+               );
+_env.IN_NCO1:=_tab.ndx_tmp(,,'REF_DST',,,'REF_PORT',,,'REF_CONN',,,'REF_SRC',,);
+_env.IN_NCO2:=_tab.ndx_tmp(,,'REF_DST',,,'REF_PORT',,,'REF_SRC',,);
+_tab
+
+
+\win_nco
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy okno tymczasowe zawierające zakazane połaczenia dla portów
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: STRING - uchwyt do okna
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_NCO;
+
+_title:='Zakazane połączenia dla portów'@;
+
+_wer:=_tab.mk_sel(_title,'P',0,_env.wid_nco,1,1);
+_tab.win_fld(_wer,,'SYMBOL' ,,,30,,,'Symbol zakazu'@,0);
+_tab.win_fld(_wer,,'SYM_PORT' ,,,20,,,'Symbol portu'@,0);
+_tab.win_fld(_wer,,'SYM_SRC' ,,,20,,,'Źródło'@,0);
+_tab.win_fld(_wer,,'SYM_DST' ,,,20,,,'Cel'@,0);
+
+_tab.win_act(_wer,,'Kolejność');
+
+_tab.win_sel(_wer);
+_wer
+
+
+\nco_conn_add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Po dodaniu połączenia analizuje ściezke od źródła do celu i dla każdej
+::       bramy AND dodaje zakazane polaczenia dla portu docelowego
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       _b - buffer tabeli .TAB_CONN - połączenie które zostało utworzone
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_buffer:=_b;
+
+
+_tab:=_env.TAB_NCO;
+
+_tab.cntx_psh();
+
+_args_collect:=exec('chk_between_a','#b_conn');
+_args_collect.MODE:=2;
+_args_collect.DIR:=-1;
+_args_collect.CLASS:='B_GATE';
+_args_collect.CL_JUMP:='B_GATE';
+_args_collect.TYPE:=exec('type_and','#b_gate');
+_args_collect.KIND:=exec('kind_merge','#b_gate');
+
+_prel_f:=exec('FindAndGet','#table',B_PREL,_buffer.REF_PREF,,,null());
+_prel_t:=exec('FindAndGet','#table',B_PREL,_buffer.REF_PRET,,,null());
+_b_conn:=exec('FindAndGet','#table',B_CONN,_buffer.REF_CONN,,,null());
+
+_args_collect.PREL_SRC:=_prel_t;
+_args_collect.PREL_CUR:=_prel_t;
+_args_collect.PREL_DST:=_prel_f;
+_args_collect.B_CONN:=_b_conn;
+_args_collect.ENTERED:=_b_conn;
+
+_formula:="
+   _env:=_a;
+   _buffer:=_b;
+
+   _tab:=_env.TAB_NCO;
+   _tab.cntx_psh();
+   _tab.index(_env.IN_NCO1);
+
+:: Sprawdzam czy stoje na bramie zbierajacej typu AND
+   {? exec('is_gate_prel','#b_gate',B_PREL.ref(),exec('type_and','#b_gate'),exec('kind_merge','#b_gate'))>0
+   ||
+::    Zapamietuje B_CONNa ktory mnie doprowadzil do bramy
+      _b_conn:=B_CONN.ref();
+
+      B_CONN.cntx_psh();
+      B_CONN.index('TO');
+      B_CONN.prefix(B_PREL.B_PROC,B_PREL.ref());
+::    Iteruje po polaczeniach ktore wchodza do bramy
+      {? B_CONN.first()
+      || {!
+         |? {? $B_CONN.ref()<>$_b_conn
+            ||
+               B_PREL.cntx_psh();
+::             Dodaje polaczenie do polaczen zakazanych
+               _tab.prefix(_buffer.REF_PRET,_buffer.REF_POT,$B_CONN.ref(),_buffer.REF_PREF);
+               {? _tab.size()=0
+               || _tab.SYMBOL:=B_CONN.FROM().SYMBOL+' -> '+B_CONN.TO().SYMBOL;
+                  _tab.SYM_PORT:=_buffer.SYM_POT;
+                  _tab.REF_PORT:=_buffer.REF_POT;
+                  _tab.REF_SRC:=_buffer.REF_PREF;
+                  _tab.REF_DST:=_buffer.REF_PRET;
+                  _tab.SYM_SRC:=_buffer.EL_FROM;
+                  _tab.SYM_DST:=_buffer.EL_TO;
+                  _tab.REF_CONN:=$B_CONN.ref();
+                  _tab.add()
+               ?};
+               B_PREL.cntx_pop();
+               ~~
+            ?};
+            B_CONN.next()
+         !}
+      ?};
+
+      B_CONN.cntx_pop();
+      ~~
+   ?};
+   _tab.cntx_pop();
+   ~~
+";
+_formula:=_formula+'';
+_args_collect.FORMULA:=_formula;
+_args_collect.ARGS1:=_env;
+_args_collect.ARGS2:=_buffer;
+
+exec('chk_between','#b_conn',_args_collect);
+
+_tab.cntx_pop();
+1
+
+
+\nco_conn_del
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Po usunięciu połączenia analizuje ściezke od źródła do celu i dla każdej
+::       bramy AND dodaje zakazane połączenia dla portu docelowego
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       _b - buffer tabeli .TAB_CONN - połączenie które zostało utworzone
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_buffer:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_NCO;
+
+_tab.cntx_psh();
+_tab.index(_env.IN_NCO2);
+_tab.prefix(_buffer.REF_PRET,_buffer.REF_POT,_buffer.REF_PREF);
+{? _tab.first()
+|| {!
+   |? _can_continue:=_tab.del(,1);
+      _tab.first() & _can_continue>0
+   !}
+?};
+_tab.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\check_nco
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Sprawdza czy port docelowy został może być powiązany
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       _b - $B_PREL.ref - element źródłowy
+::       _c - $B_PORT.ref - port źródłowy
+::       _d - $B_PREL.ref - element docelowy
+::       _e - $B_PORT.ref - port docelowy
+::       _f - $B_CONN.ref
+::   WY: 0 - port docelowy nie znajduje się w żadnych kolidujacych grupach
+::       1 - port docelowy znajduje się już w jakiejś kolidujacej grupie
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_prel_src:=_b;
+_port_src:=_c;
+_prel_dst:=_d;
+_port_dst:=_e;
+_conn:=_f;
+
+_tab:=_env.TAB_NCO;
+
+_tab.cntx_psh();
+
+_args_collect:=exec('chk_between_a','#b_conn');
+_args_collect.MODE:=2;
+_args_collect.DIR:=-1;
+_args_collect.CLASS:='B_GATE';
+_args_collect.TYPE:=exec('type_and','#b_gate');
+_args_collect.KIND:=exec('kind_merge','#b_gate');
+
+_prel_f:=exec('FindAndGet','#table',B_PREL,_prel_src,,,null());
+_prel_t:=exec('FindAndGet','#table',B_PREL,_prel_dst,,,null());
+_b_conn:=exec('FindAndGet','#table',B_CONN,_conn,,,null());
+
+_args_collect.PREL_SRC:=_prel_t;
+_args_collect.PREL_CUR:=_prel_t;
+_args_collect.PREL_DST:=_prel_f;
+_args_collect.B_CONN:=_b_conn;
+_args_collect.ENTERED:=_b_conn;
+
+_buffer:=exec('buffer_conncr','#b_poconn');
+_buffer.REF_PREF:=_prel_src;
+_buffer.REF_PRET:=_prel_dst;
+_buffer.REF_POT:=_port_dst;
+_buffer.REF_POF:=_port_src;
+_buffer.REF_CONN:=_conn;
+
+_res_obj:=obj_new('RESULT');
+_res_obj.RESULT:=1;
+
+_formula:="
+   _env:=_a;
+   _buffer:=_b;
+   _result:=_c;
+
+   _tab:=_env.TAB_NCO;
+   _tab.cntx_psh();
+   _tab.index(_env.IN_NCO1);
+
+:: Sprawdzam czy stoje na bramie zbierajacej typu AND
+   {? exec('is_gate_prel','#b_gate',B_PREL.ref(),exec('type_and','#b_gate'),exec('kind_merge','#b_gate'))>0
+   ||
+::    Sprawdzam czy takie polaczenie do tego portu jest zabronione
+      _tab.prefix(_buffer.REF_PRET,_buffer.REF_POT,$B_CONN.ref());
+      {? _tab.size()>0
+      || _result.RESULT:=0
+      ?}
+   ?};
+   _tab.cntx_pop();
+   ~~
+";
+_formula:=_formula+'';
+_args_collect.FORMULA:=_formula;
+_args_collect.ARGS1:=_env;
+_args_collect.ARGS2:=_buffer;
+_args_collect.ARGS3:=_res_obj;
+
+exec('chk_between','#b_conn',_args_collect);
+_result:=_res_obj.RESULT;
+
+_tab.cntx_pop();
+
+_result
+
+
+\req_conn_add
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Dodaje do tabeli .TAB_REQ info o utworzonym polaczeniu
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       _b - $B_PREL.ref - element źródłowy
+::       _c - $B_PORT.ref - port źródłowy
+::       _d - $B_PREL.ref - element docelowy
+::       _e - $B_PORT.ref - port docelowy
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_prel_src:=_b;
+_port_src:=_c;
+_prel_dst:=_d;
+_port_dst:=_e;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_REQ;
+
+_tab.cntx_psh();
+_tab.index(_env.IN_REQ5);
+_tab.prefix(_prel_dst,_port_dst,'E',_prel_src);
+{? _tab.first()
+|| {!
+   |?
+::    Wszystkim elementom typu E nawijam ze polaczenie zostalo utworzone
+      {? _tab.KIND='E'
+      || _tab.OK:=1;
+         _can_continue:=_tab.put()
+      ?};
+      _tab.next()
+   !}
+?};
+_tab.cntx_pop();
+{? _can_continue>0
+||
+:: Uaktualniam status calego drzewa
+   exec('req_conns_upd','#b_poconn',_env,_env.REQ_TOP);
+   _result:=1
+?};
+_result
+
+
+\req_conn_del
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Dodaje do tabeli .TAB_REQ info o usuniętym połączeniu
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       _b - $B_PREL.ref - element źródłowy
+::       _c - $B_PORT.ref - port źródłowy
+::       _d - $B_PREL.ref - element docelowy
+::       _e - $B_PORT.ref - port docelowy
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_prel_src:=_b;
+_port_src:=_c;
+_prel_dst:=_d;
+_port_dst:=_e;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_REQ;
+
+_tab.cntx_psh();
+_tab.index(_env.IN_REQ5);
+_tab.prefix(_prel_dst,_port_dst,'E',_prel_src);
+{? _tab.first()
+|| {!
+   |? _tab.OK:=0;
+      _can_continue:=_tab.put();
+      _tab.next() & _can_continue>0
+   !}
+?};
+_tab.cntx_pop();
+{? _can_continue>0
+||
+:: Uaktualniam status calego drzewa
+   exec('req_conns_upd','#b_poconn',_env,_env.REQ_TOP);
+   _result:=1
+?};
+_result
+
+
+\req_conns_upd
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Uaktualnia pola OK rekordom w tabeli .TAB_REQ
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       _b - .TAB_REQ.ref() - ref rekordu któremu sprawdzać czy OK
+::
+::   WY: 0 - wymagania nie spełnione
+::       1 - wymagania spelnione
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_ref:=_b;
+
+_result:=0;
+
+_tab:=_env.TAB_REQ;
+
+_tab.cntx_psh();
+_tab.index(_env.IN_REQ2);
+
+_tab.clear();
+{? _tab.seek(_ref)
+||
+   _operator:='';
+   {? _tab.OPERATOR='AND'
+   || _operator:='&'
+   |? _tab.OPERATOR='OR'
+   || _operator:='|'
+   ?};
+   _res2ok:=1;
+:: Dla każdego swojego liscia uruchamiam formułe wgłąb
+   _tab.cntx_psh();
+   _tab.prefix(_tab.ref());
+   {? _tab.first()
+   ||
+::    Formuła która wykonam na koncu, ktora mi zwróci wynik dla całego warunku
+      _ff_final:='';
+
+::    Iteruje po swoich lisciach
+      {!
+      |?
+::       !!! REKURENCJA !!!
+         _rec_result:=exec('req_conns_upd','#b_poconn',_env,_tab.ref());
+         _ff_final+=_operator+$_rec_result;
+         _tab.next()
+      !};
+::    Z formuły usuwam pierwszy znak ktory jest pierwszym operatorem
+      _ff_final:=1-_ff_final;
+
+::    Wykonuje formułe na warunek dla całego warunku
+      _result:=($(_ff_final))();
+      ~~
+   ||
+::    Jestem na najnizszym poziomie - wynikiem jest stan mojego pola OK
+      _result:=_tab.OK;
+      _res2ok:=0
+   ?};
+   _tab.cntx_pop();
+
+   {? _res2ok>0
+   || _tab.OK:=_result;
+      _tab.put()
+   ?}
+?};
+_tab.cntx_pop();
+_result
+
+
+\tab_del
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Tworzy tabele rekordów które należy usunąć podczas akceptacji okna
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=tab_tmp( 1
+               ,'REF_POCO' ,'STRING[16]'  ,'Ref SQL B_POCONNa ktory nalezy usunac'
+               );
+_tab
+
+
+\save_to_del
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Zapamietuje B_POCONNa do usuniecia podczas akceptacji okna
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       _b - $B_POCONN.ref
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_ref:=_b;
+
+_result:=1;
+
+_tab:=_env.TAB_DEL;
+_tab.cntx_psh();
+_tab.prefix(_ref);
+{? _tab.size()=0
+|| _tab.blank();
+   _tab.REF_POCO:=_ref;
+   _result:=_tab.add()
+?};
+_tab.cntx_pop();
+_result
+
+
+\del_while_akc
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Podczas akceptacji - usuwa rekordy z tabeli B_POCONN które zostały już usuniete
+::       z tabelki .TAB_POCO a reprezentowaly prawdziwe B_POCONNy
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_can_continue:=1;
+_result:=0;
+
+_tab:=_env.TAB_DEL;
+
+_tab.cntx_psh();
+_tab.clear();
+
+B_POCONN.cntx_psh(); B_POCONN.clear();
+
+{? _tab.first()
+|| {!
+   |?
+      {? B_POCONN.seek(_tab.REF_POCO)
+      ||
+::       Usunięcie tras portów wyjściowych połączenia B_POCONN
+         _can_continue:=exec('delete','#b_poconn',B_POCONN.ref())
+      ?};
+      _tab.next() & _can_continue>0
+   !}
+?};
+B_POCONN.cntx_pop();
+_tab.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\conns_undo_act
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Przywraca połączenia w kreatorze to stanu sprzed wejścia do okna
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_ask:=FUN.ask('Czy przywrócić stan powiązań z przed wejścia do okna?'@);
+
+{? _ask>0
+||
+:: 1. Czyszcze kreatora z calej zawartosci
+   _can_continue:=exec('clear_creator','#b_poconn',_env,0);
+
+:: 2. Laduje od nowa zawartosc
+   {? _can_continue>0
+   || _can_continue:=exec('load_creator','#b_poconn',_env,_env.PREL_SRC,_env.PREL_DST,_env.B_CONN)
+   ?}
+?};
+
+{? _can_continue>0
+|| _result:=1
+|| FUN.emsg('Przywracanie zawartości kreatora powiązań zakończone niepowodzeniem.'@)
+?};
+_result
+
+
+\clear_creator
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Czyści zawartość kreatora powiazań międzyargumentowych
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       [_b] - INTEGER - 0/[1] - czy po usunieciu wykonywac grp_disp'y
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_grp_disp:=1;
+{? var_pres('_b')=type_of(0)
+|| _grp_disp:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+_can_continue:=exec('tab_conn_clear','#b_poconn',_env);
+
+{? _can_continue>0
+|| _can_continue:=exec('tab_to_clear','#b_poconn',_env)
+?};
+
+{? _can_continue>0
+|| _can_continue:=exec('tab_from_clear','#b_poconn',_env)
+?};
+
+{? _can_continue>0
+|| _can_continue:=exec('tab_nco_clear','#b_poconn',_env)
+?};
+
+{? _can_continue>0
+|| _can_continue:=exec('tab_req_clear','#b_poconn',_env)
+?};
+
+{? _can_continue>0
+|| _can_continue:=exec('tab_del_clear','#b_poconn',_env)
+?};
+
+{? _grp_disp>0
+|| exec('grp_disp','#b_poconn',_env)
+?};
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\load_creator
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Ładuje zawartość kreatora do tworzenia powiązań międzyargumentowych
+::   WE: _a - env - kreator który załadować - wynik działania exec('env','#b_poconn')
+::       _b - B_PREL.ref() - element źródłowy procesu
+::       _c - B_PREL.ref() - element docelowy procesu
+::       _d - B_CONN.ref() - połączenie dla którego bedą tworzone/ladowane B_POCONNy
+::       [_e] - INTEGER - 0/[1] - czy wykonywac grp_dispy po załadowaniu okien
+::   WY: 0 - ładowanie zakończone niepowodzeniem
+::       1 - udało sie załadowac cala zawartość
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_prel_src:=_b;
+_prel_dst:=_c;
+_b_conn:=_d;
+
+_grp_disp:=1;
+{? var_pres('_e')=type_of(0)
+|| _grp_disp:=_e
+?};
+
+_result:=0;
+_can_continue:=1;
+
+KOMM.init(250,,'Wczytywanie zawartości kreatora powiązań');
+
+:: Ładujemy porty docelowe
+_can_continue:=exec('load_to','#b_poconn',_env,_prel_dst);
+
+:: Ładujemy porty źródłowe
+{? _can_continue>0
+|| _can_continue:=exec('load_from','#b_poconn',_env,_prel_src,_prel_src,'',_b_conn)
+?};
+
+:: Ładujemy wymagane powiązania
+::{? _can_continue>0
+::|| _can_continue:=exec('fill_req','#b_poconn',_env,_prel_dst)
+::?};
+
+:: Ładujemy utworzone juz powiązania
+{? _can_continue>0 & _env.B_PORT=null()
+|| _can_continue:=exec('load_poconns','#b_poconn',_env,_b_conn)
+?};
+
+:: Uruchamiamy automat tworzacy powiązania
+{? _can_continue>0 & _env.B_PORT=null()
+|| _can_continue:=exec('auto_conn','#b_poconn',_env,_env.CONTEXT)
+?};
+_env.TAB_TO.first();
+_env.TAB_FROM.first();
+_env.TAB_CONN.first();
+
+:: Uruchamiam odswieżanie okien w grupie
+{? _grp_disp>0
+|| exec('grp_disp','#b_poconn',_env)
+?};
+
+KOMM.select();
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\grp_disp
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Wykonuje grp_dispy dla okien w kreatorze powiązań międzyargumentowych
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::       [_b] - INTERGER - 0/[1] - czy wykonywac formuły po odświeżeniu w grp_disp
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_exe_ar:=1;
+
+{? var_pres('_b')=type_of(0)
+|| _exe_ar:=_b
+?};
+grp_disp(_env.TAB_FROM,_env.WIN_FROM,_exe_ar);
+grp_disp(_env.TAB_TO,_env.WIN_TO,_exe_ar);
+grp_disp(_env.TAB_CONN,_env.WIN_CONN,_exe_ar);
+
+{? _env.DEVELOP>0
+|| grp_disp(_env.TAB_NCO,_env.WIN_NCO,_exe_ar);
+   grp_disp(_env.TAB_REQ,_env.WIN_REQ,_exe_ar)
+?};
+~~
+
+
+\tab_from_clear
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Czyści tabele .TAB_FROM
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_FROM;
+_tab.cntx_psh();
+_tab.index(_env.IN_FROM1);
+_tab.clear();
+{? _tab.first()
+|| {!
+   |? _can_continue:=_tab.del(,1);
+      _tab.first() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_tab.cntx_pop();
+_result
+
+
+\tab_to_clear
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Czyści tabele .TAB_TO
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_TO;
+_tab.cntx_psh();
+_tab.index(_env.IN_TO1);
+_tab.clear();
+{? _tab.first()
+|| {!
+   |? _can_continue:=_tab.del(,1);
+      _tab.first() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_tab.cntx_pop();
+_result
+
+
+\tab_conn_clear
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Czyści tabele .TAB_CONN
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_CONN;
+_tab.cntx_psh();
+_tab.index(_env.IN_CONN1);
+_tab.clear();
+{? _tab.first()
+|| {!
+   |? _can_continue:=_tab.del(,1);
+      _tab.first() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_tab.cntx_pop();
+_result
+
+
+\tab_nco_clear
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Czyści tabele .TAB_NCO
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_NCO;
+_tab.cntx_psh();
+_tab.index(_env.IN_NCO1);
+_tab.clear();
+{? _tab.first()
+|| {!
+   |? _can_continue:=_tab.del(,1);
+      _tab.first() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_tab.cntx_pop();
+_result
+
+
+\tab_del_clear
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Czyści tabele .TAB_DEL
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_DEL;
+_tab.cntx_psh();
+_tab.clear();
+{? _tab.first()
+|| {!
+   |? _can_continue:=_tab.del(,1);
+      _tab.first() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_tab.cntx_pop();
+_result
+
+
+\tab_req_clear
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [17.00]
+:: OPIS: Czyści tabele .TAB_REQ
+::   WE: _a - env - środowisko kreatora - wynik działania exec('env','#b_poconn')
+::   WY: 0 - porażka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_tab:=_env.TAB_REQ;
+_tab.cntx_psh();
+_tab.index(_env.IN_REQ1);
+_tab.clear();
+
+{? _tab.seek(_env.REQ_TOP)
+||
+:: Stoje na węzle 'CALOSC' - usuwam wszystko poniżej
+   _can_continue:=exec('del_tree_branch','#tree',_tab,'PARENT',_env.IN_REQ2,#_tab.ref());
+   {? _can_continue>0
+   || _can_continue:=_tab.del(,1)
+   ?}
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_tab.cntx_pop();
+_result
+
+
+\select4conn
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [17.00]
+:: OPIS: Pokazuje konfigurator połączeń międzyargumentowych
+::   WE: _a - B_CONN.ref() - połączenie pomiędzy dwoma elementami procesu
+::       [_b] - INTEGER - kontekst wywołania akcji: 1 - tworzenie połączenia
+::                                                  2 - akcja 'powiązania Arg'
+::       [_c] - B_PORT.ref()
+::   WY: 0 - powiązania nie zostały poprawnie zaakceptowane, użytkownik wyszedł z okna
+::       1 - powiązania zostały poprawnie zaakceptowane
+::       -1 - powiązania nie były redagowane (np. między zdarzeniem z czynoscią)
+::----------------------------------------------------------------------------------------------------------------------
+_b_conn:=_a;
+
+_context:=1;
+{? var_pres('_b')=type_of(0)
+|| _context:=_b
+?};
+
+_b_port:=null();
+{? var_pres('_c')=type_of(null())
+|| _b_port:=_c
+?};
+
+_result:=0;
+
+B_PREL.cntx_psh();
+B_CONN.cntx_psh();
+B_CONN.clear();
+{? B_CONN.seek(_b_conn)
+||
+:: Powiązania portów redagowane tylko wtedy, gdy czynność lub zdarzenie docelowe ma zdefiniowane porty wejściowe
+   {? (B_CONN.TO().CLASS='B_ACTION' | B_CONN.TO().CLASS='B_EVENT')
+      & exec('ports_count','#b_action',B_CONN.TO().B_ELE,exec('kind_in','#b_port'),B_CONN.TO)>0
+   ||
+      {? exec('lock','#b_prel',B_CONN.FROM)>0 & exec('lock','#b_prel',B_CONN.TO)>0
+      ||
+         VAR_DEL.delete('PO_CREATE');
+         _pocreate:=exec('env','#b_poconn');
+         _pocreate.PREL_SRC:=B_CONN.FROM;
+         _pocreate.PREL_DST:=B_CONN.TO;
+         _pocreate.B_PORT:=_b_port;
+         _pocreate.CONTEXT:=_context;
+
+         PO_CREATE:=_pocreate;
+         _pocreate.load4con(B_CONN.ref());
+         _pocreate.select();
+         {? _pocreate.ACCEPTED='T'
+         ||
+::          Utworzenie tras portów wyjściowych dla procesu
+            KOMM.init(250,,'Wynik powiązania argumentów');
+            params_set('env',_pocreate);
+            exec('route_delete4bproc','#b_proute',B_CONN.B_PROC);
+            exec('route_create4bproc','#b_proute',1,B_CONN.B_PROC);
+            KOMM.select();
+            _result:=1
+         ?};
+
+::       Odblokowuje wszystkie zablokowane porty
+         exec('unlock_ports','#b_poconn',_pocreate);
+
+         exec('unlock','#b_prel',B_CONN.FROM);
+         exec('unlock','#b_prel',B_CONN.TO);
+         VAR_DEL.delete('PO_CREATE')
+      ?}
+   ||
+      _result:=-1
+   ?}
+?};
+B_CONN.cntx_pop();
+B_PREL.cntx_pop();
+_result
+
+
+\b_prel_level
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Zwraca minimalną odleglość (poziom zagłębienia) _a od _b
+::   WE: _a - B_PREL.ref() źródłowy
+::       _b - B_PREL.ref() docelowy
+::       _c - B_PREL.ref() aktulnie przetwarzany
+::       _d - odwiedzone elementy
+::       _e - odległość
+::   WY: _odległośc
+::----------------------------------------------------------------------------------------------------------------------
+   _from:=_a;
+     _to:=_b;
+    _cur:={? var_pres('_c')=type_of(null()) || _c || _to ?};
+_visited:={? var_pres('_d')=type_of('')     || _d || ''  ?};
+  _level:={? var_pres('_e')=type_of(0)      || _e || 1   ?};
+
+_wyn:=0;
+
+_continue:=1;
+
+B_PREL.cntx_psh();
+B_PREL.prefix();
+{? B_PREL.seek(_to)
+|| B_CONN.cntx_psh();
+   B_CONN.index('TO');
+   B_CONN.prefix(B_PREL.B_PROC,_cur);
+   _loop:=B_CONN.first();
+   {!
+   |? _loop
+   |!
+      {? _visited*($B_CONN.FROM)
+      || _continue:=1
+      |? B_CONN.FROM=_from
+      || _continue:=0;
+         _wyn:=_level
+      || _wyn1:=exec('b_prel_level','#b_poconn',_from,_to,B_CONN.FROM,_visited+($_cur),_level+1);
+         {? _wyn=0 | _wyn1 & _wyn>_wyn1 || _wyn:=_wyn1 ?}
+      ?};
+      _loop:=_continue & B_CONN.next()
+   !};
+   B_CONN.cntx_pop()
+?};
+B_PREL.cntx_pop();
+_wyn
+
+
+\portdst4portsrc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Zwraca port docelowy dla portu źródłowego _b przeszukując połączenia portów do elementu _c.
+::       Zakłada się, że może istnieć tylko jedno połączenie portu źródłowego do portu docelowego, który jest
+::       tworzony dynamicznie na podstawie parametru źródłowego.
+::   WE: _a - B_PROC.ref() - proces
+::       _b - B_PREL.ref() - element źrodłowy
+::       _b - B_PORT.ref() - port źródłowy
+::       _c - B_PREL.ref() - element docelowy
+::   WY: null - jeśli brak połączenia
+::       B_PORT.ref() - jeśli jest połączenie
+::----------------------------------------------------------------------------------------------------------------------
+_b_proc:=_a;
+_prel_src:=_b;
+_port_src:=_c;
+_prel_dst:=_d;
+
+_port_dst:=null();
+
+B_POCONN.cntx_psh();
+B_POCONN.index('FROM');
+B_POCONN.prefix(_port_src,_b_proc);
+_loop:=B_POCONN.first();
+{!
+|? _loop
+|!
+   {? B_POCONN.PREL_SRC=_prel_src & B_POCONN.PREL_DST=_prel_dst || _port_dst:=B_POCONN.TO ?};
+   _loop:=_port_dst=null() & B_POCONN.next()
+!};
+B_POCONN.cntx_pop();
+
+_port_dst
+
+
+\delete4bconn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS:
+::   WE: _a - B_CONN.ref
+::       _b - B_PREL.ref
+::       _b - B_PORT.ref
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_b_conn:=_a;
+_dst:=_b;
+_to:=_c;
+
+_result:='T';
+
+B_POCONN.cntx_psh();
+B_POCONN.index('UNIK');
+B_POCONN.prefix(_b_conn);
+_loop:=B_POCONN.first();
+{!
+|? _loop
+|!
+   _loop:=
+      {? B_POCONN.TO=_to
+      ||
+         {? ~exec('delete','#b_poconn',B_POCONN.ref()) || _result:='N' ?};
+         B_POCONN.first()
+      ||
+         B_POCONN.next()
+      ?}
+!};
+B_POCONN.cntx_pop();
+_result
+
+
+\conn_view
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Wyświetla połączenia portów w procesie
+::   WE: _a - _env - środowisko designera exec('env','#b_poconn')
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=_env.TAB_CONN;
+{? _env.WIN_MAIN=''
+||
+   _tab.index(_env.IN_CONN5);
+   _tab.first();
+
+   _tab.win_sel(_env.WIN_CONN);
+   _tab.select();
+   ~~
+?};
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:13:35 8fd15a372f745594e4a68505b836b49caefefa7f4ce49cb06abfc7a242607ca51bbb67bd5f7656afa058c180e9dee539f846e54eda611999df03d94754517397c8667d251923716bcaa9e83008cba611a5ac539ca69f979267975f03159a48c13ed639b0d1b3b440c068c02b3ee40c7dd7e6a2b342eb35a6d7e0c9f298167223

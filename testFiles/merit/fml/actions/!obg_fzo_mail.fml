@@ -1,0 +1,241 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !obg_fzo_mail.fml
+:: Utworzony: 07.11.2018
+:: Autor: MB
+::======================================================================================================================
+:: Zawartość: Formuły czynności OBG_FZO_MAIL - Wysyłanie e-maili z informacją o przeterminowanych fakturach VAT w obiegu
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.02]
+:: OPIS: Wysyłanie e-maili z informacją o przeterminowanych fakturach VAT w obiegu -
+::       główna formuła czynności OBG_FZO_MAIL
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=SEND
+::# kind=WE, symbol=DNIPOTERMINIE, type=NUMBER, name=Liczba dni po terminie płatności, required=N
+::# kind=WE, symbol=ODBIORCA, type=STRING, name=Odbiorca powiadomienia e-mail, required=T
+
+_mp:=params_get().mp;
+_in:=params_get().in;
+_komunik:=(_mp.pathTodo() | _mp.pathProc()) & ~_mp.isAutoRun() & ~_mp.isService();
+_email:={? var_press('ODBIORCA',_in)>0 || _in.ODBIORCA || '' ?};
+_dni:={? var_press('DNIPOTERMINIE',_in)>0 || _in.DNIPOTERMINIE || 0 ?};
+_ok:=1;
+{? _email=''
+|| {? _komunik
+   || FUN.info('Nie podano adresu e-mail odbiorcy wiadomości.'@)
+   ?}
+|? exec('mail_ok','#email',_email)=0
+|| {? _komunik
+   || FUN.info('Niepoprawny adresu e-mail odbiorcy wiadomości.'@)
+   ?}
+|| _data:=date()-_dni;
+   _txt1:='Faktury VAT w obiegu';
+   _txt2:=exec('info','!obg_fzo_mail',_dni);
+   _tab:=exec('tab','!obg_fzo_mail',_data);
+   {? ~_tab.first()
+   || {? _komunik
+      || FUN.info('Brak faktur VAT w obiegu%1.'@[_txt2])
+      ?};
+      _ok:=1
+   || _ok:=~_komunik |
+         FUN.ask('Czy uruchomić wysyłanie wiadomości e-mail z informacją o \nfakturach VAT%1?'@[_txt2]);
+      {? _ok
+      || exec('send','!obg_fzo_mail',_in.FROM,_in.SENDER,_in.REPLYTO,_email,_data,_txt1+_txt2,_tab)
+      ?}
+   ?}
+?};
+{? _ok || _mp.done() ?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.02]
+:: OPIS: Formuła na opis czynności na liście ToDo
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_dni:={? var_press('DNIPOTERMINIE',_in)>0 || _in.DNIPOTERMINIE || 0 ?};
+_data:=date()-_dni;
+{? _dni=0
+|| _desc:='Wyślij powiadomienie e-mail dla faktur VAT w obiegu z terminem płatności do dzisiaj'@@
+|? _dni=1
+|| _desc:='Wyślij powiadomienie e-mail dla faktur VAT w obiegu z terminem płatności do wczoraj'@@
+|? _dni=-1
+|| _desc:='Wyślij powiadomienie e-mail dla faktur VAT w obiegu z terminem płatności do jutra'@@
+|? _dni>0
+|| _desc:='Wyślij powiadomienie e-mail dla faktur VAT w obiegu powyżej %1 dni po terminie płatności (%2)'@@[$_dni,$_data]
+|? _dni<0
+|| _desc:='Wyślij powiadomienie e-mail dla faktur VAT w obiegu, których termin płatności minie za %1 dni (%2) lub już minął'@@[$(-_dni),$_data]
+?};
+_desc
+
+
+\info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.02]
+:: OPIS: Informacja o fakturach
+::   WE: _a - liczba dni po terminie płatności
+::----------------------------------------------------------------------------------------------------------------------
+_data:=date()-_a;
+{? _a=0
+|| ' z terminem płatności do dzisiaj'@
+|? _a=1
+|| ' z terminem płatności do wczoraj'@
+|? _a=-1
+|| ' z terminem płatności do jutra'@
+|? _a>0
+|| ' powyżej '@+$_a+' dni po terminie płatności ('@+$_data+')'
+|? _a<0
+|| ', których termin płatności minie za '@+$(-_a)+' dni ('@+$_data+') lub już minął'@
+?}
+
+
+\tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.02]
+:: OPIS: Tabela z fakturami w obiegu
+::   WE: _a - termin płatności
+::----------------------------------------------------------------------------------------------------------------------
+TYPOBIEG.cntx_psh();
+TYPOBIEG.index('UNIK'); TYPOBIEG.prefix('Obieg faktur',);
+_typobieg:={? TYPOBIEG.first() || TYPOBIEG.ref() || null ?};
+TYPOBIEG.cntx_pop();
+_tab:=sql(
+   'select '
+      'EDOKUM.SYM, EDOKUM.DATAW, EDOKUM.DW, EDOKUM.DO, EDOKUM.DOP, EDOKUM.TP, KH.SKR as KH, EDOKUM.B_PRELS, EDOKUM.B_PREL, '
+      'EDOKUM.WART, SLO.KOD as WAL, 0 as ILE, EDOKUM.REFERENCE as REF, '
+      'EDOKUM.B_PRELS as U '
+   'from '
+      '@EDOKUM join ETYPY left join KH using (EDOKUM.KHKH,KH.REFERENCE) join SLO using (EDOKUM.WAL,SLO.REFERENCE) '
+   'where '
+      'EDOKUM.TP<=to_date(:_a) and '
+      'EDOKUM.TYPOBIEG=:_b and '
+      'EDOKUM.REJ is null and '
+      'EDOKUM.ZAM<>\'T\' and '
+      'ETYPY.TYPVATPR=0 and '
+      'ETYPY.DEKR=\'T\' '
+   'order by ILE, TP, KH, SYM'
+   ,_a,_typobieg
+);
+params_set('TAB',_tab);
+_tab.for_each("
+   _tab:=params_get.TAB;
+   _tab.ILE:=date()-_tab.TP;
+   EDOKUM.cntx_psh();
+   EDOKOS.cntx_psh();
+   EDOKUM.use(8+_tab.REF);
+   {? EDOKUM.seek(_tab.REF)
+   || EDOKOS.use('skid_y'+(8+EDOKUM.name()+2));
+      EDOKOS.index('EDOKUM'); EDOKOS.prefix(EDOKUM.ref(),_tab.B_PREL,);
+      _txt:='';
+      {? EDOKOS.first()
+      || {!
+         |? {? EDOKOS.USERS & EDOKOS.WID='T'
+            || _txt+=EDOKOS.USERS().KOD+', '
+            ?};
+            EDOKOS.next()
+         !}
+      ?};
+      _tab.U:=_txt-2
+   ?};
+   EDOKOS.cntx_pop();
+   EDOKUM.cntx_pop();
+   _tab.put()
+");
+_tab
+
+
+\send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.02]
+:: OPIS: Wysłanie powiadomień o wynikach analizy zasobów
+::   WE: _a - nadawca
+::       _b - od
+::       _c - odpowiedź do
+::       _d - odbiorca
+::       _e - termin platnosci
+::       _f - tytuł
+::       _g - tabela z fakturami VAT
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_g;
+{? _tab.first()
+|| _mail:=exec('tabMail','!obg_fzo_mail');
+   _mail.add('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Final//EN">');
+   _mail.add('<html>');
+   _mail.add('<head>');
+   _mail.add('<meta http-equiv="content-type" content="text/html; charset=iso-8859-2">');
+   _mail.add('</head>');
+   _mail.add('<body>');
+   _mail.add('<BR><BR>');
+   _mail.add('<b>'+_f+'</b><br><br>');
+   _mail.add('<table valign=\"top\" border=\"1\" cellspacing=\"0\" cellpadding=\"0\"  >');
+   _mail.add(
+      '<tr class="head3">'
+      '<td width="50">Zarejestrowano</td>'
+      '<td width="100">Termin płatności</td>'
+      '<td width="100">Przeterminowanie</td>'
+      '<td width="200">Kontrahent</td>'
+      '<td width="200">Symbol faktury</td>'
+      '<td width="100">Brutto</td>'
+      '<td width="50">Waluta</td>'
+      '<td width="200">Bieżąca czynność</td>'
+      '<td width="100">Użytkownik</td>'
+      '</tr>'
+   );
+   {!
+   |? _mail.add('<tr class=\"wiersz\">');
+      _mail.add('<td class=\"wiersz\" width=\"50\">'+$_tab.DATAW+'</td>');
+      _mail.add('<td class=\"wiersz\" width=\"50\">'+$_tab.TP+'</td>');
+      _mail.add('<td class=\"wiersz2\" width=\"100\">'+$_tab.ILE+'</td>');
+      _mail.add('<td class=\"wiersz\" width=\"100\">'+_tab.KH+'</td>');
+      _mail.add('<td class=\"wiersz\" width=\"200\">'+_tab.SYM+'</td>');
+      _mail.add('<td class=\"wiersz2\" width=\"100\">'+form(_tab.WART,,2,' ,')+'</td>');
+      _mail.add('<td class=\"wiersz\" width=\"50\">'+_tab.WAL+'</td>');
+      _mail.add('<td class=\"wiersz\" width=\"200\">'+_tab.B_PRELS+'</td>');
+      _mail.add('<td class=\"wiersz\" width=\"100\">'+_tab.U+'</td>');
+      _mail.add('</tr>');
+      _tab.next()
+   !};
+   _mail.add('</table>');
+:: Dodanie e-maila
+   _args:=exec('add_email_a','#mailbox');
+   _args.FROM:=_a;
+   _args.SENDER:=_b;
+   _args.REPLYTO:=_c;
+   _args.RCV:=_d;
+   _args.SUB:=_f;
+   _args.BODYH:=_mail.BODY;
+   exec('add_email','#mailbox',_args)
+?};
+1
+
+
+\tabMail
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.02]
+:: OPIS: Tablica do przechowywania treści e-maila
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=obj_new('BODY','LP','add');
+_tab.LP:=0;
+_tab.BODY:=tab_tmp(1,
+   'LP','INTEGER','Lp',
+   'TEKST','STRING[255]','Tekst'
+);
+_tab.add:="
+   {!
+   |? .LP+=1;
+      .BODY.LP:=.LP;
+      .BODY.TEKST:=255+_a; _a:=255-_a;
+      .BODY.add();
+      _a<>''
+   !}
+";
+_tab
+
+:Sign Version 2.0 jowisz:1045 2021/09/17 15:16:58 17ac68b1a160a79e975ec6843afc743786540c6feb423d3aac4f4367f5b1e6483f21d56469edfb2b71dea61a95698f9ce50b95dbf93ce8ed5d168bf756ed7ebe717333fdd5b0d6985361077080c76f8640c54c82dcf3df82ebf57140286e48235848465f9d01f11882bd75f26c177343c39123c22c46f2479a159eda69cf97a8

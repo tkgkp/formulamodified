@@ -1,0 +1,291 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lzk_zds_eanu.fml
+:: Utworzony: 18.10.2017
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Obsługa anulowania zamówienia dostawy
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ
+::# properties=SERVICE
+::# parses=exec('parses','!lzk_zds_eanu')
+::# kind=WE,   symbol=ZD_NAG,      type=_ZD_NAG,   name=Zamówienie dostawy,   required=T,    keyref=T
+_mp:=params_get().mp;
+_in:=params_get().in;
+
+exec('init_zds','lzk');
+
+:: WSTĘPNE WALIDACJE
+_clean_result:=params_exec('clean','!lzk_zds_eanu',_mp,_in);
+_can_continue:=_clean_result.RESULT;
+{? _can_continue=0
+|| return()
+?};
+
+_akcja:=_mp.akcja();
+_auto:=_akcja<>'Anuluj' & (_mp.isAutoRun() | _mp.isService());
+
+{? ~(var_pres('ZD_NAG',_in)=type_of(null()) & _in.ZD_NAG)
+||
+   _mp.error('Brak wymaganego parametru ZD_NAG.')
+||
+   ZD_NAG.cntx_psh();
+   ZD_NAG.prefix();
+   {? ~ZD_NAG.seek(_in.ZD_NAG)
+   ||
+      _mp.error('Nie znaleziono dokumentu.')
+   ||
+      {? _r_lock:=exec('r_lock_one','#table',ZD_NAG,ZD_NAG.ref())
+      ||
+         params_set('mp',_mp);
+         {? _akcja='Anuluj' | _auto
+         ||
+            exec('anuluj','!lzk_zds_eanu',_auto)
+
+         |? _mp.pathTodo()
+            | _mp.pathArea() & _akcja=''
+         ||
+            _win_akr:='RED';
+            _win_red:=ZD_NAG.mk_edit('Zamówienie do dostawcy'@,,'zdn_redanu');
+            ZD_NAG.win_ewin(_win_red,,_win_akr);
+            _ff:="params_exec('zdnag_pozycje_todo','!lzk_zds_eanu')";
+            ZD_NAG.win_ebtn(_win_red,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['&Pozycje'@],_ff);
+            _ff:="params_exec('zdnag_anuluj_todo','!lzk_zds_eanu'); 'key:Esc'";
+            ZD_NAG.win_ebtn(_win_red,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['Anuluj &dokument'@],_ff);
+            _ff:="'key:Esc'";
+            ZD_NAG.win_ebtn(_win_red,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],_ff);
+            ZD_NAG.win_edit(_win_red);
+            exec('set_efld_opt','zamdst_nag',_win_red);
+::          Dalsza obsługa anulowania dokumentu w exec('anuluj','!lzk_zds_eanu')
+            ZD_NAG.display();
+::          Usunięcie definicji tymczasowych okien
+            ZD_NAG.win_edit(''); ZD_NAG.win_edel(_win_red)
+         ||
+            _mp.error('Nieobsługiwana ścieżka.')
+         ?};
+         exec('r_unlock_one','#table',ZD_NAG,ZD_NAG.ref(),_r_lock)
+      ||
+         exec('who_rlock_zdnag','zamdst_nag')
+      ?}
+   ?};
+   ZD_NAG.cntx_pop()
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+{? var_pres('ZD_NAG',_in)=type_of(null()) & _in.ZD_NAG
+|| 'Anuluj zamówienie dostawy: %1'@@[exec('record','#to_string',_in.ZD_NAG)]
+|| ''
+?}
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+{? var_pres('ZD_NAG',_in)=type_of(null()) & _in.ZD_NAG
+|| ZD_NAG.cntx_psh();
+   ZD_NAG.use(ref_name(_in.ZD_NAG));
+   ZD_NAG.prefix();
+   {? ZD_NAG.seek(_in.ZD_NAG)
+   || __PARSES.setVal('OddzialLogProd',ZD_NAG.ODDZ)
+   ?};
+   ZD_NAG.cntx_pop()
+?};
+1
+
+
+\zdnag_anuluj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Zamówienie sprzedaży - Anuluj
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LZK_ZDS_EANU';
+_params.UIDREF:=ZD_NAG.uidref();
+_params.AKCJA:='Anuluj';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZD_NAG',ZD_NAG.ref());
+
+exec('mp_run','#b__box',_params)
+
+
+\zdnag_anuluj_todo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Dokument sprzedaży - Anuluj z todo
+::   WE: params_get()   - ustawiane w exec('main','!lsp_zkn_eanu')
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('anuluj','!lzk_zds_eanu');
+''
+
+
+\zdnag_pozycje_todo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Zamówienie sprzedaży - Pozycje z todo
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+BPMN.END:=0;
+exec('zd_poz','zamdst_poz');
+
+''
+
+
+\anuluj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Zamówienie sprzedaży - Anulowanie dokumentu
+::   WE: [_a] - 1-automatycznie 0-nie(domyślnie)
+::       params_get()   - ustawiane w exec('main','!lsp_zkn_eanu')
+::----------------------------------------------------------------------------------------------------------------------
+_auto:={? var_pres('_a')=type_of(1) || _a || 0 ?};
+_mp:=params_get().mp;
+
+_result:=0;
+
+{? ~exec('czy_z_ok','okresy',-3)
+|| 1
+|? ZD_NAG.STAT_REJ='A'
+|| {? ~_auto || FUN.info('Zamówienie zostało anulowane.'@) ?};
+   _result:=1;
+   _mp.done()
+|? ZD_NAG.STAT_REJ='N'
+|| FUN.info('Nie zakończono jeszcze rejestracji zamówienia.\nAnulowanie niemożliwe.'@);
+   _mp.error('Nie zakończono jeszcze rejestracji zamówienia. Anulowanie niemożliwe.');
+   _result:=1
+|? ZD_NAG.T().VALACC<>null() & ~exec('validate','wzorce',ZD_NAG.T().VALACC,ZD_NAG,ZD_NAG.ref())
+|| _result:=0
+|? ZD_NAG.EDI_W='T'
+|| FUN.info('Utworzono zamówienie EDI z zamówienia.\n'
+      'Należy anulować powiązane zdarzenie w dzienniku EDI przed anulowaniem zamówienia.'@);
+   _result:=1;
+   _mp.done()
+|? _auto | FUN.ask('Anulować zamówienie %1?\nOperacja nieodwracalna.'@[ZD_NAG.SYM])
+||
+  {? exec('anuluj_core','!lzk_zds_eanu')
+  ||
+     _result:=1;
+     _mp.done()
+  ||
+     _result:=0
+  ?}
+?};
+_result
+
+
+\anuluj_core
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.02]
+:: OPIS: Anulowanie zamówienia dostaw (bieżącego w buforze)
+::   WY: czy anulowanie dokumentu się powiodło 0 - nie / 1- tak
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+{? _r_lock:=exec('r_lock_one','#table',ZD_NAG,ZD_NAG.ref)
+||
+   _obl_stan:=tab_tmp(2
+      ,'MG',   'STRING[16]',  '$MG.ref()'
+      ,'M',    'STRING[16]',  '$M.ref()');
+   do();
+   ZD_NAG.cntx_psh();
+   ZD_NAG.STAT_REJ:='A';
+   ZD_NAG.STAN:='U';
+   ZD_NAG.BL_STAT:=exec('zdnag_blstat_bl','zamdst_nag');
+   {? ZD_NAG.put(1)
+   ||
+      _wyn:=1;
+      ZD_NAG.cntx_psh();
+      exec('uidref_update','#b__box',ZD_NAG.uidref(),'');
+      ZD_NAG.cntx_pop();
+      ZD_POZ.index('POZ');
+      ZD_POZ.prefix(ZD_NAG.ref());
+      _loop:=ZD_POZ.first();
+      {!
+      |? _loop
+      |!
+         {? ~_obl_stan.find_key($ZD_POZ.MG,$ZD_POZ.M)
+         ||
+            _obl_stan.MG:=$ZD_POZ.MG;
+            _obl_stan.M:=$ZD_POZ.M;
+            _obl_stan.add()
+         ?};
+         ZD_POZ.ZRE:='T';
+         _loop:=ZD_POZ.put() & ZD_POZ.next()
+      !}
+   ?};
+   ZD_NAG.cntx_pop();
+   {?  do_state()<>1 || _wyn:=0 ?};
+   {? end()
+   ||
+      _loop:=_obl_stan.first();
+      {!
+      |? _loop
+      |!
+         _mat:=exec('FindAndGet','#table',M,_obl_stan.M,,,null());
+         _mg:=exec('FindAndGet','#table',MG,_obl_stan.MG,,,null());
+         {? _mat & _mg || exec('obl_stan','magazyn_stan',_mat,1,_mg) ?};
+         _loop:=_obl_stan.next()
+      !};
+::    Uruchamian cleanera - czyszcze pozostałe po zamówieniu zadania na TODO
+      exec('clean_record','#b__box',ZD_NAG.uidref(),0)
+   ?};
+   exec('r_unlock_one','#table',ZD_NAG,ZD_NAG.ref(),_r_lock)
+||
+   exec('who_rlock_zdnag','zamdst_nag')
+?};
+_wyn
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [21.14]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+params_exec('zd_clean','zamdst_nag',_mp,_in)
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:37 a97facc46a2593f1ced25f023fa2513a6056280c61bd96d8cbefea61b8c536985eb327e6a1d1f99b54665297341a7436426af631072a3e583d751e35bf0d0c84dbee39a23d58ea4af2dea7ac2dee59412b0ac9bb736fd82ab724d7a6136389e462fe51d5b5987e47616f340c2ae9445eefdaa980111d006d768fc6b6b397ced3

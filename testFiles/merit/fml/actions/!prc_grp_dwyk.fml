@@ -1,0 +1,227 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !prc_grp_dwyk.fml
+:: Utworzony: 18.09.2017
+:: Autor: areKc
+::======================================================================================================================
+:: Zawartość: Formuły czynności PRC_GRP_DWYK - Wykonanie na podstawie planu.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.42]
+:: OPIS: Funkcja grupowa - wypełnienie we/wy wykonania na podstawie przypisanego kalendarza.
+::   WE:
+::   WY:
+::  OLD: \add_w_kal/grupwewy.fml
+::       \start/gupywewy.fml
+::       \wzor_kalend/grupywewy.fml
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+
+_okr:=__HARM.OKR_REF;
+_args:=exec('wybierz_args','pracownik');
+_args.DOMAIN:='PRC';
+_args.UD_SCH:=exec('domyslny','schemat','PODZORG');
+_args.UD_SKL:=__PARSES.getVal('JednostkaOrganizacyjna').REF;
+_args.F_ZATR:={? +P_FILTER.F_ZATR().KOD || P_FILTER.F_ZATR().KOD || '*T' ?};
+_args.VIEW:=P_FILTER.STATUS;
+_wyb:=FUN.choice('Należy określić zakres uwzględnianych pracowników:'@,1,'Rozliczani w okresie'@,'Wszyscy'@,,,,
+                 ' - Wybór pracowników'@);
+{? _okr & _wyb=1
+|| _args.SQL_FROM:='join A_OKRP using(A_OKRP.P, P.REFERENCE)';
+   _args.SQL_WHERE:='A_OKRP.OKR=\''+$_okr+'\''
+?};
+{? _wyb
+|| _PRAC:=exec('wybierz','pracownik',_args).P
+?};
+
+{? _wyb & _PRAC.first()
+|| {? FUN.ask(
+         'Funkcja usuwa i ponownie wprowadza informacje o wejściach i wyjściach w zakresie podanych dni\n'
+         'dla określonej wcześniej grupy pracownikow\n'
+         'na podstawie kalendarza pracownika oraz zarejestrowanych nieobecności.'@+'\n' +
+         'Czy na pewno rozpocząć proces wprowadzania danych?'@
+      )
+   || {? _okr
+      || _od:={? date()>=A_OKR.OD & date()<=A_OKR.DO || date(,,1) || date(A_OKR.OD~1,A_OKR.OD~2,1) ?};
+         _do:={? date()>=A_OKR.OD & date()<=A_OKR.DO || date(,,0) || date(A_OKR.OD~1,A_OKR.OD~2,0) ?};
+         VAR_EDIT.D_OD:=_od;
+         VAR_EDIT.D_DO:=_do
+      || VAR_EDIT.D_OD:=date(,,1);
+         VAR_EDIT.D_DO:=date(,,0)
+      ?};
+      VAR_EDIT.win_edit('ZAKR_DAT');
+      VAR_EDIT.efld_opt('ZAKR_DAT','mark=1',,'D_OD');
+      VAR_EDIT.efld_opt('ZAKR_DAT','mark=1',,'D_DO');
+      {? VAR_EDIT.edit(
+            "  {? __CHK.record(VAR_EDIT,,'D_OD','D_DO')=''
+               || {? VAR_EDIT.D_OD>VAR_EDIT.D_DO
+                  || FUN.emsg('Wartość w polu \"Od daty\" musi być większa od wartości w polu \"Do daty\".'@);
+                     'D_DO'
+                  |? VAR_EDIT.D_DO-VAR_EDIT.D_OD>31
+                  || FUN.emsg(
+                        'Różnica pomiędzy wartością w polu \"Od daty\" i \"Do daty\" nie może być większa niz 31 dni.'@
+                     );
+                     'D_DO'
+                  || 1
+                  ?}
+               ?}
+            "
+         )
+      || _width:=MS.fld_len('OSOBA','NAZWISKO')+MS.fld_len('OSOBA','PIERWSZE')+MS.fld_len('P','T')+15;
+         KOMM.init(_width,,' Uwagi do wprowadzanych danych o wykonaniu wg planu.'@,'');
+         A_OKRP.cntx_psh();
+         A_OKRP.index('A_OKRPR');
+         P.cntx_psh();
+         P.index('PRACOIP');
+         H.cntx_psh();
+         H.index('_HISTKOD');
+         _size:=_PRAC.size()*(VAR_EDIT.D_DO-VAR_EDIT.D_OD+1);
+         PROGRESS.set(_size,'Trwa wprowadzanie danych do kartoteki wejść/wyjść.'@);
+         KAL_DEF.cntx_psh();
+         KAL_DEF.prefix();
+         {!
+         |? {? P.seek(_PRAC.SQL,,1)
+            || {? P.KAL
+               || __KAL.set_cal(P.KAL().NAZWA)
+               || __KAL.set_cal('standard')
+               ?};
+:: Definicja okna do wyświetlania komunikatów.
+               _komm:=obj_new('lp','closed','blocked','locked','ok','lpadd','cempty','bempty','okempty','lempty');
+               _komm.cempty:=_komm.bempty:=_komm.okempty:=_komm.lempty:=0;
+               _komm.lp:=KOMM.sect_beg(
+                  ' %1 %2 %3:'[P.OSOBA().NAZWISKO,P.OSOBA().PIERWSZE,'[nr teczki - %1]'@[form(P.T)]],
+                  'xwin16.png:100'
+               );
+               KOMM.sect_end();
+               _komm.closed:=KOMM.sect_beg(' Miesiąc zamknięty, aktualizacja niemożliwa'@,'xwin16.png:157');
+               KOMM.sect_end();
+               KOMM.chngroot(_komm.closed,_komm.lp);
+               _komm.blocked:=KOMM.sect_beg(
+                  ' Dane przeniesione do rozliczenia, aktualizacja niemożliwa'@,
+                  'xwin16.png:157'
+               );
+               KOMM.sect_end();
+               KOMM.chngroot(_komm.blocked,_komm.lp);
+               _komm.ok:=KOMM.sect_beg(' Dane zaktualizowane'@,'xwin16.png:1');
+               KOMM.sect_end();
+               KOMM.chngroot(_komm.ok,_komm.lp);
+               _komm.locked:=KOMM.sect_beg(
+                  ' Dane zablokowane do rozliczenia, aktualizacja niemożliwa'@,
+                  'xwin16.png:157'
+               );
+               KOMM.sect_end();
+               KOMM.chngroot(_komm.locked,_komm.lp);
+
+               {! _ind:=0..(VAR_EDIT.D_DO-VAR_EDIT.D_OD)
+               |! _dzien:=VAR_EDIT.D_OD+_ind;
+                  {? exec('get_msc_status','grafik',_dzien)='Z'
+                  || _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                     KOMM.chngroot(_komm.lpadd,_komm.closed);
+                     _komm.cempty+=1
+                  |? __HARM.mc_zam_prac(_dzien)
+                  || _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                     KOMM.chngroot(_komm.lpadd,_komm.blocked);
+                     _komm.bempty+=1
+                  |? exec('isBlokada','prc_rozlicz',P.ref(),_dzien)
+                  || _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                     KOMM.chngroot(_komm.lpadd,_komm.locked);
+                     _komm.lempty+=1
+                  || _komm.lpadd:=KOMM.add(' '+$_dzien,'xwin16.png:83');
+                     _komm.okempty+=1;
+                     KOMM.chngroot(_komm.lpadd,_komm.ok);
+                     {? KAL_DEF.seek(__KAL.get_day(_dzien)) & (_dzien>=P.DZA) & (P.DZ=#0 | _dzien<=P.DZ)
+                     || _wy_d:=KAL_DEF.DATAW;
+                        _wy_t:=KAL_DEF.KONIEC;
+                        H.prefix(P.ref(),'Z');
+                        {? H.find_le(_dzien)
+                        || {? H.OD<=_dzien & (_dzien<=H.DO | H.DO=#0)
+                           || {? H.WY<>1 & __KAL.p_kin(_dzien)<>'T' & __KAL.grafik(_dzien)<>'T'
+                              || _wy_t:=KAL_DEF.POCZATEK+(*(((*KAL_DEF.CZAS/60)*(H.WYL/H.WYM))*60));
+                                 {? _wy_t>=time(24,0,0)
+                                 || _wy_t:=_wy_t-time(24,0,0);
+                                    _wy_d:=KAL_DEF.DATA+1
+                                 ?}
+                              ?}
+                           ?}
+                        ?};
+                        _we_d:=KAL_DEF.DATA;
+                        _we_t:=KAL_DEF.POCZATEK;
+                        {? KAL_DEF.TYP<>'R'
+                        || _we_t:=_wy_t:=*0
+                        ?};
+                        _nb:=exec('nieobecnosc','grafik',P.ref(),_dzien);
+                        _ng:=0;
+                        _typ:='';
+                        {? _nb & __RUB.sys_attr(_nb,199,_dzien)
+                        || N.cntx_psh();
+                           N.index('NIEORM');
+                           N.prefix('N',P.ref(),_dzien~1,_dzien~2);
+                           {? N.first()
+                           || {!
+                              |? {? __RUB.sys_attr(N.NB().RN,199,_dzien) & ( N.OD<=_dzien & N.DO>=_dzien)
+                                 || _ng+=N.NG
+                                 ?};
+                                 N.next()
+                              !}
+                           ?};
+                           N.cntx_pop();
+                           {? _ng
+                           || {? _we_d<>_wy_d & ((time(24,0,0)-_we_t)+_wy_t-(*0))>*(_ng*60)
+                              || _we_t+=*(_ng*60);
+                                 {? _we_t=*(24*60)
+                                 || _we_t:=*0;
+                                    _we_d:=_wy_d;
+                                    _typ:='X'
+                                 |? _we_t>*(24*60)
+                                 || _we_t-=*(24*60);
+                                    _we_d:=_wy_d;
+                                    _typ:='X'
+                                 ?};
+                                 _nb:=0
+                              |? _wy_t-_we_t>*(_ng*60)
+                              || _we_t+=*(_ng*60);
+                                 _nb:=0
+                              ?}
+                           ?}
+                        ?};
+                        {? _nb
+                        || exec('save2wewy','prc_wewy',P.ref(),_we_d,time(0,0,0),_wy_d,time(0,0,0),,,,'SYS_2')
+                        || exec('save2wewy','prc_wewy',P.ref(),_we_d,_we_t,_wy_d,_wy_t,,_typ,,'SYS_2')
+                        ?}
+                     ?}
+                  ?};
+                  PROGRESS.next()
+               !};
+               {? ~_komm.cempty || KOMM.del(_komm.closed) ?};
+               {? ~_komm.bempty || KOMM.del(_komm.blocked) ?};
+               {? ~_komm.okempty || KOMM.del(_komm.ok) ?};
+               {? ~_komm.lempty || KOMM.del(_komm.locked) ?};
+               obj_del(_komm);
+               exec('kwal','grafik',P.ref(),VAR_EDIT.D_OD,VAR_EDIT.D_DO);
+               {? _okr
+               || A_OKRP.prefix(_okr,P.ref());
+                  {? A_OKRP.first()
+                  || params_exec('oblicz','okres',1)
+                  ?}
+               ?}
+            || {! _ind:=0..(VAR_EDIT.D_DO-VAR_EDIT.D_OD) |! PROGRESS.next() !}
+            ?};
+            _PRAC.next()
+         !};
+         KOMM.select(,,,,,0);
+         KAL_DEF.cntx_pop();
+         H.cntx_pop();
+         P.cntx_pop();
+         A_OKRP.cntx_pop();
+         PROGRESS.close()
+      ?}
+   || FUN.info('Operacja przerwana przez operatora.'@)
+   ?}
+?};
+~~
+
+:Sign Version 2.0 jowisz:1048 2021/04/09 15:19:41 ccf422ca5d2a68e37c82800b97b6add3e869d63bfadcaeb2b433e6bbf376be8085f6fcb186be2a71dc2cf68a2f891edc297f36c2d06587398498471d5526670c35b34f63f78272c3255f1c2309dbbc244430727dd990b5e60f8e84585a2f693d10318ab444eb74c4b5d611ea4cdd9fc60b4d052874b4dfca79c02947811fe75a

@@ -1,0 +1,418 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !psz_sdw_rzps.fml
+:: Utworzony: 14.12.2017
+:: Autor: RO
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PSZ_SDW_RZPS - Zapisy podwładnych.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RO [18.02]
+:: OPIS: Główna formuła czynności PSZ_SDW_RZSZ - Zapisy własne.
+::----------------------------------------------------------------------------------------------------------------------
+{? ~(exec('env_wt','psz') & exec('load_cur_prac','p_web'))
+|| return()
+?};
+
+_szk:=sql('
+   select
+      SZK_OPIS.OD as OD,
+      SZK_OPIS.REFERENCE as REF,
+      SZK_ORG.NAZWA as ORG,
+      SZK_TEM.TEMAT as TEMAT,
+      SZK_OPIS.LU as LU,
+      case
+         when SZK_OPIS.LIMIT>0 then SZK_OPIS.LIMIT
+         else -1
+      end as L_MIEJSC
+   from
+      SZK_OPIS join
+      SZK_ORG using(SZK_OPIS.ORG, SZK_ORG.REFERENCE) join
+      SZK_TEM using(SZK_OPIS.TEMAT, SZK_TEM.REFERENCE) join
+      SLO_KOD using(SZK_OPIS.STATUS, SLO_KOD.REFERENCE)
+   where
+      SLO_KOD.KOD=\'P\' and
+      SZK_OPIS.PORTAL=\'T\' and
+      (SZK_OPIS.DO>=current_date OR SZK_OPIS.DO IS NULL)
+   order by
+      1
+');
+ZZ_POM.MODUL:='A';
+_typ_op:=exec('typ_op','phr_dane');
+
+Cntx.psh(P,SZK_PRAC,SZK_OPIS);
+Cntx.clr(P,SZK_PRAC);
+
+exec('wt_szkz_clean','psz',3);
+
+WT_SZKZ.cntx_psh();
+WT_SZKZ.index('KEY');
+WT_SZKZ.prefix(app_info('web_tcid'),app_info('web_sesid'),app_info('web_tabid'),);
+SZK_OPIS.prefix();
+_loop:=_szk.first();
+{!
+|? _loop
+|! {? SZK_OPIS.seek(_szk.REF)
+   || SZK_PRAC.index('SZK_PRAC');
+      SZK_PRAC.prefix(SZK_OPIS.ref());
+      _wolne:=SZK_OPIS.LIMIT-SZK_OPIS.LU;
+      {? P.seek(P.ref()) & (_wolne>0 | SZK_OPIS.LIMIT=0) &
+         exec('test_kryt','phr_dane',SZK_OPIS.ZZ_DOK,_typ_op,0,date(),P)>0
+      || WT_SZKZ.blank();
+         WT_SZKZ.SZK_OPIS:=SZK_OPIS.ref();
+         WT_SZKZ.TEMAT:=_szk.TEMAT;
+         WT_SZKZ.ORG:=_szk.ORG;
+         WT_SZKZ.add()
+      ?}
+   ?};
+   _loop:=_szk.next()
+!};
+
+Cntx.pop(P,SZK_PRAC,SZK_OPIS);
+
+WT_SZKZ.web_select('WT_GRP');
+WT_SZKZ.cntx_pop();
+~~
+
+
+\zapisz_pod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Ro [18.02]
+:: OPIS: Obsługa akcji "Zapisz podwładnych".
+::----------------------------------------------------------------------------------------------------------------------
+ZZ_POM.MODUL:='A';
+_typ_op:=exec('typ_op','phr_dane');
+
+{? ~exec('env_wt','psz')
+|| return()
+?};
+
+OSOBA.cntx_psh();
+_POD:=exec('prac_pod','stanprac',P.OSOBA,'TYPPOZ','DOSTINF');
+_POD.prefix();
+OSOBA.cntx_pop();
+_setid:='szk_zap';
+
+_ref:=web_win_ref('WT_ZPOD');
+{?_ref=~~ || _ref:=null() ?};
+
+WT_SZKZ.cntx_psh();
+WT_SZKZ.prefix();
+_ref:={? WT_SZKZ.seek(_ref) || WT_SZKZ.SZK_OPIS || null() ?};
+WT_SZKZ.cntx_pop();
+
+
+ZZ_DOK.prefix();
+_loop:=_POD.first();
+{!
+|? _loop
+|! _P:=exec('FindAndGet','#table',P,_POD.P_SQL,,,null());
+   SZK_PRAC.cntx_psh();
+   SZK_PRAC.index('SZK_PRAC');
+   SZK_PRAC.prefix(_ref);
+   _jest:=(SZK_PRAC.first() & SZK_PRAC.find_key(_P));
+   SZK_PRAC.cntx_pop();
+   {? _jest
+   || _loop:=_POD.del()
+   || _loop:=_POD.next()
+   ?}
+!};
+
+exec('clean','p_web',1);
+P_WEB_CX.cntx_psh();
+{? exec('p_web_cx_set','p_web',,_POD,,_setid,0)>0
+||
+   web_params_set(
+     exec('obj_ntab_set','#array',web_params_get(),
+          'P_WEB_CX_WER_WYBX_WYBIERZ_A',"exec('zapisz_prac','!psz_sdw_rzps')",
+          'P_WEB_CX_WEB_WYBX_WYBIERZ_BG',"exec('zapisz_grp','!psz_sdw_rzps')",
+          'SZK_OPIS',_ref
+         )
+   );
+   P_WEB_CX.web_select('WEB_WYBX')
+?};
+P_WEB_CX.cntx_pop();
+~~
+
+
+\wypisz_pod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Ro [18.02]
+:: OPIS: Obsługa akcji "Wypisz podwładnych".
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('env_wt','psz')
+|| return()
+?};
+
+ZZ_POM.MODUL:='A';
+_typ_op:=exec('typ_op','phr_dane');
+
+:: Podwładni.
+OSOBA.cntx_psh();
+_POD:=exec('prac_pod','stanprac',P.OSOBA,'TYPPOZ','DOSTINF');
+_POD.prefix();
+OSOBA.cntx_pop();
+_setid:='szk_wyp';
+
+_ref:=web_win_ref('WT_ZPOD');
+{?_ref=~~ || _ref:=null() ?};
+
+WT_SZKZ.cntx_psh();
+WT_SZKZ.prefix();
+_ref:={? WT_SZKZ.seek(_ref) || WT_SZKZ.SZK_OPIS || null() ?};
+WT_SZKZ.cntx_pop();
+
+_loop:=_POD.first();
+{!
+|? _loop
+|! _P:=exec('FindAndGet','#table',P,_POD.P_SQL,,,null());
+    SZK_PRAC.cntx_psh();
+    SZK_PRAC.index('SZK_PRAC');
+    SZK_PRAC.prefix(_ref);
+    _jest:=(SZK_PRAC.first() & SZK_PRAC.find_key(_P));
+    SZK_PRAC.cntx_pop();
+    {? ~_jest || _loop:=_POD.del() || _loop:=_POD.next() ?}
+!};
+
+_tcid:=app_info('web_tcid');
+_sesid:=app_info('web_sesid');
+_tabid:=app_info('web_tabid');
+
+exec('clean','p_web',1);
+P_WEB_CX.cntx_psh();
+:P_WEB_CX.prefix();
+{? exec('p_web_cx_set','p_web',,_POD,,_setid,0)>0
+|| web_params_set(
+     exec('obj_ntab_set','#array',web_params_get(),
+          'P_WEB_CX_WER_WYBX_WYBIERZ_A',"exec('wypisz_prac','!psz_sdw_rzps')",
+          'P_WEB_CX_WEB_WYBX_WYBIERZ_BG',"exec('wypisz_grp','!psz_sdw_rzps');0",
+          'SZK_OPIS',_ref
+         )
+   );
+   P_WEB_CX.web_select('WEB_WYBX')
+?};
+:P.cntx_pop();
+P_WEB_CX.cntx_pop();
+~~
+
+
+\szk_prac_wt_lu_bs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RO [18.02]
+:: OPIS: Formuła "Przed obsługą" okna WT_LU tabli SZK_PRAC.
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('env_wt','psz')
+|| return()
+?};
+
+_ref:=web_win_ref('WT_ZPOD');
+{?_ref=~~ || _ref:=null() ?};
+
+WT_SZKZ.cntx_psh();
+WT_SZKZ.prefix();
+_ref:={? WT_SZKZ.seek(_ref) || WT_SZKZ.SZK_OPIS || null() ?};
+WT_SZKZ.cntx_pop();
+
+SZK_PRAC.index('SZK_PRAC');
+SZK_PRAC.prefix(_ref);
+SZK_PRAC.first();
+~~
+
+
+\szk_prac_wt_lu_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RO [18.02]
+:: OPIS: Formuła na "Rekord - przed" okienka WT_LU tabeli SZK_PRAC.
+::   WE: _a [NUMBER] - Rekord bieżący? [0 - nie / 1 - tak]
+::----------------------------------------------------------------------------------------------------------------------
+{? SZK_PRAC.get()
+|| SZK_PRAC.P().OSOBA()
+?};
+~~
+
+
+\zapisz_prac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RO [18.02]
+:: OPIS: Zapisanie podwładnego na szkolenie (jeden pracownik).
+::----------------------------------------------------------------------------------------------------------------------
+_setid:='szk_zap';
+exec('del','wt_group',_setid);
+exec('add','wt_group',_setid,P_WEB_CX.uidref());
+_tab:=exec('get','wt_group',_setid);
+exec('write','%logger',,_tab.KEY);
+
+web_params_set(_par:=web_params_get());
+_szk:=_par.SZK_OPIS;
+{? ~exec('env_wt','psz')
+|| return()
+?};
+
+Cntx.psh(P_WEB_CX,SZK_PRAC,SZK_OPIS,P);
+P_WEB_CX.prefix();
+SZK_PRAC.index('SZK_PRAC');
+{? P_WEB_CX.seek(_tab.KEY)
+|| _p_ref:={? P.seek(P_WEB_CX.P) || P.ref() || null() ?};
+   SZK_OPIS.prefix();
+   {? SZK_OPIS.seek(_szk)
+   || {? SZK_OPIS.LIMIT=0 | (SZK_OPIS.LIMIT-SZK_OPIS.LU)>0
+      || SZK_PRAC.prefix(SZK_OPIS.ref());
+         SZK_PRAC.blank();
+         SZK_PRAC.P:=_p_ref;
+         SZK_PRAC.SZKOL:=SZK_OPIS.ref();
+         SZK_PRAC.WYDZIAL:=P.WYDZIAL;
+         SZK_PRAC.STN:=P.ST;
+         {? SZK_PRAC.add()
+         || SZK_OPIS.LU:=SZK_OPIS.LU+1;
+            SZK_OPIS.put();
+            FUN.info('Podwładny został zapisany na szkolenie.'@);
+            WT_SZKZ.web_refresh('WT_GRP','WT_ZPOD');
+            web_top_close()
+         ?}
+      ?}
+   ?}
+?};
+Cntx.pop(P_WEB_CX,SZK_PRAC,SZK_OPIS,P)
+
+
+\zapisz_grp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RO [18.02]
+:: OPIS: Grupowe zapisanie podwładnych na szkolenie.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_setid:='zapisz_grp';
+exec('del','wt_group',_setid);
+exec('add_selected','wt_group',_setid,,1);
+_P:=exec('get','wt_group',_setid);
+
+web_params_set(_par:=web_params_get());
+_szk:=_par.SZK_OPIS;
+{? ~exec('env_wt','psz')
+|| return()
+?};
+
+Cntx.psh(SZK_PRAC,SZK_OPIS,P_WEB_CX);
+P_WEB_CX.prefix();
+_loop:=_P.first();
+_ile:=_P.size();
+_limit:=0;
+_lu:=0;
+SZK_OPIS.prefix();
+{? SZK_OPIS.seek(_szk)
+|| _limit:=SZK_OPIS.LIMIT;
+   _lu:=SZK_OPIS.LU
+?};
+
+{? _limit=0 | (_limit-_lu>0 & _ile<=_limit-_lu)
+|| {!
+   |? _loop
+   |! {? P_WEB_CX.seek(_P.KEY)
+      || P_WEB_CX.P();
+         SZK_PRAC.blank();
+         SZK_PRAC.P:=P.ref();
+         SZK_PRAC.SZKOL:=SZK_OPIS.ref();
+         SZK_PRAC.WYDZIAL:=P.WYDZIAL;
+         SZK_PRAC.STN:=P.ST;
+         SZK_PRAC.prefix();
+         {? SZK_PRAC.add()
+         || SZK_OPIS.LU:=SZK_OPIS.LU+1;
+            SZK_OPIS.put()
+         ?}
+      ?};
+      _loop:=_P.next()
+   !}
+|? _ile>_limit-_lu
+|| web_msg('Liczba wybranych pracowników przekracza liczbę dostępnych miejsc na szkolenie.'@);
+   Cntx.pop(SZK_PRAC,SZK_OPIS,P_WEB_CX);
+   return()
+?};
+WT_SZKZ.web_refresh('WT_GRP','WT_ZPOD');
+FUN.info('Zapisałeś podwładnych na szkolenie.'@);
+web_top_close();
+Cntx.pop(SZK_PRAC,SZK_OPIS,P_WEB_CX)
+
+
+\wypisz_prac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RO [18.02]
+:: OPIS: Wypisanie podwładnego ze szkolenia (jeden pracownik
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_setid:='wyp_prac';
+exec('del','wt_group',_setid);
+exec('add','wt_group',_setid,P_WEB_CX.uidref());
+_tab:=exec('get','wt_group',_setid);
+
+web_params_set(_par:=web_params_get());
+_szk:=_par.SZK_OPIS;
+{? ~exec('env_wt','psz')
+|| return()
+?};
+
+Cntx.psh(SZK_PRAC,SZK_OPIS,P,P_WEB_CX);
+P.prefix();
+SZK_PRAC.index('SZK_PRAC');
+{? P_WEB_CX.seek(_tab.KEY)
+|| _p_ref:={? P.seek(P_WEB_CX.P) || P.ref() || null() ?};
+   SZK_OPIS.prefix();
+   {? SZK_OPIS.seek(_szk)
+   || SZK_PRAC.prefix(SZK_OPIS.ref(),_p_ref);
+      {? SZK_PRAC.first()
+      || SZK_PRAC.del();
+         FUN.info('Podwładny został wypisany ze szkolenia ze szkolenia'@);
+         WT_SZKZ.web_refresh('WT_GRP','WT_ZPOD');
+         web_top_close()
+      ?}
+   ?}
+?};
+Cntx.pop(SZK_PRAC,SZK_OPIS,P,P_WEB_CX)
+
+
+\wypisz_grp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RO [18.02]
+:: OPIS: Grupowe wypisanie podwładnych na szkolenie.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_setid:='wypisz_grp';
+exec('del','wt_group',_setid);
+exec('add_selected','wt_group',_setid,,1);
+_P:=exec('get','wt_group',_setid);
+
+web_params_set(_par:=web_params_get());
+_szk:=_par.SZK_OPIS;
+{? ~exec('env_wt','psz')
+|| return()
+?};
+
+Cntx.psh(P_WEB_CX,SZK_PRAC,SZK_OPIS,P);
+P_WEB_CX.prefix();
+SZK_PRAC.index('SZK_PRAC');
+_loop:=_P.first();
+{!
+|? _loop
+|! {? P_WEB_CX.seek(_P.KEY)
+   || P_WEB_CX.P();
+      SZK_OPIS.prefix();
+      {? SZK_OPIS.seek(_szk)
+      || SZK_PRAC.prefix(_szk,P.ref());
+         {? SZK_PRAC.first()
+         || SZK_PRAC.del()
+         ?}
+      ?}
+   ?};
+   _loop:=_P.next()
+!};
+FUN.info('Podwładni zostali wypisani ze szkolenia.'@);
+WT_SZKZ.web_refresh('WT_GRP','WT_ZPOD');
+web_top_close();
+Cntx.pop(P_WEB_CX,SZK_PRAC,SZK_OPIS,P)
+
+:Sign Version 2.0 jowisz:1028 2019/10/14 09:20:07 1b906e4f13f40fb0103fce1f1267bee47e13add608e1a943596355cd978649175cd79b818ae030e528c55ddd4ce73a357264313e5a2a9499d944a88fc904dfc34dd5039e1c134cc0201d2a6c34f8706757655372e95ebe21d9cfdd20f1aca3176ff9b778be20b644a27ea733df93a564a3013d7efc1ad1361bc498b5db041fc1

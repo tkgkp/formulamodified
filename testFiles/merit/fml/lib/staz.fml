@@ -1,0 +1,1333 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: staz.fml
+:: Utworzony: 26.05.2015
+:: Autor: jaws
+::======================================================================================================================
+:: Zawartość: Plik zawiera formuły obsługi naliczania stażu pracownika lub osoby.
+::======================================================================================================================
+
+
+\oblicz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ATA [2009+]
+:: OPIS: Funkcja wyliczająca staż dla pracownika lub osoby
+::   WE: _a - wyświetlanie informacji o wyliczonym stażu (brak lub typu pustego, winietka nie jest wyświetlana,
+::            w każdym innym przypadku okienko z informacją o wyliczonym stażu jest wyświetlane)
+::       _b - 0 wyliczenie stażu tylko z okresów zatrudnienia
+::            1 określenie stażu na podstawie wszystkich dostępnych danych
+::           -1 pominięty lub typu innego niż liczbowy działanie jak dla wywołania z 1 z dodatkową aktualizacją
+::              kartoteki osobowej
+::       _e - opcjonalny - na jaki dzień staż, gdy jest ten parametr to wynik nie jest zapisywany do tabeli P
+::       UWAGA: obliczenia maja sens wyłącznie dla współpracowników z formą współpracy P.
+::   WY: Wskazanie bufora zawierającego wyniki obliczeń. W szczególności znajdują się w niej tablice nazwane
+::       lat, msc, dni o rozmiarze 4 zawieracjące w komórkach: 1 - ogolny, 2 - do nagrody, 3 - branżowy, 4 - do urlopu
+::  OLD: \oblicz/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('__KAL','object');
+exec('__RUB','object');
+
+_a:=var_press('_a');
+{? var_press('_b')<>type_of(0) || _b:=-1 ?};
+{? var_press('_d')<>type_of(0) || _d:=0 ?};
+
+_zdate:=date(0,0,0);
+{? var_press('_e')<>type_of(date()) || _e:=_zdate ?};
+_osoba:={? _b | _d || P || STAZ ?}.OSOBA;
+_p_dza:={? _b | _d || P.DZA || _zdate ?};
+_p_dzw:={? _b | _d || P.DZ  || _zdate ?};
+
+_kalend:=
+   {? _a & var_press('_c')=type_of(0) & _c  || 1
+   |? ~_a & var_press('_b')=type_of(0) & _b || 2
+   ?};
+
+echo('Trwa przygotowanie danych...'@);
+_buf:=exec('oblicz_buf','staz');
+_tab:=_buf.tabela;
+
+::dla pracownika zatrudnionego w przyszlosci akcja Oblicz staz nie jest wykonywana tylko odpowiedni komunikat
+{? ~_a & var_press('_b')=type_of(0) & _b
+|| {? _p_dza<>_zdate & _p_dza>date()
+   || FUN.emsg('Pracownik będzie zatrudniony od dnia: %1.\nObliczenie stażu nie jest możliwe.'@[P.DZA$1]);
+      return(_buf)
+   ?}
+?};
+
+{? ~{? _b || _p_dza<>_zdate & (_p_dza<=date() | var_press('_c')=type_of(0) & _c) || 1 ?}
+|| return(_buf)
+?};
+
+STAZ.cntx_psh();
+STAZ_H.cntx_psh();
+STAZ_H.index('OSOBA');
+STAZ_H.prefix(exec('ref_firma','ustawienia'),_osoba,'Z');
+_start:={? STAZ_H.first || STAZ_H.OD || _p_dza ?};
+
+P.cntx_psh;
+P.index('PRACOSOB');
+P.prefix(exec('ref_firma','ustawienia'),'P',_osoba);
+_put:=P.first();
+: w przypadku pracy "z powrotami" lub na równoległej
+: zarezerwuj odpowiednio dużo miejsca w buforze dni
+{? _b
+|| {? _put & P.DZA<_start
+   || _start:=P.DZA
+   ?}
+?};
+P.cntx_pop();
+
+{? _p_dza<>_zdate & _p_dza<_start
+|| _start:=_p_dza
+?};
+
+_cdata:=_zdate;
+_buf.DataStazu:=
+   {? _b=0
+   || {? STAZ_H.last()
+      || _DPom:=STAZ_H.DO;
+         {!
+         |? {? _DPom<>_zdate
+            || {? STAZ_H.DO=_zdate | _DPom<STAZ_H.DO
+               || _DPom:=STAZ_H.DO
+               ?};
+               STAZ_H.prev()
+            ?}
+         !};
+         {? _DPom=_zdate || date() || &_DPom ?}
+      || _p_dza
+      ?}
+   || {? var_press('_c')=type_of(0) & _c
+      || _cdata:=date(_c,12,0);
+         {? _e<>_zdate || _cdata:=_e ?};
+         {? _p_dzw=_zdate || _cdata
+         |? _p_dzw<_cdata || _p_dzw
+         || _cdata
+         ?}
+      || {? _p_dzw=_zdate || date() || _p_dzw ?}
+      ?}
+   ?};
+
+EDIT_VAR.DATA:=_buf.DataStazu;
+_val:=exec('get','#profile',,'staz','TN');
+EDIT_VAR.TN:={? +_val || _val || 'N' ?};
+{? _b=1 & _e=_zdate
+|| _redacr:=EDIT_VAR.mk_edit(,,'oblicz_staz_red');
+   EDIT_VAR.win_efld(_redacr,,'DATA');
+   EDIT_VAR.win_efld(_redacr,,'TN',,,,,,'Podsumowanie dla firmy'@,0,, 'check-box',,"'T'","'N'");
+   EDIT_VAR.win_edit(_redacr);
+
+   EDIT_VAR.hdr_edit('Staż pracy'@);
+   exec('ok_esc','#window',EDIT_VAR,_redacr);
+   {? EDIT_VAR.edit(
+         "  {? P.DZA<=EDIT_VAR.DATA
+            || 1
+            || FUN.emsg('%1 %2.'
+                  ['Data do obliczenia stażu nie może być wcześniejsza od daty zatrudnienia pracownika:'@,P.DZA$1]
+               );
+               return('DATA')
+            ?};
+            {? P.DZ<>date(0,0,0) & P.DZ<EDIT_VAR.DATA
+            || FUN.emsg('%1 %2.'
+                  ['Data do obliczenia stażu nie może być późniejsza od daty zwolnienia pracownika:'@,P.DZ$1]
+               );
+               return('DATA')
+            || 1
+            ?}
+         "
+      )
+   || _buf.DataStazu:=EDIT_VAR.DATA;
+      exec('set','#profile',,'staz','TN',EDIT_VAR.TN)
+   || STAZ.cntx_pop();
+      STAZ_H.cntx_pop();
+      return(_buf)
+   ?}
+?};
+
+{? _d
+|| _DCiagl:=_buf.DataStazu:=_p_dza
+?};
+_stop:=(_DCiagl:=_buf.DataStazu);
+_kal_naz:=__KAL.nazwa;
+_kal_rok:=__KAL.rok;
+
+STAZ.index('_STAZE');
+STAZ.prefix(exec('ref_firma','ustawienia'),_osoba);
+STAZ_H.index('OZ');
+_loop:=STAZ.first();
+{!
+|? _loop
+|! STAZ_H.prefix(STAZ.ref());
+   _loop:=STAZ_H.first();
+   {!
+   |? _loop
+   |! {? STAZ_H.DO=_zdate
+      || STAZ_H.DO:=_stop
+      ?};
+      {? STAZ_H.ZM().KZ='Z'
+      || {? STAZ_H.OD<=_buf.DataStazu
+         || exec('add_okr','staz',
+               _buf,
+               STAZ_H.OD,
+               {? STAZ_H.DO>_stop || _stop || STAZ_H.DO ?},
+               'O',
+               #STAZ.ref,
+               STAZ.CI,
+               STAZ.NA,
+               STAZ.BR,
+               STAZ.DU,
+               'N'
+            )
+         ?}
+      ?};
+      _loop:=STAZ_H.next()
+   !};
+   _loop:=STAZ_H.first();
+   {!
+   |? _loop
+   |! {? STAZ_H.DO=_zdate
+      || STAZ_H.DO:=_stop
+      ?};
+      {? STAZ_H.ZM().KZ='B'
+      || {? STAZ_H.OD<=_buf.DataStazu
+         || exec('add_nie','staz',
+               _buf,
+               STAZ_H.OD,
+               {? STAZ_H.DO>_stop || _stop || STAZ_H.DO ?},
+               'O',
+               #STAZ_H.OZ
+            )
+         ?}
+      ?};
+      _loop:=STAZ_H.next()
+   !};
+   _loop:=STAZ.next()
+!};
+
+_tab.cntx_psh();
+_tab.clear();
+_loop:=_tab.first();
+{!
+|? _loop
+|! _tab.REF:=#_osoba;
+   _tab.put();
+   _loop:=_tab.next()
+!};
+_tab.cntx_pop();
+
+{? _b
+|| H.cntx_psh();
+   H.index('_HISTOSD');
+   _P_ref:=P.ref();
+   _P_dza:=P.DZA;
+   _P_kal:=null();
+   _rok:=0;
+   P.cntx_psh();
+   H.prefix(exec('ref_firma','ustawienia'),_osoba);
+:  uwzględniaj informacje o innych etatach osoby (!),
+:  ale tylko do dnia zatrudnienia na "bieżącym" etacie
+   _loop:=H.first();
+   {!
+   |? _loop
+   |! {? H.P().F_ZATR().KOD='P'
+      || {? H.P=_P_ref | H.OD<=_P_dza
+         || {? (_data:=H.OD)<=_buf.DataStazu
+            || _od:=_data;
+               _do:={? H.P=_P_ref
+                    || {? H.DO=_zdate || _stop || H.DO ?}
+                    || {? H.DO=_zdate | _P_dza<H.DO || _P_dza || H.DO ?}
+                    ?};
+               _do:={? _do>_stop || _stop || _do ?};
+               {? _od=P.DZA & _od~3>1
+               || {? _P_kal<>P.KAL | _rok<>_od~1
+                  || {? _kalend
+                     || {? (_kalend=1 & P.DZA~1<>_cdata~1) | (_kalend=2 & P.DZA~1<>EDIT_VAR.DATA~1)
+                        || __KAL.no_err(1)
+                        ?}
+                     ?};
+                     __KAL.set_cal(P.KAL,_od~1);
+                     __KAL.no_err(0);
+                     _P_kal:=P.KAL;
+                     _rok:=_od~1
+                  ?};
+                  _url:={? __KAL.w_days(date(_od~1,_od~2,1),_od-1)>0 || 'T' || '1' ?}
+               || _url:='T'
+               ?};
+               exec('add_okr','staz',_buf,_od,_do,'P',#H.P,'T','T','T',_url,'T')
+            ?}
+         ?}
+      ?};
+      _loop:=H.next()
+   !};
+   H.cntx_pop();
+
+   N.cntx_psh();
+   N.index('NIOSOBNB');
+   _rub:=__RUB.sys_rub(1121);
+   _loop:=_rub.first();
+   {!
+   |? _loop
+   |! N.prefix('N',exec('ref_firma','ustawienia'),P.OSOBA,_rub.RN);
+:     uwzględniaj dane o innych nieobecnościach osoby (!),
+:     ale tylko do dnia zatrudnienia na "bieżącym" etacie
+      _loop:=N.first();
+      {!
+      |? _loop
+      |! {? N.P().F_ZATR().KOD='P'
+         || {? (_data:=N.OD)<=_buf.DataStazu &
+               (N.P=_P_ref | N.OD<=_P_dza) ||
+               _od:=_data;
+               _do:={? N.P=_P_ref
+                    || {? N.DO>_stop || _stop || N.DO ?}
+                    || {? N.DO>_P_dza || _P_dza || N.DO ?}
+                    ?};
+               _do:={? _do>_stop || _stop || _do ?};
+               exec('add_nie','staz',_buf,_od,_do,'P',#N.P)
+            ?}
+         ?};
+         _loop:=N.next()
+      !};
+      _loop:=_rub.next()
+   !};
+   N.cntx_pop();
+   P.cntx_pop()
+?};
+
+P.DC:=_DCiagl;
+P.DS:=P.DU:=_buf.DataStazu;
+
+P.cntx_psh();
+OS_SZKOL.cntx_psh();
+OS_SZKOL.index('OD');
+OS_SZKOL.prefix(_osoba);
+_loop:=OS_SZKOL.first();
+{!
+|? _loop
+|! {? OS_SZKOL.OD<>_zdate & OS_SZKOL.DO<>_zdate &
+      _start<=OS_SZKOL.DO & OS_SZKOL.OD<=_stop &
+      OS_SZKOL.POMIN<>'T'
+   || _od:={? OS_SZKOL.OD<_start || _start || OS_SZKOL.OD ?};
+      _do:={? _stop<OS_SZKOL.DO || _stop || OS_SZKOL.DO ?};
+      exec('add_nie','staz',_buf,_od,_do,'O',#_osoba,1);
+
+      P.index('PRACOSOB');
+      P.prefix(exec('ref_firma','ustawienia'),'P',_osoba);
+      _loop:=P.first();
+      {!
+      |? _loop
+      |! exec('add_nie','staz',_buf,_od,_do,'P',#P.ref,1);
+         _loop:=P.next()
+      !}
+   ?};
+   _loop:=OS_SZKOL.next()
+!};
+OS_SZKOL.cntx_pop();
+P.cntx_pop();
+
+: nie obsługujemy nakładających się okresów
+_par_333:=exec('get_par','#parametr',333,2);
+_tab.cntx_psh();
+{! _i:=1..obj_len(_buf.rodzaj)
+|! _buf.data_pom[_i]:=date(0,0,0);
+   _tab.prefix(_buf.rodzaj[_i]);
+   {? _tab.first()
+   || exec('norm_tab','staz',_buf);
+      {? _b
+      || _buf.data_pom[_i]:=_tab.OD
+      ?};
+      {!
+      |? _buf.licz_tab[_i]+=1;
+         __KAL.rdat(_tab.OD,_tab.DO);
+         _buf.dni[_i]+=__KAL.day;
+         _buf.msc[_i]+=__KAL.month;
+         _buf.lat[_i]+=__KAL.year;
+         _tab.next()
+      !}
+   ?};
+
+   {? _buf.rodzaj[_i]='U'
+   || _rdu:=0;
+      OS_SZKOL.cntx_psh();
+      OS_SZKOL.index('DO');
+      OS_SZKOL.prefix(_osoba);
+      {? OS_SZKOL.last()
+      || {!
+         |? {? OS_SZKOL.POMIN<>'T' &
+               {? _buf.DataStazu<>#0 & OS_SZKOL.DO<>#0 || _buf.DataStazu>=OS_SZKOL.DO || 1 ?}
+            || _rdu:=OS_SZKOL.WYK().DU
+            ?};
+            ~_rdu & OS_SZKOL.prev()
+         !}
+      ?};
+      OS_SZKOL.cntx_pop();
+
+      _dr:=floor(_rdu);
+      _dm:=ceil((_rdu-_dr)*12);
+      _buf.lat[_i]+=_dr;
+      _buf.msc[_i]+=_dm;
+      {? _buf.data_pom[4]<>date(0,0,0)
+      || _td:=_buf.data_pom[4]~3;
+         _ld:=(date(_buf.data_pom[4]~1,_buf.data_pom[4]~2,0)~3=_buf.data_pom[4]~3);
+         _buf.data_pom[4]:=date((_buf.data_pom[4]~1)-_dr,(_buf.data_pom[4]~2)-_dm,0);
+         {? ~_ld & _td<_buf.data_pom[4]~3
+         || _buf.data_pom[4]:=date(_buf.data_pom[4]~1,_buf.data_pom[4]~2,_td)
+         ?}
+      ?};
+      &_rdu
+   ?};
+
+   {? {? _par_333='N' || _buf.dni[_i]>30 || _buf.dni[_i]>29 ?}
+   || _buf.msc[_i]+=_buf.dni[_i]%30;
+      _buf.dni[_i]:=_buf.dni[_i]%*30
+
+   |? _buf.dni[_i]<0
+   || _buf.dni[_i]:=-_buf.dni[_i];
+      _buf.msc[_i]:=_buf.msc[_i]-_buf.dni[_i]%30-1;
+      _buf.dni[_i]:=30-_buf.dni[_i]%*30
+   ?};
+
+   {? _buf.msc[_i]>11
+   || _buf.lat[_i]+=_buf.msc[_i]%12;
+      _buf.msc[_i]:=_buf.msc[_i]%*12
+
+   |? _buf.msc[_i]<0
+   || _buf.msc[_i]:=-_buf.msc[_i];
+      _buf.lat[_i]:=_buf.lat[_i]-_buf.msc[_i]%12-1;
+      _buf.msc[_i]:=12-_buf.msc[_i]%*12
+   ?}
+!};
+_tab.cntx_pop();
+echo();
+
+{? _a<=0
+|| {? _b<>0
+   || P.OSOBA()
+   ?};
+   _Zwol:=_zdate;
+   _Data:=
+      {? _b<>0 & P.DZ<>_zdate & P.DZ<date()
+      || _Zwol:=P.DZ; {? _buf.DataStazu<P.DZ || _buf.DataStazu || P.DZ ?}
+      || EDIT_VAR.DATA
+      ?};
+
+   _wid:=tab_tmp(1,
+:     dane podstawowe
+      'DATA_OBL','DATE', 'Staż na dzień',
+      'DATA_ZWO','DATE', 'Data zwolnienia',
+:     ogólny staż pracy
+      'OG_LAT','INTEGER','Lata',
+      'OG_MSC','INTEGER','Miesiące',
+      'OG_DNI','INTEGER','Dni',
+:     nagroda jubileuszowa
+      'NA_LAT','INTEGER','Lata',
+      'NA_MSC','INTEGER','Miesiące',
+      'NA_DNI','INTEGER','Dni',
+:     staż w branży
+      'BR_LAT','INTEGER','Lata',
+      'BR_MSC','INTEGER','Miesiące',
+      'BR_DNI','INTEGER','Dni',
+:     urlop wypoczynkowy
+      'UW_LAT','INTEGER','Lata',
+      'UW_MSC','INTEGER','Miesiące',
+      'UW_DNI','INTEGER','Dni',
+:      suma lat przepracowanych w firmie
+      'FR_LAT','INTEGER','Lata',
+      'FR_MSC','INTEGER','Miesiące',
+      'FR_DNI','INTEGER','Dni'
+   );
+
+   _wid.DATA_OBL:=_Data;
+   _wid.DATA_ZWO:=_Zwol;
+   _wid.OG_LAT:=_buf.lat[1];
+   _wid.OG_MSC:=_buf.msc[1];
+   _wid.OG_DNI:=_buf.dni[1];
+   _wid.NA_LAT:=_buf.lat[2];
+   _wid.NA_MSC:=_buf.msc[2];
+   _wid.NA_DNI:=_buf.dni[2];
+   _wid.BR_LAT:=_buf.lat[3];
+   _wid.BR_MSC:=_buf.msc[3];
+   _wid.BR_DNI:=_buf.dni[3];
+   _wid.UW_LAT:=_buf.lat[4];
+   _wid.UW_MSC:=_buf.msc[4];
+   _wid.UW_DNI:=_buf.dni[4];
+   _wid.FR_LAT:=_buf.lat[5];
+   _wid.FR_MSC:=_buf.msc[5];
+   _wid.FR_DNI:=_buf.dni[5];
+
+   _len:=20;
+   _wnd:=_wid.mk_edit('Staż'@,0,'oblicz_staz_wer');
+   _wid.win_esep(_wnd,'Dane podstawowe'@);
+   _wid.win_efld(_wnd,OSOBA,'NAZWISKO',,,_len,,,'Nazwisko'@,,'Nazwisko pracownika'@);
+   _wid.win_efld(_wnd,OSOBA,'PIERWSZE',,,_len,,,'Imię'@,,'Imię pracownika'@);
+   _wid.win_efld(_wnd,,'DATA_OBL',,,,,,'Staż na dzień'@,,'Dzień, na który obliczono staż pracy'@);
+   {? _Zwol<>_zdate
+   || _wid.win_efld(_wnd,,'DATA_ZWO',,,,,,'Data zwolnienia'@,,'Data zakończenia pracy'@)
+   ?};
+   _wid.win_esep(_wnd,'Ogólny staż pracy'@);
+   _wid.win_efld(_wnd,,'OG_LAT',,,_len,,,'Lata'@,,'Liczba lat stażu pracy'@);
+   _wid.win_efld(_wnd,,'OG_MSC',,,_len,,,'Miesiące'@,,'Liczba miesięcy stażu pracy'@);
+   _wid.win_efld(_wnd,,'OG_DNI',,,_len,,,'Dni'@,,'Liczba dni stażu pracy'@);
+   _wid.win_ecol(_wnd);
+   _wid.win_esep(_wnd,'Nagroda jubileuszowa'@);
+   _wid.win_efld(_wnd,,'NA_LAT',,,_len,,,'Lata'@,,'Liczba lat stażu pracy do nagrody jubileuszowej'@);
+   _wid.win_efld(_wnd,,'NA_MSC',,,_len,,,'Miesiące'@,,'Liczba miesięcy stażu pracy do nagrody jubileuszowej'@);
+   _wid.win_efld(_wnd,,'NA_DNI',,,_len,,,'Dni'@,,'Liczba dni stażu pracy do nagrody jubileuszowej'@);
+   _wid.win_esep(_wnd,'Staż w branży'@);
+   _wid.win_efld(_wnd,,'BR_LAT',,,_len,,,'Lata'@,,'Liczba lat stażu pracy w branży'@);
+   _wid.win_efld(_wnd,,'BR_MSC',,,_len,,,'Miesiące'@,,'Liczba miesięcy stażu pracy w branży'@);
+   _wid.win_efld(_wnd,,'BR_DNI',,,_len,,,'Dni'@,,'Liczba dni stażu pracy w branży'@);
+   _wid.win_ecol(_wnd);
+   _wid.win_esep(_wnd,'Urlop wypoczynkowy'@);
+   _wid.win_efld(_wnd,,'UW_LAT',,,_len,,,'Lata'@,,'Liczba lat stażu pracy do ustalenia wymiaru urlopu'@);
+   _wid.win_efld(_wnd,,'UW_MSC',,,_len,,,'Miesiące'@,,'Liczba miesięcy stażu pracy do ustalenia wymiaru urlopu'@);
+   _wid.win_efld(_wnd,,'UW_DNI',,,_len,,,'Dni'@,,'Liczba dni stażu pracy do ustalenia wymiaru urlopu'@);
+   {? EDIT_VAR.TN='T'
+   || _wid.win_esep(_wnd,'Staż pracy w firmie'@);
+      _wid.win_efld(_wnd,,'FR_LAT',,,_len,,,'Lata'@,,'Liczba lat stażu pracy w firmie'@);
+      _wid.win_efld(_wnd,,'FR_MSC',,,_len,,,'Miesiące'@,,'Liczba miesięcy stażu pracy w firmie'@);
+      _wid.win_efld(_wnd,,'FR_DNI',,,_len,,,'Dni'@,,'Liczba dni stażu pracy w firmie'@)
+   ?};
+   _wid.win_edit(_wnd);
+   _wid.display()
+?};
+
+{? _e<>date(0,0,0)
+|| {! _i:=1..obj_len(_buf.rodzaj)
+   |! {? _buf.licz_tab[_i]<=1 & _buf.data_pom[_i]<>date(0,0,0)
+      || _buf.daty[_i]:=_buf.data_pom[_i]
+      |? _buf.DataStazu<>date(0,0,0) & (_buf.lat[1]>0 | _buf.msc[1]>0 | _buf.dni[1]>0)
+      || _buf.daty[_i]:=__KAL.sub_date(_buf.DataStazu,_buf.lat[_i],_buf.msc[_i],_buf.dni[_i])
+      ?}
+   !}
+|? _b<0 | _d
+|| {? _buf.licz_tab[1]<=1 & _buf.data_pom[1]<>date(0,0,0)
+   || P.DS:=_buf.data_pom[1]
+   |? _buf.DataStazu<>date(0,0,0) & (_buf.lat[1]>0 | _buf.msc[1]>0 | _buf.dni[1]>0)
+   || P.DS:=__KAL.sub_date(_buf.DataStazu,_buf.lat[1],_buf.msc[1],_buf.dni[1])
+   ?};
+
+   {? _buf.licz_tab[4]<=1 & _buf.data_pom[4]<>date(0,0,0)
+   || P.DU:=_buf.data_pom[4]
+   |? _buf.DataStazu<>date(0,0,0) &(_buf.lat[4]>0 | _buf.msc[4]>0 | _buf.dni[4]>0)
+   || P.DU:=__KAL.sub_date(_buf.DataStazu,_buf.lat[4],_buf.msc[4],_buf.dni[4])
+   ?};
+
+   {? _buf.licz_tab[2]<=1 & _buf.data_pom[2]<>date(0,0,0)
+   || P.DC:=_buf.data_pom[2]
+   |? _buf.DataStazu<>date(0,0,0) & (_buf.lat[2]>0 | _buf.msc[2]>0 | _buf.dni[2]>0)
+   || P.DC:=__KAL.sub_date(_buf.DataStazu,_buf.lat[2],_buf.msc[2],_buf.dni[2])
+   ?};
+
+   {? _put
+   || P.put()
+   ?}
+?};
+P.get();
+{? _kal_naz<>__KAL.nazwa || __KAL.set_cal(_kal_naz,_kal_rok) ?};
+STAZ.cntx_pop();
+STAZ_H.cntx_pop();
+
+_buf
+
+
+\oblicz_buf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Tworzy bufor parametrów działania funkcji oblicz.
+::   WY: Tablica nazwana zawierająca zmienne pomocnicze i wyniki obliczeń.
+::----------------------------------------------------------------------------------------------------------------------
+_zdate:=date(0,0,0);
+
+_buf:=obj_new(
+:  pomocnicze
+   'tabela','ndx_tec','rodzaj',
+   'data_pom','licz_tab',
+:  data poczatku stazu
+   'DataStazu',
+:  wyliczone staze
+   'lat','msc','dni',
+:  tablica daty do wyliczen w innych funkcjach
+   'daty'
+);
+
+_buf.tabela:=tab_tmp(2,
+   'RO', 'STRING[1]','Rodzaj stazu',
+   'OD', 'DATE',     'Data od',
+   'DO', 'DATE',     'Data do',
+   'SYM','STRING[1]','Symbol',
+   'REF','INTEGER',  'Ref pomocniczy'
+);
+_buf.ndx_tec:=_buf.tabela.ndx_tmp(,,'RO',,,'SYM',,,'REF',,,'OD',,);
+
+_buf.rodzaj:=obj_new(5);
+_buf.rodzaj[1]:='O';
+_buf.rodzaj[2]:='N';
+_buf.rodzaj[3]:='B';
+_buf.rodzaj[4]:='U';
+_buf.rodzaj[5]:='F';
+
+_buf.data_pom:=obj_new(5);
+_buf.licz_tab:=obj_new(5);
+
+_buf.DataStazu:=_zdate;
+_buf.lat:=obj_new(5);
+_buf.msc:=obj_new(5);
+_buf.dni:=obj_new(5);
+
+_buf.daty:=obj_new(5);
+
+_ini:="{! _n:=1..obj_len(_a) |! _a[_n]:=_b !}";
+_ini(_buf.lat,0);
+_ini(_buf.msc,0);
+_ini(_buf.dni,0);
+_ini(_buf.data_pom,_zdate);
+_ini(_buf.licz_tab,0);
+_ini(_buf.daty,_zdate);
+
+_buf
+
+
+\add_okr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ATA [2009+]
+:: OPIS: Dodaje zapis okresu stażu do tabeli tymczasowej
+::   WE: _a - wskazanie na bufor danych
+::       _b - data od
+::       _c - data do
+::       _d - P - pracownik, O - osoba
+::       _e - ref
+::       _f - T - ogólny staż
+::       _g - T - nagroda
+::       _h - T - branzowy
+::       _i - T - urlop
+::            1 - urlop, z korektą początku
+::       _j - T - firma (podsumowanie pracy dla firmy)
+::  OLD: \add_okr/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a.tabela;
+{? _b<=_a.DataStazu
+|| _tab.clear();
+   {! _n:=1..obj_len(_a.rodzaj)
+   |! {? _[5+_n]='T' | _[5+_n]='1'
+      || _tab.SYM:=_d;
+         _tab.REF:=_e;
+         _tab.OD:={? _[5+_n]='1' || date(_b~1,_b~2,1) || _b ?};
+         _tab.DO:=_c;
+         _tab.RO:=_a.rodzaj[_n];
+         _tab.add()
+      ?}
+   !}
+?}
+
+
+\add_nie
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ATA [2009+]
+:: OPIS: Aktualizuje (pomniejsza) zapisy okresu stażu o przerwy w okresach zatrudnienia
+::   WE: _a - wskazanie na bufor danych
+::       _b - data od
+::       _c - data do
+::       _d - P - pracownik, O - osoba
+::       _e - ref
+::       _f - 1 - analiza tylko zapisów dla urlopow
+::  OLD: \add_nie/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a.tabela;
+_tab.cntx_psh();
+_tab.index(_a.ndx_tec);
+
+_od:=_b;
+_do:=_c;
+{? var_press('_f')<>type_of(0)
+|| _f:=0
+?};
+
+{! _i:=1..obj_len(_a.rodzaj)
+|! _tab.prefix(_a.rodzaj[_i],_d,_e);
+   {? _tab.first()
+   || {!
+      |? _del:=0;
+         {? {? _f || _tab.RO='U' || 1 ?}
+         || {? _tab.OD<_od & _tab.DO>_do
+            || _tab_do:=_tab.DO;
+               _tab.DO:=_od-1;
+               _tab.put();
+               _tab.OD:=_do+1;
+               _tab.DO:=_tab_do;
+               _tab.SYM:=_d;
+               _tab.REF:=_e;
+               _tab.add()
+
+            |? _od<=_tab.OD & _do>=_tab.DO
+            || _del:=_tab.del()
+
+            |? _od>_tab.OD & _do>=_tab.DO & _od<=_tab.DO
+            || _tab.DO:=_od-1;
+               _tab.put()
+
+            |? _od<=_tab.OD & _do<_tab.DO & _do>=_tab.OD
+            || _tab.OD:=_do+1;
+               _tab.put()
+            ?}
+         ?};
+         {? ~_del || _tab.next() || 1 ?} & _tab.OD<=_do
+      !}
+   ?}
+!};
+
+_tab.cntx_pop()
+
+
+\norm_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ATA [2009+]
+:: OPIS: Funkcja normalizująca zapisy w tabeli pomocniczej. Normalizacja polega na scaleniu zapisów, które pokrywają się
+::       w zakresie dat
+::   WE: _a - wskazanie na bufor danych
+::  OLD: \norm_tab/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a.tabela;
+{!
+|? _od:=_tab.OD;
+   _do:=_tab.DO;
+   _mc:=_tab.DO~2;
+   _ref:=_tab.ref();
+   {? _tab.next()
+   || {? _tab.OD<=(_do+1)
+      || _do:=_tab.DO;
+         _tab.del();
+         _tab.seek(_ref);
+         {? _tab.DO<_do
+         || _tab.DO:=_do
+         ?};
+         _tab.put();
+         1
+      || 1
+      ?}
+   ?}
+!};
+_tab.first();
+1
+
+
+\md_staz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Funkcja sprawdza czy istnieje wpis w okresach zatrundnienia o wykorzystanej opiece Art. 188 (dawniej MD)
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::   WY: obiekt z informacją o wykorzystanej liczbie dni i godzin
+::  OLD: \md_staz/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('_staz','staz',{? _<1 || ~~ || _a ?},{? _<2 || ~~ || _b ?},"STAZ.WMD","STAZ.WMDG")
+
+
+\md_info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Funkcja pokazuje informacje o wykorzystaniu opieki (Art. 188) u poprzedniego pracodawcy
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::       _c - [OBJECT]    - obiekt komunikatów
+::       _d - [INTEGER]   - czy wyświetlać komunikaty
+::       _e - [INTEGER]   - czy dodawać sekcję informacyjną o osobie (domyślnie tak)
+::       _f - [INTEGER]   - czy dodawać sekcję informacyjną (domyślnie tak)
+::  OLD: \md_info/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+{! _lp:=_+1 .. 6 |! _[_lp]:=~~ !};
+exec('_info','staz',_a,_b,_c,_d,_e,_f,'md_staz','Opieka na dziecko do lat 14 (Art. 188)'@)
+
+
+\czy_rok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MKG [2015]
+:: OPIS: Funkcja sprawdzająca w szybki sposób, czy staż dłuższy niż rok tylko dla aktualnego angażu pracownika
+::        i dla podanej daty
+::   WE: _a - data dla której sprawdzany jest staż
+::  OLD: \czy_rok/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dni:=0;
+{? var_press('_a')<>type_of(date()) || _a:=date() ?};
+{? _a>=date(2017,1,1) || return(1) ?};
+H.cntx_psh;
+N.cntx_psh;
+H.index('_HISTDAT');
+H.prefix(P.ref);
+N.index('NIPRACNB');
+{? H.first
+|| {!
+   |? _kod:=H.KZ().KZ;
+      {? ((_kod='B' & H.WN<>'T') | _kod='Z') & H.OD<_a
+      || _do:={? H.DO=date(0,0,0) | H.DO>_a || _a || H.DO ?};
+         _dni+=(_do-H.OD+1)*{? _kod='Z' || 1 || -1 ?}
+      ?};
+      H.next & H.OD<_a
+   !}
+?};
+{? var_press('_tab')>100 || obj_del(_tab) ?};
+_tab:=__RUB.sys_rub(1121);
+{? _tab.first
+|| {!
+   |? N.prefix('N',P.ref,_tab.RN);
+      {? N.first
+      || {!
+         |? {? N.OD<_a
+            || _do:={? N.DO>_a || _a || N.DO ?};
+               _dni-=(_do-N.OD+1)
+            ?};
+            N.next & N.OD<_a
+         !}
+      ?};
+      _tab.next
+   !}
+?};
+H.cntx_pop;
+N.cntx_pop;
+_dni>366
+
+
+\akt_hist
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Aktualizuje informacje w okresie zatrudnienia na podstawie jego przebiegu.
+::  OLD: \akt_hist/staze.fml
+::  OLD: \cia_hist/staze.fml
+::  OLD: \spr_staz/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+STAZ_H.cntx_psh();
+STAZ_H.index('ZM');
+STAZ_H.prefix(STAZ.ref(),'Z');
+: normalizacja zapisów
+{? STAZ_H.first()
+|| _do:=STAZ_H.DO;
+   {!
+   |? {? STAZ_H.next()
+      || {? _do=date(0,0,0)
+         || _do:=STAZ_H.OD-1;
+            STAZ_H.prev();
+            STAZ_H.DO:=_do;
+            STAZ_H.put();
+            STAZ_H.next();
+            _do:=STAZ_H.DO:=date(0,0,0)
+         || STAZ_H.OD:=_do+1;
+            _do:=STAZ_H.DO
+         ?};
+         STAZ_H.put()
+      ?}
+   !}
+?};
+: aktualizacja okresu
+{? STAZ_H.first()
+|| STAZ.DR:=STAZ_H.OD;
+   STAZ_H.last();
+   STAZ.DZ:=STAZ_H.DO
+|| STAZ.DR:=STAZ.DZ:=date(0,0,0)
+?};
+STAZ_H.cntx_pop();
+exec('akt_staz','staz');
+STAZ.put()
+
+
+\akt_staz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DPU
+:: OPIS: aktualizuje zawartosc pol okresu zatrudnienia
+::  OLD: \spr_staz/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? STAZ.DR<>date(0,0,0) & STAZ.DZ<>date(0,0,0)
+|| __KAL.rdat(STAZ.DR,STAZ.DZ);
+   {? STAZ.CI='T'
+   || STAZ.PRY:=__KAL.year;
+      STAZ.PRM:=__KAL.month;
+      STAZ.PRD:=__KAL.day;
+      exec('wyl_hist','staz')
+   || STAZ.PSY:=__KAL.year;
+      STAZ.PSM:=__KAL.month;
+      STAZ.PSD:=__KAL.day;
+      STAZ.PRY:=0;
+      STAZ.PRM:=0;
+      STAZ.PRD:=0
+   ?};
+   STAZ.put()
+?};
+1
+
+
+\wyl_hist
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wylicza okresy do i poza stażem okresu zatrudnienia na podstawie jego historii.
+::  OLD: \wyl_hist/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+STAZ_H.cntx_psh;
+STAZ_H.index('ZM');
+STAZ_H.prefix(STAZ.ref,'Z');
+_pry:=_prm:=_prd:=0;
+_psy:=_psm:=_psd:=0;
+{? STAZ_H.first()
+|| _od:=STAZ_H.OD;
+   STAZ_H.last();
+   _do:=
+      {? STAZ_H.DO=date(0,0,0)
+      || _p_dza:=exec('data_prac','osoba',STAZ.OSOBA,0);
+         {? _p_dza<>date(0,0,0)
+         || _p_dza
+         || date()
+         ?}
+      || STAZ_H.DO
+      ?};
+   {? _od<=_do
+   || __KAL.rdat(_od,_do);
+      _pry+=__KAL.year;
+      _prm+=__KAL.month;
+      _prd+=__KAL.day;
+      STAZ_H.prefix(STAZ.ref,'B');
+      {? STAZ_H.first()
+      || {!
+         |? __KAL.rdat(STAZ_H.OD,STAZ_H.DO);
+            _psy+=__KAL.year;
+            _psm+=__KAL.month;
+            _psd+=__KAL.day;
+            STAZ_H.next()
+         !};
+         {? _psd>29 || _psm+=_psd%30; _psd:=_psd%*30 ?};
+         {? _psm>11 || _psy+=_psm%12; _psm:=_psm%*12 ?}
+      ?}
+   ?}
+?};
+STAZ_H.cntx_pop();
+
+: do stażu
+STAZ.PRY:=_pry;
+STAZ.PRM:=_prm;
+STAZ.PRD:=_prd;
+: poza stażem
+STAZ.PSY:=_psy;
+STAZ.PSM:=_psm;
+STAZ.PSD:=_psd;
+~~
+
+
+\_staz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JAKOLTUN [21.37]
+:: OPIS: Funkcja sprawdza czy istnieje wpis w okresach zatrundnienia dla wybranej nieobecności
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::       _c - [RULE]      - formuła na pole tabeli STAZ z liczbą dni
+::       _d - [STRING]    - formuła na pole tabeli STAZ z liczbą godzin
+::   WY: obiekt z informacją o wykorzystanej liczbie dni i godzin
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('dni','godz');
+_result.dni:=0;
+_result.godz:=0;
+
+_osoba:={? var_pres('_a')=type_of(null()) || _a || return(_result) ?};
+_rok:={? var_pres('_b')=type_of(0) || _b || return(_result) ?};
+_dni:={? var_pres('_c')=type_of("") || _c || return(_result) ?};
+_godziny:={? var_pres('_d')=type_of("") || _d || return(_result) ?};
+
+STAZ.cntx_psh();
+STAZ.index('_STAZE');
+STAZ.prefix(exec('ref_firma','ustawienia'),_osoba);
+{? STAZ.last()
+|| {!
+   |? {? STAZ.DZ~1=_rok
+      || _result.dni+=_dni();
+         _result.godz+=_godziny()
+      ?};
+      STAZ.prev()
+   !}
+?};
+STAZ.cntx_pop();
+_result
+
+
+\dod_staz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JAKOLTUN [21.37]
+:: OPIS: Funkcja sprawdza czy istnieje wpis w okresach zatrundnienia o wykorzystaniu urlopu dodatkowego
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::   WY: obiekt z informacją o wykorzystanej liczbie dni i godzin
+::----------------------------------------------------------------------------------------------------------------------
+exec('_staz','staz',{? _<1 || ~~ || _a ?},{? _<2 || ~~ || _b ?},"STAZ.WUNSP","STAZ.WUNSPG")
+
+
+\_info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JAKOLTUN [21.37]
+:: OPIS: Funkcja pokazuje informacje o wykorzystaniu limitu nieobecności u poprzedniego pracodawcy
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::       _c - [OBJECT]    - obiekt komunikatów
+::       _d - [INTEGER]   - czy wyświetlać komunikaty
+::       _e - [INTEGER]   - czy dodawać sekcję informacyjną o osobie (domyślnie tak)
+::       _f - [INTEGER]   - czy dodawać sekcję informacyjną (domyślnie tak)
+::       _g - [STRING]    - nazwa formuły sprawdzające wykorzystanie wybranej nieobecności
+::       _h - [STRING]    - informacja do komunikatu o rodzaju nieobecności
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+ _osoba:={? var_press('_a')=type_of(null()) || _a || return(_result) ?};
+   _rok:={? var_press('_b')=type_of(0)    || _b || return(_result) ?};
+  _KOMM:={? var_press('_c')>100
+         || _c
+         || exec('KOMM','#object');
+            KOMM.init(255);
+            KOMM
+         ?};
+  _show:={? var_press('_d')=type_of(0) || _d || 1 ?};
+_os_sec:={? var_press('_e')=type_of(0) || _e || 1 ?};
+ _i_sec:={? var_press('_f')=type_of(0) || _f || 1 ?};
+_formula:={? var_press('_g')=type_of('') || _g || return(_result) ?};
+_info:={? var_press('_h')=type_of('') || _h || return(_result) ?};
+
+OSOBA.cntx_psh();
+OSOBA.prefix();
+_staz:=exec(_formula,'staz',_osoba,_rok);
+{? (_staz.dni | _staz.godz) & OSOBA.seek(_osoba)
+||
+    {? _os_sec || _KOMM.sect_beg(OSOBA.NAZWISKO+' '+OSOBA.PIERWSZE) ?};
+    {? _i_sec  || _KOMM.sect_beg('Informacja',15) ?};
+       _dni:={? _staz.dni>0
+             || {? _staz.dni=1
+                || '%1 dnia'@[$_staz.dni]
+                || '%1 dni'@[$_staz.dni]
+                ?}
+             || ''
+             ?};
+    _godzin:={? _staz.godz>0
+             || {? _staz.godz=1
+                || '%1 godziny'@[$_staz.godz]
+                || '%1 godzin'@[$_staz.godz]
+                ?}
+             || ''
+             ?};
+    _KOMM.add(_info);
+    _KOMM.add(
+      'W roku %1 w okresach zatrudnienia istnieje zapis o wykorzystaniu u poprzedniego pracodawcy, '
+      'wskazanej wyżej nieobecności, w wymiarze:'@ [$_rok]+' '+
+      {? _dni<>'' & _godzin<>''
+      || '%1 (%2)' [_dni,_godzin]
+      |? _dni=''
+      || _godzin
+      || _dni
+      ?}+'.'
+      );
+   {? _i_sec
+   || _KOMM.add('Należy sprawdzić poprawność wprowadzonych danych.');
+      _KOMM.sect_end()
+   ?};
+   {? _os_sec || _KOMM.sect_end() ?}
+?};
+OSOBA.cntx_pop();
+{? _show || _KOMM.select() ?}
+
+
+\dod_info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JAKOLTUN [21.37]
+:: OPIS: Funkcja pokazuje informacje o wykorzystaniu urlopu dodatkowego u poprzedniego pracodawcy
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::       _c - [OBJECT]    - obiekt komunikatów
+::       _d - [INTEGER]   - czy wyświetlać komunikaty
+::       _e - [INTEGER]   - czy dodawać sekcję informacyjną o osobie (domyślnie tak)
+::       _f - [INTEGER]   - czy dodawać sekcję informacyjną (domyślnie tak)
+::----------------------------------------------------------------------------------------------------------------------
+{! _lp:=_+1 .. 6 |! _[_lp]:=~~ !};
+exec('_info','staz',_a,_b,_c,_d,_e,_f,'dod_staz','Urlop dodatkowy'@)
+
+
+\opiek_staz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Funkcja sprawdza czy istnieje wpis w okresach zatrundnienia o wykorzystaniu urlopu opiekuńczego
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::   WY: obiekt z informacją o wykorzystanej liczbie dni i godzin
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('upgrade2226_nru01','wnioski_urlopowe') || return(0) ?};
+exec('_staz','staz',{? _<1 || ~~ || _a ?},{? _<2 || ~~ || _b ?},"STAZ.WUOP","0")
+
+
+\wyzsza_staz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Funkcja sprawdza czy istnieje wpis w okresach zatrudnienia o wykorzystaniu siły wyższej
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::   WY: obiekt z informacją o wykorzystanej liczbie dni i godzin
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('upgrade2226_nru01','wnioski_urlopowe') || return(0) ?};
+exec('_staz','staz',{? _<1 || ~~ || _a ?},{? _<2 || ~~ || _b ?},"STAZ.WUSW","STAZ.WUSWG")
+
+
+\opwy_info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Funkcja pokazuje informacje o wykorzystaniu urlopu opiekuńczego lub siły wyższej u poprzedniego pracodawcy
+::   WE: _a - [REFERENCE] - wskazanie na osobę
+::       _b - [INTEGER]   - rok sprawdzenia
+::       _c - [OBJECT]    - obiekt komunikatów
+::       _d - [INTEGER]   - czy wyświetlać komunikaty
+::       _e - [INTEGER]   - czy dodawać sekcję informacyjną o osobie (domyślnie tak)
+::       _f - [INTEGER]   - czy dodawać sekcję informacyjną (domyślnie tak)
+::       _g - [STRING]    - O/W - Opiekuńczy/ siła Wyższa
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('upgrade2226_nru01','wnioski_urlopowe') || return(0) ?};
+{! _lp:=_+1 .. 6 |! _[_lp]:=~~ !};
+{? var_pres('_g')<>type_of('') || return(0) || _typ:=_g ?};
+exec('_info','staz',_a,_b,_c,_d,_e,_f,{? _typ='O' || 'opiek_staz' || 'wyzsza_staz' ?},
+   {? _typ='O' || 'Urlop opiekuńczy' || 'Siła wyższa' ?})
+
+
+\limity_pz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Kontrola limitów pracy zdalnej okazjonalnej po modyfikacji okresu zatrudnienia
+::   WE: [_a][INTEGER] - 0*/1 dołącz*/popraw
+::       [_b][INTEGER] - liczba wykorzystanych dni pracy zdalnej okazjonalnej przed modyfikacją (popraw)
+::   WY:
+::  OLD: \limity_pz/staze.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('is_pzd02','ppsf')
+|| return()
+?};
+:: Czynność, do której należy mieć uprawnienia dot. limitów pracy poza siedzibą:
+_act:='PPL_GRP_PPSL';
+{? ~exec('chk_role','#b__box',OPERATOR.USER,_act)
+|| _txt:='%3\n%1 "%2".'
+      ['Brak uprawnień do czynności'@,exec('name','#b_action',_act),
+       'Należy zweryfikować poprawność limitów pracy zdalnej okazjonalnej w przyszłości.'@];
+   FUN.info(_txt);
+   return()
+?};
+_popraw:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+_wpzOld:={? var_pres('_b')=type_of(0) || _b || 0 ?};
+_bRok:=date()~1;
+:: Jeśli nie jest to zapis z przeszłości:
+{? STAZ.DZ=date(0,0,0) | STAZ.DZ~1>=_bRok
+|| _wpz:=STAZ.WPZ;
+:: Sprawdzenie czy zmieniła się wartość wykorzystanej pracy zdalnej okazjonalnej lub jest to dołączanie:
+   {? (~_popraw & _wpz) | (_popraw & _wpz<>_wpzOld)
+   || _P_BEZ_LIM:=tab_tmp(1
+         ,'T'       ,'STRING[9]'  ,'Nr teczki'
+         ,'PREF'    ,'STRING[16]' ,'P.ref()'
+::       Jednostka organizacyjna (P.WYDZIAL().SYMBOL)
+         ,'WYDZIAL' ,'STRING[16]' ,'Jednostka organizacyjna'
+::       Wskazanie na opis konta kosztów (P.KK().SYM)
+         ,'KK'      ,'STRING[35]' ,'Konto kosztów'
+         ,'ZA'      ,'STRING[1]'  ,'Zatrudniony?'
+::       Wskazanie na opis stanowiska (P.ST().ST)
+         ,'ST'      ,'STRING[80]' ,'Stanowisko'
+         ,'WY'      ,'REAL'       ,'Wymiar zatrudnienia'
+::       Wskazanie na opis charakteru pracy (P.CP().CP)
+         ,'CP'      ,'STRING[9]'  ,'Charakter pracy'
+         ,'DZ'      ,'DATE'       ,'Data zwolnienia'
+         ,'DZA'     ,'DATE'       ,'Data zatrudnienia'
+         ,'OK'      ,'STRING[1]'  ,'Tworzyć limit?'
+         ,'L'       ,'REAL'       ,'Limit dni'
+         );
+      _firma:=exec('firma','ustawienia');
+::    Rodzaj "ZDALN_OK" - zdalna okazjonalna:
+      _ppsfr:=exec('FindInSet','#table','PPSFR','KOD','ZDALN_OK',_firma,,1);
+      {? ~_ppsfr
+      || FUN.emsg('%1\n%2'['W systemie brak rodzaju pracy "ZDALN_OK - Praca zdalna okazjonalna".'@,
+                           'Modyfikacja limitów pracy zdalnej okazjonalnej nie jest możliwa.'@]);
+         return()
+      ?};
+::    Podstawa limitu:
+      PPSFL.cntx_psh();
+      PPSFL.index('UNIQUE');
+      PPSFL.prefix(_firma,_ppsfr,null(),_bRok);
+      {? PPSFL.first() & PPSFL.SL='D'
+      || _podstawa:=PPSFL.L
+      || _podstawa:=24
+      ?};
+      PPSFL.cntx_pop();
+::    Liczba pracowników z już założonym limitem indywidualnym:
+      _pZlim:=0;
+      UD_SKL.cntx_psh();
+      KK.cntx_psh();
+      STN.cntx_psh();
+      CP.cntx_psh();
+      P.cntx_psh();
+      _P_UPR:=exec('dostepne_p_osoba','schemat','PKD','P','*',$STAZ.OSOBA);
+::    Sprawdzanie czy są limity lub braki limitów osoby w pracownikach 'P' na bieżący rok:
+      {? _P_UPR.first()
+      || {!
+         |? {? P.seek(_P_UPR.REF,,1)
+            || _lim:=exec('limit_get','ppsf',P.ref(),_ppsfr,_bRok);
+               {? _lim.dom=0 & _lim.ok=1
+               || _pZlim+=1
+               || _P_BEZ_LIM.PREF:=$P.ref();
+                  _P_BEZ_LIM.WYDZIAL:=P.WYDZIAL().SYMBOL;
+                  _P_BEZ_LIM.KK:=P.KK().SYM;
+                  _P_BEZ_LIM.ZA:=P.ZA;
+                  _P_BEZ_LIM.T:=P.T;
+                  _P_BEZ_LIM.ST:=P.ST().ST;
+                  _P_BEZ_LIM.WY:=P.WY;
+                  _P_BEZ_LIM.CP:=P.CP().CP;
+                  _P_BEZ_LIM.DZ:=P.DZ;
+                  _P_BEZ_LIM.DZA:=P.DZA;
+                  _P_BEZ_LIM.OK:='N';
+                  _P_BEZ_LIM.L:=_podstawa-_wpz;
+                  {? _P_BEZ_LIM.L<0
+                  || _P_BEZ_LIM.L:=0
+                  ?};
+                  _P_BEZ_LIM.add()
+               ?};
+               obj_del(_lim)
+            ?};
+
+            _P_UPR.next()
+         !}
+      ?};
+      obj_del(_P_UPR);
+      P.cntx_pop();
+      CP.cntx_pop();
+      STN.cntx_pop();
+      KK.cntx_pop();
+      UD_SKL.cntx_pop();
+
+      _txt:='';
+      OSOBA.cntx_psh();
+      _nazwisko:=STAZ.OSOBA().NAZWISKO;
+      _pierwsze:=OSOBA.PIERWSZE;
+      OSOBA.cntx_pop();
+      {? ~_pZlim & ~_P_BEZ_LIM.size()
+      || _txt+='%1 %2 %3 %4.\n%5'
+            ['Brak pracowników'@, _nazwisko, _pierwsze,'spełniających kryteria'@,
+             'Należy zweryfikować poprawność limitów pracy zdalnej okazjonalnej w przyszłości.'@]
+      ?};
+      {? _pZlim
+      || _txt+='%1 %2 %3.\n%4'
+            ['Istnieją limity indywidualne pracy zdalnej okazjonalnej'@, _nazwisko, _pierwsze,
+             'Należy zweryfikować poprawność limitów.'@]
+      ?};
+      {? _P_BEZ_LIM.first()
+      || {? _pZlim
+         || _txt+='\n\n'
+         ?};
+         _wielu:=(_P_BEZ_LIM.size()>1);
+         _txt+='%1 %2 %3 %4,\n%5 %6'
+            ['Czy utworzyć limit indywidualny pracy zdalnej okazjonalnej dla'@,
+             {? _wielu || 'pracowników'@ || 'pracownika'@ ?}, _nazwisko, _pierwsze,
+             {? _wielu || 'którzy nie posiadają'@ || 'który nie posiada'@ ?}, 'utworzonego limitu?'@];
+         {? FUN.ask(_txt)
+         || {? ~_wielu
+            || _P_BEZ_LIM.OK:='T';
+               _P_BEZ_LIM.put()
+            ?};
+            _wer:=_P_BEZ_LIM.mk_sel('%1 - %2 %3'['Wybierz pracowników'@,_nazwisko,_pierwsze],,0,
+                                       '#p_bez_lim1',,,10,,'U','T',,,,'html_maximized');
+            _P_BEZ_LIM.win_fld(_wer,,'OK',,,-9,,,'Zaznaczony'@,,'Czy utworzyć limit dla pracownika? [T/N]'@,2,,
+               "'T'","'N'");
+            _P_BEZ_LIM.win_fld(_wer,,'L',,,-9,0,,'Limit dni'@,,'Limit roczny (dni)'@);
+            _P_BEZ_LIM.win_fld(_wer,,'T',,,-6,,,'Numer teczki'@,,'Numer w aktach'@);
+            _P_BEZ_LIM.win_fld(_wer,,'DZA',,,-10,,,'Od dnia'@,,'Data rozpoczęcia'@);
+            _P_BEZ_LIM.win_fld(_wer,,'DZ',,,-10,,,'Do dnia'@,,'Data zakończenia'@);
+            _P_BEZ_LIM.win_fld(_wer,,'ZA',,,-6,,,'Zatrudniony'@,,'Znacznik zatrudnienia [T/N]'@,2,,
+               "'T'","'N'");
+            _P_BEZ_LIM.win_fld(_wer,,'WYDZIAL',,,-15,,,'Jednostka organizacyjna'@,,'Jednostka organizacyjna'@);
+            _P_BEZ_LIM.win_fld(_wer,,'ST',,,-20,,,'Stanowisko'@,,'Stanowisko'@);
+            _P_BEZ_LIM.win_fld(_wer,,'WY',,,-10,3,,'Wymiar zatrudnienia'@,,'Wymiar zatrudnienia'@);
+            _P_BEZ_LIM.win_fld(_wer,,'CP',,,-10,,,'Charakter pracy'@,,'Charakter pracy'@);
+            _P_BEZ_LIM.win_fld(_wer,,'KK',,,-16,,,'Konto kosztów'@,,'Konto kosztów'@);
+            _P_BEZ_LIM.win_act(_wer,0,'Formuła','Zaznacz'@@,,'Zmień stan tworzenia limitu'@,
+               "_P_BEZ_LIM:=cur_tab();
+                {? _P_BEZ_LIM.OK='N'
+                || _P_BEZ_LIM.OK:='T';
+                   _P_BEZ_LIM.put()
+                ?}
+               ",,0,1,,,'Z');
+            _P_BEZ_LIM.win_btn(_wer,'text=%1'['Zaznacz'@],'menu:Z');
+            _P_BEZ_LIM.win_act(_wer,0,'Formuła','Odznacz'@@,,'Zmień stan tworzenia limitu'@,
+               "_P_BEZ_LIM:=cur_tab();
+                {? _P_BEZ_LIM.OK='T'
+                || _P_BEZ_LIM.OK:='N';
+                   _P_BEZ_LIM.put()
+                ?}
+               ",,0,1,,,'O');
+            _P_BEZ_LIM.win_btn(_wer,'text=%1'['Odznacz'@],'menu:O');
+            _P_BEZ_LIM.win_act(_wer,0,'Formuła','Zmień &limit'@@,,'Zmień liczbę dni limitu'@,
+               "_P_BEZ_LIM:=cur_tab();
+                PPSFL.L:=_P_BEZ_LIM.L;
+                {? PPSFL.edit(""{? PPSFL.L<0
+                               || __CHK.err_incorrect('Limit dni','Wartość nie może być ujemna.'@)
+                               || 1
+                               ?}"")
+                || _P_BEZ_LIM.L:=PPSFL.L;
+                   _P_BEZ_LIM.put()
+                ?}
+               ",,1,0,,,'L');
+            _P_BEZ_LIM.win_btn(_wer,'text=%1'['Zmień &limit'@],'menu:L');
+            _P_BEZ_LIM.win_act(_wer,0,'Formuła','Dalej'@@,,'Utwórz zaznaczone limity'@,
+               "{? FUN.ask('Czy utworzyć limity dla zaznaczonych pracowników?'@)
+                || sel_exit()
+                ?}",,,,,,'D');
+            _P_BEZ_LIM.win_btn(_wer,'text=%1,panel=bottom'['Dalej'@],'menu:D');
+            _P_BEZ_LIM.win_act(_wer,0,'Rekord',,,,
+               "_P_BEZ_LIM:=cur_tab();
+                _wer:=cur_win(1,0);
+                {? _P_BEZ_LIM.sel_size()>1
+                || _P_BEZ_LIM.actions_grayed(_wer)
+                |? _P_BEZ_LIM.OK='T'
+                || _P_BEZ_LIM.actions_grayed(_wer,'Z')
+                || _P_BEZ_LIM.actions_grayed(_wer,'O')
+                ?}
+                ");
+            _P_BEZ_LIM.win_sel(_wer);
+
+            PPSFL.cntx_psh();
+            PPSFL.index('UNIQUE');
+            PPSFL.prefix();
+            PPSFL.win_edit('RED');
+            PPSFL.efld_opt('RED','editable=grayed',,'PPSFR');
+            PPSFL.efld_opt('RED','editable=grayed',,'R');
+            PPSFL.efld_opt('RED','editable=grayed',,'SL');
+            PPSFL.efld_opt('RED','enable=0',EDIT_VAR,'PPSFL_LG');
+            PPSFL.blank(1);
+            PPSFL.FIRMA:=_firma;
+            PPSFL.PPSFR:=_ppsfr;
+            PPSFL.R:=_bRok;
+            PPSFL.SL:='D';
+
+            {? _P_BEZ_LIM.select()
+            || _P_BEZ_LIM.index(_P_BEZ_LIM.ndx_tmp(,1,'OK',,));
+::          Ograniczenie dziedziny - tylko zapisy oznaczone do utworzenia limitu:
+               _P_BEZ_LIM.prefix('T');
+               {? _P_BEZ_LIM.first()
+               || _utworzono:=0;
+                  P.cntx_psh();
+                  {!
+                  |? {? P.seek(_P_BEZ_LIM.PREF,,1)
+                     || PPSFL.P:=P.ref();
+                        PPSFL.L:=_P_BEZ_LIM.L;
+                        {? PPSFL.add()
+                        || _utworzono+=1
+                        ?}
+                     ?};
+
+                     _P_BEZ_LIM.next()
+                  !};
+                  P.cntx_pop();
+                  FUN.info('%1 %2'['Liczba utworzonych limitów:'@,$_utworzono])
+
+               || FUN.info('Nie wybrano limitów do utworzenia.'@)
+               ?};
+               _P_BEZ_LIM.ndx_drop()
+            || FUN.info('Zrezygnowano z tworzenia limitów.'@)
+            ?};
+
+            PPSFL.efld_opt('RED','editable=1',,'SL');
+            PPSFL.cntx_pop()
+         ?}
+      || FUN.info(_txt)
+      ?}
+   ?}
+?}
+
+:Sign Version 2.0 jowisz:1045 2023/11/07 14:00:41 077559a166c15ce2a81a3c0dc07f948a9c01fafc78e0653a9c3733c6a34e67c949c89b9bac3be0e049d8322bd7c0628162f2bf088a6ff07f3b8f95e01a3e3bd79d095e645194dfc78b3cdc029f4cd515694561dd3b9d2b944f875a9f38f3177f900ac9d2186f8ac5f12104a96e1e9938a0e4724914109d969a8e6695e5ddbb04

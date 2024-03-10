@@ -1,0 +1,323 @@
+﻿:!UTF-8
+:: (c) Asseco Business Solutions S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: qtte.fml
+:: Utworzony: 29.10.2020
+:: Autor: TP
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Formuły do obslugi komunikacji z terminalami statusu na produkcji
+::======================================================================================================================
+
+\start_order
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Uruchomienie zlecenia o symbolu _a
+::   WE: _a - symbol zlecenia
+:: wywołanie exec('start_order','qrest','ZLECEN_0001') - zamknięcie zlecenia 'ZLECEN_0001'
+::----------------------------------------------------------------------------------------------------------------------
+debug();
+_order_no:=_a;
+_status:='opened';
+_args:='
+   {
+      "order_no": %1,
+      "status": %2
+   }
+'
+[  json_value(_order_no),
+   json_value(_status)
+];
+_obj:=exec('run','qrest','api/orders/','POST',_args);
+_obj
+
+
+\stop_order
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zatrzymanie zlecenia o symbolu _a
+::   WE: _a - symbol zlecenia
+:: wywołanie exec('stop_order','qrest','ZLECEN_0001') - zamknięcie zlecenia 'ZLECEN_0001'
+::----------------------------------------------------------------------------------------------------------------------
+
+_order_no:=_a;
+_status:='closed';
+_args:='
+   {
+      "order_no": %1,
+      "status": %2
+   }
+'
+[  json_value(_order_no),
+   json_value(_status)
+];
+_obj:=exec('run','qrest','api/orders/'+_a,'PUT',_args);
+_obj
+
+
+
+
+::======================================================================================================================
+
+\env
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Środowisko obsługi zapytań HTTP
+::----------------------------------------------------------------------------------------------------------------------
+_env:=obj_new(
+:: Tablica parametrów wejściowych
+   'in',
+:: Tablica parametrów wyjściowych
+   'out',
+:: Tablica wynikowa
+   'RESULT'
+);
+_env.in:=~~;
+_env.out:=~~;
+_env.RESULT:=obj_new('STATUS','HEADER','DATA','MESSAGE');
+_env.RESULT.STATUS:=0;
+_env.RESULT.HEADER:='';
+_env.RESULT.DATA:='';
+_env.RESULT.MESSAGE:='';
+
+_env
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Uruchamia dowolne zapytanie REST
+::   WE: _a - zapytanie
+::       _b - metoda (GET, POST, PUT, DELETE)
+::       _c - argument wywołania: JSON (string, file) albo tablica nazwana argumentów
+::       [_d] - token autoryzacyjny
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('')
+|| _request:=_a
+|| FUN.info('Parametr %1 musi być podany.'@['_a']);
+   return()
+?};
+
+{? var_pres('_b')=type_of('')
+|| {? _b='GET' | _b='POST' | _b='PUT' | _b='DELETE'
+   || _method:=_b
+   || FUN.info('Parametr %1 musi mieć wartość %2, %3, %4 lub %5.'@['_b','GET','POST','PUT','DELETE'])
+   ?}
+|| FUN.info('Parametr %1 musi być podany.'@['_b']);
+   return()
+?};
+
+{? var_pres('_c')=type_of('')
+|| _json:=_c
+|? var_pres('_c')>100
+|| _args:=_c
+?};
+
+:: czy autoryzacja tokenem
+{? var_pres('_d')=type_of('')
+|| _auth:=1;
+   _token:=_d
+|| _auth:=0
+?};
+
+_env:=exec('env','qrest');
+::_env.in:=_in;
+params_set('env',_env);
+
+:: URL
+::_url:='https://bdo-test.mos.gov.pl/api/';
+_url:=exec('address','qrest');
+
+:: Brak proxy - jeżeli to konieczne, trzeba będzie dodać wpis do FO
+_proxy:='';
+
+:: ścieżka do pliku z certyfikatem
+_cert:='';
+::{? sys_name(1)='U_LINUX'
+::|| _pem:='ssl_xxx.pem';
+::   _cert:=pth_dir(_pem)+'/'+_pem
+::|| _cert:=''
+::?};
+
+
+:: Sprawdzenie parameryzacji systemu
+{? _url=''
+|| _env.RESULT.STATUS:=0;
+   _env.RESULT.MESSAGE:='Błąd parametryzacji — nie podano adresu usługi (parametr %1).'@['100331']
+
+:: Uruchomienie zapytania
+||
+:: Tryb cichy poza transakcją
+:: ODKOMENTOWAĆ   {? do_state()=0 || _do:=0; _no_msg:=no_msg(1) || _do:=1 ?};
+   _inet:=inet_get(_url,_proxy);
+:: ODKOMENTOWAĆ   {? _do=0 || no_msg(_no_msg) ?};
+
+   {? type_of(_inet)<100
+   || _env.RESULT.STATUS:=0;
+      _env.RESULT.MESSAGE:='Błąd wywołania funkcji %1.'@['inet_get()']
+
+   ||
+::    ścieżka do pliku z certyfikatami
+      {? _cert<>'' || _inet.set_cert_path(_cert) ?};
+
+::    Endpoint
+      _inet.url_append(_request);
+
+::    Nagłówki
+     _inet.append_header('accept: application/json');
+     _inet.append_header('Content-Type: application/json');
+     {? _auth
+     || _inet.append_header('Authorization: Bearer %1'[_token])
+     ?};
+
+::    Parametry (w tablicy nazwanej)
+      {? var_pres('_args')>100
+      || _par_names:=obj_ntab_names(_args);
+         {! _it:=1.. obj_len(_args)
+         |! _inet.url_add_param(_par_names[_it],_args[_it])
+         !}
+      ?};
+
+::    Logowanie do pliku - można ustawić do testowania dialogu z webserwisem
+      _logname:='rest_api%1.log'[6+gsub(date$2,'.','')];
+      {? exec('is_verbose','qrest') || _inet.set_verbose(_logname) ?};
+
+::    Wysłanie zapytania - wynik jako tekst albo plik w zależności od typu zapytania
+:: ZAWSZE TEKST (1) PLIK (0)
+      {? 1
+      ||
+::       Tryb cichy także w transakcji - błąd musi być obsłużony po end()
+         _do:=0;
+         _no_msg:=no_msg(1);
+::         {? do_state()=0 || _do:=0; _no_msg:=no_msg(1) || _do:=1 ?};
+         {? _method='GET'
+         || _response:=_inet.http_get()
+         |? _method='POST'
+         || _response:=_inet.http_post(,_json)
+         |? _method='PUT'
+         || _response:=_inet.http_put(,_json)
+         |? _method='DELETE'
+         || _response:=_inet.http_delete(,_json)
+         ?};
+
+         {? _response<>0
+         || _env.RESULT.STATUS:=_inet.get_status();
+            _env.RESULT.HEADER:=_inet.get_header();
+            _env.RESULT.DATA:=utf8_maz(_inet.get_data())
+         ?};
+         {? _do=0 || no_msg(_no_msg) ?};
+         ~~
+      ||
+::       Tryb cichy także w transakcji - błąd musi być obsłużony po end()
+         _do:=0;
+         _no_msg:=no_msg(1);
+::         {? do_state()=0 || _do:=0; _no_msg:=no_msg(1) || _do:=1 ?};
+         _answer:=fopen(null(),'bw',,,1);
+         {? _method='GET'
+         || _response:=_inet.http_get(_answer)
+         |? _method='POST'
+         || _response:=_inet.http_post(_answer,_json)
+         |? _method='PUT'
+         || _response:=_inet.http_put(_answer,_json)
+         |? _method='DELETE'
+         || _response:=_inet.http_delete(_answer,_json)
+         ?};
+
+         {? _response<>0
+         || _env.RESULT.STATUS:=_inet.get_status();
+            _env.RESULT.HEADER:=_inet.get_header();
+            _env.RESULT.DATA:=_answer
+         ?};
+         {? _do=0 || no_msg(_no_msg) ?};
+         ~~
+      ?};
+
+::debug();
+
+::    Uruchomienie formuły interpretującej wynik zapytania -
+      {? _response=200
+      ||
+::       Specjalna obsługa - wyciągnięcie z nagłówków limitu zapytań i oczekiwanie 10s, jeśli jest zerowy
+         _x_limit:=1;
+         _x_reset:='';
+         _headers:=spli_str(_env.RESULT.HEADER,'\n');
+         _size:=obj_len(_headers);
+         {! _it:=1.. _size
+         |! {? 23+_headers[_it]='X-Rate-Limit-Remaining:'
+            || _x_limit:=#(24-form(_headers[_it]))
+            ?};
+            ~~
+         !};
+         {? _x_limit=0
+         || echo('DELAY 200');
+            delay(10)
+         ?};
+         ~~
+      |? _response=0
+      || _env.RESULT.STATUS:=-errno();
+         _env.RESULT.MESSAGE:='Problem z połączeniem z adresem:\n%1'@[_url]
+      ||
+::       Specjalna obsługa - oczekiwanie 10s jak status 429 - Too Many Requests
+         {? _response=429
+         || echo('DELAY 429');
+            delay(10)
+         ?};
+         _env.RESULT.STATUS:=_response;
+         _env.RESULT.MESSAGE:=exec('status_not200','qrest',_response,_env.RESULT.DATA,_env.RESULT.HEADER)
+      ?}
+   ?}
+?};
+
+_env.RESULT
+
+
+\address
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Adres usługi (Narazui ciąg znaków - można przenieść do parametru na poziomi Merit
+::----------------------------------------------------------------------------------------------------------------------
+:: exec('get','#params',100331)
+'http://n59.ap-info.pl:3000/'
+
+
+\is_verbose
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Czy logowanie zapytań jest aktywne (1 - tak, 0 - nie) - można przenieść do parametru na poziomi Merit
+::----------------------------------------------------------------------------------------------------------------------
+::exec('get','#params',100335)='T'
+1
+
+
+\status_not200
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Treść komunikatu o statusie innym niż 200
+::   WE: _a - status
+::       [_b] - dane do sparsowania i uzupełnienia komunikatu
+::       [_c] - nagłówek do sparsowania i uzupełnienia komunikatu
+::   WY: Opis statusu
+::----------------------------------------------------------------------------------------------------------------------
+_status:=_a;
+_result:='System REST zwrócił kod: %1.'@[$_status]+'\n';
+{? var_pres('_b')=type_of('')
+|| _data:=_b;
+:: Jeżeli dane zaczynają się od cydzysłowu, to biorę jako zrozumiały tekst wewnątrz cudzysłowów
+   {? 1+_data='"'
+   || _result+=utf8_maz(1-_data-1)
+:: w przeciwnym wypadku (jak coś jest) biorę wszystko co jest (błąd krytyczny, który nie powinien wystąpić)
+   |? +_data>0
+   || _result+='\n'+utf8_maz(_data)
+:: w przeciwnym wypadku wydłubuję coś z nagłówka
+   || {? var_pres('_c')=type_of('')
+      || _header:=_c;
+         _tab:=spli_str(_header,'\n');
+         {! _it:=1 .. obj_len(_tab)
+         |! {? 8+_tab[_it]='HTTP/1.1'
+            || _result+='\n'+(9-_tab[_it])
+            ?}
+         !}
+      ?}
+   ?}
+?};
+_result

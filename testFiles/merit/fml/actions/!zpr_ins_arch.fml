@@ -1,0 +1,183 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku: !zpr_ins_arch.fml
+:: Utworzony: 02.12.2014
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartosc: Formuły czynnosci ZPR_INS_ARCH
+::            Tworzenie archiwum instancji procesow
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła główna czynności archiwizacji instancji procesów (ZPR_INS_ARCH)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=PROCES, type=_B_PROC, name=Proces do archiwizacji, required=N, fml_val="exec('select_proces','!zpr_ins_arch',_a,_b)"
+::# kind=WE, symbol=DNI, type=NUMBER, name=Ilość dni wstecz do archiwizacji, required=N
+::# kind=WE, symbol=ILOSC, type=NUMBER, name=Ilość instancji do archiwizacji, required=N
+{? var_pres('PROCES',_in)<>type_of(~~) & var_pres('PROCES',_in)<>type_of(null()) || return() ?};
+{? _in.PROCES=~~ || _in.PROCES:=null() ?};
+{? var_pres('ILOSC',_in)<>type_of(~~) & var_pres('ILOSC',_in)<>type_of(0) || return() ?};
+{? _in.ILOSC=~~ || _in.ILOSC:=0 ?};
+{? var_pres('DNI',_in)<>type_of(~~) & var_pres('DNI',_in)<>type_of(0) || return() ?};
+{? _in.DNI=~~ || _in.DNI:=0 ?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=RESULT, type=STRING, name=Wynik czynności (OK, gdy wszystkie procesy zostały zarchiwizowane), required=N
+::# kind=WY, symbol=ILOSC, type=NUMBER, name=Ilość zarchiwizowanych instancji, required=N
+{? var_pres('RESULT',_out)<>type_of(~~) & var_pres('RESULT',_out)<>type_of('') || return() ?};
+{? var_pres('ILOSC',_out)<>type_of(~~) & var_pres('ILOSC',_out)<>type_of(0) || return() ?};
+
+::# properties=SERVICE,GRP_FIRM
+
+{? _mp.isAutoRun() | _mp.isService()
+|| exec('archive','!zpr_ins_arch',_in,_out,_mp)
+
+|| {? FUN.ask('Czy archiwizować procesy?'@)
+   || exec('archive','!zpr_ins_arch',_in,_out,_mp)
+   ?}
+
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Opis dla czynności archiwizacji instancji procesów (ZPR_INS_ARCH)
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_desc:='Zarchiwizuj zakończone instancje procesów'@@;
+
+_desc
+
+
+\archive
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Właściwa funkcja archiwizacji instancji procesów
+::   WE: _a - _in
+::       _b - _out
+::       _c - _mp
+::----------------------------------------------------------------------------------------------------------------------
+_in:=_a;
+_out:=_b;
+_mp:=_c;
+
+_firma:=REF.FIRMA;
+_params:=exec('archive_a','#bi_arch');
+
+B_PROC.cntx_psh();
+BI_PROC.cntx_psh();
+
+_tm_stop:=exec('create','#tm_stamp',date(),time())-_in.DNI*exec('day','#tm_stamp');
+
+B_PROC.index('SYM');
+{? _in.PROCES=null()
+|| B_PROC.prefix('N',_firma)
+|| _proces:=exec('FindAndGet','#table',B_PROC,_in.PROCES,,"SYMBOL",'');
+   _ver:=exec('FindAndGet','#table',B_PROC,_in.PROCES,,"VER",'');
+   B_PROC.prefix('N',_firma,_proces,_ver,)
+?};
+
+_counter:=0;
+_ok:=1;
+{? B_PROC.first()
+|| {!
+   |? BI_PROC.index('PROSTOP');
+      BI_PROC.prefix(B_PROC.ref());
+
+      {? BI_PROC.first()
+      || {!
+         |? _next:=0;
+            _ref_nxt:=null();
+            BI_PROC.cntx_psh();
+            {? BI_PROC.next()
+            || _ref_nxt:=BI_PROC.ref()
+            ?};
+            BI_PROC.cntx_pop();
+
+            {? BI_PROC.STOP<>0 & BI_PROC.STOP<_tm_stop & exec('statArch','#bi_arch')
+            ||
+               {? B_PROC.ARCHDEL='T'
+               ||
+::                Usuwanie zamiast archiwizacji
+                  exec('delete','#bi_proc',BI_PROC.ref())
+               ||
+::                Archiwizacja
+                  _params.MASK:=exec('get_mask','#bi_arch',BI_PROC.ref(),_firma);
+                  {? _params.MASK<>''
+                  || _ref:=exec('newBiArchProc','#bi_arch',_params.MASK,B_PROC.ref());
+                     exec('infoArch','#bi_arch',_ref,_params.TABSTAT);
+                     _params.BI_PROC:=BI_PROC.ref();
+                     {? exec('archive','#bi_arch',_params)
+                     || _counter+=1;
+                        exec('actuArch','#bi_arch',_params.TABSTAT)
+                     || _ok:=0
+                     ?}
+                  ?}
+               ?}
+            ?};
+
+            {? _ref_nxt<>null()
+            || _next:=BI_PROC.seek(_ref_nxt)
+            ?};
+            (_counter<_in.ILOSC | _in.ILOSC=0) & _next>0
+         !}
+      ?};
+      (_counter<_in.ILOSC | _in.ILOSC=0) & B_PROC.next()
+   !}
+?};
+
+B_PROC.cntx_pop();
+BI_PROC.cntx_pop();
+
+{? ~_mp.isService() || FUN.info('Zakończono archiwizację instancji procesów.'@) ?};
+
+_out.ILOSC:=_counter;
+_out.RESULT:={? _ok || 'OK' || 'BŁĄD' ?};
+_mp.save(,_out);
+_mp.done();
+~~
+
+
+\select_proces
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła służąca do redagowania parametru wejściowego PROCES
+::   WE: _a - B_PROC.ref() przed redakcją
+::   WY: B_PROC.ref() po redakcji
+::----------------------------------------------------------------------------------------------------------------------
+_in_proc:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+_out_proc:=null();
+
+B_PROC.cntx_psh();
+B_PROC.index('AKT');
+B_PROC.prefix('N','T',REF.FIRMA);
+B_PROC.seek(_in_proc);
+_wer:=B_PROC.mk_sel('Wybierz proces'@,,,'editproces',,,,,'U');
+B_PROC.win_fld(_wer,,'SYMBOL');
+B_PROC.win_fld(_wer,,'VER');
+B_PROC.win_act(_wer,,'Formuła','&Wybierz'@@,,,"sel_exit()",,1,,,,'W');
+B_PROC.win_sel(_wer);
+{? B_PROC.select(,1,5)
+|| _out_proc:=B_PROC.ref()
+?};
+B_PROC.cntx_pop();
+_out_proc
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:37 48e6a11a145c6d69fe2b59ca8495ec3fcd1faa56fb85a7bcf527e6564894118beced8d147d18a8b3a78ee4c68cecb5016ea93eb832fed868679d6830065481eacac2c89e7123675c17510ddf854a72a7e3e406edd6bad21dfdd74214d41bb2e055c1887790757a0551aea6b55ef6165fe80dca679ec844af98fdc26165619d39

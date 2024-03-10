@@ -1,0 +1,3474 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: rozrach_kor.fml
+:: Utworzony: 04.11.2015
+:: Autor: MB
+::======================================================================================================================
+:: Zawartość: Procedury do obsługi korespondencji z rozrachunków
+::======================================================================================================================
+
+
+\parses_ser_nags
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Formuła ustala PARSES dla czynności na podstawie rekordu tabeli SER_NAGS,
+::       wskazanie na rekord tabeli SER_NAGS jest przekazane poprzez parametr SER_NAGS czynności.
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+{? _mp.pathTodo()
+|| _result:=0;
+   _sernags:=null;
+   {? var_pres('SER_NAGS',_out) & var_pres('SER_NAGS',_out)=type_of(null()) & _out.SER_NAGS<>null
+   || _sernags:=_out.SER_NAGS
+   |? var_pres('SER_NAGS',_in) & var_pres('SER_NAGS',_in)=type_of(null()) & _in.SER_NAGS<>null
+   || _sernags:=_in.SER_NAGS
+   || return(1)
+   ?};
+   SER_NAGS.cntx_psh(); SER_NAGS.prefix();
+   {? _sernags<>null & SER_NAGS.seek(_sernags)
+   || SER_NAG.cntx_psh(); SER_NAG.prefix(); SER_NAGS.SER_NAG();
+      {? SER_NAG.DATA<>date(0,0,0)
+      || exec('szuk_okr','okresy',SER_NAG.DATA);
+         {? ROZNE.UT_OKROD
+         || ROK_F.cntx_psh(); ROK_F.index('KODG'); ROK_F.prefix();
+            {? ROK_F.seek(ROZNE.UT_OKROD().ROK)
+            || OKRO_F.cntx_psh(); OKRO_F.index('ROK'); OKRO_F.prefix(ROK_F.ref());
+               {? OKRO_F.first() & OKRO_F.next()
+               || __PARSES.setVal('OkresRok',OKRO_F.ref());
+                  _result:=1
+               ?};
+               OKRO_F.cntx_pop()
+            ?};
+            ROK_F.cntx_pop()
+         ?}
+      ?};
+      SER_NAG.cntx_pop()
+   ?};
+   SER_NAGS.cntx_pop()
+?};
+_result
+
+
+\upr_ser_nags
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Formuła na uprawnienia do danych dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menadżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do danych dla czynności
+::       1 - użytkownik ma uprawnienia do danych czynności
+::----------------------------------------------------------------------------------------------------------------------
+_args:=params_get();
+_in:=_args.in;
+_user:=_args.user;
+_mp:=_args.mp;
+
+_result:=0;
+USERS.cntx_psh(); USERS.prefix();
+{? USERS.seek(_user)
+|| {? var_pres('SER_NAGS',_in) & var_pres('SER_NAGS',_in)=type_of(null()) & _in.SER_NAGS<>null
+   || SER_NAGS.cntx_psh(); SER_NAGS.prefix();
+      {? SER_NAGS.seek(_in.SER_NAGS,form(($_in.SER_NAGS)-8))
+      || {? exec('usr_fjks','b_perm',SER_NAGS.ODD().OD,USERS.ref())
+         || _result:=1
+         ?}
+      ?};
+      SER_NAGS.cntx_pop()
+   ||
+:: czy w ogóle user ma uprawnienia do jakiejkolwiek jednostki księgowej
+      {? exec('usr_fjks_any','b_perm',USERS.ref())
+      || _result:=1
+      ?}
+   ?}
+?};
+USERS.cntx_pop();
+_result
+
+
+\gen_kor1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: Generowanie korespondencji z rozrachunków - formuła wstępna
+::  OLD: \skid_now/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAGS.cntx_psh();
+SER_KOR.WYB_WAL:=0; SER_KOR.WAL:=SSTALE.WAL;
+SER_KOR.ODD:=OPERATOR.DEPT;
+ODD.win_dict('SLO');
+SER_KOR.ODSPTER:=SER_KOR.RATY:=0;
+{? var_press('DNI_KH',SER_KOR)>0 || SER_KOR.DNI_KH:=0; SER_KOR.DNI_TP:=XINFO.L_D_POZ ?};
+_dalej:=1; l_wal:=1; wal_kod:=''; sch_dom:=tr_dom:=tods_dom:=null;
+{? FINFO.SLWAL=null
+|| FUN.info('Nie ustalono słownika walut\nw parametrach pracy programu.'@); _dalej:=0
+|? SER_KOR.TYP='N' & FINFO.SL_ODS=null
+|| FUN.info('Nie ustalono słownika typów tabel odsetek\nw parametrach pracy programu.'@); _dalej:=0
+?};
+{? _dalej & (SER_KOR.TYP='W' | SER_KOR.TYP='N')
+|| {? exec('get_par','#parametr',26)='T'
+   || _kal:=exec('get_par','#parametr',8);
+      {? _kal=''
+      || FUN.info('Nie ustawiono wzorca kalendarza\nw 8 parametrze systemu.'@); _dalej:=0
+      || KAL_WZOR.cntx_psh(); KAL_WZOR.index('KAL_WZOR'); KAL_WZOR.prefix(exec('ref_firma','ustawienia'),_kal);
+         {? KAL_WZOR.first()
+         || SSTALE.AR();  _okres:=0;
+            OKRO_F.cntx_psh(); OKRO_F.index('ROK'); OKRO_F.prefix(ROK_F.ref(),1);
+            {? OKRO_F.first() || _okres:=OKRO_F.POCZ~1 ?};
+            OKRO_F.cntx_pop();
+            KAL_OPIS.cntx_psh(); KAL_OPIS.index('KAL_OPIS'); KAL_OPIS.prefix(KAL_WZOR.ref(),_okres);
+            {? ~KAL_OPIS.first()
+            || FUN.info('Nie zdefiniowano pozycji kalendarza %1\ndla roku %2'@[_kal,$_okres]); _dalej:=0
+            ?};
+            KAL_OPIS.cntx_pop()
+         || FUN.info('Nie znaleziono wzorca kalendarza\nustawionego w 8 parametrze systemu.'@); _dalej:=0
+         ?};
+         KAL_WZOR.cntx_pop()
+      ?}
+   ?}
+?};
+ROZNE.UT_DOK:=1;
+SER_NAG.cntx_psh();
+exec('ind_pref','rozrach_kor')
+
+
+\gen_kor2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: Generowanie korespondencji z rozrachunków - formuła kończąca
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAG.cntx_pop();
+{? var_pres('ODS_TMP1')>0
+|| {? ODS_TMP1.first() || exec('pyt_pok','rozrach_ods') ?};
+   exec('del_tmp','rozrach_ods')
+?};
+&l_wal; &wal_kod; &sch_dom; &tr_dom; &tods_dom;
+SER_NAGS.cntx_pop(); 0
+
+
+\ind_pref
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Ustawienie dziedziny tabeli SER_NAGS
+::  OLD: \ind_pref/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ROZRACH.KONTR=null
+|| SER_NAGS.index('SER_NAG'); SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP)
+|? ROZRACH.KONTR<>null
+|| SER_NAGS.index('TYPKH'); SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,ROZRACH.KONTR().KOD,ROZRACH.KONTR().KOD)
+?}
+
+
+\initmpks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.62]
+:: OPIS: Stworzenie tymczasowej tabelki do komunikatów o błędach
+::  OLD: \initmpks/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+:TMPKS.TYP - 1 usterka, 2 - zablokowany kontrahent
+nr_bledu:=lp_ok:=0;
+TMPKS:=tab_tmp(2,'TYP','INTEGER','Typ',
+                 'LP','INTEGER','Lp',
+                 'LP_OK','STRING[4]','Lp',
+                 'TRESC','STRING[110]','Treść komunikatu');
+_wer:=TMPKS.mk_sel('Komunikaty'@,,,'tmpks_wer');
+TMPKS.win_fld(_wer,,'LP_OK',,,4);
+TMPKS.win_fld(_wer,,'TRESC');
+TMPKS.win_act(_wer,0,'Szukaj');
+TMPKS.win_sel(_wer)
+
+
+\addtmpks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.62]
+:: OPIS: Dołączenie rekordu do tabeli TMPKS
+::   WE: _a - typ                                                     ";
+::       _b - treść komunikatu                                        ";
+:        _c - zadeklarowana - druga część notatki
+::  OLD: \addtmpks/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+TMPKS.LP_OK:={? var_pres('_c')<=0 || lp_ok+=1; form(lp_ok,4)  || '' ?};
+nr_bledu+=1; TMPKS.LP:=nr_bledu;
+TMPKS.TYP:=_a;
+TMPKS.TRESC:=_b;
+TMPKS.add()
+
+
+\deltmpks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.62]
+:: OPIS: Skasowanie tymczasowej tabelki do komunikatów o błędach
+::  OLD: \deltmpks/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('TMPKS','nr_bledu','lp_ok')
+
+
+\szuksch1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.62]
+:: OPIS: Znajduje schemat windykacyjny
+::   WE: _a=0 - domyslny, _a=1 - dla kontrahenta, _a=2 - dla grupy
+::       _b=1 - szukanie tabeli odsetek, trybu dla grupy kontrahentow
+::       _c=0 - wezwania, _c=1 - noty, _d - waluta
+::  OLD: \szuksch1/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:='';
+{? ~_a
+|| SER_WOW.index('KH'); SER_WOW.prefix(null,null)
+|? _a=1
+|| SER_WOW.index('KH'); SER_WOW.prefix(KH.ref)
+|| SER_WOW.index('GRKH'); SER_WOW.prefix(GRKH.ref)
+?};
+{? ~SER_WOW.first
+|| _zwrot:='DATA';
+   {? ~_a || FUN.info('Brak domyślnego schematu windykacyjnego na datę %1.'@[$SER_KOR.DATA]) ?}
+|| _ok:=0;
+   {! |?
+      {? SER_KOR.DATA>=SER_WOW.DATA_OD &
+         ((SER_WOW.DATA_DO<>date(0,0,0) & SER_KOR.DATA<=SER_WOW.DATA_DO) |
+          SER_WOW.DATA_DO=date(0,0,0))
+      || _ok:=1;
+         {? ~_c & -SER_WOW.SER_SCH().CZY_MON='n'
+         || czy_mon:=0; _zwrot:='DATA';
+            {? ~_a
+            || FUN.info('Domyślny schemat windykacyjny ma wyłaczone monitowanie na datę %1.'@[$SER_KOR.DATA])
+            ?}
+         ?};
+         {? _zwrot='' | _b
+         || {? SER_KOR.SER_SCH=null & _a || SER_KOR.SER_SCH:=SER_WOW.SER_SCH ?};
+            {? ~_c & SER_KOR.WYB_TRYB=null & _a || SER_KOR.WYB_TRYB:=SER_WOW.SER_SCH().SER_TM ?};
+            {? ~_c & SER_WOW.SER_SCH().SER_TM=null
+            || _zwrot:='DATA';
+               {? ~_a
+               || FUN.info('Domyślny schemat windykacyjny nie ma podpiętego trybu monitowania na datę %1.'@[$SER_KOR.DATA])
+               ?}
+            ?};
+            {? _b || _zwrot:='' ?};
+            {? _zwrot='' &  (_c & SER_WOW.SER_SCH().ODS=null | (SER_SCH.CZY_ODS1='T' & SER_WOW.SER_SCH().ODS=null))
+            || _zwrot:='DATA';
+               {? ~_a
+               || FUN.info('Domyślny schemat windykacyjny nie ma podpiętej tabeli odsetek na datę %1.'@[$SER_KOR.DATA])
+               ?}
+            ?};
+            {? _zwrot='' &  (_c & SER_WOW.SER_SCH().ODS=null | (SER_SCH.CZY_ODS1='T' & SER_WOW.SER_SCH().ODS=null))
+            || ODS.cntx_psh(); ODS.index('DATA');
+               {? SER_KOR.WYB_WAL=0
+               || ODS.prefix(SER_WOW.SER_SCH().ODS,_d);
+                  {? ~(ODS.first() & SER_KOR.DATA>=ODS.ZM)
+                  || _zwrot:={? _c=1 || 'DATA' || '' ?};
+                     {? ~_a
+                     || FUN.info('Tabela odsetek domyślnego schematu windykacyjnego nie ma wartości dla waluty '
+                                 '%1\nna datę %2.'@[wal_kod,$SER_KOR.DATA])
+
+                     ?}
+                  ?}
+               ?};
+               {? SER_KOR.TAB_ODS=null & _a || SER_KOR.TAB_ODS:=SER_WOW.SER_SCH().ODS ?};
+               ODS.cntx_pop()
+            ?}
+         ?}
+      ?};
+       ~_ok & SER_WOW.next()
+   !};
+   {? ~_ok
+   || {? ~_a
+      || FUN.info('Brak domyślnego schematu windykacyjnego na datę %1'@[$SER_KOR.DATA])
+      ?}; _zwrot:='DATA'
+   ?};
+   {? _ok & _zwrot='' & ~_a
+   || sch_dom:=SER_WOW.SER_SCH;
+      {? ~_c || tr_dom:=SER_WOW.SER_SCH().SER_TM ?};
+      tods_dom:=SER_WOW.SER_SCH().ODS
+   ?}
+?};
+{? _c=0 & SER_SCH.CZY_ODS1='N' || ROZNE.UT_DOK:=0 ?};
+_zwrot
+
+
+\wybr_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK
+:: OPIS: Sprawdza, czy da sie wyznaczyc kontrahenta z wybranego konta i ustawia go w tabeli TMPKH.
+::   WE: _a - symbol konta
+::   WY: (1/0) - udalo/nie udalo sie ustalic pojedynczego kontrahenta z symbolu konta
+::  OLD: \wybr_kh/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:=0;
+{? _a<>'' & _a*'?'=0
+|| SKID.POCH:=exec('wys_op','dok_fks_ks',_a,SSTALE.AR);
+   {? exec('kh_op','dok_fks_ks',1)<>0
+   || TMPKH:=tab_tmp(1,'KOD','STRING[8]','');
+      ind_kh:=TMPKH.ndx_tmp('',1,'KOD',,0,'KOD',,0);
+      TMPKH.index(ind_kh); TMPKH.prefix();
+      TMPKH.KOD:=KH.KOD; _zwrot:=TMPKH.add()
+   ?}
+?};
+_zwrot
+
+
+\wyb_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Stworzenie okienka tymczasowego dla wyboru walut
+::  OLD: \wyb_wal/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+TMP_WAL:=tab_tmp(1,'KOD','STRING[8]','');
+ind_wal:=TMP_WAL.ndx_tmp('',1,'KOD',,0,'KOD',,0);
+TMP_WAL.index(ind_wal); TMP_WAL.prefix();
+_wer:=SLO.mk_sel('Wybierz waluty'@,,,'slo_wer');
+SLO.index('SL');
+SLO.prefix(FINFO.SLWAL().SLU);
+SLO.win_fld(_wer,,'KOD',,,8);
+SLO.win_fld(_wer,,'TR',,,40);
+SLO.win_act(_wer,0,'Formuła','Akceptuj'@@,,'Wybór walut'@,,"exec('wyb_wal1','rozrach_kor')",1,1,
+            "exec('wyb_wal1_gbe','rozrach_kor')");
+SLO.win_sel(_wer); SLO.select();
+l_wal:=TMP_WAL.size()
+
+
+\wyb_wal1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Zaznacza/odznacza rekord w okienkl
+::----------------------------------------------------------------------------------------------------------------------
+{? SLO.sel_size()
+|| 1
+|| {? exec('wyr_wal','rozrach_kor') || TMP_WAL.KOD:=SLO.KOD; TMP_WAL.add(); sel_exit() || 0 ?}
+?}
+
+
+\wyb_wal1_gbe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Zaznacza/odznacza rekord w okienml
+::----------------------------------------------------------------------------------------------------------------------
+TMPWALOP:=tab_tmp(1,'WAL','STRING[8]','Waluta','OPIS','STRING[100]','');
+TMP_WAL.erase();
+SLO.cntx_psh(); SLO.prefix();
+_tab:=SLO.sel_aget();
+{? _tab.first()
+|| {! |?
+      {? SLO.seek(_tab.REF,) & exec('wyr_wal','rozrach_kor')
+      || TMP_WAL.KOD:=SLO.KOD; TMP_WAL.add()
+      ?};
+      _tab.next()
+   !}
+?};
+SLO.cntx_pop();
+{? TMPWALOP.first()
+|| TMPWALOP.win_sel(TMPWALOP.mk_sel(,,1));
+   TMPWALOP.select()
+?};
+VAR_DEL.delete('TMPWALOP');
+{? TMP_WAL.size()
+|| sel_exit(); 1
+|| FUN.info('Nie wybrano żadnej waluty, dla której tabela odsetek ma wartość na datę %1'@[$SER_KOR.DATA]); 0
+?}
+
+
+\wyr_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Zaznacza/odznacza rekord w okienku
+::  OLD: \wyr_wal/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_size:=SLO.sel_size();
+{? SLO.ref<>FINFO.NAROD
+|| _jest:=1;
+   {? SER_KOR.TYP='N' | SER_KOR.TYP='W'
+   || ODS.cntx_psh();
+      _tab_od:={? SER_KOR.TYP='W' | (SER_KOR.TYP='N' & SER_KOR.TRYB_NOT=0)
+               || _dom:=1; SER_WOW.SER_SCH().ODS
+               || _dom:=0; SER_KOR.TAB_ODS
+               ?};
+      ODS.index('DATA'); ODS.prefix(_tab_od,SLO.ref);
+      {? ~(ODS.first() & SER_KOR.DATA>=ODS.ZM)
+      || {? ~_size
+         || FUN.info('Tabela odsetek'+{? _dom || ' domyślnego' || '' ?}+' schematu windykacyjnego na datę '+
+                     $SER_KOR.DATA+' nie ma wartości dla waluty '+SLO.KOD+'.')
+         |? var_pres('TMPWALOP')>0
+         || TMPWALOP.WAL:=SLO.KOD;
+            TMPWALOP.OPIS:='Tabela odsetek'+{? _dom || ' domyślnego' || '' ?}+' schematu windykacyjnego'+
+                           ' na datę '+$SER_KOR.DATA+' nie ma wartości dla waluty '+SLO.KOD;
+            TMPWALOP.add()
+         ?};
+         _jest:=0
+      ?};
+      ODS.cntx_pop()
+   ?};
+   _jest
+|| {? ~_size
+   || FUN.info('Nie można wybrać waluty narodowej systemu.'@)
+   |? var_pres('TMPWALOP')>0
+   || TMPWALOP.WAL:=SLO.KOD;
+      TMPWALOP.OPIS:='Nie można wybrać waluty narodowej systemu.';
+      TMPWALOP.add()
+   ?}; 0
+?}
+
+
+\del_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Skasowanie tymczasowej tabeli dla wyboru walut
+::  OLD: \del_wal/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('TMP_WAL','ind_wal')
+
+
+\mod_nag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.70]
+:: OPIS: Dodaje rekord do tabeli SER_NAGS i modyfikuje SER_NAG.ODD
+::       dla korespondencji typu P, N, W
+::  OLD: \mod_nag/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_POZ.cntx_psh();
+SER_NAG.index('ID'); SER_NAG.prefix(REF.FIRMA);
+SER_POZ.REF();
+exec('dodajs','rozrach_kor',SER_NAG.ref(),SER_POZ.ODD,SER_POZ.WAL,null,SER_NAG.KH,SER_NAG.KOD);
+exec('dodajs','rozrach_kor',SER_NAG.ref(),null,SER_POZ.WAL,null,SER_NAG.KH,SER_NAG.KOD);
+ODD.cntx_psh(); ODD.index('ODDZIALY'); ODD.prefix(REF.FIRMA);
+_oddzial:=SER_POZ.ODD;
+SER_POZ.index('SER_POZO'); SER_POZ.prefix(REF.FIRMA,SER_NAG.ref(),SER_POZ.ODD().OD,);
+_odsize:=SER_POZ.size();
+SER_POZ.prefix(REF.FIRMA,SER_NAG.ref());
+_size:=SER_POZ.size();
+SER_NAG.ODD:={? _odsize=_size || SER_POZ.ODD || null ?};
+{? SER_KOR.TYP='P' || SER_NAG.MIN_NASZ:=SER_KOR.NADOBRON; SER_NAG.MIN_WASZ:=SER_KOR.NADOBROW ?};
+SER_NAG.put();
+ODD.cntx_pop(); SER_POZ.cntx_pop()
+
+
+\dodaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ??? [?????]
+:: OPIS: dodanie nowej pozycji w naglowkach sprawozdan
+::   WE: _a - typ naglowka: W-wezwanie, N-nota, P-potw. sal., I-inne
+::       _b - ref tabeli SER_DEF
+::       _c - data
+::       _d - opcja, jesli zadeklarowane to przechowuje ref typu tabeli odsetek
+::       _e - opcja, jesli zadeklarowane to przechowuje ref poziomu monitowania
+::       _f - opcja, jesli zadeklarowane to przechowuje ref waluty
+::       _g - opcja, jesli zadeklarowane to przechowuje ref jezyka
+::       _h - opcja, jesli rowne 1 to oznacza pozycje walutowa
+::       _i - opcja, ref jednostki ksiegowej (tylko dla korespondencji innej)
+::  OLD: \dodaj/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_d')<=0 || _d:=null ?};
+{? var_pres('_e')<=0 || _e:=null ?};
+{? var_pres('_f')<=0 || _f:=null ?};
+{? var_pres('_g')<=0 || _g:=null ?};
+{? var_pres('_h')<=0 || _h:=0 ?};
+SER_NAG.blank();
+SER_NAG.FIRMA:=REF.FIRMA;
+SER_NAG.T:=_a;
+SER_NAG.KOD:=_b;
+SER_NAG.KH:=KH.ref;
+SER_NAG.DATA:=_c;
+SER_NAG.TTAB_ODS:=_d;
+SER_NAG.SER_TPOZ:=_e;
+SER_NAG.WAL:=_f;
+SER_NAG.JEZYK:=_g;
+SER_NAG.WALUTOWA:=_h;
+{? var_pres('idnagpar')>0 || SER_NAG.UNIK_ID:=idnagpar+'1' || '' ?};
+_czy:=SER_NAG.add(1);
+{? var_pres('__AKC_KOR')>0 & _czy || __AKC_KOR.REF:=$SER_NAG.ref; __AKC_KOR.add() ?};
+ile+=_czy;
+_czy
+
+
+\dodajs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.70]
+:: OPIS: Dodaje rekord do tabeli SER_NAGS
+::   WE: _a - ref SER_NAG,     _b - ref ODD, _c - ref WAL (SLO)
+::       _d - ref JEZYK (SLO), _e - ref KH,  _f - ref SER_DEF
+::   WY: 1/0 udalo/nie udalo sie dodac rekordu do SER_NAGS
+::  OLD: \dodajs/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAGS.cntx_psh();
+SER_NAGS.index('SERNAGS1'); SER_NAGS.prefix(REF.FIRMA);
+{? ~SER_NAGS.find_key(_a,_b)
+|| SER_NAGS.WAL:=_c;   SER_NAGS.SER_NAG:=_a; SER_NAGS.KH:=_e;
+   SER_NAGS.JEZYK:=_d; SER_NAGS.ODD:=_b;     SER_NAGS.KOD:=_f;
+   SER_NAGS.FIRMA:=REF.FIRMA;
+   _zwrot:=SER_NAGS.add()
+|| _zwrot:=0
+?};
+SER_NAGS.cntx_pop();
+_zwrot
+
+
+\szuk_poz1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [8.70]
+:: OPIS: Szuka poziomu trybu monitowania jesli jest ustawiony poziom wg dni zwloki
+::  OLD: \szuk_poz1/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_znal:=0;
+SER_TPOZ.index('SER_TPOZ'); SER_TPOZ.prefix(SER_KOR.WYB_TRYB);
+{? SER_TPOZ.first()
+|| {! |?
+      {? maxzwl>=SER_TPOZ.ILE
+      || SER_TPOZ.cntx_psh();
+         _next:=SER_TPOZ.next();
+         {? (~_next | (_next & maxzwl<SER_TPOZ.ILE)) || _znal:=1 ?};
+         SER_TPOZ.cntx_pop()
+      ?};
+      _znal=0 & SER_TPOZ.next()
+   !}
+?};
+{? ~_znal
+|| exec('addtmpks','rozrach_kor',1,'Kontr.: '+KH.SKR+' tryb mon.: '+SER_KOR.WYB_TRYB().KOD+
+        ' - brak odpowiedniego poziomu')
+?};
+_znal
+
+
+\serndel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.70]
+:: OPIS: Kasuje rekordy w tabeli SER_NAGS
+::  OLD: \serndel/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAGS.cntx_psh();
+SER_NAGS.index('SERNAGS1'); SER_NAGS.prefix(REF.FIRMA,SER_NAG.ref());
+{? SER_NAGS.first() || {! |? SER_NAGS.del() !} ?};
+SER_NAGS.cntx_pop()
+
+
+\szu_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Szuka w tabeli SLO waluty dla rekordu w tabeli tymczasowej
+::  OLD: \szu_wal/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+wal_snag:=null; wal_kod:='';
+SLO.cntx_psh(); SLU.cntx_psh(); SLUAPPL.cntx_psh();
+SLO.index('SL'); SLO.prefix(FINFO.SLWAL().SLU,TMP_WAL.KOD);
+{? SLO.first() || wal_snag:=SLO.ref(); wal_kod:=SLO.KOD ?};
+SLO.cntx_pop(); SLU.cntx_pop(); SLUAPPL.cntx_pop()
+
+
+\blok_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.62]
+:: OPIS: Blokowanie kontrahenta przy generowaniu wezwan do zaplaty
+::  OLD: \blok_kh/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+KH.cntx_psh();
+{? SER_KOR.TRYB_MON<>2 & SER_TPOZ.BL<>''
+|| SER_NAG.KH(); ROZNE.R:='B'; ZDARZ.blank();
+   _kh_b:=__War_f('KH_DOD','B',KH.ref); {? _kh_b='' || _kh_b:='N' ?};
+   {? SER_TPOZ.BL='W' & _kh_b='N'
+   || {? exec('szukaj','rozrach_kor','T','BL_WARUNKOWE','W',0)
+      || exec('addtmpks','rozrach_kor',2,'Kontr.: '+KH.SKR+' zablokowany warunkowo')
+      ?}
+   |? SER_TPOZ.BL='B' & _kh_b<>'B'
+   || {? exec('szukaj','rozrach_kor','T','BL_BEZWARUNKOWE','B',0)
+      || exec('addtmpks','rozrach_kor',2,'Kontr.: '+KH.SKR+' zablokowany bezwarunkowo')
+      ?}
+   ?}
+?};
+KH.cntx_pop()
+
+
+\szukaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: formula pomocnicza przy zmianie znacznika kontrahenta(blokada T/N)
+::   WE: _a - typ operacj (BLOKOWANIE/ODBLOKOWANIE)
+::       _b - typ zdarzenia (N - ODBLOKOWANY T- BLOKOWANY)
+::       _c - typ blokoady (W - warunkowa, B - bezwarunkowa)
+::       _d - czy wyswietlac komunikaty
+::  OLD: \szukaj/kh_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZDARZT.index('ZDARZT'); ZDARZT.prefix();
+_find:=ZDARZT.find_key(_a,_b);
+{? ~_find
+||ZDARZT.cntx_psh(); ZDARZT.index('ZDARZT'); ZDARZT.prefix('T');
+    {? ~ZDARZT.first()
+    || {? ~ZDARZT.find_key('BL_BEZWARUNKOWE')
+       || ZDARZT.ZDARZ:='BL_BEZWARUNKOWE'; ZDARZT.SYS:='T';  ZDARZT.add()
+       ?};
+       {? ~ZDARZT.find_key('BL_WARUNKOWE')
+       || ZDARZT.ZDARZ:='BL_WARUNKOWE';  ZDARZT.SYS:='T'; ZDARZT.add()
+       ?};
+       {? ~ZDARZT.find_key('ODBLOKOWANIE')
+       || ZDARZT.ZDARZ:='ODBLOKOWANIE';  ZDARZT.SYS:='T'; ZDARZT.add()
+       ?}
+    ?};
+   ZDARZT.cntx_pop();
+   _find:=ZDARZT.find_key(_a,_b)
+?};
+{? _find
+|| do;
+   ZDARZ.DOT:=ZDARZT.ref;
+   {? ~exec('kh_dod_ini','kontrahent') || undo ?};
+   KH_DOD.B:=_c;
+   {? ~KH_DOD.put || undo ?};
+   {? _d=0 || ZDARZ.KR_OP:='Automat na dzień: '+$SER_KOR.DATA ?};
+   _dod:=0;
+   ZDARZ.cntx_psh();
+   ZDARZ.prefix();
+   {? ~ZDARZ.add() || undo || _dod:=1; _ref:=ZDARZ.ref(); {? _d || ZDARZ.memo_put(,'OP') ?} ?};
+   ZDARZ.cntx_pop();
+   {? _dod || ZDARZ.seek(_ref) ?};
+   _ok:=end;
+   {? _d
+   || {? _ok
+      || FUN.info('Znacznik blokady został zmieniony.'@)
+      || FUN.info('Operacja nie powiodła się. Spróbuj jeszcze raz.'@)
+      ?}
+   ?};
+   _ok
+|| {? _d || FUN.info('Brak zdarzenia typu %1.'@[_b]) ?};0
+?}
+
+
+\spr_rwal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GC [12.30]
+:: OPIS: Sprawdza istnienie odpowiednika podanego rozrachunku w drugiej walucie
+::   WE: _a - SYM_ROK rozrachunku,
+::       _b - wskazanie na kontrahenta
+::   WY: 1/0 - istnieje/nie istnieje drugi rozrachunek
+::  OLD: \spr_rwal/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+{? _a<>'' & _b<>null()
+|| OP.cntx_psh(); OP.index('KHSYMR'); OP.prefix(_b,_a,);
+   {? OP.first
+   || {! |?
+         {? OP.WAL().KOD<>wal_kod
+         || _wyn:=1
+         ?};
+         OP.next & _wyn=0
+      !}
+   ?};
+   OP.cntx_pop()
+?};
+_wyn
+
+
+\initmpkh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [7.62]
+:: OPIS: Stworzenie okienka tymczasowego dla tabeli KH i tymczasowej tabeli
+::  OLD: \initmpkh/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+okn_kh:=KH.win_sel('?');
+VAR_DEL.delete('__T_WERK');
+TMPKH:=tab_tmp(1,'KOD','STRING[8]','','REF','STRING[16]','ref');
+ind_kh:=TMPKH.ndx_tmp('',1,'KOD',,0,'KOD',,0);
+TMPKH.index(ind_kh);
+TMPKH.prefix();
+__T_WERK:=KH.mk_sel('Wybierz kontrahentów'@,,,'kh_wer1',,,,,'U');
+KH.index('KOD'); KH.prefix(2);
+KH.win_fld(__T_WERK,,'KOD',,,8);
+KH.win_fld(__T_WERK,,'SKR',,,10);
+KH.win_fld(__T_WERK,,'NAZ',,,50);
+KH.win_fld(__T_WERK,,'GRKH','KOD',,10,,,'Kod grupy'@);
+KH.win_fld(__T_WERK,,'GRKH','NAZ',,40,,,'Nazwa grupy'@);
+KH.win_act(__T_WERK,0,'Formuła','Akceptuj'@@,,'Wybór kontrahentów'@,,"exec('wyb_kh','rozrach_kor')",1,1,
+           "exec('wyb_kh_gbe','rozrach_kor')",,'A');
+KH.win_act(__T_WERK,0,'Szukaj');
+KH.win_act(__T_WERK,0,'Kolejność');
+KH.win_sel(__T_WERK)
+
+
+\deltmpkh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [7.62]
+:: OPIS: Skasowanie okienka tymczasowego dla tabeli KH i tymczasowej tabeli
+::  OLD: \deltmpkh/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+KH.win_sel(okn_kh);
+VAR_DEL.delete('TMPKH','ind_kh','okn_kh')
+
+
+\wyb_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Zaznacza/odznacza rekord w okienku
+::----------------------------------------------------------------------------------------------------------------------
+{? ~KH.sel_size()
+|| TMPKH.prefix(KH.KOD,);
+   {? ~TMPKH.first()
+   || TMPKH.KOD:=KH.KOD;
+      TMPKH.REF:=$KH.ref();
+      TMPKH.add()
+   ?};
+   TMPKH.prefix();
+   sel_exit()
+?};
+1
+
+
+\wyb_kh_gbe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Zaznacza/odznacza rekord w okienku
+::----------------------------------------------------------------------------------------------------------------------
+KH.cntx_psh(); KH.prefix();
+_tab:=KH.sel_aget();
+TMPKH.erase();
+{? _tab.first()
+|| {! |?
+      {? KH.seek(_tab.REF,)
+      || TMPKH.KOD:=KH.KOD;
+         TMPKH.REF:=$KH.ref();
+         TMPKH.add()
+      ?};
+      _tab.next()
+   !}
+?};
+KH.cntx_pop();
+sel_exit();
+1
+
+
+\usunpoz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [????]
+:: OPIS: Usuniecie naglowkow i pozycji korespondencji z rozrachunków
+::   WE: _a=0 - jeden dokument, 1 - kilka
+::  OLD: \usunpoz/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAG.cntx_psh();
+ile_ok:=0; _selsize:=SER_NAGS.sel_size();
+_podaj:={? _selsize=0
+        || {? var_pres('kh_all')>0 & kh_all=0
+           || FUN.ask('Usunąć dokument?'@)
+           || FUN.choice('Usunąć dokumenty?'@,,'Bieżący'@,'Wszystkie z datą %1'@[form(SER_NAG.DATA)])
+           ?}
+        || 1
+        ?};
+SER_NAGS.get(); SER_NAGS.SER_NAG();
+{? _podaj=1
+|| {? SER_KOR.TYP='N'
+   || {? SER_NAG.ST_DEK='T'
+      || {? _selsize=0 || FUN.info('Nota zaksięgowana.\nUsunięcie niemożliwe.'@) ?}; 0
+      |? SER_NAG.ST_AKC='T'
+      || {? _selsize=0
+         || FUN.info('Nota jest zaakceptowana. Aby ją usunąć należy najpierw wycofać akceptację.'@)
+         ?}; 0
+      || {? exec('usunpoz1','rozrach_kor',0)
+         || {? var_pres('licz_gr')>0 || licz_gr+=1 ?}
+         ?}
+      ?}
+   |? SER_KOR.TYP='W'
+   || {? SER_NAG.ID<>''
+      || {? _selsize=0
+         || FUN.info('Wezwanie jest zaakceptowane.\nAby je usunąć należy najpierw wycofać akceptację.'@)
+         ?}; 0
+      || {? exec('usunpoz1','rozrach_kor',0)
+         || {? var_pres('licz_gr')>0 || licz_gr+=1 ?}
+         ?}
+      ?}
+   || {? SER_NAG.ST_POT='T'
+      || {? _selsize=0
+         || FUN.info('Na potwierdzenie salda naniesione jest potwierdzenie zwrotne od kontrahenta.'@)
+         ?}; 0
+      |? SER_NAG.ST_AKC='T'
+      || {? _selsize=0
+         || FUN.info('Potwierdzenie jest zaakceptowane. Aby je usunąć należy najpierw wycofać akceptację.'@)
+         ?}; 0
+      || {? exec('usunpoz1','rozrach_kor',0)
+         || {? var_pres('licz_gr')>0 || licz_gr+=1 ?}
+         ?}
+      ?}
+   ?}
+|? _podaj=2
+|| ile_zabl:=ile_akc:=ile_dekr:=ile_rodd:=ile_pot:=0;
+   SER_KOR.DATA:=SER_NAG.DATA;
+   SER_NAGS.cntx_psh();
+   SER_NAG.cntx_psh(); SER_NAG.prefix(REF.FIRMA);
+   {? ROZRACH.KONTR=null
+   || SER_NAGS.index('SER_NAG'); SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_NAG.T,SER_KOR.DATA)
+   || SER_NAGS.index('TYPKH');
+      SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_NAG.T,ROZRACH.KONTR().KOD,ROZRACH.KONTR().KOD,SER_KOR.DATA)
+   ?};
+   {? SER_NAGS.first
+   || {! |?
+        SER_NAGS.SER_NAG();
+        {? SER_NAG.ST_AKC='N' & SER_NAG.ST_DEK='N' & SER_NAG.ST_POT='N'
+        || _new_ref:=null;
+           SER_NAGS.cntx_psh();
+           {? SER_NAGS.next() || _new_ref:=SER_NAGS.ref() ?};
+           SER_NAGS.cntx_pop();
+           exec('usunpoz1','rozrach_kor',1);
+           {? _new_ref<>null || SER_NAGS.seek(_new_ref) || 0 ?}
+        || {? SER_NAG.ST_DEK='T'
+           || ile_dekr+=1
+           |? SER_NAG.ST_POT='T'
+           || ile_pot+=1
+           |? SER_NAG.ST_AKC='T'
+           || ile_akc+=1
+           ?};
+           SER_NAGS.next()
+        ?}
+      !}
+   ?};
+   SER_NAGS.cntx_pop(); SER_NAG.cntx_pop();
+   FUN.info('Liczba usuniętych dokumentów: '+$ile_ok+
+            '\n\nLiczba nieusuniętych dokumentów z powodu:'+
+            '\nużywania ich przez innych użytkowników systemu: '+$ile_zabl+
+            {? SER_KOR.TYP='N' | SER_KOR.TYP='W'
+            || '\nwcześniejszej ich akceptacji: '+$ile_akc
+            || ''
+            ?}+
+            {? SER_KOR.TYP='N'
+            || '\nwcześniejszej ich dekretacji: '+$ile_dekr
+            || ''
+            ?}+
+            {? SER_KOR.TYP='P'
+            || '\nnaniesienia potwierdzenia kontrahenta: '+$ile_pot
+            || ''
+            ?}+
+            {? (SER_KOR.TYP='N' | SER_KOR.TYP='W') & OPERATOR.DEPT<>null
+            || '\nistnienia pozycji z kilku jednostek księgowych: '+$ile_rodd
+            || ''
+            ?})
+?};
+SER_NAG.cntx_pop();
+VAR_DEL.delete('ile_zabl','ile_akc','ile_dekr','ile_rodd','ile_ok','ile_pot')
+
+
+\usunpoz1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [????]
+:: OPIS: Usuniecie dokumentu w korespondencji z rozrachunków
+::   WE: _a=0 - jeden dokument, 1 - kilka
+::  OLD: \usunpoz1/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:=1; _refnew:=null; _del:=0;
+{? SER_NAGS.sel_size()=0 & _a=0
+|| SER_NAGS.cntx_psh();
+   _refnew:={? SER_NAGS.next() | SER_NAGS.prev() || SER_NAGS.ref() ?};
+   SER_NAGS.cntx_pop()
+?};
+SER_NAGS.cntx_psh();
+_blok_er:=~SER_NAG.r_lock(1,1); _old_ref:=SER_NAG.ref();
+{? ~_blok_er
+|| SER_NAGS.index('SERNAGS1'); SER_NAGS.prefix(REF.FIRMA,SER_NAG.ref());
+   {? SER_NAGS.first()
+   || {! |?
+        _blok_er:=~SER_NAGS.r_lock(1,1);
+        _blok_er=0 & SER_NAGS.next()
+      !}
+   ?};
+   {? ~_blok_er
+   || SER_POZ.index('SER_POZO'); SER_POZ.prefix(REF.FIRMA,SER_NAG.ref());
+      {? SER_POZ.first()
+      || {! |?
+            _blok_er:=~SER_POZ.r_lock(1,1);
+            _blok_er=0 & SER_POZ.next()
+         !}
+      ?}
+   ?}
+?};
+_odbl:=1;
+{? ~_blok_er
+|| _czy_us:={? OPERATOR.DEPT<>null || exec('czy_usu','rozrach_kor',_a) || 1 ?};
+   {? _czy_us
+   || do();
+      SER_POZ.trig_off('del po');
+      {? SER_POZ.first()  || {! |? SER_POZ.del()  !} ?};
+      SER_POZ.trig_on('del po');
+      {? SER_NAGS.first() || {! |? SER_NAGS.del() !} ?};
+      exec('del_att','dok_fks',$SER_NAG.ref());
+      SER_NAG.del();
+      {? end() || ile_ok+=1; _odbl:=0; _del:=1 ?}
+   || _zwrot:=0
+   ?}
+|| _zwrot:=0;
+   {? ~_a
+   || {? SER_NAGS.sel_size()=0 || exec('blok_err','rozrach_kor') ?}
+   || ile_zabl+=1
+   ?}
+?};
+SER_NAGS.cntx_pop();
+{? _odbl & SER_NAG.seek(_old_ref)
+|| SER_NAG.r_unlock();
+   SER_NAGS.cntx_psh();
+   SER_NAGS.index('SERNAGS1'); SER_NAGS.prefix(REF.FIRMA,SER_NAG.ref());
+   {? SER_NAGS.first()
+   || {! |? SER_NAGS.r_unlock(); SER_NAGS.next() !}
+   ?};
+   SER_NAGS.cntx_pop();
+   SER_POZ.index('SER_POZO'); SER_POZ.prefix(REF.FIRMA,SER_NAG.ref());
+   {? SER_POZ.first()
+   || {! |? SER_POZ.r_unlock(); SER_POZ.next() !}
+   ?}
+?};
+{? SER_NAGS.sel_size()=0 & _a=0 & _refnew<>null & _del
+|| SER_NAGS.seek(_refnew)
+?};
+_zwrot
+
+
+\czy_usu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.70]
+:: OPIS: Sprawdzenie, czy korespondencja jest dla kilku jednostek ksiegowych
+::       - przed usuwaniem
+::   WE: _a=0 - jeden dokument, 1 - kilka
+::   WY: 1/0 usuwac lub nie
+::  OLD: \czy_usu/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAGS.cntx_psh(); SER_NAG.cntx_psh();
+SER_NAGS.index('SERNAGS1'); SER_NAGS.prefix(REF.FIRMA,SER_NAG.ref());
+_zwrot:={? SER_NAGS.size()>2
+        || {? SER_NAGS.sel_size()=0 & _a=0
+           || FUN.info('Dana pozycja dotyczy kilku jednostek księgowych.\n'
+                       'Usuwanie możliwe tylko podczas pracy w trybie wszystkich jednostek księgowych.'@)
+           ?};
+           {? _a=1 || ile_rodd+=1 ?}; 0
+        || 1
+        ?};
+SER_NAGS.cntx_pop(); SER_NAG.cntx_pop();
+_zwrot
+
+
+\blok_err
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Komunikat w przypadku blokady dokumentu
+::  OLD: \blok_err/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+FUN.info('Dokument jest używany przez innego operatora.\nZabroniony dostęp.'@)
+
+
+\kordelbe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.60]
+:: OPIS: Formula początkowa dla grupowego usuwania pozycji
+::  OLD: \kordelbe/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+licz_gr:=0; licz_zaz:=SER_NAGS.sel_size();
+_zwrot:=FUN.ask('Usunąć zaznaczone pozycje?'@);
+{? ~_zwrot || VAR_DEL.delete('licz_gr','licz_zaz') ?};
+_zwrot
+
+
+\kordelae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.60]
+:: OPIS: Formula końcowa dla grupowego usuwania pozycji
+::  OLD: \kordelae/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+FUN.info('Liczba zaznaczonych pozycji: %1'
+         '\nLiczba usuniętych pozycji: %2'@[$licz_zaz,$licz_gr]);
+VAR_DEL.delete('licz_gr','licz_zaz'); 1
+
+
+\poz_kor_rozr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [?????]
+:: OPIS: Pozycje korespondencji z rozrachunków
+::   WE: _a - zadeklarowane - dla tabeli tymczasowej (SER_NAG ustawione)
+::  OLD: \skid_poz/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<=0 || _a:=0 ?};
+SER_NAG.cntx_psh(); SER_NAG.prefix(REF.FIRMA);
+{? ~_a || SER_NAGS.SER_NAG() ?};
+{? SER_NAG.T='W'
+|| SER_KOR.TYP:='W';
+   {? ~exec('czy_ods','rozrach_kor')
+   || {? SER_NAG.WAL<>null
+      || exec('wyswietl','rozrach_kor','SER_POZW',_a)
+      || exec('wyswietl','rozrach_kor','SERPOZW2',_a)
+      ?}
+   || {? SER_NAG.WAL<>null
+      || exec('wyswietl','rozrach_kor','SERPOZW',_a)
+      || exec('wyswietl','rozrach_kor','SERPOZW1',_a)
+      ?}
+  ?}
+|? SER_NAG.T='N'
+|| SER_KOR.TYP:='N';
+   {? SER_NAG.WAL<>null
+   || exec('wyswietl','rozrach_kor','SER_POZN',_a)
+   || exec('wyswietl','rozrach_kor','SERPOZN1',_a)
+   ?}
+|? SER_NAG.T='P'
+|| SER_KOR.TYP:='P';
+   {? SER_NAG.WAL<>null
+   || exec('wyswietl','rozrach_kor','SER_POZP',_a)
+   || exec('wyswietl','rozrach_kor','SERPOZP1',_a)
+   ?}
+?};
+SER_NAG.cntx_pop();
+1
+
+
+\czy_ods
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Sprawdzenie czy dokument ma odsetki
+::  OLD: \czy_ods/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_odsetki:=0;
+SER_POZ.cntx_psh();
+SER_POZ.index('SER_POZW'); SER_POZ.prefix(REF.FIRMA,SER_NAG.ref());
+{? SER_POZ.first()
+|| {! |?
+      {? SER_POZ.ODS$2<>0 || _odsetki:=1 ?};
+      ~_odsetki & SER_POZ.next()
+   !}
+?};
+SER_POZ.cntx_pop();
+_odsetki
+
+
+\wys_wez_plat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AFI] [?????]
+:: OPIS: Obliczanie wartosci dla pozycji wezwan
+::----------------------------------------------------------------------------------------------------------------------
+{? cur_tab(1,1) = SER_POZ
+|| {? cur_win(1,1) = 'SER_POZN' | cur_win(1,1) = 'SER_POZP' | cur_win(1,1) = 'SER_POZW'
+   || _ref:={? ~SER_POZ.sel_size() & SER_POZ.f_active() & SER_POZ.f_get() || SER_POZ.ref() || null ?};
+     {? f_usr_changed() | ~SER_POZ.f_active()
+     || SER_POZ.cntx_psh();
+        SER_KOR.SUMFAKT:=SER_KOR.SUMWPL:=ROZNE.WN:=SER_KOR.ODS:=SER_KOR.ODSP:=SER_KOR.ODSPRTER:=SER_KOR.ODSPOTER:=0;
+        _dokument:=''; _tp:=date(0,0,0); _kon:='';
+        {? {? SER_POZ.f_active() || SER_POZ.f_first() || SER_POZ.first() ?}
+        || {! |?
+              {? SER_KOR.TYP='W' | (SER_KOR.TYP='N' & ~SER_POZ.UMORZNOT)
+              || {? (SER_POZ.SYM_ROK<>_dokument | SER_POZ.TERM<>_tp | SER_POZ.KON<>_kon)
+                 || SER_KOR.SUMFAKT+=SER_POZ.KW; _dokument:=SER_POZ.SYM_ROK; _tp:=SER_POZ.TERM; _kon:=SER_POZ.KON
+                 ?};
+                 SER_KOR.SUMWPL+=SER_POZ.KWP;
+                 {? SER_POZ.PRZEDPO
+                 || SER_KOR.ODSP+=SER_POZ.ODS
+                 || SER_KOR.ODS+=SER_POZ.ODS
+                 ?}
+              ?};
+              {? SER_POZ.f_active() || SER_POZ.f_next() || SER_POZ.next() ?}
+           !}
+        ?};
+        ROZNE.WN:=SER_KOR.SUMFAKT-SER_KOR.SUMWPL;
+        SER_POZ.cntx_pop();
+        {? _ref || SER_POZ.f_seek(_ref) ?}
+     ?};
+     1
+   || 1
+   ?}
+|| 1
+?}
+
+
+\bd_potw_sald
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AFI] [?????]
+:: OPIS: Obliczanie wartosci dla pozycji potwierdzenia sald
+::----------------------------------------------------------------------------------------------------------------------
+_ref:={? ~SER_POZ.sel_size() & SER_POZ.f_active() & SER_POZ.f_get() || SER_POZ.ref() || null ?};
+{? f_usr_changed() | ~SER_POZ.f_active()
+|| SER_POZ.cntx_psh();
+   SER_KOR.OBR_NASZ:=SER_KOR.OBR_WASZ:=SER_KOR.SAL_NASZ:=SER_KOR.SAL_WASZ:=0;
+   SER_KOR.RAZEMPDN:=SER_KOR.RAZEMPDW:=_potdn:=_potdw:=0;
+   {? {? SER_POZ.f_active || SER_POZ.f_first || SER_POZ.first() ?}
+   || {! |?
+        SER_KOR.OBR_NASZ+=SER_POZ.DNASZ$2;
+        SER_KOR.OBR_WASZ+=SER_POZ.DWASZ$2;
+        {? SER_POZ.POTWIER=2
+        || _potdn+=SER_POZ.DNASZ$2;
+           _potdw+=SER_POZ.DWASZ$2
+        ?};
+        {? SER_POZ.f_active || SER_POZ.f_next || SER_POZ.next() ?}
+      !};
+      SER_KOR.SAL_NASZ:=F.SWn(SER_KOR.OBR_NASZ,SER_KOR.OBR_WASZ);
+      SER_KOR.SAL_WASZ:=F.SMa(SER_KOR.OBR_NASZ,SER_KOR.OBR_WASZ);
+      SER_KOR.RAZEMPDN:=F.SWn(_potdn,_potdw);
+      SER_KOR.RAZEMPDW:=F.SMa(_potdn,_potdw)
+   ?};
+   SER_POZ.cntx_pop();
+   {? _ref || SER_POZ.f_seek(_ref) ?}
+?};
+1
+
+
+\wyswietl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [?????]
+:: OPIS: Wyswietlanie pozycji korespondencji
+::   WE: _a - nazwa okienka wertowania tabeli pozycji korespondencji
+::       _b - zadeklarowane=1 - dla tabeli tymczasowej (SER_NAG ustawione)
+::  OLD: \wyswietl/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_b')<=0 || _b:=0 ?};
+{? _b=1 | SER_NAGS.r_lock(1,1)
+|| _refns:=SER_NAGS.ref();
+   _form:="{? SER_POZ.UMORZNOT=0 || '' || 'xwin16.png:78' ?}";
+   SER_POZ.win_fml('SER_POZN',SER_KOR,'IKON_NOT',,'ICON_BEFORE',_form);
+   SER_POZ.win_fml('SERPOZN1',SER_KOR,'IKON_NOT',,'ICON_BEFORE',_form);
+   {? SER_NAG.r_lock(1,1)
+   || _refn:=SER_NAG.ref();
+      SER_POZ.hdr_sel();
+      SER_NAG.cntx_psh();
+      {? SER_POZ.use('ser_pxx')
+      || SER_POZ.index('SER_POZO');
+         {? OPERATOR.DEPT=null
+         || SER_POZ.prefix(REF.FIRMA,SER_NAG.ref())
+         || SER_POZ.prefix(REF.FIRMA,SER_NAG.ref(),OPERATOR.DEPT().OD)
+         ?};
+         _ref:=null;
+         {? var_pres('KOR_OP')>0
+         || SER_POZ.cntx_psh();
+            SER_POZ.index('SER_OP');
+            SER_POZ.prefix(REF.FIRMA,OP.WAL,OP.ODD,OP.AN,OP.SYM,OP.SYM,OP.SYM_ROK,SER_NAG.ref());
+            {? SER_POZ.first() || _ref:=SER_POZ.ref() ?};
+            SER_POZ.cntx_pop()
+         ?};
+         {? _ref=null | ~SER_POZ.seek(_ref) || SER_POZ.first() ?};
+
+         SER_POZ.win_sel(_a);
+         SER_POZ.hdr_sel(' (%1)'@[SER_NAG.KH().SKR]);
+         SER_POZ.win_sel(exec('ser_poz_win','rozrach_kor',_a));
+         {? SER_KOR.TYP='N' & (SER_NAG.ST_AKC='T' | _b=1)
+         || SER_POZ.actions(_a,'UP'); SER_POZ.select(,1); SER_POZ.actions(_a)
+         |? SER_KOR.TYP='P' & (_b=1 | SER_NAG.ST_POT='T' | SER_NAG.ST_AKC='N')
+         || SER_POZ.actions(_a,'PO');
+            SER_POZ.select(,1)
+         || SER_POZ.actions(_a,''); SER_POZ.select(,1)
+         ?}
+      ?};
+      SER_POZ.hdr_sel();
+      SER_NAG.cntx_pop();
+      {? SER_NAG.seek(_refn) || SER_NAG.r_unlock() ?}
+   || exec('blok_err','rozrach_kor')
+   ?};
+   {? _b=0 & SER_NAGS.seek(_refns) || SER_NAGS.r_unlock() ?}
+|| exec('blok_err','rozrach_kor')
+?};
+1
+
+
+\czy_kor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.41]
+:: OPIS: Funkcja sprawdza, czy dla danego wzorca, daty, typu korespondencji i kontrahenta byla
+::       generowana pozycja dla wezwan, not i potwierdzen sprawdzana jest tez waluta a dla innej
+::       korespondencji jezyk
+::   WE: _a - typ korespondencji
+::       _b - data generowania
+::       _c - ref wzorca
+::       _d - kod kontrahenta
+::       _e - ref jezyka
+::       _f - ref waluty (null - jedna lub kilka obcych)
+::       _g - skrot jednostki ksiegowej
+::   WY: 0 - nie, 1 - tak
+::  OLD: \czy_kor/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0; _ref_kh:=null;
+KH.cntx_psh();
+KH.index('KOD'); KH.prefix(2,_d);
+{? KH.first() || _ref_kh:=KH.ref() ?};
+KH.cntx_pop();
+{? _ref_kh<>null
+|| SER_NAGS.cntx_psh(); SER_NAG.cntx_psh();
+   {? SER_KOR.TYP='P'
+   || {? _f=FINFO.NAROD
+      || {? _g=''
+         || SER_NAG.index('SER_NAG');
+            SER_NAG.prefix(REF.FIRMA,_a,_b,_c,_d,_ref_kh,_e,_f);
+            {? SER_NAG.first() || _ok:=1 ?}
+         || SER_NAG.index('SER_NAGO');
+            SER_NAG.prefix(REF.FIRMA,_a,'',_b,_c,_d,_ref_kh,_e,_f);
+            {? SER_NAG.first() || _ok:=1 ?};
+            {? _ok=0
+            || SER_NAG.prefix(REF.FIRMA,_a,_g,_b,_c,_d,_ref_kh,_e,_f);
+               {? SER_NAG.first() || _ok:=1 ?}
+            ?}
+         ?}
+      || {? _g=''
+         || SER_NAG.index('SER_NAG');
+            SER_NAG.prefix(REF.FIRMA,_a,_b,_c,_d,_ref_kh,_e);
+            {? SER_NAG.first() || {! |? {? SER_NAG.WAL<>FINFO.NAROD || _ok:=1 ?}; SER_NAG.next() !} ?}
+         || SER_NAG.index('SER_NAGO');
+            SER_NAG.prefix(REF.FIRMA,_a,'',_b,_c,_d,_ref_kh,_e);
+            {? SER_NAG.first() || {! |? {? SER_NAG.WAL<>FINFO.NAROD || _ok:=1 ?}; SER_NAG.next() !} ?};
+            {? _ok=0
+            || SER_NAG.prefix(REF.FIRMA,_a,_g,_b,_c,_d,_ref_kh,_e);
+               {? SER_NAG.first() || {! |? {? SER_NAG.WAL<>FINFO.NAROD || _ok:=1 ?}; SER_NAG.next() !} ?}
+            ?}
+         ?}
+      ?}
+   || {? _f=FINFO.NAROD
+      || {? _g=''
+         || SER_NAG.index('SERNAG1');
+            SER_NAG.prefix(REF.FIRMA,_a,_b,_ref_kh,_f);
+            {? SER_NAG.first() || _ok:=1 ?}
+         || SER_NAG.index('SERNAG2');
+            SER_NAG.prefix(REF.FIRMA,_a,'',_b,_ref_kh,_f);
+            {? SER_NAG.first() || _ok:=1 ?};
+            {? _ok=0
+            || SER_NAG.prefix(REF.FIRMA,_a,_g,_b,_ref_kh,_f);
+               {? SER_NAG.first() || _ok:=1 ?}
+            ?}
+         ?}
+      || {? _g=''
+         || SER_NAG.index('SERNAG1');
+            SER_NAG.prefix(REF.FIRMA,_a,_b,_ref_kh);
+            {? SER_NAG.first() || {! |? {? SER_NAG.WAL<>FINFO.NAROD || _ok:=1 ?}; SER_NAG.next() !} ?}
+         || SER_NAG.index('SERNAG2');
+            SER_NAG.prefix(REF.FIRMA,_a,'',_b,_ref_kh);
+            {? SER_NAG.first() || {! |? {? SER_NAG.WAL<>FINFO.NAROD || _ok:=1 ?}; SER_NAG.next() !} ?};
+            {? _ok=0
+            || SER_NAG.prefix(REF.FIRMA,_a,_g,_b,_ref_kh);
+               {? SER_NAG.first() || {! |? {? SER_NAG.WAL<>FINFO.NAROD || _ok:=1 ?}; SER_NAG.next() !} ?}
+            ?}
+         ?}
+      ?}
+   ?};
+   SER_NAGS.cntx_pop(); SER_NAG.cntx_pop()
+?};
+_ok
+
+
+\szuksch
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.62]
+:: OPIS: Znajduje schemat windykacyjny, tryb monitowania (wezwania) i tabelę odsetek, najpierw dla kontrahenta,
+::       potem dla grupy, a na koncu ustawia domyslne
+::   WE: _a=0 - wezwania, _a=1 - noty                                 ";
+::       _b=0 - waluta
+::  OLD: \szuksch/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.SER_SCH:=null;
+{? ~_a | (_a & SER_KOR.TRYB_NOT=0) || SER_KOR.TAB_ODS:=null ?};
+{? ~_a & SER_KOR.TRYB_MON<>1 || SER_KOR.WYB_TRYB:=null ?};
+exec('szuksch1','rozrach_kor',1,1,_a,_b);
+{? czy_mon &
+   ({? ~_a || SER_KOR.WYB_TRYB=null || 0 ?} |
+    SER_KOR.TAB_ODS=null | SER_KOR.SER_SCH=null)
+|| GRKH.prefix(); KH.GRKH(); exec('szuksch1','rozrach_kor',2,1,_a,_b)
+?};
+{? czy_mon
+|| {? SER_KOR.SER_SCH=null  || SER_KOR.SER_SCH:=sch_dom ?};
+   {? ~_a & SER_KOR.WYB_TRYB=null || SER_KOR.WYB_TRYB:=tr_dom ?};
+   {? SER_KOR.TAB_ODS=null  || SER_KOR.TAB_ODS:=tods_dom ?}
+?}
+
+
+\spr_rkor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GC [12.30]
+:: OPIS: Sprawdza istnienie korespondencji z rozrachunków dla rozrachunku w drugiej walucie wygenerowanej na ten sam dzień
+::   WE: _a - SYM_ROK rozrachunku,
+::       _b - wskazanie na kontrahenta
+::       _c - rodzaj korespondencji - W-wezwanie/N-nota/P-Potwierdzenie salda
+::   WY: 1/0 - istnieje/nie istnieje korespondencja
+::  OLD: \spr_rkor/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+SER_NAG.cntx_psh();
+SER_POZ.cntx_psh(); SER_POZ.index('SER_POZX'); SER_POZ.prefix(REF.FIRMA,_c,_b,_a,);
+{? SER_POZ.first
+|| {! |?
+      {? SER_KOR.DATA=SER_POZ.REF().DATA & SER_POZ.REF().WAL().KOD<>wal_kod
+      || _wyn:=1;
+         exec('addtmpks','rozrach_kor',1,'Kontr.: '+KH.SKR+' dla rozrachunku '+OP.SYM);
+         exec('addtmpks','rozrach_kor',1,'generowano korespondencję w drugiej walucie na dzień '+$SER_KOR.DATA,1)
+      ?};
+      SER_POZ.next & _wyn=0
+   !}
+?};
+SER_NAG.cntx_pop(); SER_POZ.cntx_pop();
+_wyn
+
+
+\spr_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Sprawdza czy jest wiecej niz jedna waluta w pozycjach
+::       i jesli jest tylko jedna ustawia ja w polu SER_NAG.WAL
+::  OLD: \spr_wal/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_rozne:=0; _wal:=null;
+SER_NAG.cntx_psh(); SER_POZ.cntx_psh();
+SER_POZ.index('SER_POZR'); SER_POZ.prefix(REF.FIRMA,SER_NAG.ref());
+{? SER_POZ.first()
+|| _wal:=SER_POZ.WAL;
+   {! |?
+      {? SER_POZ.WAL<>_wal || _rozne:=1 ?};
+      ~_rozne & SER_POZ.next()
+   !}
+?};
+{? _rozne || _wal:=null ?};
+SER_NAG.cntx_pop(); SER_POZ.cntx_pop();
+SER_NAG.WAL:=_wal; SER_NAG.put();
+SER_NAGS.cntx_psh();
+SER_NAGS.index('SERNAGS1'); SER_NAGS.prefix(REF.FIRMA,SER_NAG.ref());
+{? SER_NAGS.first()
+|| {! |?
+      SER_NAGS.WAL:=SER_NAG.WAL; SER_NAGS.put();
+      SER_NAGS.next()
+   !}
+?};
+SER_NAGS.cntx_pop()
+
+
+\akc_not2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.50]
+:: OPIS: Nadawanie identyfikatora nocie/wezwaniu/potwierdzeniu
+::  OLD: \akc_not2/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+PLUGINS.cntx_psh();
+PLUGINS.index('KOD');
+PLUGINS.prefix('SERNAG_T_SYMBOL_001');
+{? PLUGINS.first()
+|| _form_do_spr:=PLUGINS.FORMULA;
+   on_error(2);
+   no_msg(1);
+   _wyn_form_spr:=($_form_do_spr)();
+   {? in_error()
+   || _wyn_form_spr:=PLUGINS.DEFAULT
+   ?};
+   on_error;
+   {? type_of(_wyn_form_spr) = type_of('napis') & _wyn_form_spr <> PLUGINS.DEFAULT
+   || _sym:=_wyn_form_spr
+   || _sym:=exec('id_wezw','rozrach_kor')
+   ?}
+|| _sym:=exec('id_wezw','rozrach_kor')
+?};
+PLUGINS.cntx_pop();
+SER_NAG.ID:=_sym;
+SER_NAG.cntx_psh(); SER_NAG.prefix();
+SER_NAG.ST_AKC:='T';
+SER_NAG.put();
+SER_NAG.cntx_pop()
+
+
+\id_wezw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.70]
+:: OPIS: Formula do nadawania identyfikatorow wezwan do zaplaty, not i potwierdzeń, gdy nie ma zdefiniowanego
+::       w słowniku systemowym pola "Formuła na symbol korespondencji z rozrachunków"
+::  OLD: \id_wezw/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_id:='000000';
+SER_NAG.cntx_psh;
+KH.prefix();
+SER_NAG.index('TYPKHO'); SER_NAG.prefix(REF.FIRMA,SER_KOR.TYP,SER_NAG.KH().KOD,SER_NAG.ODD);
+{? SER_NAG.last()
+|| _dalej:=0;
+   {! |?
+      {? +SER_NAG.ID>16 & (SER_NAG.ID-7)+4=(4+SSTALE.AR().NAZ)
+      || _id:=SER_NAG.ID+6; _dalej:=1
+      ?};
+      _dalej=0 & SER_NAG.prev()
+   !}
+?};
+SER_NAG.cntx_pop;
+_c:=#_id+1; _d:=form(_c,-6,,'99'); _e:=(4+SSTALE.AR().NAZ);
+{? SER_KOR.TYP='W'
+|| 'WEZW/'+KH.SKR+'/'+_e+'/'+_d
+|? SER_KOR.TYP='N'
+|| 'NOTA/'+KH.SKR+'/'+_e+'/'+_d
+|| 'POTW/'+KH.SKR+'/'+_e+'/'+_d
+?}
+
+
+\ile_dok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: Ile wygenerowano dokumentów
+::  OLD: \ile_dok/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('kh_all')>0 & kh_all=0
+|| {? ile>0
+   || FUN.info('Wygenerowano dokument.'@)
+   || FUN.info('Nie wygenerowano dokumentu.'@)
+   ?}
+|| {? ile>0
+   || FUN.info('Liczba wygenerowanych dokumentów: %1'@[form(ile)])
+   || FUN.info('Nie wygenerowano żadnego dokumentu.'@)
+   ?}
+?}
+
+
+\koroprz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [8.70]
+:: OPIS: Formula na 'Okienko przed' dla SER_NAG
+::   WE: _a - typ
+::  OLD: \koroprz/windyk1.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('grup_kor')>0
+|| {? _a<>'A'
+   || SER_KOR.TYP:=_a;
+      SER_KOR.ZAK_WAL:=SSTALE.WAL; ROZRACH.KONTR:=WIND_KH.KH;
+      {? (SER_KOR.TYP='N' & zmzaknot>0) | (SER_KOR.TYP='P' & zmzakpot>0) |
+         (SER_KOR.TYP='W' & zmzakwez>0)
+      || exec('ser_zakr','rozrach_kor',1)
+      || exec('ind_pref','rozrach_kor');
+         SER_NAGS.hdr_sel();
+         {? var_pres('wyd_kor')<=0 || SER_NAGS.hdr_sel(' (wszystkie)'@) ?}
+      ?};
+      exec('okienka','rozrach_kor',SER_KOR.TYP)
+   || SER_NAGS.index('NAG_KODK'); SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,KH.KOD,KH.KOD);
+      SER_NAGS.hdr_sel(); SER_NAGS.hdr_sel(' kontrahenta:  %1'@[ KH.SKR])
+   ?}
+?};
+1
+
+
+\okienka
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [8.70]
+:: OPIS: Ustawienie okienek dla korespondencji
+::   WE: _a - typ
+::  OLD: \okienka/windyk1.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _a='W' | _a='P'
+|| SER_DEF.win_sel('SERWZW'); SER_DEF.hdr_sel();
+   {? _a='P' || SER_DEF.hdr_sel(' - potwierdzenie salda'@)
+   |? _a='W' || SER_DEF.hdr_sel(' - wezwanie do zapłaty'@)
+   ?}; SER_DEF.win_sel('SERWZW');   SER_DEF.win_dict('SERWZW')
+|| SER_DEF.win_sel('SERNOW');   SER_DEF.win_dict('SERNOW'); SER_DEF.hdr_sel()
+?};
+KH.win_dict('WERHOME2')
+
+
+\ser_zakr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMA [7.41]
+:: OPIS: Funkcja do ograniczania dziedziny dokumentów korespondencji z rozrachunków do wybranego kontrahenta lub
+::       daty wystawienia dokumentu.
+::   WE: _a - zadeklarowane - zmienne parametryczne ustawione wcześniej
+::  OLD: \ser_zakr/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+ODD.cntx_psh(); ODD.index('ODDZIALY'); ODD.prefix(REF.FIRMA);
+SER_NAG.cntx_psh(); SER_NAG.prefix(REF.FIRMA); _hdr:=''; SER_KOR.ZAK_KH:=null;
+SER_KOR.win_edit({? ROZRACH.KONTR=null || 'ZAK_PWN' || 'ZAK_PWN1' ?});
+{? SER_KOR.TYP='N'
+|| {? var_pres('zmzaknot')>0 & zmzaknot
+   || SER_KOR.ZAKRES:=notzak1; SER_KOR.ZAKRESW:=notzak2;
+      SER_KOR.ZAK_DAT:=notzak3; SER_KOR.ZAK_WAL:=notzak4;
+      SER_KOR.ZAK_KH:=notkh
+   || SER_KOR.ZAK_DAT:={? SER_NAGS.size() || SER_NAGS.SER_NAG().DATA || date() ?};
+      SER_KOR.ZAKRES:=0; SER_KOR.ZAKRESW:=0; SER_KOR.ZAK_WAL:=SSTALE.WAL
+   ?}
+|? SER_KOR.TYP='P'
+|| {? var_pres('zmzakpot')>0 & zmzakpot
+   || SER_KOR.ZAKRES:=potzak1; SER_KOR.ZAKRESW:=potzak2;
+      SER_KOR.ZAK_DAT:=potzak3; SER_KOR.ZAK_WAL:=potzak4;
+      SER_KOR.ZAK_KH:=potkh
+   || SER_KOR.ZAK_DAT:={? SER_NAGS.size() || SER_NAGS.SER_NAG().DATA || date() ?};
+      SER_KOR.ZAKRES:=0; SER_KOR.ZAKRESW:=0; SER_KOR.ZAK_WAL:=SSTALE.WAL
+   ?}
+|? SER_KOR.TYP='W'
+|| {? var_pres('zmzakwez')>0 & zmzakwez
+   || SER_KOR.ZAKRES:=wezzak1; SER_KOR.ZAKRESW:=wezzak2;
+      SER_KOR.ZAK_DAT:=wezzak3; SER_KOR.ZAK_WAL:=wezzak4;
+      SER_KOR.ZAK_KH:=wezkh
+   || SER_KOR.ZAK_DAT:={? SER_NAGS.size() || SER_NAGS.SER_NAG().DATA || date() ?};
+      SER_KOR.ZAKRES:=0; SER_KOR.ZAKRESW:=0; SER_KOR.ZAK_WAL:=SSTALE.WAL
+   ?}
+?};
+{? _=1 | SER_KOR.edit("exec('chk_kor','rozrach_kor')")
+|| {? _=0
+   || {? SER_KOR.TYP='N' & var_pres('zmzaknot')>0
+      || zmzaknot:=1;
+         notzak1:=SER_KOR.ZAKRES; notzak2:=SER_KOR.ZAKRESW;
+         notzak3:=SER_KOR.ZAK_DAT; notzak4:=SER_KOR.ZAK_WAL;
+         notkh:=SER_KOR.ZAK_KH
+      |? SER_KOR.TYP='P' & var_pres('zmzakpot')>0
+      || zmzakpot:=1;
+         potzak1:=SER_KOR.ZAKRES; potzak2:=SER_KOR.ZAKRESW;
+         potzak3:=SER_KOR.ZAK_DAT; potzak4:=SER_KOR.ZAK_WAL;
+         potkh:=SER_KOR.ZAK_KH
+      |? SER_KOR.TYP='W' & var_pres('zmzakwez')>0
+      || zmzakwez:=1;
+         wezzak1:=SER_KOR.ZAKRES; wezzak2:=SER_KOR.ZAKRESW;
+         wezzak3:=SER_KOR.ZAK_DAT; wezzak4:=SER_KOR.ZAK_WAL;
+         wezkh:=SER_KOR.ZAK_KH
+      ?}
+   || {? SER_KOR.TYP='N' & var_pres('zmzaknot')>0
+      || SER_KOR.ZAKRES:=notzak1; SER_KOR.ZAKRESW:=notzak2;
+         SER_KOR.ZAK_DAT:=notzak3; SER_KOR.ZAK_WAL:=notzak4;
+         SER_KOR.ZAK_KH:=notkh
+      |? SER_KOR.TYP='P' & var_pres('zmzakpot')>0
+      || SER_KOR.ZAKRES:=potzak1; SER_KOR.ZAKRESW:=potzak2;
+         SER_KOR.ZAK_DAT:=potzak3; SER_KOR.ZAK_WAL:=potzak4;
+         SER_KOR.ZAK_KH:=potkh
+      |? SER_KOR.TYP='W' & var_pres('zmzakwez')>0
+      || SER_KOR.ZAKRES:=wezzak1; SER_KOR.ZAKRESW:=wezzak2;
+         SER_KOR.ZAK_DAT:=wezzak3; SER_KOR.ZAK_WAL:=wezzak4;
+         SER_KOR.ZAK_KH:=wezkh
+      ?}
+   ?};
+   SER_NAGS.hdr_sel(); _hdr+=' (';
+   SLO.cntx_psh(); SLO.prefix();
+   _kod_w:=SER_KOR.ZAK_WAL().KOD;
+   SLO.cntx_pop();
+   KH.cntx_psh(); KH.prefix();
+   _kod_kh:=SER_KOR.ZAK_KH().KOD; _skr_kh:=SER_KOR.ZAK_KH().SKR;
+   {? _skr_kh='' || _skr_kh:='jednorazowy' ?};
+   KH.cntx_pop();
+   _zn_wal:={? SER_KOR.ZAKRESW=0 & SER_KOR.ZAK_WAL=FINFO.NAROD || 0 || 1 ?};
+   {? var_pres('only_dek')>0 & only_dek=1
+   || _hdr+=('niezadekretowane');
+       SER_NAGS.index('SER_DEK');
+       SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,'T','N')
+   |? ROZRACH.KONTR=null
+   || {? SER_KOR.ZAKRES=0
+      || _hdr+=('data sporządzenia '+$SER_KOR.ZAK_DAT);
+         {? SER_KOR.ZAKRESW=0
+         || _hdr+=(', waluta '+_kod_w);
+            SER_NAGS.index('SER_DSP1');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,_zn_wal,'',_kod_w,SER_KOR.ZAK_DAT)
+         |? SER_KOR.ZAKRESW=1
+         || _hdr+=(', obce waluty');
+            SER_NAGS.index('SER_DSP3');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,1,SER_KOR.ZAK_DAT)
+         || _hdr+=(', wszystkie waluty');
+            SER_NAGS.index('SER_NAG');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,SER_KOR.ZAK_DAT)
+         ?}
+      |? SER_KOR.ZAKRES=1
+      || _hdr+=('kontrahent '+_skr_kh);
+         {? SER_KOR.ZAKRESW=0
+         || _hdr+=(', waluta '+_kod_w);
+            SER_NAGS.index('SER_DSP2');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,_zn_wal,SER_KOR.ZAK_KH,'',_kod_w)
+         |? SER_KOR.ZAKRESW=1
+         || _hdr+=(', obce waluty');
+            SER_NAGS.index('SER_DSP4');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,1,SER_KOR.ZAK_KH)
+         || _hdr+=(', wszystkie waluty');
+            SER_NAGS.index('TYPKH');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,_kod_kh,_kod_kh)
+         ?}
+      || {? SER_KOR.ZAKRESW=0
+         || _hdr+=('waluta '+_kod_w)
+         |? SER_KOR.ZAKRESW=1
+         || _hdr+=('obce waluty')
+         || _hdr+=('wszystkie')
+         ?};
+         {? SER_KOR.ZAKRESW<>2
+         || SER_NAGS.index('SER_DSP1');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,_zn_wal,'',_kod_w)
+         || SER_NAGS.index('SER_NAG');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP)
+         ?}
+      ?}
+   || {? SER_KOR.ZAKRES=0
+      || _hdr+=('data sporządzenia '+$SER_KOR.ZAK_DAT);
+         {? SER_KOR.ZAKRESW=0
+         || _hdr+=(', waluta '+_kod_w);
+            SER_NAGS.index('SER_DSP2');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,_zn_wal,ROZRACH.KONTR,'',_kod_w,SER_KOR.ZAK_DAT)
+         |? SER_KOR.ZAKRESW=1
+         || _hdr+=(', obce waluty');
+            SER_NAGS.index('SER_DSP4');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,1,ROZRACH.KONTR,SER_KOR.ZAK_DAT)
+         || _hdr+=(', wszystkie waluty');
+            SER_NAGS.index('TYPKH');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,ROZRACH.KONTR().KOD,ROZRACH.KONTR().KOD,SER_KOR.ZAK_DAT)
+         ?}
+      || {? SER_KOR.ZAKRESW=0
+         || _hdr+=('waluta '+_kod_w)
+         |? SER_KOR.ZAKRESW=1
+         || _hdr+=('obce waluty')
+         || _hdr+=('wszystkie')
+         ?};
+         {? SER_KOR.ZAKRESW=0
+         || SER_NAGS.index('SER_DSP2');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,_zn_wal,ROZRACH.KONTR,'',_kod_w)
+         |? SER_KOR.ZAKRESW=1
+         || SER_NAGS.index('SER_DSP4');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,1,ROZRACH.KONTR)
+         || SER_NAGS.index('TYPKH');
+            SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_KOR.TYP,ROZRACH.KONTR().KOD,ROZRACH.KONTR().KOD)
+         ?}
+      ?}
+   ?};
+   _hdr+=(')'); {? var_pres('wyd_kor')<=0 || SER_NAGS.hdr_sel(_hdr) ?}
+?};
+ODD.cntx_pop(); SER_NAG.cntx_pop()
+
+
+\chk_kor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Sprawdzanie parametrów zakresu dla korespondencji
+::  OLD: \chk_kor/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ok:='';
+{? SER_KOR.ZAKRES=0 & SER_KOR.ZAK_DAT=date(0,0,0)
+|| FUN.info('Nie wypełniona data.'@); _ok:='ZAK_DAT'
+?};
+{? _ok='' & SER_KOR.ZAKRES=1 & SER_KOR.ZAK_KH=null
+|| FUN.info('Nie wybrany kontrahent.'@); _ok:='ZAK_KH'
+?};
+{? _ok=''
+|| {? SER_KOR.ZAKRESW=0 & SER_KOR.ZAK_WAL=null
+   || FUN.info('Nie wybrana waluta.'@); _ok:='ZAK_WAL'
+   ?}
+?};
+_ok
+
+
+\sz_kor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.70]
+:: OPIS: Wyszukuje w tabeli SER_NAGS rekordu zgodnego z wzorcem
+::   WE: _a - rodzaj korespondencji (lub pusty STRING jesli wszystkie)
+::       _b - 0 - szukanie dokladne, 1 - kontekstowe
+::  OLD: \sz_kor/wz_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_DEF.cntx_psh();
+_wer:=SER_DEF.mk_sel('Wzorce korespondencji'@,,,'ser_def_wer1');
+SER_DEF.win_fld(_wer,,'KOD');
+SER_DEF.win_fld(_wer,,'ST');
+SER_DEF.win_fld(_wer,,'OP');
+SER_DEF.win_sel(_wer); SER_DEF.win_dict(_wer);
+SER_KOR.SZDATA:=SER_KOR.SZDATDOK:=date(0,0,0); SER_KOR.SZNR:='';
+SER_KOR.SZKOD:=SER_KOR.SZWAL:=SER_KOR.SZJEZYK:=SER_KOR.SZKH:=null;
+SER_KOR.win_edit({? _a=''
+                 || 'SZ_ALL'
+                 |? _a='N'
+                 || 'SZ_NOT'
+                 |? _a='P'
+                 || 'SZ_POT'
+                 |? _a='W'
+                 || 'SZ_WEZW'
+                 ?});
+BUFKOR:=obj_new(@.CLASS.BUFFER,'SER_KOR');
+BUFKOR.save();
+{? SER_KOR.edit()
+|| {? BUFKOR.is_equal()
+   || FUN.info('Niewypełniony wzorzec.'@)
+   || KH.cntx_psh(); KH.win_dict('WERHOME2'); KH.prefix();
+      SER_NAGS.blank(1);
+      operat:={? _b=0 || ':*' || ':-' ?};
+      SER_DEF.cntx_psh(); SER_DEF.prefix();
+      SLO.cntx_psh();     SLO.prefix();
+      _kodkod:=SER_KOR.SZKOD().KOD;
+      _khkod:=SER_KOR.SZKH().KOD;
+      _khnazp:=SER_KOR.SZKH().NAZ_P;
+      _walkod:=SER_KOR.SZWAL().KOD;
+      _waltr:=SER_KOR.SZWAL().TR;
+      _jezkod:=SER_KOR.SZJEZYK().KOD;
+      _jeztr:=SER_KOR.SZJEZYK().TR;
+      SER_DEF.cntx_pop(); SLO.cntx_pop();
+      _czy_zn:={? _a=''
+               || SER_NAGS.find_tab(0,'SER_NAG', 'DATA',   operat,  SER_KOR.SZDATA,
+                                      'KOD',     'KOD',    operat, _kodkod,
+                                      'WAL',     'KOD',    operat, _walkod,
+                                      'WAL',     'TR',     operat, _waltr,
+                                      'JEZYK',   'KOD',    operat, _jezkod,
+                                      'JEZYK',   'TR',     operat, _jeztr)
+               |? _a='P'
+               || SER_NAGS.find_tab(0,'SER_NAG', 'DATA',   operat,  SER_KOR.SZDATA,
+                                      'KH',      'KOD',    operat, _khkod,
+                                      'KH',      'NAZ_P',  operat, _khnazp,
+                                      'KOD',     'KOD',    operat, _kodkod,
+                                      'WAL',     'KOD',    operat, _walkod,
+                                      'WAL',     'TR',     operat, _waltr)
+               |? _a='W'
+               || SER_NAGS.find_tab(0,'SER_NAG', 'ID',     operat,  SER_KOR.SZNR,
+                                      'SER_NAG', 'DATA',   operat,  SER_KOR.SZDATA,
+                                      'KH',      'KOD',    operat, _khkod,
+                                      'KH',      'NAZ_P',  operat, _khnazp,
+                                      'KOD',     'KOD',    operat, _kodkod,
+                                      'WAL',     'KOD',    operat, _walkod,
+                                      'WAL',     'TR',     operat, _waltr)
+               |? _a='N'
+               || SER_NAGS.find_tab(0,'SER_NAG', 'ID',     operat,  SER_KOR.SZNR,
+                                      'SER_NAG', 'DATA',   operat,  SER_KOR.SZDATA,
+                                      'KH',      'KOD',    operat, _khkod,
+                                      'KH',      'NAZ_P',  operat, _khnazp,
+                                      'KOD',     'KOD',    operat, _kodkod,
+                                      'SER_NAG', 'DATDOK', operat, SER_KOR.SZDATDOK,
+                                      'WAL',     'KOD',    operat, _walkod,
+                                      'WAL',     'TR',     operat, _waltr)
+               ?};
+      {? ~_czy_zn || FUN.info('Nie znaleziono rekordu zgodnego z wzorcem.'@) ?};
+      KH.cntx_pop();
+      &operat
+   ?}
+?};
+VAR_DEL.delete('BUFKOR');
+SER_DEF.cntx_pop()
+
+
+\not_ber
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK
+:: OPIS: Akcja Rekord przed w okienku wertowania not odsetkowych
+::       i wezwan do zaplaty
+::  OLD: \not_ber/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_okno:={? SER_KOR.TYP='W'
+       || 'SER_NAGW'
+       |? SER_KOR.TYP='N'
+       || 'SER_NOTY'
+       || 'SER_NAGN'
+       ?};
+_akcje:='';
+{? ~SER_NAGS.sel_size()
+|| SER_NAGS.SER_NAG();
+   {? SER_NAG.ST_AKC='T'
+   || _akcje:='U';
+      {? SER_KOR.TYP='W' || _akcje+='E' ?}
+   |? SER_NAG.ST_AKC='N' & SER_KOR.TYP<>'P'
+   || _akcje:='P'
+   ?};
+   {? SER_NAG.ST_DEK='T'
+   || _akcje+='UP'
+   ?}
+?};
+
+{? SER_KOR.TYP='W' | SER_KOR.TYP='P'
+|| SER_NAGS.SER_NAG();
+   SER_KOR.ST_EMAIL:={? -SER_NAG.EMAIL='t'
+                     || 'Wysłany'
+                     |? -SER_NAG.EMAIL='n' | -SER_NAG.EMAIL='w'
+                     || 'Nie wysłany'
+                     || 'Brak adresu email'
+                     ?}
+?};
+SER_NAGS.actions_grayed(_okno,'');
+SER_NAGS.actions_grayed(_okno,_akcje);
+{? SER_KOR.TYP='N' & SER_NAGS.SER_NAG().ST_DEK='T'
+|| 'SER_NAG#01#01'
+|? SER_NAGS.SER_NAG().ST_AKC='T'
+|| 'SER_NAG#01#02'
+|| ''
+?}
+
+
+\pop_num
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.50]
+:: OPIS: Poprawienie numeru noty lub wezwania
+::  OLD: \pop_num/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAG.cntx_psh(); SER_NAG.prefix(REF.FIRMA);
+SER_NAGS.SER_NAG();
+_ok:=1;
+{? SER_NAG.ST_AKC<>'T'
+|| {? SER_KOR.TYP='W'
+   || FUN.info('Wezwanie nie jest zaakceptowane.'@)
+   || FUN.info('Nota nie jest zaakceptowana.'@)
+   ?}; _ok:=0
+?};
+{? _ok & SER_KOR.TYP='N' & SER_NAG.ST_DEK='T'
+|| FUN.info('Nota jest zadekretowana.'@); _ok:=0
+?};
+{? _ok
+|| undefine();
+   old_id:=SER_NAG.ID; ref_ser:=SER_NAG.ref();
+   {? SER_KOR.TYP='N'
+   || define('NR',SER_NAG.ID,'Numer',,30,30)
+   || define('NR',SER_NAG.ID,'Numer',,30,30)
+   ?};
+   _btnok:=def_btn('text=%1'['Zapisz'@],'key:F2');
+   _btnan:=def_btn('text=%1'['Anuluj'@],'key:Esc');
+   def_bopt(_btnok,'tooltip='+exec('help_red_ok','#window','Z'));
+   def_bopt(_btnan,'tooltip='+exec('help_red_esc','#window','A'));
+   {? def_edit("exec('spr_nr','rozrach_kor')",'Numer %1'@[{? SER_KOR.TYP='W' || 'wezwania'@ || 'noty'@ ?}])
+   || SER_NAG.ID:=DEFINE.NR; SER_NAG.put()
+   ?};
+   &old_id; &ref_ser;
+   undefine()
+?};
+SER_NAG.cntx_pop()
+
+
+\spr_nr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [8.50]
+:: OPIS: Formula sprawdza identyfikator przy poprawianiu
+::   WY: '' - identyfikator poprawny, 'NR' - koniecznosc korekty
+::  OLD: \spr_nr/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:=''; DEFINE.NR:=|DEFINE.NR;
+{? DEFINE.NR<>''
+|| {? DEFINE.NR<>old_id
+   || _jest:=0;
+      SER_NAG.cntx_psh(); SER_NAG.index('ID'); SER_NAG.prefix(REF.FIRMA,SER_NAG.T,SER_NAG.ODD,DEFINE.NR);
+      {? SER_NAG.first()
+      || {! |?
+            {? SER_NAG.ID=DEFINE.NR & SER_NAG.ref()<>ref_ser || _jest:=1 ?};
+            ~_jest & SER_NAG.next()
+         !}
+      ?};
+      SER_NAG.cntx_pop();
+      {? _jest
+      || {? ~FUN.ask('Istnieje już dokument(-y) o symbolu:\n%1\nKontunuować?'@[DEFINE.NR])
+         || _zwrot:='NR'
+         ?}
+      ?}
+   ?}
+|| FUN.info('Nie wprowadzono numeru.'@); _zwrot:='NR'
+?};
+_zwrot
+
+
+\poz_rek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.50]
+:: OPIS: Rekord przed dla tabeli SER_POZ
+::  OLD: \poz_rek/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_POZ.PRZEDPO || 'SER_POZ#01#01' || '' ?}
+
+
+\swalszuk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MAKO [2010]
+:: OPIS: Wzorzec na pole SER_NAG.WAL
+::  OLD: \swalszuk/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? -(6+menu_txt)='szukaj'
+|| SLO.win_dict('ONE'); SLO.win_sel('ONE');
+   XINFO.SLWAL()
+?};
+''
+
+
+\sjezszuk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MAKO [2010]
+:: OPIS: Wzorzec na pole SER_NAG.JEZYK
+::  OLD: \sjezszuk/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? -(6+menu_txt)='szukaj'
+|| SLO.win_dict('ONE'); SLO.win_sel('ONE');
+   XINFO.SLJEZYK()
+?};
+''
+
+
+\dspodkor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MAKO [2010]
+:: OPIS: Przed wyswietleniem pola SER_NAG.ODD
+::  OLD: \dspodkor/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAGS.SER_NAG().ODD(); 1
+
+
+\wyd_kor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BS
+:: OPIS: obsluga funkcji wydruk z okienka korespondencji z rozrachunków
+::  OLD: \skid_wyd/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_if_empty:=0;
+{? XINFO.SLJEZYK=null
+|| FUN.info('Nie ustalono słownika języków w parametrach pracy programu.'@)
+|| {? SER_KOR.TYP='' || _if_empty:=1; SER_KOR.TYP:=SER_NAG.T ?};
+   {? SER_KOR.TYP='W'
+   || exec('rep_exec','#b_report','','fks_wezwkor',,,,,,,,'W')
+   |? SER_KOR.TYP='N'
+   || exec('rep_exec','#b_report','','fks_notakor',,,,,,,,'W')
+   |? SER_KOR.TYP='P'
+   || exec('rep_exec','#b_report','','fks_potwkor',,,,,,,,'W')
+   ?};
+   {? _if_empty || SER_KOR.TYP:='' ?}
+?};
+0
+
+
+\get_rb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMA] [8.70]
+:: OPIS: Zwraca nr subkonta kontrahenta lub nr rachunku licencjobiorcy do wezwkor.rpm
+::  OLD: \get_rb/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+_rb:=RB.get_drb(1,REF.FIRMA().SYMBOL+'KH2',SER_NAG.KH(); #SER_NAG.KH);
+{? SKID_RBK.prefix(); _rb & SKID_RBK.seek(_rb)
+|| _ret:=RB.get_rbtx(1,_rb)
+|| _rb:=RB.getrrban(RACHBANK.KB_1R,REF.INFO,0);
+   {? SKID_RBK.prefix(); _rb & SKID_RBK.seek(_rb)
+   || {? +SER_NAG.KH().KRAJISO().KODISO & SER_NAG.KH().KRAJISO().KODISO<>XINFO.KRAJ().KODISO
+      || _ret:=RB.get_rbtx(2,RB.formiban(RB.get_rbel(1,_rb,SER_NAG.KH().KRAJISO().KODISO)),
+            SER_NAG.KH().KRAJISO().KODISO)
+      || _ret:=RB.get_rbtx(1,_rb,SER_NAG.KH().KRAJISO().KODISO)
+      ?}
+   ?}
+?};
+_ret
+
+
+\czy_umorz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2010]
+:: OPIS: Sprawdza, czy istnieje przynajmniej jedna nieumorzona pozycja noty
+::       wg wprowadzonych parametrow
+::  OLD: \czy_umorz/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_POZ.cntx_psh(); SER_POZ.index('SER_POZU');
+{? OPERATOR.DEPT
+|| SER_POZ.prefix(REF.FIRMA,SER_NAG.ref(),0,OPERATOR.DEPT().OD)
+|| SER_POZ.prefix(REF.FIRMA,SER_NAG.ref(),0)
+?};
+_zwrot:=SER_POZ.first();
+{? _zwrot & ~PAR_WYDR.PAR15
+|| _zwrot:=0;
+   {! |?
+      _zwrot:=(SER_POZ.PRZEDPO=0);
+      ~_zwrot & SER_POZ.next()
+   !}
+?};
+SER_POZ.cntx_pop();
+_zwrot
+
+
+\be_sumf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Przed redakcją pola SER_KOR.SUMFAKT
+::  OLD: \be_sumf/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TRYB_NOT=1 & SER_KOR.WYB_WAL=0 || 1 || SER_KOR.SUMFAKT:=0; 0 ?}
+
+
+\dspods
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.50]
+:: OPIS: Na wyświetl dla pola SER_KOR.ODSPOTER
+::  OLD: \dspods/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_POZ.size=0
+|| SER_KOR.ODSPOTER:=SER_KOR.ODSPRTER:=0
+|| _dok:=SER_POZ.DOK; _usym:=SER_POZ.SYM_ROK;
+   SER_KOR.ODSPOTER:=SER_KOR.ODSPRTER:=0; _odd:=SER_POZ.ODD;
+   SER_POZ.cntx_psh();
+   SER_POZ.index('SER_POZD'); SER_POZ.prefix(REF.FIRMA,SER_KOR.TYP,_dok);
+   {? SER_POZ.first()
+   || {! |?
+         {? SER_POZ.REF=SER_NAG.ref() & SER_POZ.ODD=_odd & SER_POZ.SYM_ROK=_usym & SER_POZ.PRZEDPO=0
+         || SER_KOR.ODSPOTER+=SER_POZ.ODS
+         ?};
+         SER_POZ.next()
+      !}
+   ?};
+   SER_POZ.cntx_pop()
+?};
+1
+
+
+\be_tryb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: przed edycja trybu
+::  OLD: \be_tryb/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TRYB_MON=1 || 1 || 0 ?}
+
+
+\be_wpoz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: przed redakcja trybu
+::  OLD: \be_wpoz/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TRYB_MON=2 || 1 || 0 ?}
+
+
+\ae_tmon
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: po redakcji trybu
+::  OLD: \ae_tmon/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TRYB_MON=0
+|| SER_KOR.WYB_TRYB:=SER_KOR.WYB_POZ:=null;
+   SER_KOR.ODSPTER:=SER_KOR.RATY:=0
+|? SER_KOR.TRYB_MON=1
+|| SER_KOR.WYB_POZ:=null
+|| SER_KOR.WYB_TRYB:=null
+?};
+{? var_press('DNI_KH',SER_KOR)>0
+|| {? SER_KOR.TRYB_MON=0
+   || SER_KOR.DNI_KH:=0;
+      SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP');
+      SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH');
+      SER_KOR.efld_opt(cur_win(),'enable=0',,'ODSPTER')
+   || SER_KOR.efld_opt(cur_win(),'enable=1',,'ODSPTER');
+      {? SER_KOR.ODSPTER
+      || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_KH');
+         {? SER_KOR.DNI_KH
+         || SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP')
+         || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_TP')
+         ?}
+      || SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP');
+         SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH')
+      ?}
+   ?}
+?};
+win_disp();
+1
+
+
+\be_tabod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Przed redakcją pola SER_KOR.TAB_ODS
+::  OLD: \be_tabod/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TRYB_NOT=1
+|| FINFO.SL_ODS().SLU(); SLO.win_dict('ONE'); SLO.win_sel('ONE'); SLO.win_edit('RED'); 1
+|| 0
+?}
+
+
+\ae_trnot
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: Po edycji trybu generowania not
+::  OLD: \ae_trnot/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TRYB_NOT=0
+|| SER_KOR.TAB_ODS:=null;
+   SER_KOR.SUMFAKT:=SER_KOR.ODSPTER:=SER_KOR.RATY:=0
+?};
+{? var_press('DNI_KH',SER_KOR)>0
+|| {? SER_KOR.TRYB_NOT=0
+   || SER_KOR.DNI_KH:=0;
+      SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP');
+      SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH');
+      SER_KOR.efld_opt(cur_win(),'enable=0',,'ODSPTER')
+   || SER_KOR.efld_opt(cur_win(),'enable=1',,'ODSPTER');
+      {? SER_KOR.ODSPTER
+      || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_KH');
+         {? SER_KOR.DNI_KH
+         || SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP')
+         || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_TP')
+         ?}
+      || SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP');
+         SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH')
+      ?}
+   ?}
+?};
+1
+
+
+\awwybwal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: Po redakcji waluty
+::  OLD: \awwybwal/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.WYB_WAL
+|| SER_KOR.WAL:=null; SER_KOR.SUMFAKT:=0;
+   SER_KOR.efld_opt(SER_KOR.win_edit('?'),'enable=0',,'WAL')
+|| SER_KOR.efld_opt(SER_KOR.win_edit('?'),'enable=1',,'WAL')
+?}; 1
+
+
+\bewalkor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Przed redakcją pola SER_KOR.WAL
+::  OLD: \bewalkor/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ~SER_KOR.WYB_WAL
+|| exec('par_w','dok_fks')
+|| 0
+?}
+
+
+\ae_zakrd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Po redakcji pola SER_KOR.ZAKRES
+::  OLD: \ae_zakrd/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.ZAKRES=0
+|| SER_KOR.ZAK_KH:=null
+|? SER_KOR.ZAKRES=1
+|| SER_KOR.ZAK_DAT:=date(0,0,0)
+|| SER_KOR.ZAK_KH:=null; SER_KOR.ZAK_DAT:=date(0,0,0)
+?};
+1
+
+
+\be_zakd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Przed redakcją pola SER_KOR.ZAK_DAT
+::  OLD: \be_zakd/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.ZAKRES=0 || 1 || 0 ?}
+
+
+\be_zakkh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Przed redakcją pola SER_KOR.ZAK_KH
+::  OLD: \be_zakkh/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.ZAKRES=1 || 1 || 0 ?}
+
+
+\ae_zakrw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Po redakcji pola SER_KOR.ZAKRESW
+::  OLD: \ae_zakrw/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.ZAKRESW<>0 || SER_KOR.ZAK_WAL:=null ?}; 1
+
+
+\bezakwal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Przed redakcją pola SER_KOR.ZAK_WAL
+::  OLD: \bezakwal/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.ZAKRESW=0 & exec('par_w','dok_fks') || 1 || 0  ?}
+
+
+\bepterwn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: przed redakcja pola ODSPTER
+::  OLD: \bepterwn/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+(SER_KOR.TYP='W' & SER_KOR.TRYB_MON<>0) |
+(SER_KOR.TYP='N' & SER_KOR.TRYB_NOT<>0)
+
+
+\serptabo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [8.50]
+:: OPIS: Formula na wyswietl dla pola SER_KOR.PODS
+::  OLD: \serptabo/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.PODS:={? SER_POZ.PRZEDPO & FINFO.TODS_UST<>null
+              || FINFO.TODS_UST
+              |? ~SER_POZ.PRZEDPO & SER_NAG.TTAB_ODS
+              || SER_NAG.TTAB_ODS
+              || null
+              ?}
+
+
+\be_skodd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: Przed redakcją jednostki ksiegowej
+::  OLD: \be_skodd/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+OPERATOR.DEPT=null
+
+
+\aelwst
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.70]
+:: OPIS: Po redakcji pola SER_KOR.L_WSTECZ
+::  OLD: \aelwst/kor_ser3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:=1;
+{? SER_KOR.L_WSTECZ=null
+|| FUN.info('Nie wprowadzono liczby lat wstecz.'@); _zwrot:=0
+|| l_wstecz:=#SER_KOR.L_WSTECZ().WART;
+   {? l_wstecz>0
+   || SSTALE.AR();
+      {? exec('first_rok_obsz','zam_okr_rok','FKS',ROK_F.ref())
+      || FUN.info('Bieżący rok bilansowy jest pierwszy w systemie.'@); _zwrot:=0
+      || ROK_F.prev();
+         SER_KOR.ROK1:=ROK_F.ref();
+         {? l_wstecz=2 & exec('first_rok_obsz','zam_okr_rok','FKS',ROK_F.ref())
+         || FUN.info('Nie zdefiniowano w systemie 2 lat obrotowych wstecz.'@); _zwrot:=0
+         |? l_wstecz=2
+         || SER_KOR.ROK2:=ROK_F.ref()
+         ?}
+      ?}
+   ?}
+?};
+_zwrot
+
+
+\aenalods
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: Po redakcji pola - naliczanie odsetek do dnia
+::  OLD: \aenalods/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.NAL_ODSD=0 || SER_KOR.DATODODS:=date(0,0,0) ?}; 1
+
+
+\bedatodo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: Przed redakcją daty od której będą naliczane odstetki
+::  OLD: \bedatodo/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.NAL_ODSD
+
+
+\aetkon
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: Po redakcji konta
+::  OLD: \aetkon/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TYP_KON=1
+|| SER_KOR.KONTO1:='';
+   DOK.efld_opt(DOK.win_edit('?'),'enable=0',SER_KOR,'KONTO1')
+|| DOK.efld_opt(DOK.win_edit('?'),'enable=1',SER_KOR,'KONTO1')
+?};
+1
+
+
+\dsp_tkon
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Na wyświetl dla pola SER_KOR.TYP_KON
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TYP_KON=1
+|| DOK.efld_opt(DOK.win_edit('?'),'enable=0',SER_KOR,'KONTO1')
+|| DOK.efld_opt(DOK.win_edit('?'),'enable=1',SER_KOR,'KONTO1')
+?};
+1
+
+
+\dspstpot
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2008]
+:: OPIS: Na wyswietl dla pola SER_KOR.STAP_POT
+::  OLD: \dspstpot/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.STAP_POT:={? SER_POZ.POTWIER=0
+                  || 'niepotwierdzona'
+                  |? SER_POZ.POTWIER=1
+                  || 'odrzucona'
+                  || 'potwierdzona'
+                  ?};
+1
+
+
+\ser_tr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RL [7.62]
+:: OPIS: Na wyświetl dla pola ROZNE.SER_TM
+::  OLD: \ser_tr/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_NAG.cntx_psh(); SER_NAG.index('ID'); SER_NAG.prefix(REF.FIRMA);
+SER_TPOZ.cntx_psh(); SER_TPOZ.prefix();
+SER_TM.cntx_psh(); SER_TM.prefix();
+{? SER_NAGS.SER_NAG().SER_TPOZ<>null
+|| SER_NAG.SER_TPOZ();
+   ROZNE.SER_TPOZ:=SER_NAG.SER_TPOZ;
+   ROZNE.SER_TM:=SER_TPOZ.SER_TM
+|| ROZNE.SER_TM:=ROZNE.SER_TPOZ:=null
+?};
+SER_NAG.cntx_pop(); SER_TPOZ.cntx_pop(); SER_TM.cntx_pop();
+1
+
+
+\ser_poz_trig
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [12.41]
+:: OPIS: Trigger dla tabeli SER_POZ - add przed i put przed
+::  OLD: \ser_poz_trig/dol_dok.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_POZ.SYM_ZEW='' || SER_POZ.SYM_ZEW:=SER_POZ.DOK ?};
+1
+
+
+\akc_kor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: Akceptacja not, wezwań do zapłaty i potwierdzeń sald
+::   WE: _a - 1 - dla bieżącego dokumentu
+::  OLD: \akc_not/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_selsize:=SER_NAGS.sel_size();
+{? _
+|| _pyt:=1
+|| _pyt:={? _selsize=0
+         || {? SER_KOR.TYP='N'
+            || FUN.choice('Akceptacja not?'@,,'Bieżącej'@,'Wszystkich z dnia %1'@[form(SER_NAG.DATA)])
+            |? SER_KOR.TYP='W'
+            || FUN.choice('Akceptacja wezwań?'@,,'Bieżącego'@,'Wszystkich z dnia %1'@[form(SER_NAG.DATA)])
+            |? SER_KOR.TYP='P'
+            || FUN.choice('Akceptacja potwierdzeń sald?'@,,'Bieżącego'@,'Wszystkich z dnia %1'@[form(SER_NAG.DATA)])
+            ?}
+         || 1
+         ?}
+?};
+{? _pyt
+|| SER_NAG.cntx_psh; SER_NAG.prefix(REF.FIRMA);
+   ODD.cntx_psh(); ODD.index('ODDZIALY'); ODD.prefix(REF.FIRMA);
+   {? _pyt=1
+   || SER_NAGS.SER_NAG();
+      {? SER_KOR.TYP='N' & SER_NAG.ST_DEK='T'
+      || FUN.info('Nota jest wcześniej zadekretowana.'@)
+      |? SER_NAG.ST_AKC='T'
+      || {? _selsize=0
+         || {? SER_KOR.TYP='N'
+            || FUN.info('Nota jest zaakceptowana wcześniej.'@)
+            |? SER_KOR.TYP='W'
+            || FUN.info('Wezwanie jest zaakceptowane wcześniej.'@)
+            || FUN.info('Potwierdzenie salda jest zaakceptowane wcześniej.'@)
+            ?}
+         ?}
+      || {? SER_KOR.TYP='N'
+         || exec('notakor_akc','rozrach_kor')
+         |? SER_KOR.TYP='W'
+         || exec('wezwkor_akc','rozrach_kor')
+         || exec('potwkor_akc','rozrach_kor')
+         ?}
+      ?};
+      {? _selsize=0
+      || VAR_DEL.delete('__POTWPAR','repesc')
+      ?}
+   |? _pyt=2
+   || SER_KOR.DATA:=SER_NAG.DATA;
+      SER_NAGS.cntx_psh;
+      {? ROZRACH.KONTR=null
+      || SER_NAGS.index('SER_NAG'); SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_NAG.T,SER_KOR.DATA)
+      || SER_NAGS.index('TYPKH');
+         SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_NAG.T,ROZRACH.KONTR().KOD,ROZRACH.KONTR().KOD,SER_KOR.DATA)
+      ?};
+      {? SER_NAGS.first()
+      || _czy:=1;
+         ile_zabl:=0;
+         {! |?
+            SER_NAGS.SER_NAG();
+            {? SER_NAG.ST_AKC='N' & SER_NAG.ST_DEK='N' & SER_NAG.ST_POT='N' &
+               ~exec('czy_dek1','rozrach_kor') &
+               {? SER_KOR.TYP='N' || ~exec('czy_dekr','rozrach_kor') || 1 ?}
+            || {? SER_KOR.TYP='N'
+               || exec('notakor_akc','rozrach_kor',1)
+               |? SER_KOR.TYP='W'
+               || exec('wezwkor_akc','rozrach_kor',1)
+               || exec('potwkor_akc','rozrach_kor',1)
+               ?}
+            ?};
+            SER_NAGS.next()
+         !};
+         {? ile_zabl & _selsize=0
+         || FUN.info('Liczba dokumentów używanych przez innych użytkowników systemu: %1'@[$ile_zabl])
+         ?};
+         VAR_DEL.delete('ile_zabl')
+      ?};
+      VAR_DEL.delete('__POTWPAR','repesc');
+      SER_NAGS.cntx_pop
+   || 0
+   ?};
+   ODD.cntx_pop(); SER_NAG.cntx_pop()
+?}
+
+
+\spr_dokument
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Sprawdzanie dokumentu
+::   WE: 0/1 - automatyczna akceptacja - bez komunikatów
+::----------------------------------------------------------------------------------------------------------------------
+_auto:={? var_pres('_a')>0 || _a || 0 ?};
+_args:=params_get();
+_mp:={? var_pres('mp',_args)>0 || _args.mp || ~~ ?};
+_selsize:=SER_NAGS.sel_size();
+SER_NAGS.SER_NAG();
+{? SER_KOR.TYP='N' & SER_NAG.ST_DEK='T'
+|| {? _selsize=0 & ~_auto
+   || {? SER_NAG.ODD<>null
+      || FUN.info('Nota wystawiona dla kontrahenta %1 dnia %2'
+           '\n w jednostce księgowej %3'
+           '\njest już zadekretowana.'@[SER_NAG.KH().NAZ,$SER_NAG.DATA,SER_NAG.ODD().OD])
+      || FUN.info('Nota wystawiona dla kontrahenta %1 dnia %2'
+           '\njest już zadekretowana.'@[SER_NAG.KH().NAZ,$SER_NAG.DATA])
+      ?}
+   ?};
+   {? type_of(_mp)<>type_of(~~) || _mp.done() ?}; 0
+|? SER_KOR.TYP='P' & SER_NAG.ST_POT='T'
+|| {? _selsize=0 & ~_auto
+   ||  {? SER_NAG.ODD<>null
+       || FUN.info('W potwierdzeniu salda wystawione dla kontrahenta %1dnia %2'
+               '\n w jednostce księgowej %3'
+               '\njest już naniesione potwierdzenie kontrahenta.'@[SER_NAG.KH().NAZ,$SER_NAG.DATA,SER_NAG.ODD().OD])
+       || FUN.info('W potwierdzeniu salda wystawione dla kontrahenta %1dnia %2'
+               '\njest już naniesione potwierdzenie kontrahenta.'@[SER_NAG.KH().NAZ,$SER_NAG.DATA])
+       ?}
+   ?};
+   {? type_of(_mp)<>type_of(~~) || _mp.done() ?}; 0
+|? SER_NAG.ST_AKC='T'
+|| {? _selsize=0 & ~_auto
+   || {? SER_KOR.TYP='N'
+      || FUN.info('Nota wystawiona dla kontrahenta '+SER_NAG.KH().NAZ+' dnia '+$SER_NAG.DATA+
+                  {? SER_NAG.ODD<>null || '\n w jednostce księgowej '+SER_NAG.ODD().OD || '' ?}+
+                  '\njest już zaakceptowana.')
+      |? SER_KOR.TYP='W'
+      || FUN.info('Wezwanie wystawione dla kontrahenta '+SER_NAG.KH().NAZ+' dnia '+$SER_NAG.DATA+
+                  {? SER_NAG.ODD<>null || '\n w jednostce księgowej '+SER_NAG.ODD().OD || '' ?}+
+                  '\njest już zaakceptowane.')
+      || FUN.info('Potwierdzenie salda wystawione dla kontrahenta '+SER_NAG.KH().NAZ+' dnia '+$SER_NAG.DATA+
+                  {? SER_NAG.ODD<>null || '\n w jednostce księgowej '+SER_NAG.ODD().OD || '' ?}+
+                  '\njest już zaakceptowane.')
+      ?}
+   ?};
+   {? type_of(_mp)<>type_of(~~) || _mp.done() ?}; 0
+|? exec('czy_dek1','rozrach_kor')
+|| {? _selsize=0 & ~_auto
+   || {? SER_KOR.TYP='N'
+      || FUN.info('W nocie brak jest pozycji. Akceptacja niemożliwa.'@)
+      |? SER_KOR.TYP='P'
+      || FUN.info('W wezwaniu brak jest pozycji. Akceptacja niemożliwa.'@)
+      || FUN.info('W potwierdzeniu salda brak jest pozycji. Akceptacja niemożliwa.'@)
+      ?}
+   ?};
+   {? type_of(_mp)<>type_of(~~) || _mp.error() ?}; 0
+|? SER_KOR.TYP='N' & exec('czy_dekr','rozrach_kor')
+|| {? _selsize=0 & ~_auto
+   || FUN.info('Przynajmniej jedna z pozycji bieżącej noty\n'
+               'nie ma wypełnionego pola konto.\nAkceptacja niemożliwa.'@)
+   ?};
+   {? type_of(_mp)<>type_of(~~) || _mp.error() ?}; 0
+|| 1
+?}
+
+
+\wezwkor_akc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Akceptacja wezwania do zapłaty
+::   WE: [_a] - 1 - automatyczna akceptacja 0(domyślnie) - nie
+::----------------------------------------------------------------------------------------------------------------------
+_autoakc:={? var_pres('_a')>0 || _a || 0 ?};
+{? ~_autoakc || SER_NAGS.SER_NAG() ?};
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='FKS_RRK_DKAE';
+_params.AKCJA:={? _autoakc || 'AkceptujAuto' || 'Akceptuj' ?};
+_params.UIDREF:=SER_NAG.uidref();
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+_params.PROC_START:='N';
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'SER_NAG',SER_NAG.ref());
+exec('mp_run','#b__box',_params)
+
+
+\notakor_akc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Akceptacja not odsetkowych
+::   WE: [_a] - 1 - automatyczna akceptacja 0(domyślnie) - nie
+::----------------------------------------------------------------------------------------------------------------------
+_autoakc:={? var_pres('_a')>0 || _a || 0 ?};
+{? ~_autoakc || SER_NAGS.SER_NAG() ?};
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='FKS_RRK_DKOE';
+_params.AKCJA:={? _autoakc || 'AkceptujAuto' || 'Akceptuj' ?};
+_params.UIDREF:=SER_NAG.uidref();
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+_params.PROC_START:='N';
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'SER_NAG',SER_NAG.ref());
+exec('mp_run','#b__box',_params)
+
+
+\potwkor_akc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Akceptacja potwierdzeń sald
+::----------------------------------------------------------------------------------------------------------------------
+_autoakc:={? var_pres('_a')>0 || _a || 0 ?};
+{? ~_autoakc || SER_NAGS.SER_NAG() ?};
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='FKS_RRK_DKPE';
+_params.AKCJA:={? _autoakc || 'AkceptujAuto' || 'Akceptuj' ?};
+_params.UIDREF:=SER_NAG.uidref();
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+_params.PROC_START:='N';
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'SER_NAG',SER_NAG.ref());
+exec('mp_run','#b__box',_params)
+
+
+\okno_ser_nag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Tworzy okienko tymczasowe dla dokumentu (akceptacja)
+::   WE: _a - akronim okienka redakcji
+::----------------------------------------------------------------------------------------------------------------------
+_okn:=SER_NAGS.mk_edit(_b);
+SER_NAGS.win_ewin(_okn,,_a);
+SER_NAGS.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['&Pozycje'@],
+                  "exec('poz_kor_rozr','rozrach_kor'); ''"
+                 );
+SER_NAGS.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Akceptuj'@],
+                  "{? params_exec('spr_dokument','rozrach_kor') || params_exec('akc_not1','rozrach_kor',0) ?};
+                   {? SER_NAGS.SER_NAG().ST_AKC='T' || 'key:Esc' || '' ?}"
+                );
+_anuluj:=SER_NAGS.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],
+                 'key:Esc');
+SER_NAGS.btn_eopt(_okn,_anuluj,'tooltip='+exec('help_red_esc','#window','A'));
+SER_NAGS.win_edit(_okn);
+SER_NAGS.display()
+
+
+\okno_dok_nota
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Tworzy okienko tymczasowe dla dokumentu (akceptacja)
+::----------------------------------------------------------------------------------------------------------------------
+_okn:=DOK.mk_edit('Dekretacja noty odsetkowej'@);
+DOK.win_ewin(_okn,,'KSKORSER');
+DOK.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['&Nota odsetkowa'@],
+             "exec('poz_kor_rozr','rozrach_kor'); ''"
+            );
+_zapisz:=DOK.win_ebtn(_okn,'text=%1, btn_label_align=center, panel=bottom, align=end,display=1'['&Zapisz'@],"'key:F2'");
+_anuluj:=DOK.win_ebtn(_okn,'text=%1, btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],
+                 'key:Esc');
+DOK.btn_eopt(_okn,_zapisz,'tooltip='+exec('help_red_ok','#window','Z'));
+DOK.btn_eopt(_okn,_anuluj,'tooltip='+exec('help_red_esc','#window','A'));
+DOK.win_edit(_okn)
+
+
+\okno_potwier
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Tworzy okienko tymczasowe dla dokumentu (potwierdzenie salda)
+::   WE: _a - akronim okienka redakcji
+::----------------------------------------------------------------------------------------------------------------------
+_okn:=SER_NAGS.mk_edit(_b);
+SER_NAGS.win_ewin(_okn,,_a);
+SER_NAGS.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=begin,display=1'['&Pozycje'@],
+                  "exec('poz_kor_rozr','rozrach_kor'); ''"
+                 );
+SER_NAGS.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Zakończ nanoszenie potwierdzeń'@],
+                  "params_exec('potwkor_zak_nan1','!fks_rrk_dkpw',0);
+                   {? SER_NAGS.SER_NAG().ST_POT='T' || 'key:Esc' || '' ?}"
+                );
+_anuluj:=SER_NAGS.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=bottom,align=end,display=1'['&Anuluj'@],
+                 'key:Esc');
+SER_NAGS.btn_eopt(_okn,_anuluj,'tooltip='+exec('help_red_esc','#window','A'));
+SER_NAGS.win_edit(_okn);
+SER_NAGS.display()
+
+
+\czy_dekr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.20]
+:: OPIS: Funkcja sprawdza, czy we wszystkich pozycjach noty wypelnione jest pole konto
+::   WY: 1 - nie, 0 - tak
+::  OLD: \czy_dekr/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_POZ.cntx_psh();
+SER_POZ.index('SER_POZR'); SER_POZ.prefix(REF.FIRMA,SER_NAG.ref()); _i:=0;
+{? SER_POZ.first()
+|| {! |?
+     {? SER_POZ.KON='' || _i:=1 ?};
+     SER_POZ.next() & _i=0
+   !}
+?};
+SER_POZ.cntx_pop();
+_i
+
+
+\czy_dek1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [7.41]
+:: OPIS: Funkcja sprawdza, czy dokument ma pozycje
+::   WY: 1 - nie, 0 - tak
+::  OLD: \czy_dek1/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_POZ.cntx_psh();
+SER_POZ.index('SER_POZR'); SER_POZ.prefix(REF.FIRMA,SER_NAG.ref); _i:=0;
+{? ~SER_POZ.first() || _i:=1 ?};
+SER_POZ.cntx_pop();
+_i
+
+
+\akc_not1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: Akceptacja not i wezwań do zapłaty
+::   WE: _a - 0 - jedna, 1 - kilka
+::  OLD: \akc_not1/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=params_get();
+_mp:={? var_pres('mp',_args)>0 || _args.mp || ~~ ?};
+{? SER_NAG.r_lock(1,1)
+|| params_exec('akc_not2','rozrach_kor');
+   {? SER_NAG.get() & SER_NAG.ST_AKC='T' & type_of(_mp)<>type_of(~~) || _mp.done() ?};
+   {? var_pres('licz_gr')>0 || licz_gr+=1 ?};
+   SER_NAG.r_unlock()
+|| {? ~_a
+   || {? SER_NAG.sel_size()=0 || exec('blok_err','rozrach_kor') ?}
+   || ile_zabl+=1
+   ?}
+?}
+
+
+\korakcbe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.60]
+:: OPIS: Formula poczatkowa dla akceptacji grupy pozycji
+::  OLD: \korakcbe/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+licz_gr:=0; licz_zaz:=SER_NAGS.sel_size();
+_zwrot:=FUN.ask('Zaakceptować zaznaczone pozycje?'@);
+{? ~_zwrot || VAR_DEL.delete('licz_gr','licz_zaz') ?};
+_zwrot
+
+
+\korakcae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.60]
+:: OPIS: Formula koncowa dla akceptacji grupy pozycji
+::  OLD: \korakcae/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+FUN.info('Liczba zaznaczonych pozycji: %1'
+         '\nLiczba zaakceptowanych pozycji: %2'@[$licz_zaz,$licz_gr]);
+VAR_DEL.delete('licz_gr','licz_zaz','__POTWPAR','repesc'); 1
+
+
+\korwakbe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.60]
+:: OPIS: Formula poczatkowa dla akceptacji grupy pozycji
+::  OLD: \korwakbe/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+licz_gr:=0; licz_zaz:=SER_NAGS.sel_size();
+_zwrot:=FUN.ask('Anulować akceptację zaznaczonych pozycji?'@);
+{? ~_zwrot || VAR_DEL.delete('licz_gr','licz_zaz') ?};
+_zwrot
+
+
+\korwakae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.60]
+:: OPIS: Formula koncowa dla akceptacji grupy pozycji
+::  OLD: \korwakae/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+FUN.info('Liczba zaznaczonych pozycji: %1'
+         '\nLiczba pozycji, w których anulowano akceptację: %2'@[$licz_zaz,$licz_gr]);
+VAR_DEL.delete('licz_gr','licz_zaz'); 1
+
+
+\wyc_akc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: Wycofanie akceptacji korespondencji z rozrachunków.
+::  OLD: \wyc_akc/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_selsize:=SER_NAGS.sel_size();
+SER_NAG.cntx_psh; SER_NAG.prefix(REF.FIRMA);
+SER_NAGS.cntx_psh();
+ODD.cntx_psh(); ODD.index('ODDZIALY'); ODD.prefix(REF.FIRMA);
+SER_KOR.DATA:=SER_NAG.DATA;
+_pyt:={? _selsize=0
+      || {? SER_KOR.TYP='N'
+         || FUN.choice('Anulowanie akceptacji dla not.'@,,'Bieżącej'@,'Wszystkich z dnia %1'@[form(SER_NAG.DATA)])
+         |? SER_KOR.TYP='W'
+         || FUN.choice('Anulowanie akceptacji dla wezwań.'@,,'Bieżącego'@,'Wszystkich z dnia %1'@[form(SER_NAG.DATA)])
+         || FUN.choice('Anulowanie akceptacji dla potwierdzeń sald.'@,,'Bieżącego'@,
+                       'Wszystkich z dnia %1'@[form(SER_NAG.DATA)])
+         ?}
+      || 1
+      ?};
+{? _pyt<>0
+|| {? _pyt=1
+   || SER_NAGS.SER_NAG();
+      {? SER_KOR.TYP='N' & SER_NAG.ST_DEK='T'
+      || {? _selsize=0
+         || FUN.info('Nota jest zadekretowana.'@)
+         ?}
+      |? SER_KOR.TYP='P' & SER_NAG.ST_POT='T'
+      || {? _selsize=0
+         || FUN.info('W potwierdzeniu salda naniesione jest potwierdzenie kontrahenta.'@)
+         ?}
+      |? SER_NAG.ST_AKC<>'T'
+      || {? _selsize=0
+         || {? SER_KOR.TYP='N'
+            || FUN.info('Nota nie jest zaakceptowana.'@)
+            |? SER_KOR.TYP='W'
+            || FUN.info('Wezwanie nie jest zaakceptowane.'@)
+            || FUN.info('Potwierdzenie nie jest zaakceptowane.'@)
+            ?}
+         ?}
+      || exec('wyc_akc1','rozrach_kor',0)
+      ?}
+   |? _pyt=2
+   || {? ROZRACH.KONTR=null
+      || SER_NAGS.index('SER_NAG'); SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_NAG.T,SER_KOR.DATA)
+      || SER_NAGS.index('TYPKH');
+         SER_NAGS.prefix(REF.FIRMA,OPERATOR.DEPT().OD,SER_NAG.T,ROZRACH.KONTR().KOD,ROZRACH.KONTR().KOD,SER_KOR.DATA)
+      ?};
+      ile_zabl:=0;
+      {? SER_NAGS.first
+      || {! |?
+           SER_NAGS.SER_NAG();
+           {? SER_NAG.ST_AKC='T' &
+              {? SER_KOR.TYP='N' || SER_NAG.ST_DEK='N' || 1 ?} &
+              {? SER_KOR.TYP='P' || SER_NAG.ST_POT='N' || 1 ?}
+           || exec('wyc_akc1','rozrach_kor',1)
+           ?};
+           SER_NAGS.next()
+         !}
+      ?};
+      {? _selsize=0 & ile_zabl>0
+      || FUN.info('Zakończono wycofywanie akceptacji.'+
+                  '\nLiczba dokumentów używanych ich przez innych użytkowników systemu: %1'@[$ile_zabl]
+                 )
+      ?};
+      VAR_DEL.delete('ile_zabl')
+   ?}
+?};
+SER_NAGS.cntx_pop(); SER_NAG.cntx_pop(); ODD.cntx_pop()
+
+
+\wyc_akc1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: Wycofanie akceptacji korespondencji z rozrachunków.
+::   WE: _a - 0 - jedna, 1 - kilka
+::  OLD: \wyc_akc1/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_NAG.r_lock(1,1)
+|| SER_NAG.ID:=''; SER_NAG.ST_AKC:='N'; SER_NAG.put();
+   {? var_pres('licz_gr')>0 || licz_gr+=1 ?};
+   SER_NAG.r_unlock()
+|| {? ~_a
+   || {? SER_NAGS.sel_size()=0 || exec('blok_err','rozrach_kor') ?}
+   || ile_zabl+=1
+   ?}
+?}
+
+
+\par_out
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Ustawianie parametrów wyjściowych czynności
+::   WE: _a - UNIK_ID
+::----------------------------------------------------------------------------------------------------------------------
+_args:=params_get();
+_mp:=_args.mp;
+_wy:=_args.out;
+SER_NAG.cntx_psh(); SER_NAG.index('UNIK_ID'); SER_NAG.prefix(_a+'1',);
+{? SER_NAG.first()
+|| _wy.SER_NAG:=SER_NAG.ref();
+   {? SER_NAG.size()>1
+   || _wy.UNIK_ID:=_a;
+      _mp.save(,_wy);
+      _mp.loop_continue()
+   || _wy.UNIK_ID:=''; _mp.save(,_wy)
+   ?};
+   SER_NAG.UNIK_ID:=(SER_NAG.UNIK_ID-1)+'2';
+   SER_NAG.cntx_psh(); SER_NAG.prefix(); SER_NAG.put(); SER_NAG.cntx_pop()
+|| _wy.UNIK_ID:=''; _wy.SER_NAG:=null;
+   _mp.save(,_wy)
+?};
+SER_NAG.cntx_pop()
+
+
+\bw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Przed obsługą okien okna grupowego obszaru FKS_RRK
+::  OLD: \pozycje/gen_ser.fml
+::  OLD: \bw/!fks_rrk_zkaz.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.TYP:=_a;
+exec('okienka','rozrach_kor',SER_KOR.TYP);
+SER_NAGS.win_sel(_b); SER_NAGS.hdr_sel(); SER_NAGS.hdr_sel(' (wszystkie)'@);
+SER_NAGS.win_edit(_c);
+1
+
+
+\sum_wezw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: ?? [?????]
+:: OPIS: Sumy wezwania do zapłaty
+::  OLD: \sum_wezw/gen_ser.fml
+::  OLD: \sum_nota/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\rozr_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.40]
+:: OPIS: Dla rozrachunku w PLN sprawdza, czy nie ma rozrachunku w walucie
+::       jesli jest to rozliczanie mozliwe tylko od strony walutowego
+::   WY: 1 - kontynuacja rozliczania
+::       0 - przerwanie rozliczania
+::  OLD: \rozr_wal/parow.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:=1;
+{? OP.WAL=FINFO.NAROD
+|| SLUAPPL.cntx_psh(); SLU.cntx_psh(); SLO.cntx_psh(); OP.cntx_psh();
+   _wal:=OP.WAL; _odd:=OP.ODD; _konto:=OP.AN; _sym:=OP.SYM; _usym:=OP.SYM_ROK;
+   OP.index('KON_O');
+   SLUAPPL.prefix(); SLU.prefix(); FINFO.SLWAL().SLU();
+   SLO.index('SL'); SLO.prefix(SLU.ref());
+   {? SLO.first()
+   || {! |?
+         {? SLO.ref<>_wal
+         || OP.prefix(SLO.ref(),_odd,_konto,_sym,_sym,_usym); _zwrot:=~OP.first()
+         ?};
+         _zwrot & SLO.next()
+      !}
+   ?};
+   SLUAPPL.cntx_pop(); SLU.cntx_pop(); SLO.cntx_pop(); OP.cntx_pop()
+?};
+_zwrot
+
+
+\sum_potw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Sumowanie potwierdzenia salda
+::  OLD: \sum_potw/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_POZ.cntx_psh();
+SER_KOR.OBR_NASZ:=SER_KOR.OBR_WASZ:=SER_KOR.SAL_NASZ:=SER_KOR.SAL_WASZ:=0;
+SER_KOR.RAZEMPDN:=SER_KOR.RAZEMPDW:=_potdn:=_potdw:=0;
+{? SER_POZ.first()
+|| {! |?
+     SER_KOR.OBR_NASZ+=SER_POZ.DNASZ$2;
+     SER_KOR.OBR_WASZ+=SER_POZ.DWASZ$2;
+     {? SER_POZ.POTWIER=2
+     || _potdn+=SER_POZ.DNASZ$2;
+        _potdw+=SER_POZ.DWASZ$2
+     ?};
+     SER_POZ.next()
+   !};
+   SER_KOR.SAL_NASZ:=F.SWn(SER_KOR.OBR_NASZ,SER_KOR.OBR_WASZ);
+   SER_KOR.SAL_WASZ:=F.SMa(SER_KOR.OBR_NASZ,SER_KOR.OBR_WASZ);
+   SER_KOR.RAZEMPDN:=F.SWn(_potdn,_potdw);
+   SER_KOR.RAZEMPDW:=F.SMa(_potdn,_potdw)
+?};
+SER_POZ.cntx_pop();
+1
+
+
+\podsumps
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2008]
+:: OPIS: Podsumowanie potwierdzenia (waluty)
+::  OLD: \podsumps/gen_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+PS_SUM:=tab_tmp(1,'WAL','STRING[4]','Wal.',
+                  'OWN','REAL','Dobro nasze',
+                  'OMA','REAL','Dobro wasze',
+                  'SWN','REAL','Saldo (d. nasze)',
+                  'SMA','REAL','Saldo (d. wasze)',
+                  'SWNP','REAL','Potw. (d. nasze)',
+                  'SMAP','REAL','Potw. (d. wasze)'
+               );
+_ind:=PS_SUM.ndx_tmp(,1,'WAL',,0,'WAL',,0); PS_SUM.index(_ind);
+SER_POZ.cntx_psh();
+{? SER_POZ.first()
+|| {! |?
+      {? PS_SUM.find_key(SER_POZ.WAL().KOD,SLO.KOD)
+      || PS_SUM.OWN+=SER_POZ.DNASZ$2;
+         PS_SUM.OMA+=SER_POZ.DWASZ$2;
+         {? SER_POZ.POTWIER=2
+         || PS_SUM.SWNP+=SER_POZ.DNASZ$2;
+            PS_SUM.SMAP+=SER_POZ.DWASZ$2
+         ?};
+         PS_SUM.put()
+      || PS_SUM.OWN:=SER_POZ.DNASZ$2;
+         PS_SUM.OMA:=SER_POZ.DWASZ$2;
+         {? SER_POZ.POTWIER=2
+         || PS_SUM.SWNP:=SER_POZ.DNASZ$2;
+            PS_SUM.SMAP:=SER_POZ.DWASZ$2
+         ?};
+         PS_SUM.WAL:=SER_POZ.WAL().KOD;
+         PS_SUM.add()
+      ?};
+      SER_POZ.next()
+   !}
+?};
+SER_POZ.cntx_pop();
+_ile:=PS_SUM.size(); {? _ile>30 || _ile:=30 ?};
+_wer:=PS_SUM.mk_sel('Podsumowanie potwierdzenia'@,,,'ps_sum_wer',,,_ile);
+PS_SUM.win_fld(_wer,,'WAL');
+PS_SUM.win_fld(_wer,,'OWN',,,17,2);
+PS_SUM.win_fld(_wer,,'OMA',,,17,2);
+PS_SUM.win_fld(_wer,,'SWN',,,17,2);
+PS_SUM.win_fld(_wer,,'SMA',,,17,2);
+PS_SUM.win_fld(_wer,,'SWNP',,,17,2);
+PS_SUM.win_fld(_wer,,'SMAP',,,17,2);
+PS_SUM.win_sel(_wer);
+{? PS_SUM.first()
+|| {! |?
+      _wn:=F.SWn(PS_SUM.SWNP,PS_SUM.SMAP);
+      _ma:=F.SMa(PS_SUM.SWNP,PS_SUM.SMAP);
+      PS_SUM.SWNP:=_wn; PS_SUM.SMAP:=_ma;
+      PS_SUM.SWN:=F.SWn(PS_SUM.OWN,PS_SUM.OMA);
+      PS_SUM.SMA:=F.SMa(PS_SUM.OWN,PS_SUM.OMA);
+      PS_SUM.put(); PS_SUM.next()
+   !}
+?};
+PS_SUM.select();
+VAR_DEL.delete('PS_SUM')
+
+
+\blad_okr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [RL] [8.70]
+:: OPIS: Komunikat o nieznalezieniu okresu na date
+::  OLD: \blad_okr/windyk.fml
+::----------------------------------------------------------------------------------------------------------------------
+FUN.info('Nie znaleziono okresu obrachunkowego zgodnego z parametrami analizy.'@)
+
+
+\ae_gobr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [8.70]
+:: OPIS: Grupa po dla liczenia obrotow
+::  OLD: \ae_gobr/windyk1.fml
+::----------------------------------------------------------------------------------------------------------------------
+def_disp('Obroty zaznaczonych pozycji'@);
+undefine()
+
+
+\kh_zdarz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RL [8.40]
+:: OPIS: Wydruk zdarzeń dla kontrahenta
+::  OLD: \kh_zdarz/kh_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('rep_exec','#b_report','','wsp_kh_zdarz',,,,,,,,'W')
+
+
+\kh_zdarz_spr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [ISZ] [8.40]
+:: OPIS: Funkcja sprawdzajaca poprawnosc wypelnionych parametrow
+::       okienka redakcyjnego ZDARZ_KH dla wydruku kh_zdarz
+::  OLD: \kh_zdarz/par_wydr.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? WYDRUKI.P1 & (WYDRUKI.P11=1) &  WYDRUKI.P11DDO=date(0,0,0) |
+   WYDRUKI.P2 & (WYDRUKI.P21=1) & (WYDRUKI.P21DOD=date(0,0,0) | WYDRUKI.P21DDO=date(0,0,0)) |
+   WYDRUKI.P3 & (WYDRUKI.P31=1) & (WYDRUKI.P31DOD=date(0,0,0) | WYDRUKI.P31DDO=date(0,0,0)) |
+   WYDRUKI.P4 & (WYDRUKI.P41=1) & (WYDRUKI.P41DOD=date(0,0,0) | WYDRUKI.P41DDO=date(0,0,0))
+|| FUN.info('Nie wypełniona data jednego z parametrów wydruku'@); 0
+|? WYDRUKI.P2 & (WYDRUKI.P21=1) & (WYDRUKI.P21DOD>WYDRUKI.P21DDO)
+|| FUN.info('Błędny zakres dat dla zakresu korespondencji z rozrachunków'@,'Uwaga'@); 'P21DOD'
+|? WYDRUKI.P3 & (WYDRUKI.P31=1) & (WYDRUKI.P31DOD>WYDRUKI.P31DDO)
+|| FUN.info('Błędny zakres dat dla zakresu kontaktów'@,'Uwaga'@); 'P31DOD'
+|? WYDRUKI.P4 & (WYDRUKI.P41=1) & (WYDRUKI.P41DOD>WYDRUKI.P41DDO)
+|| FUN.info('Błędny zakres dat dla zakresu kontaktów'@,'Uwaga'@); 'P41DOD'
+|? WYDRUKI.P2 & WYDRUKI.P22 & ~(+WYDRUKI.P22S)
+|| FUN.info('Nie wypełnione pole typ korespondencji z rozrachunków'@,'Uwaga'@); 'P22S'
+|| 1
+?}
+
+
+\be_2poz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [ISZ] [8.40]
+:: OPIS: Uniwersalna funkcja przed edycja, dla pol, ktorych wypelnienie
+::       zalezy od innych pol (parametrow)
+::       do obslugi w zmiennej WYDRUKI
+::  OLD: \be_2poz/par_wydr.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:='WYDRUKI.'; _fld1poz:=(2+cur_afld); _f:=_tab+_fld1poz; ($(_f))()
+
+
+\be_3poz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [ISZ] [8.40]
+:: OPIS: Uniwersalna funkcja przed edycja, dla pol, ktorych wypelnienie
+::       zalezy od innych pol (parametrow)
+::       do obslugi w zmiennej WYDRUKI
+::  OLD: \be_3poz/par_wydr.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:='WYDRUKI.'; _fld1poz:=(2+cur_afld); _fld2poz:=(3+cur_afld);
+_f:=_tab+_fld1poz+'&('+_tab+_fld2poz+'=1)'; ($(_f))()
+
+
+\f3_p22s
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [ISZ] [8.40]
+:: OPIS: Funkcja na F3 dla pola P22S w zmiennej WYDRUKI
+::  OLD: \f3_p22s/par_wydr.fml
+::----------------------------------------------------------------------------------------------------------------------
+kor_ser:='';
+popup(0,'Wybór typu','Wezwania do zapłaty',,"kor_ser:='Wezwania do zapłaty'",
+      'Potwierdzenia sald',,"kor_ser:='Potwierdzenia sald'",
+      'Noty odsetkowe',,"kor_ser:='Noty odsetkowe'");
+_a:=kor_ser; &kor_ser; _a
+
+
+\rok1null
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS:
+::  OLD: \rok1null/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.ROK1<>null
+
+
+\berozpr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS: Przed redagowaniem ROZNE.PREFIX1
+::  OLD: \berozpr1/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+anal_rok:=SER_KOR.ROK1;
+exec('be_konto','edkonto',"ROZNE.PAR41=0 & SER_KOR.ROK1<>null")
+
+
+\berozpr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS: Przed redagowaniem ROZNE.PREFIX2
+::  OLD: \berozpr2/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+anal_rok:=SER_KOR.ROK2;
+exec('be_konto','edkonto',"ROZNE.PAR42=0 & SER_KOR.ROK2<>null")
+
+
+\be_rozm1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS: Przed redagowaniem ROZNE.MASKA1
+::  OLD: \be_rozm1/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+anal_rok:=SER_KOR.ROK1;
+exec('be_konto','edkonto',"ROZNE.PAR41=2 & SER_KOR.ROK1<>null")
+
+
+\be_rozm2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS: Przed redagowaniem ROZNE.MASKA2
+::  OLD: \be_rozm2/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+anal_rok:=SER_KOR.ROK2;
+exec('be_konto','edkonto',"ROZNE.PAR42=2 & SER_KOR.ROK2<>null")
+
+
+\zakrkon1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS: Przed redagowaniem ROZNE.KS_OD1, ROZNE.KS_DO1
+::  OLD: \zakrkon1/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+BILANSP.AROK:=SER_KOR.ROK1; ROZNE.PAR41=4 & SER_KOR.ROK1<>null
+
+
+\zakrkon2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS: Przed redagowaniem ROZNE.KS_OD2, ROZNE.KS_DO2
+::  OLD: \zakrkon2/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+BILANSP.AROK:=SER_KOR.ROK2; ROZNE.PAR42=4 & SER_KOR.ROK2<>null
+
+
+\rok2null
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2010]
+:: OPIS:
+::  OLD: \rok2null/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.ROK2<>null
+
+
+\params_kor_ser
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.00]
+:: OPIS: Parametry pracy w obszarze koresponedncji z rozrachunków
+::----------------------------------------------------------------------------------------------------------------------
+{? __PARSES.editDom('FKS')
+|| {? SER_KOR.TYP='W'
+   || grp_disp(SER_NAGS,'SER_NAGW',1)
+   |? SER_KOR.TYP='N'
+   || grp_disp(SER_NAGS,'SER_NOTY',1)
+   |? SER_KOR.TYP='P'
+   || grp_disp(SER_NAGS,'SER_NAGN',1)
+   ?};
+   AreaTitle.setTitle()
+?}
+
+
+\ser_poz_win
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.00]
+:: OPIS: Zwraca okno pozycji
+::   WE: _a - okno bazowe
+::----------------------------------------------------------------------------------------------------------------------
+:: okno z przyciskami
+_okn:=SER_POZ.mk_edit(,,,,,,'wrapped');
+_btn:=SER_POZ.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=top,align=end,display=1'['Akceptuj'@],"
+   exec('akc_kor','rozrach_kor',1);
+   'key:Esc'
+");
+_btnzam:=SER_POZ.win_ebtn(_okn,'text=%1,btn_label_align=center,panel=top,align=end,display=1'['Zamknij okno'@],"'key:Esc'");
+SER_POZ.btn_eopt(_okn,_btn,'state='+{? SER_NAG.ST_AKC='T' || 'grayed' || 'normal' ?}+',tooltip='+'Akceptuj korespondencję z rozrachunków'@);
+SER_POZ.btn_eopt(_okn,_btnzam,'tooltip='+exec('help_red_esc','#window','K'));
+:: Okno grupowe
+_grp:=SER_POZ.grp_make('Pozycje'@,,'#ser_poz4',,,,,'html_maximized');
+SER_POZ.grp_sel(_grp,,_a);
+SER_POZ.grp_splt(_grp,,'horizontal','bottom','35,90%');
+SER_POZ.grp_edit(_grp,,_okn,,,,,,'maximized');
+_grp
+
+
+\zadania
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.00]
+:: OPIS: Zadania koresponencji z rozrachunków
+::----------------------------------------------------------------------------------------------------------------------
+exec('todo_select','#b__box',SER_NAG.uidref())
+
+
+\zadania_um
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.00]
+:: OPIS: Zadania dla umów z rozrachunków
+::----------------------------------------------------------------------------------------------------------------------
+exec('todo_select','#b__box',PAR_NAG.uidref())
+
+
+\poz_t_od
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.10]
+:: OPIS: Pozycje tabeli odsetkowej
+::  OLD: \poz_t_od/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+SLO.cntx_psh();
+ROZNE.WAL_ODS:=__PARSES.getVal('AktywnaWaluta').REF;
+_wal:=ROZNE.WAL_ODS().KOD;
+SLO.cntx_pop();
+ODS.hdr_sel();
+ODS.hdr_sel(' Typ: %1, Waluta: %2'@[SLO.KOD,_wal]);
+ODS.index('DATA');
+ODS.prefix(SLO.ref(),ROZNE.WAL_ODS);
+ODS.select()
+
+
+\bepottmp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2008]
+:: OPIS: Przed akcja grupowa potwierdzenia salda przez kontrahenta - z poziomu analizy potwierdzen
+::  OLD: \bepottmp/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? (_a=1 & FUN.ask('Potwierdzić zaznaczone'@)) | (_a=2 & FUN.ask('Odrzucić zaznaczone'@))
+|| undefine();
+   define('UWAGI','','','Uwagi kontrahenta'@,60,60);
+   _ok:=def_btn('text=%1'['OK'@],'key:F2');
+   _anuluj:=def_btn('text=%1'['Anuluj'@],'key:Esc');
+   def_bopt(_ok,'tooltip='+exec('help_red_ok','#window','P'));
+   def_bopt(_anuluj,'tooltip='+exec('help_red_esc','#window','A'));
+   {? def_edit(,'Uwagi kontrahenta'@)
+   || ile_zmie:=0; ile_zazn:=POTWIERS.sel_size(); 1
+   || 0
+   ?}
+|| 0
+?}
+
+
+\aepottmp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2008]
+:: OPIS: Po akcji grupowej potwierdzenia salda przez kontrahenta - z poziomu analizy potwierdzen
+::   WE: _a - 1 (potwierdzenie), 2 - odrzucenie
+::  OLD: \aepottmp/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ile:=(+$ile_zazn);
+{? (+$ile_zmie)>_ile || _ile:=(+$ile_zmie) ?};
+FUN.info(form(form('Pozycji zaznaczonych: ',24)+$ile_zazn,24+_ile)+'\n'+
+         form(form('Pozycji '+{? _a=1 || 'potwierdzonych' || 'odrzuconych' ?}+': ',24)+$ile_zmie,24+_ile));
+{? ile_zmie & FUN.ask('Zaktualizować zawartość okienka?'@)
+|| sel_exit(); gen_new:=1
+?};
+&ile_zmie; &ile_zazn; undefine()
+
+
+\potw_tmp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2008]
+:: OPIS: Potwierdzenie/odrzucenie salda przez kontrahenta - z poziomu analizy potwierdzen
+::   WE: _a - 1 (potwierdzenie), 2 - odrzucenie
+::  OLD: \potw_tmp/kor_ser.fml
+::----------------------------------------------------------------------------------------------------------------------
+_size:=POTWIERS.sel_size();
+{? POTWIERS.SER_POZ<>0
+|| SER_POZ.cntx_psh(); SER_POZ.prefix(REF.FIRMA);
+   {? SER_POZ.seek(POTWIERS.SER_POZ,SER_POZ.name())
+   || {? (_a=1 & POTWIERS.STATINT<>2) | (_a=2 & POTWIERS.STATINT<>1)
+      || SER_NAG.cntx_psh(); SER_NAG.prefix(REF.FIRMA);
+         SER_POZ.REF();
+         {? SER_NAG.r_lock(1,1)
+         || {? SER_NAG.ST_POT='T'
+            || {? ~_size
+               || FUN.info('Zakończono nanoszenie potwierdzeń w bieżącym potwierdzeniu salda.'@)
+               ?}
+            |? SER_NAG.ST_AKC='N'
+            || {? ~_size
+               || FUN.info('Potwierdzenie nie jest zaakceptowane.'@)
+               ?}
+            |? (_a=1 & SER_POZ.POTWIER<>2) | (_a=2 & POTWIERS.STATINT<>1)
+            || SER_POZ.POTWIER:={? _a=1 || 2 || 1 ?};
+               {? ~_size
+               || undefine();
+                  define('UWAGI','','','Uwagi kontrahenta'@,60,60);
+                  _ok:=def_btn('text=%1'['OK'@],'key:F2');
+                  _anuluj:=def_btn('text=%1'['Anuluj'@],'key:Esc');
+                  def_bopt(_ok,'tooltip='+exec('help_red_ok','#window','P'));
+                  def_bopt(_anuluj,'tooltip='+exec('help_red_esc','#window','A'))
+               ?};
+               {? _size |
+                  (~_size & def_edit(,'Uwagi kontrahenta'@))
+               || SER_POZ.KOMEN:=DEFINE.UWAGI; SER_POZ.put();
+                  {? _size || ile_zmie+=1 ?}
+               ?};
+               {? ~_size || undefine() ?}
+            |? ~_size &
+                {? _a=1
+                 || FUN.ask('Powiązana pozycja w bazie korespondencji z rozrachunków jest wcześniej potwierdzona.'
+                            '\nZaktualizować zawartość okienka?'@)
+                ||  FUN.ask('Powiązana pozycja w bazie korespondencji z rozrachunków jest wcześniej odrzucona.'
+                            '\nZaktualizować zawartość okienka?'@)
+                ?}
+            || sel_exit(); gen_new:=1
+            ?};
+            SER_NAG.r_unlock()
+         |? ~_size
+         || FUN.info('Powiązaną pozycję w bazie korespondencji z rozrachunków obsługuje inny operator.'@)
+         ?};
+         SER_NAG.cntx_pop()
+      |? ~_size
+      || FUN.info('Pozycja wcześniej '+{? _a=1 || 'potwierdzona.' || 'odrzucona.' ?})
+      ?}
+   |? ~_size
+   || FUN.ask('Nie znaleziono powiązanej pozycji w bazie korespondencji z rozrachunków.'
+              '\nZaktualizować zawartość okienka?'@)
+   ?};
+   SER_POZ.cntx_pop()
+|? ~_size
+|| FUN.info('Akcja niedostępna dla danej pozycji.'@)
+?}
+
+
+\chk_tm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RL [7.62]
+:: OPIS: Akcja rekord po w okienku wertowania tabeli SER_TM
+::  OLD: \chk_tm/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:='';
+{? SER_TM.KOD=''
+|| FUN.info('Nie wprowadzono kodu trybu monitowania.'@); _zwrot:='KOD'
+|? SER_TM.OPIS=''
+|| FUN.info('Nie wprowadzono opisu trybu monitowania.'@); _zwrot:='OPIS'
+|? SER_TM.TYP=1 & SER_TM.ODSTEP<=0
+|| FUN.info('Minimalny odstęp od poprzedniego monitu musi być większy od zera.'@); _zwrot:='ODSTEP'
+?};
+_zwrot
+
+
+\poz_tm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RL [7.62]
+:: OPIS: Akcja Poziomy w okienku wertowania tabeli SER_TM
+::  OLD: \poz_tm/kor_ser2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_TM.r_lock(1,1)
+|| ile_dni1:=ile_dni2:=0;
+   SER_TPOZ.index('SER_TPOZ'); SER_TPOZ.prefix(SER_TM.ref());
+   SER_TPOZ.win_sel({? SER_TM.TYP=0 || 'WER' || 'WER1' ?});
+   SER_TPOZ.win_edit({? SER_TM.TYP=0 || 'RED' || 'RED1' ?});
+   SER_DEF.win_sel('SERWZW');  SER_DEF.win_dict('SERWZW');
+   SER_DEF.hdr_sel();
+   SER_TPOZ.select();
+   SER_TM.r_unlock();
+   VAR_DEL.delete('ile_dni1','ile_dni2')
+|| FUN.info('Tryb monitowania obsługuje inny operator.'@)
+?}
+
+
+\bednitp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [20.14]
+:: OPIS: Formuła przed redakcją pola SER_KOR.DNI_TP
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.ODSPTER & ~SER_KOR.DNI_KH
+
+
+\bednikh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [20.14]
+:: OPIS: Formuła przed redakcją pola SER_KOR.DNI_KH
+::----------------------------------------------------------------------------------------------------------------------
+SER_KOR.ODSPTER
+
+
+\aednikh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [20.14]
+:: OPIS: Formuła po redakcji pola SER_KOR.DNI_KH
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.DNI_KH
+|| SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP')
+|| SER_KOR.DNI_TP:=XINFO.L_D_POZ;
+   SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_TP')
+?}
+
+
+\aepterwn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [20.14]
+:: OPIS: Formuła po redakcji pola SER_KOR.ODSPTER
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.ODSPTER
+|| {? ~SER_KOR.DNI_KH
+   || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_TP');
+      SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_KH')
+   ?}
+|| SER_KOR.DNI_KH:=0;
+   SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP');
+   SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH')
+?}
+
+
+\bd_trnot
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [20.14]
+:: OPIS: Formuła przed wyświetleniem pola SER_KOR.TRYB_NOT
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TRYB_NOT=0
+|| SER_KOR.ODSPTER:=SER_KOR.RATY:=SER_KOR.DNI_KH:=0;
+   SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP');
+   SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH');
+   SER_KOR.efld_opt(cur_win(),'enable=0',,'ODSPTER')
+|| {? SER_KOR.ODSPTER
+   || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_KH');
+      {? SER_KOR.DNI_KH
+      || SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP')
+      || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_TP')
+      ?}
+   || SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH')
+   ?};
+   SER_KOR.efld_opt(cur_win(),'enable=1',,'ODSPTER')
+?}
+
+
+\bd_tmon
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [20.14]
+:: OPIS: Formuła przed wyświetleniem pola SER_KOR.TRYB_MON
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_KOR.TRYB_MON=0
+|| SER_KOR.ODSPTER:=SER_KOR.RATY:=SER_KOR.DNI_KH:=0;
+   SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP');
+   SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH');
+   SER_KOR.efld_opt(cur_win(),'enable=0',,'ODSPTER')
+|| {? SER_KOR.ODSPTER
+   || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_KH');
+      {? SER_KOR.DNI_KH
+      || SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_TP')
+      || SER_KOR.efld_opt(cur_win(),'enable=1',,'DNI_TP')
+      ?}
+   || SER_KOR.efld_opt(cur_win(),'enable=0',,'DNI_KH')
+   ?};
+   SER_KOR.efld_opt(cur_win(),'enable=1',,'ODSPTER')
+?}
+
+
+\ser_poz_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [23.25]
+:: OPIS: Formula wykonywana jako trigger dla tabeli SER_POZ
+::----------------------------------------------------------------------------------------------------------------------
+SER_POZ.cntx_psh();
+SER_POZ.index('SER_POZO');
+{? SER_NAG.WAL<>null
+|| SER_POZ.prefix(REF.FIRMA,SER_NAG.ref());
+   {? SER_POZ.first()
+   || _przed:=_po:=0;
+      {! |?
+         {? SER_POZ.UMORZNOT=0 || {? SER_POZ.PRZEDPO || _przed+=SER_POZ.ODS || _po+=SER_POZ.ODS ?} ?};
+         SER_POZ.next()
+      !};
+      SER_NAG.SUM_ODSA:=_po; SER_NAG.SUM_ODSB:=_przed; SER_NAG.put()
+   ?}
+?};
+SER_POZ.cntx_pop();
+~~
+
+\bd_sum_ods
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [23.25]
+:: OPIS: Na Wyświetl przed dla pola SER_NAG.SUM_ODSA i SER_NAG.SUM_ODSB w okienkach wertowania
+::--------------------------------------------------------------------------------------------------------------------
+{? cur_nfld='Numer noty' | cur_nfld='Sporządzono'
+|| 1
+|| SER_NAGS.WAL<>null
+?}
+
+
+\odsprter
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [23.25]
+:: OPIS: Na wyświetl dla pola SER_KOR.ODSPRTER
+::----------------------------------------------------------------------------------------------------------------------
+{? SER_POZ.size=0
+|| SER_KOR.ODSPOTER:=SER_KOR.ODSPRTER:=0
+|| _dok:=SER_POZ.DOK; _usym:=SER_POZ.SYM_ROK;
+   SER_KOR.ODSPOTER:=SER_KOR.ODSPRTER:=0; _odd:=SER_POZ.ODD;
+   SER_POZ.cntx_psh();
+   SER_POZ.index('SER_POZD'); SER_POZ.prefix(REF.FIRMA,SER_KOR.TYP,_dok);
+   {? SER_POZ.first()
+   || {! |?
+         {? SER_POZ.REF=SER_NAG.ref() & SER_POZ.ODD=_odd & SER_POZ.SYM_ROK=_usym & SER_POZ.PRZEDPO
+         || SER_KOR.ODSPRTER+=SER_POZ.ODS
+         ?};
+         SER_POZ.next()
+      !}
+   ?};
+   SER_POZ.cntx_pop()
+?};
+1
+
+
+\tab_autoakc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: tabela z złączeniami do automatycznej akceptacji nagłówkow korespondencji seryjnej
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('__AKC_KOR');
+__AKC_KOR:=tab_tmp(,'REF','STRING[16]','Reference')
+
+
+\autoakc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JK [23.25]
+:: OPIS: Automatyczna akceptacja dla korespondencji seryjnej
+::   WE: 1 - wezwania, 2 - noty, 3 - potwierdzenia sald
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? __AKC_KOR.first()
+|| SER_NAG.cntx_psh();
+   {!
+   |? {? SER_NAG.seek(__AKC_KOR.REF,ref_name(__AKC_KOR.REF),1)
+      || {? _a=1
+         || exec('wezwkor_akc','rozrach_kor',1)
+         |? _a=2
+         || exec('notakor_akc','rozrach_kor',1)
+         |? _a=3
+         || exec('potwkor_akc','rozrach_kor',1)
+         ?}
+      ?};
+      __AKC_KOR.next()
+   !};
+   SER_NAG.cntx_pop()
+?};
+VAR_DEL.delete('__AKC_KOR');
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:35 023709fc9c3f2fcb2a061e77d3122ae5a8b202ded0074fa0c377607db85143e2dfb691eee8b7eadbc1664689a8f9ea73b539a87239a5be1089d8fb69ec930ea5ff3d7453d1581085791e40d1e82e5d4662ae028ea4229a942fd6bb3ee27d56d9e15df3d39512f83ac603e8e193336d744068e2864f0893b307d67c37288134a2

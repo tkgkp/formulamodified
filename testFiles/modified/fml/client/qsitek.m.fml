@@ -1,0 +1,470 @@
+:!UTF-8
+:: SITEK Paweł Sitkowski
+::======================================================================================================================
+:: Nazwa pliku: qsitek.m.fml
+:: Utworzony: 7.12.2022
+:: Autor: PS
+::======================================================================================================================
+:: Zawartość: Zbiór modyfikacji i nowych funkcji systemu MERIT
+::======================================================================================================================
+
+\qdef
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK [NUCO]
+:: OPIS: Umozliwia dodanie customowych akcji do okienek
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+
+:: Dla kartoteki materiałów i usług
+:: Dodatkowa akcja umożliwia import dostawcy i wag dla indeksów z pliku csv
+_fb:="{? exec('czy_rola','qprocesy','Logistyk - import dostawcy i wag netto brutto dla indeksów')
+      || exec('import_Mcsv','qsitek')
+      || FUN.emsg('Funkcja dostępna po nadaniu odpowiednich uprawnień.')
+      ?}";
+M.win_act('NL_WER',0,'Formuła','Import wag i &horyzontu dostawy','#0',,_fb);
+
+::Dodatkowa akcja umożliwia zmiane magazynu na zamowieniu sprzedazy
+_fb:="{? exec('czy_rola','qprocesy','Adm - popraw magazyn')
+      || exec('popraw_mg0','qsitek')
+      || FUN.emsg('Funkcja dostępna po nadaniu odpowiednich uprawnień.')
+      ?}";
+ZK_N.win_act('WERZ',0,'Formuła','Popraw &magazyn','#0',,_fb);
+
+::Dodatkowa akcja umozliwia podglad rejestru modyfikacji tabeli TAP i TAR
+_fb:="{? exec('czy_rola','qprocesy','Podglad rejestru modyfikacji')
+      || params_exec('zmiany','#syslog')
+      || FUN.emsg('Funkcja dostępna po nadaniu odpowiednich uprawnień.')
+      ?}";
+TAP.win_act('WER_KD',0,'Formuła','Zmiany &pozycji cennika','#0',,_fb);
+_fb:="{? exec('czy_rola','qprocesy','Podglad rejestru modyfikacji')
+      || params_exec('zmiany','#syslog','TAR')
+      || FUN.emsg('Funkcja dostępna po nadaniu odpowiednich uprawnień.')
+      ?}";
+TAP.win_act('WER_KD',0,'Formuła','Zmiany &nagłówka cennika','#0',,_fb);
+
+
+::Dodatkowa akcja umozliwia podglad rejestru modyfikacji tabeli ZDP_NAG i ZDP_POZ
+_fb:="{? exec('czy_rola','qprocesy','Podglad rejestru modyfikacji')
+      || params_exec('zmiany','#syslog')
+      || FUN.emsg('Funkcja dostępna po nadaniu odpowiednich uprawnień.')
+      ?}";
+ZDP_NAG.win_act('WER',0,'Formuła','Zmiany potwierdzenia','#0',,_fb);
+_fb:="{? exec('czy_rola','qprocesy','Podglad rejestru modyfikacji')
+      || params_exec('zmiany','#syslog')
+      || FUN.emsg('Funkcja dostępna po nadaniu odpowiednich uprawnień.')
+      ?}";
+ZDP_POZ.win_act('WER',0,'Formuła','Zmiany pozycji potwierdzenia','#0',,_fb);
+
+::Automatyczne wybieranie opisu (ND.O) dokumentu mag dla typu RWPZL ze slownika POLE_O_W_ND
+_ff:="
+   {? ND.TYP().T='RWPZL'
+   ||
+   SLO.index('SL');
+   _ref:=exec('FindInSet','#table','SLU','NAZ','POLE_O_W_ND');
+    SLO.prefix(_ref);
+    SLO.blank(1);
+    SLO.KOD:='007';
+    SLO.find_rec;
+    ND.O:=SLO.TR
+   ||
+    ND.O:=''
+   ?}
+   ";
+ND.fld_fml('O','BLANK',_ff)
+
+
+
+\fak_poprawienie_wartosci
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK [NUCO]
+:: OPIS: Funkcja umożliwia poprawienie wartosci faktury
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+
+{? ask('Czy chcesz poprawić wartość faktury?','Korekta wartości faktury',0)
+	||
+	_sEdt:=FAKS.mk_edit('',,'#faks_swin');
+	FAKS.win_edit(_sEdt);
+	FAKS.win_efld(_sEdt,,'NETW'    ,          ,          , 10, 2, ,'Netto w walucie:',,'Wartość walutowa netto',,);
+	FAKS.win_efld(_sEdt,,'BRTW'    ,          ,          , 10, 2, ,'Brutto w walucie:',,'Wartość walutowa brutto',,);
+	FAKS.win_ebtn(_sEdt,'text=Zat&wierdz', " 'key:F2' ");
+	FAKS.win_ebtn(_sEdt,'text=Anuluj', " 'key:Esc' ");
+	{? FAKS.edit() ||
+		FAKS.put()
+	?}
+?}
+
+
+\open_mpm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK [NUCO]
+:: OPIS: Funkcja otiwera zewnetrzna strone w nowej zakladce
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+ctr_call('!application',,'openWebBrowser','https://mpm.privatelabel.wolomin.pl/goto/eQ2exIfVk?orgId=1' , 'MPM');
+1
+
+\open_opak
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK [NUCO]
+:: OPIS: Funkcja otiwera zewnetrzna strone w nowej zakladce
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+ctr_call('!application',,'openWebBrowser','https://opakowania.privatelabel.wolomin.pl/' , 'Opakowania NUCO');
+1
+
+
+\import_Mcsv
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa
+:: OPIS: Aktualizacja danych w tabeli M na podstawie pliku csv
+::  MOD: Na podstawie oryginalnej funkcji zrobiony import wag i dostawcy
+::----------------------------------------------------------------------------------------------------------------------
+
+VAR_DEL.delete('__p','IMPORT');
+_plik:=_wyn:='';
+
+__p:=tab_tmp(1
+             ,'KTM'   ,'STRING[50]' ,'INDEKS'
+             ,'KOD_D'    ,'STRING[10]','KOD_D'
+             ,'DNI'   ,'INTEGER','DNI'
+             ,'WAGA_N'   ,'REAL','WAGA_N'
+			 ,'WAGA_B'   ,'REAL','WAGA_B'
+            );
+
+_win:=__p.mk_sel('Dane do importu','P',1,,,,,,'U','T');
+__p.win_sel(_win);
+__p.win_act(_win, ,'Usuń',,,,,,,1);
+__p.win_act(_win, ,'Szukaj');
+
+
+_odp:=FUN.ask('Czy rozpocząć import?');
+
+{? _odp
+|| _plik:=myDIALOG.OpenFile('Plik importu (*.csv)|*.csv|Wszystkie pliki (*.*)|*.*','','')
+?};
+
+{? _plik<>''
+||
+   IMPORT:=obj_new(@.CLASS.IMPORT);
+   _file:=IMPORT.open('@'+_plik, ';', 0);
+   {? _file
+   ||
+      {!
+      |?
+         _jest:=IMPORT.get();
+         {? _jest
+         ||
+            __p.blank();
+            {? IMPORT.fld(1)<>'[KTM]'
+            ||
+               __p.KTM:=STR.gsub(IMPORT.fld(1),' ','');
+			   __p.KOD_D:=STR.gsub(IMPORT.fld(2),' ','');
+			   __p.DNI:=#(STR.gsub(STR.gsub(IMPORT.fld(3),',','.'),' ',''));
+               __p.WAGA_N:=#(STR.gsub(STR.gsub(IMPORT.fld(4),',','.'),' ',''));
+			   __p.WAGA_B:=#(STR.gsub(STR.gsub(IMPORT.fld(5),',','.'),' ',''));
+               __p.add(1)
+            ?}
+         ?};
+         _jest<>0
+      !}
+   ?};
+   obj_del(IMPORT);
+   {? __p.first
+   ||
+:: podglad danych przed importem
+      __p.select();
+      {!
+      |? {? _mat:=exec('FindInSet','#table','M','MATKTM',__p.KTM,__p.KTM); _mat<>null
+         ||
+			M.cntx_psh();
+			M.index('MATKTM');
+			M.prefix();
+			M.find_key(__p.KTM,__p.KTM,);
+			M.WN:=__p.WAGA_N;
+			M.WB:=__p.WAGA_B;
+			M.put();
+			
+			MDOST.cntx_psh();
+			MDOST.index('M');
+			MDOST.prefix();
+			{? _tkh:=exec('FindInSet','#table','KH','KOD1',__p.KOD_D,); _tkh<>null
+			||
+				{? MDOST.find_key('D',_mat,_tkh)
+				||
+					{? __p.DNI <> MDOST.ILDNI || MDOST.ILDNI:=__p.DNI; MDOST.put() ?}
+				||
+					MDOST.blank();
+					MDOST.M:=_mat;
+					MDOST.KH:=_tkh;
+					MDOST.ILDNI:=__p.DNI;
+					MDOST.D:='T';
+					MDOST.clear;
+					MDOST.add(1)
+				?}
+			||
+				msg('Brak kontrahenta o kodzie: ' + __p.KOD_D + ' w systemie. Najpierw dodaj Kontrahenta!')
+			?};
+			MDOST.cntx_pop();
+			M.cntx_pop()
+         ?};
+         _next:=__p.next;
+         {? _next=0
+         ||
+            _wyn:='Import danych zakończony.'
+         ?};
+         _next
+      !}
+   || _wyn:='Plik nie zawiera danych, które można zaimportować.\nImport danych niemożliwy.\nFormat pliku csv: wiersz nagłówka: KTM;KOD_D;DNI;WAGA_N;WAGA_B'
+   ?}
+|| _wyn:='Nie wskazano pliku do importu.\nImport danych niemożliwy.'
+?};
+{? _wyn<>'' || FUN.emsg(_wyn) ?};
+1
+
+
+\koszt_kadr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JB [20.42]
+:: OPIS: wykorzystanie:
+::       - zapytanie sql w płacach: Płaca zasadnicza i premia - NUCO
+::         jako Parametr 3: Tabela z danymi F 0 exec('koszt_kadr','qkali', PAR_SQL.PAR2D)
+::   WE: _a - data podana jako parametr 2 w zapytaniu sql
+::   WY: tabela do wykazania w zapytaniu
+::----------------------------------------------------------------------------------------------------------------------
+_tabP:=exec('dostepne_p','schemat','PPL',__F_ZATR.P,'*');
+
+H.cntx_psh; P.cntx_psh; LS.cntx_psh;
+H.index('_HISTKOD');
+P.index('F_ZATR');
+P.prefix();
+
+_tab :=tab_tmp(6,'LP','INTEGER','Lp.',
+                 'SYMBOL','STRING[16]','JednOrg',
+                 'STN','STRING['+$MS.fld_len('STN','ST')+']','Stanowisko',
+                 'NAZWISKO','STRING['+$MS.fld_len('OSOBA','NAZWISKO')+']','Nazwisko',
+                 'PIERWSZE','STRING['+$MS.fld_len('OSOBA','PIERWSZE')+']','Imię',
+                 'PESEL','STRING[11]','Pesel',
+                 'MSC','STRING[2]','Miesiąc',
+                 'OSOB','INTEGER','Osoby',
+                 'ETAT','REAL','Etaty',
+                 'PLEC','STRING[1]','Płeć',
+                 'PLACA','REAL','Płaca',
+                 'PROC','REAL','Procent',
+                 'PREMIA','REAL','Premia',
+				 'S110','REAL','Dodatek S110',
+                 'RAZEM','REAL','Razem');
+
+_data:=_a;
+echo('Przetwarzanie danych: '+$_data);
+
+{? _tabP.first()
+|| {!|?
+     {? P.seek(BB.sqlint(_tabP.REF),)
+     || {? P.DZA>date(0,0,0)
+        ||
+          H.prefix(P.ref,'Z');
+		  LS.prefix(P.ref);
+          {? H.find_le(_data)
+          || {? H.OD<=_data & (H.DO<=date(0,0,0) | H.DO>=_data)
+             || _tab.NAZWISKO :=H.P().OSOBA().NAZWISKO;
+                _tab.PIERWSZE:=H.P().OSOBA().PIERWSZE;
+                _tab.STN    :=H.ST().ST;
+                _tab.SYMBOL :=H.P().WYDZIAL().SYMBOL;
+                _tab.OSOB   := 1;
+                _tab.ETAT   := H.WY;
+                _tab.PLEC   :=H.P().OSOBA().PLEC;
+                _tab.PLACA:=H.S1;
+                _tab.PROC :=FUNKCJE.S(75);
+                _tab.PREMIA:=(H.S1*0.01*_tab.PROC)$2;
+                _tab.MSC:=form(_data~2,-2);
+                _tab.RAZEM:=_tab.PLACA+_tab.PREMIA;
+                _tab.add
+             ?}
+          ?}
+       ?}
+     ?};
+
+    _tabP.next()
+   !}
+?};
+echo();
+
+P.cntx_pop;
+H.cntx_pop;
+LS.cntx_pop;
+
+_tab
+
+
+\popraw_mg0
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK
+:: OPIS: Poprawienie magazynu
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+ZK_N.cntx_psh();
+{? ZK_N.STAN='REA' | ZK_N.STAN='REA-ZAM' | ZK_N.STAN='ZAM'
+      || exec('popraw_mg','qsitek')
+      || FUN.emsg('Zamówienie w niedopuszczalnym stanie. Brak możliwości poprawienia.')
+?};
+ZK_N.cntx_pop()
+
+
+\popraw_mg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK
+:: OPIS: Poprawienie magazynu
+::   WE: symbol magazynu, od którego rozpocząć selekcję
+::   WY: STRING - MG.SYM lub ''
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_start:={? var_pres('_a')=type_of('') || _start:=_a || _start:='' ?};
+_result:='';
+ZK_N.cntx_psh();
+BEER.TYP:='Z';
+BEER.ZK_N:=ZK_N.ref();
+_start:=ZK_N.MG().SYM;
+MG.cntx_psh();
+_acr_sel:=MG.mk_sel('Magazyny'@,'T',0,,,,,,'U');
+MG.win_fld(_acr_sel,,'SYM',,,8,,0,'Kod'@);
+MG.win_fld(_acr_sel,,'NAZ',,,30,,0,'Nazwa'@);
+MG.win_act(_acr_sel,,'Formuła','&Wybierz'@@,,'Wybór bieżącego zapisu'@,"sel_exit()",,1,,,,'W');
+MG.win_act(_acr_sel,,'Szukaj');
+MG.win_sel(_acr_sel);
+MG.index('MAGAZYNY');
+MG.prefix();
+MG.find_key(_start+_start);
+{? MG.select(,1,5)
+|| _result:=MG.ref
+?};
+ZK_N.MG:=_result;
+ZK_N.put();
+ZK_P.index('TYPN');
+ZK_P.prefix('A',BEER.TYP,BEER.ZK_N,1);
+{? ZK_P.first()
+         || {!
+            |?
+               ZK_P.cntx_psh();
+               ZK_P.MG:=_result;
+               ZK_P.RMAG:=_result;
+               ZK_P.put(1);
+               ZK_P.cntx_pop();
+               ZK_P.next()
+            !}
+?};
+ZK_N.cntx_pop();
+MG.cntx_pop();
+win_disp
+
+
+\uzupel_intra
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK
+:: OPIS: Podczas walidacji uzupełnia ilość netto do intrastatu (DK.MASAN) z DK.IL na pozycji dok mag typu WNT dla JM kg
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+
+DK.prefix(ND.ref);
+{? DK.first()
+||{!
+	|?
+	DK.cntx_psh();
+	{? DK.JM().KOD='kg'
+	||
+	  DK.MASAN:=DK.IL;
+	  DK.put(1)
+	?};
+	DK.cntx_pop();
+	DK.next()
+   !}
+?};
+_result
+
+\pobr_do_zl_par
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK
+:: OPIS: Parametry zapytania sql
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('TABSITEK');
+TABSITEK:=tab_tmp(,
+'ST','STRING[1]','Stan zlecenia',
+'GRP','STRING[20]','Grupa towarowa',
+'D1', 'DATE', 'Data OD:',
+'D2', 'DATE', 'Data DO:'
+);
+TABSITEK.ST:='*';
+TABSITEK.fld_fml('ST','PATTERN',"'u#'");
+TABSITEK.fld_fml('ST','F3',"exec('zlstan_f3','sql')");
+TABSITEK.fld_fml('ST','AFTER_EDIT',"exec('zlstan_po','sql')");
+
+TABSITEK.GRP:='*';
+TABSITEK.fld_fml('GRP','PATTERN',"'xxxxxxxxxxxxxxxxxxxx#'");
+TABSITEK.fld_fml('GRP','F3',"exec('grupa_f3','sql')");
+TABSITEK.fld_fml('GRP','AFTER_EDIT',"exec('grupa_f3','sql')");
+
+TABSITEK.D1:=date()-7;
+TABSITEK.D2:=date();
+_win_acr:=TABSITEK.mk_edit('Parametry zapytania SQL'@,0);
+TABSITEK.win_esep(_win_acr,'Ograniczenia:'@);
+TABSITEK.win_efld(_win_acr,TABSITEK,'ST',,,,,,,,,,'F3_button=1');
+TABSITEK.win_efld(_win_acr,TABSITEK,'GRP',,,,,,,,,,'F3_button=1');
+TABSITEK.win_efld(_win_acr,,'D1',,,8);
+TABSITEK.win_efld(_win_acr,,'D2',,,8);
+TABSITEK.win_ebtn(_win_acr,'text=%1,icon=xwin16.png:13,btn_label_align=center, panel=bottom, align=end'['&OK'@],"'key:F2'");
+TABSITEK.win_ebtn(_win_acr,'text=%1,icon=xwin16.png:14,btn_label_align=center, panel=bottom, align=end'['&Anuluj'@],'key:Esc');
+TABSITEK.win_edit(_win_acr);
+TABSITEK.edit
+
+\pobr_do_zl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: SITEK
+:: OPIS: Parametry zapytania sql
+::----------------------------------------------------------------------------------------------------------------------
+::obsluga zjebow kurwa
+_st:=TABSITEK.ST;
+{? _st='*'
+ ||
+ _st:='%'
+?};
+_grp:=TABSITEK.GRP;
+{? _grp='*'
+ ||
+ _grp:='%'
+?};
+_d1:=TABSITEK.D1;
+_d2:=TABSITEK.D2;
+
+_sql:=sql('SELECT
+0 as LP,
+ZL.SYM as ZLSYM,
+ ZL.OPIS as ZLO,
+ ZL.KTM as PKTMREF,
+ ND.D as NDD,
+ M.KTM as SKTM,
+ M.N as SN,
+ ZL.ILWYK as ZLILWYK,
+ sum(case when DK.PLUS=\'N\' then DK.IL else 0 end) as POBR,
+ sum(case when DK.PLUS=\'T\' then DK.IL else 0 end) as ZWRO,
+ JM.KOD as JM
+from @DK
+ join M using(DK.M,M.REFERENCE)
+  join MGR using(M.MGR,MGR.REFERENCE)
+  join JM using (M.J,JM.reference)
+ join ZL using(DK.ZL,ZL.REFERENCE)
+ join @ND using(DK.N,ND.REFERENCE)
+ join TYPYDOK
+where
+ (ZL.STAN like UPPER(\':_a\'))
+  and (MGR.KOD like \':_b\')
+  and TYPYDOK.WYR=\'N\'
+  and ND.D BETWEEN to_date(:_c) and to_date(:_d)
+group by ZL.SYM,ZL.OPIS,ZL.ILWYK,ZL.STARTD,ZL.KTM,ND.D,M.KTM,M.N,JM.KOD
+order by 5,2,3,4,6,7',_st,_grp,_d1,_d2);
+_sql

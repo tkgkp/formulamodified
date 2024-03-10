@@ -1,0 +1,1830 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: st_src.fml
+:: Utworzony: 02.06.2020
+:: Autor: WH
+::======================================================================================================================
+:: Zawartość: Obsługa wczytywania plików .mstat do tabeli źródłowej STAT_SRC
+::======================================================================================================================
+
+
+\fill
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Wczytuje pliki do tymczasowych tabel środowiska i zasila tabelkę ST_SRC
+::   WE: _a - obj_new - obiekt środowiska, wynik działania exec('env_parse','st_common')
+::   WY: 0 - porażka
+::       >0 - liczba wczytanych plików
+::  TAG: <PUBLICZNA>
+::  OLD: \fill/stat_src.fml
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_dialog:=_env.DIALOG;
+_progress:=_dialog;
+
+ST_ARCH.cntx_psh();
+ST_ARCH.index('MASK');
+
+{? _dialog=2
+|| KOMM.init(250,,'Wczytywanie plików: %1'@[_env.EXTENSION])
+?};
+
+exec('init','st_common',_dialog);
+
+_result:=0;
+_can_continue:=1;
+
+_dir:=exec('dir','st_src',_env.DIR);
+_files:=_env.TAB_FILES;
+_tab_src:=_env.TAB_SRC;
+
+:: Inicjalizuję progressy
+{? _progress>0
+||
+   _argsprog:=_env.PROGRESS;
+   _argsprog.add_progress('Analiza folderu z plikami: %1...'@[_env.EXTENSION],1);
+   _argsprog.add_progress('Zasilanie tabeli źródłowej...'@,1);
+   exec('start','#progress',_argsprog);
+   _argsprog.ph_ssize(1,_dir.size());
+   _argsprog.ph_start(1)
+?};
+_paczka:=100;
+_lp:=1;
+::h_echo('Start formuły fill, katalog: %1 rozmiar plików: %2\n'[_env.DIR,$_dir.size()]);
+_locked:=null();
+{? ST_ARCH.first() & exec('blk_lock','#table','ST_ARCH',ST_ARCH.ref(),,,'Pliki są parsowane'@,,{? _dialog>0 || 1 || 2?})>0
+|| _locked:=ST_ARCH.ref();
+   {? _dir.first()
+   ||
+      {!
+      |?
+         {? _progress>0
+         || _can_continue:=exec('next_step','#progress',_argsprog,1)
+         ?};
+::         h_echo('Analiza pliku: '+_dir.FILENAME+' filtr na rozszerzenie: '+_env.EXTENSION);
+         {? _dir.FILENAME*_env.EXTENSION>0 & _dir.IS_FILE>0
+         ||
+            {? _progress>0
+            || _argsprog.ph_sname(1,'Wczytywanie pliku: %1'@[_dir.FILENAME])
+            ?};
+
+            _wczytany:=0;
+            _can_add:=exec('can_add','st_src',_dir.FILEPATH);
+            {? _can_add>0 & _lp<=_paczka
+            ||
+               _lp+=1;
+               {? var_pres('_file')>100
+               || obj_del(_file)
+               ?};
+               _file:=fopen(_dir.FILEPATH,'ur',,,1);
+               {? _file.is_open()>0
+               ||
+::                _hash:=hash(_file);
+::                Rezygnacja z hash z powodów wydajnościowych, plik jest identyfikowany teraz
+::                po ścieżce
+                  _hash:='';
+                  _wczytany:=1;
+                  _files.prefix();
+                  _files.blank();
+                  _files.FILENAME:=_dir.FILENAME;
+                  _files.FILEPATH:=_dir.FILEPATH;
+                  _files.FILEHASH:=_hash;
+                  _can_continue:=_files.add();
+                  {? _can_continue>0
+                  ||
+                     {!
+                     |?
+::                      Czytam linię z pliku
+                        _line:=_file.fread();
+::                      Linię z pliku dodaję do tab tymczasowej
+                        _can_continue:=exec('line2src_temp','st_src',_env
+                                                                        ,_line
+                                                                        ,_dir.FILEPATH
+                                                                        ,_dir.FILENAME
+                                                                        ,_hash);
+                        _line<>'\n' & _can_continue>0
+                     !}
+                  ?};
+
+::                Plik odczytany
+                  fclose(_file);
+::                Rozpoczęcie cenzurowania
+                  {? _can_continue>0 & _wczytany>0
+                  || _can_continue:=exec('start','st_censure',_env,_dir.FILEPATH,_dir.FILENAME);
+
+::                  {? _can_continue>1
+::                  ||
+::                   Cenzura zakończona trzeba wyliczyć nowy hash dla pliku
+::                     {? var_pres('_file_cen')>100
+::                     || obj_del(_file_cen)
+::                     ?};
+::                     _file_cen:=fopen(_dir.FILEPATH,'ur',,,1);
+::                     {? _file_cen.is_open()>0
+::                     || _hash:=hash(_file_cen);
+::
+::                        _files.prefix(_dir.FILEPATH,_dir.FILENAME,);
+::                        {? _files.first()
+::                        || _files.FILEHASH:=_hash;
+::                           _can_continue:=_files.put()
+::                        ?};
+::                        fclose(_file_cen)
+::                     ?}
+::                  ?};
+                     ~~
+                  ?}
+               || _msg:='Nie udało się otwarcie pliku: %1'@[_dir.FILENAME];
+                  {? _dialog=1
+                  || FUN.emsg(_msg)
+                  |? _dialog=2
+                  || KOMM.add(_msg,2,,1)
+                  ?}
+               ?}
+            ?}
+         ?};
+         _dir.next() & _can_continue>0
+      !}
+   ?};
+   {? _progress>0
+   || _argsprog.ph_complete(1)
+   ?};
+   _files.prefix();
+   {? _can_continue>0
+   ||
+      {? _progress>0
+      || _argsprog.ph_ssize(2,_files.size());
+         _argsprog.ph_start(2)
+      ?};
+
+::    Przetwarzam pliki których jeszcze nie było w bazie
+      {? _files.first()
+      ||
+         _tab_src.index(_env.NDX_SRC1);
+         {!
+         |?
+            {? _progress>0
+            || _can_continue:=exec('next_step','#progress',_argsprog,2);
+               _argsprog.ph_sname(2,'Wciąganie pliku: %1 do bazy'@[_files.FILENAME])
+            ?};
+            _tab_src.prefix(_files.FILEPATH,);
+            {? exec('st_src_create','st_src',_env,_files.FILEHASH)>0
+            || _msg:='Plik: %1 został wciągnięty do bazy.'@[_files.FILENAME];
+               {? _dialog=2
+               || KOMM.add(_msg,1,,1)
+               ?}
+            ?};
+            _files.next() & _can_continue>0
+         !}
+      ?}
+   ?};
+   {? _locked<>null()
+   || exec('blk_unlock','#table','ST_ARCH',_locked)
+   ?}
+?};
+
+:: Zatrzymanie progressa
+{? _progress>0
+|| _argsprog.ctr_stop()
+?};
+
+{? _dialog=2
+|| KOMM.select()
+?};
+{? _can_continue>0
+|| _result:=_lp
+?};
+
+ST_ARCH.cntx_pop();
+_result
+
+
+\dir
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Zbiera wszystkie pliki z folderów i podfolderów
+::   WE: _a - STRING - katalog
+::   WY: tab_tmp
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_dir:=_a;
+
+_result:=tab_tmp(1,
+      'FILEPATH','STRING[255]','Ścieżka',
+      'FILENAME','STRING[255]','Nazwa pliku',
+      'IS_FILE','INTEGER','Czy jest plikiem',
+      'IS_DIR','INTEGER','Czy jest folderem',
+      'LOADED','STRING[1]','Czy został wczytany',
+      'MOD_DATE','DATE','Data modyfikacji',
+      'MOD_TIME','TIME','Czas modfyfikacji'
+      );
+
+_tab:=fdir(_dir,,1);
+_sep:=exec('sep','#file',1);
+_i2:=_tab.ndx_tmp(,,'TYPE',,);
+_tab.index(_i2);
+_tab.prefix('f');
+{? _tab.first()
+|| {!
+   |? _result.blank();
+      _result.FILENAME:=_tab.NAME;
+      _result.FILEPATH:=_tab.DIR+_sep+_tab.NAME;
+      _result.IS_FILE:=1;
+      _result.MOD_DATE:=_tab.MOD_DATE;
+      _result.MOD_TIME:=_tab.MOD_TIME;
+      _result.add();
+      _tab.next()
+   !}
+?};
+_tab.ndx_drop(_i2);
+_result
+
+
+\can_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Sprawdza czy można dodać plik do bazy
+::   WE: _a - STRING - ścieżka pliku
+::   WY: 0 - nie można dodawać
+::       1 - można
+::  TAG: <PRYWATNA>
+::  OLD: \can_add/stat_src.fml
+::----------------------------------------------------------------------------------------------------------------------
+_filepath:=_a;
+
+_args:=obj_new('FILEPATH','FILEHASH');
+_args.FILEPATH:=_filepath;
+
+_rule:="
+   _args:=_b;
+   _result:=1;
+   ST_SRC.cntx_psh();
+   ST_SRC.index('FILEPATH');
+   ST_SRC.prefix(_args.FILEPATH,);
+   {? ST_SRC.first()
+   ||  _result:=0
+   ?};
+   ST_SRC.cntx_pop();
+   _result
+";
+_last_mask:=exec('last_empty_mask','st_src');
+_result:=exec('for_each_mask','#table',ST_SRC,_rule,,_last_mask,_args,1,,-1);
+_result
+
+
+
+\last_empty_mask
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [22.26]
+:: OPIS: Wyszukuje ostatnią w kolejności pustą maskę ST_SRC
+::   WY: STRING - nazwa maski
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+
+_result:=~~;
+_can_continue:=1;
+
+ST_ARCH.cntx_psh();
+ST_ARCH.index('MASK');
+ST_ARCH.prefix();
+{? ST_ARCH.last()
+|| {!
+   |? _mask:=(ST_SRC.name()-4);
+      _mask+=ST_ARCH.MASK;
+      ST_SRC.use(_mask);
+      ST_SRC.cntx_psh();
+      ST_SRC.index('FILEPATH');
+      ST_SRC.prefix();
+      {? ST_SRC.first()=0
+      || _result:=ST_SRC.name();
+         _can_continue:=0
+      ?};
+      ST_SRC.cntx_pop();
+      ST_ARCH.prev() & _can_continue>0
+   !}
+?};
+
+ST_ARCH.cntx_pop();
+_result
+
+
+\line2src_temp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Przetwarza linijkę tekstu na rekord w tabeli tymczasowej
+::   WE: _a - obj_new - obiekt środowiska, wynik działania exec('env_parse','st_common')
+::       _b - STRING - linijka tekstu
+::       _c - STRING - ścieżka do pliku
+::       _d - STRING - nazwa pliku
+::       _e - STRING - hash pliku
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PRYWATNA>
+::  OLD: \line2src_temp/stat_src.fml
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_line:=_b;
+_filepath:=_c;
+_filename:=_d;
+_filehash:=_e;
+
+_result:=1;
+{? _line<>'' & _line<>'\n'
+|| _tab_src:=_env.TAB_SRC;
+   _split:=spli_str(_line,_env.SEPARATOR);
+   _len:=obj_len(_split);
+   {? _len>1
+   || _kind:=_split[1];
+      _time:=_split[2];
+      _tab_src.blank();
+      _tab_src.FILEPATH:=_filepath;
+      _tab_src.FILENAME:=_filename;
+      _tab_src.FILEHASH:=_filehash;
+      _tab_src.TM_STAMP:=SYSLOG.tm_stamp();
+      _tab_src.KIND:=_kind;
+      {? type_of(_time)=type_of('') & _time<>''
+      || _tm_stamp:=#_time;
+
+         {? _tm_stamp>0
+         || _date:=utc_date(_tm_stamp);
+            _time:=utc_time(_tm_stamp);
+            _tab_src.SRC_DATE:=_date;
+            _tab_src.SRC_TIME:=_time
+         ?}
+      ?};
+      _result:=_tab_src.add();
+
+      {? _result>0
+      || _tab_src.memo_set(_line,'LINE');
+         _result:=_tab_src.memo_put(,'LINE')
+      ?}
+   ?}
+?};
+_result
+
+
+\st_src_create
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Na podstawie aktualnego prefiksu tabeli .TAB_SRC tworzy rekordy ST_SRC
+::       Kontekst działania - zaprefiksowana dziedzina .TAB_SRC
+::   WE: _a - obj_new - obiekt środowiska, wynik działania exec('env_parse','st_common')
+::       _b - STRING - hash pliku
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PRYWATNA>
+::  OLD: \st_src_create/stat_src.fml
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_filehash:=_b;
+
+_tab_src:=_env.TAB_SRC;
+
+_result:=0;
+_can_continue:=1;
+
+_dialog:=_env.DIALOG;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+
+_uid:=exec('uid','#blank');
+
+:: Otwieram lub zakładam maskę
+_msk:=exec('get_mask','st_arch',_tab_src.size());
+{? _msk<>''
+|| _can_continue:=exec('open','st_arch',_msk)
+|| _can_continue:=0;
+   _msg:='Nie udało się otwarcie lub tworzenie nowych masek archiwum'@;
+   {? _dialog=1
+   || FUN.emsg(_msg)
+   |? _dialog=2
+   || KOMM.add(_msg,2,,1)
+   ?}
+?};
+
+:: Sprawdzam czy ostatnim wierszem jest zamknięcie sesji - w ten sposób nie wciągnę
+:: wciąż otwartego pliku
+{? _can_continue>0 & _tab_src.last()
+|| {? _tab_src.KIND='C'
+   || _can_continue:=1
+   || _can_continue:=0;
+      _msg:='Plik: %1 nie jest poprawnie zamknięty lub odczytany i nie został wczytany do bazy.'@[_tab_src.FILENAME];
+      {? _dialog=1
+      || FUN.emsg(_msg)
+      |? _dialog=2
+      || KOMM.add(_msg,2,,1)
+      ?}
+   ?}
+?};
+
+{? _can_continue>0 & _tab_src.first()
+||
+   {!
+   |? _can_continue:=exec('temp2real','st_src',_env,_uid,_msk,_filehash);
+      _tab_src.next() & _can_continue>0
+   !}
+?};
+
+{? _can_continue<=0
+|| undo()
+?};
+
+{? _mydo || end() ?};
+
+{? _can_continue>0
+|| _result:=1
+?};
+
+_result
+
+
+\temp2real
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Przepisuje rekord z tabeli tymczasowej TAB_SRC do tabeli stałej ST_SRC
+::   WE: _a - obj_new - obiekt środowiska, wynik działania exec('env_parse','st_common')
+::       _b - STRING - unikalny identyfikator grupujący rekordy
+::       _c - STRING - maska w jakiej tworzony jest rekord
+::       _d - STRING - hash pliku
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PRYWATNA>
+::  OLD: \temp2real/stat_src.fml
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_uid:=_b;
+_msk:=_c;
+_filehash:=_d;
+_tab_src:=_env.TAB_SRC;
+
+_result:=0;
+_can_continue:=1;
+
+ST_ARCH.cntx_psh();
+ST_ARCH.index('MASK');
+ST_ARCH.prefix(_msk,);
+{? ST_ARCH.first()
+||
+   _lp:=ST_ARCH.LP_LAST+1;
+   ST_SRC.blank(1);
+   ST_SRC.UID_GRP:=_uid;
+   ST_SRC.TM_STAMP:=ST_SRC.tm_stamp();
+   ST_SRC.FILEHASH:=_filehash;
+   ST_SRC.FILENAME:=_tab_src.FILENAME;
+   ST_SRC.FILEPATH:=_tab_src.FILEPATH;
+   ST_SRC.KIND:=_tab_src.KIND;
+   ST_SRC.LP:=_lp;
+   ST_SRC.SRC_DATE:=_tab_src.SRC_DATE;
+   ST_SRC.SRC_TIME:=_tab_src.SRC_TIME;
+   ST_SRC.PARSED:='N';
+   ST_SRC.FILE_DEL:='N';
+   _can_continue:=ST_SRC.add();
+::   {? _can_continue>0
+::   || _line:=_tab_src.memo_txt(,1,'LINE');
+::      ST_SRC.memo_set(_line,'LINE');
+::      _can_continue:=ST_SRC.memo_put(,'LINE')
+::   ?};
+:: Przepisywanie przez plik szybsze
+   {? _can_continue>0
+   || _memo_file:=_tab_src.memo_get('r','LINE');
+      _can_continue:=ST_SRC.memo_put(_memo_file,'LINE')
+   ?};
+
+   {? _can_continue>0
+   || ST_ARCH.LP_LAST:=_lp;
+
+      {? ST_SRC.SRC_DATE>date(0,0,0)
+      ||
+         {? ST_ARCH.STARTD=date(0,0,0) | ST_ARCH.STARTD>ST_SRC.SRC_DATE
+         || ST_ARCH.STARTD:=ST_SRC.SRC_DATE
+         ?};
+         {? ST_ARCH.ENDD=date(0,0,0) | ST_ARCH.ENDD<ST_SRC.SRC_DATE
+         || ST_ARCH.ENDD:=ST_SRC.SRC_DATE
+         ?}
+      ?};
+      _can_continue:=ST_ARCH.put()
+   ?}
+?};
+ST_ARCH.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\fill_action
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja 'Wczytaj pliki' w oknie wertowania ST_SRC
+::  TAG: <MBUILDER>
+::  OLD: \fill_action/stat_src.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_can_continue:=1;
+
+_env:=exec('env_parse','st_common');
+_env.DIALOG:=2;
+_can_continue:=FUN.ask('Rozpocząć wczytywanie plików: %1?'@[_env.EXTENSION]);
+
+{? _can_continue>0
+|| _can_continue:=exec('fill','st_src',_env)
+?};
+grp_disp(ST_ARCH,'WER_GRP',1);
+''
+
+
+\fill_proc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Zadanie 'Wczytaj pliki' w procesie
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_can_continue:=1;
+
+_env:=exec('env_parse','st_common');
+_env.DIALOG:=0;
+
+exec('fill','st_src',_env)
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Kasuje podany rekord tabeli ST_SRC (wykonywane w transakcji!!!)
+::   WE: _a - ST_SRC.ref()
+::   WY: >0 -wyczyszczone,
+::       <=0 -niewyczyszczone
+::  TAG: <PUBLICZNA><DEL>
+::UWAGA: Parametry bez [] są wymagane, formula może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+:: jeżeli transakcja została zerwana, to nie ma sensu przetwarzać formuły
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+:: sprawdzam, czy to w tej formule będę zakładał transakcję, czy już jest założona
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+ST_SRC.cntx_psh(); ST_SRC.clear();
+{? ST_SRC.seek(_ref)
+|| {? exec('clean','st_src',_ref)>0
+   || {? ST_SRC.del(,1)>0
+      || _result:=1
+      || undo();
+         _result:=-3
+      ?}
+   || _result:=-2
+   ?}
+|| _result:=0
+?};
+
+{? _result<0
+|| undo()
+?};
+
+ST_SRC.cntx_pop();
+{? _mydo || end() ?};
+_result
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Czyści powiązania do rekordu tabeli ST_SRC
+::   WE: _a - ST_SRC.ref()
+::   WY: >0  -wyczyszczone,
+::       <=0 -niewyczyszczone
+::  TAG: <PRYWATNA><CLEAN>
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+:: --- powiązania do ---
+
+:: --- wszystkie powiazania usuniete? ---
+
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end() ?};
+
+_result
+
+
+\erase
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Kasuje wszystkie rekordy ST_SRC we wszystkich maskach
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+
+_rule:="
+   _args:=_b;
+   _result:=1;
+   _can_continue:=1;
+   ST_SRC.cntx_psh();
+   ST_SRC.index('TM_STAMP');
+   ST_SRC.prefix();
+
+   {? ST_SRC.first()
+   || {!
+      |? _can_continue:=exec('delete','st_src',ST_SRC.ref());
+         ST_SRC.first() & _can_continue>0
+      !}
+   ?};
+
+   {? _can_continue<=0
+   || _result:=0
+   ?};
+   ST_SRC.cntx_pop();
+   _result
+";
+_can_continue:=exec('for_each_mask','#table',ST_SRC,_rule,,,,1);
+
+:: Resetuje ostatnio pamietane LP we wszystkich archiwach
+{? _can_continue>0
+|| ST_ARCH.cntx_psh();
+   ST_ARCH.index('MASK');
+   ST_ARCH.prefix();
+   {? ST_ARCH.first()
+   || {!
+      |? ST_ARCH.LP_LAST:=0;
+         ST_ARCH.STARTD:=date(0,0,0);
+         ST_ARCH.ENDD:=date(0,0,0);
+         _can_continue:=ST_ARCH.put();
+         ST_ARCH.next() & _can_continue>0
+      !}
+   ?};
+   ST_ARCH.cntx_pop()
+?};
+
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end() ?};
+_result
+
+
+\erase_old
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Kasuje wszystkie rekordy ST_SRC wcześniejsze niż podana data
+::   WE: _a - DATE - data wstecz której dane zostaną usunięte (na ten dzień również dane usunie)
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_date:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+ST_ARCH.cntx_psh();
+ST_ARCH.index('ENDD');
+ST_ARCH.prefix();
+
+{? _can_continue>0
+|| {? var_pres('_date')=type_of(date())
+   || {? _date=date(0,0,0)
+      || _can_continue:=0
+      ?}
+   || _can_continue:=0
+   ?}
+?};
+
+:: Maski mniejsze niż granica
+{? _can_continue>0 & ST_ARCH.find_le(_date)
+|| {!
+   |?
+      {? exec('blk_lock','#table','ST_ARCH',ST_ARCH.ref(),,,'Archiwalne dane są usuwane'@,,2)>0
+      ||
+         {? ST_ARCH.ENDD<=_date
+         ||
+::         FUN.emsg('Mniejsze '+ST_ARCH.MASK+' '+$ST_ARCH.STARTD+'-'+$ST_ARCH.ENDD);
+            _can_continue:=exec('erase_old_core','st_src',_date);
+            ~~
+         ?};
+         exec('blk_unlock','#table','ST_ARCH',ST_ARCH.ref())
+      ?};
+      ST_ARCH.prev() & _can_continue>0
+   !}
+?};
+
+:: Maski zawierące w środku granicę
+ST_ARCH.index('ENDD');
+ST_ARCH.prefix();
+{? _can_continue>0 & ST_ARCH.find_ge(_date)
+|| {!
+   |? {? exec('blk_lock','#table','ST_ARCH',ST_ARCH.ref(),,,'Archiwalne dane są usuwane'@,,2)>0
+      || {? _date>=ST_ARCH.STARTD & _date<=ST_ARCH.ENDD
+         ||
+::         FUN.emsg('W środku '+ST_ARCH.MASK+' '+$ST_ARCH.STARTD+'-'+$ST_ARCH.ENDD);
+            _can_continue:=exec('erase_old_core','st_src',_date);
+            ~~
+         ?};
+         exec('blk_unlock','#table','ST_ARCH',ST_ARCH.ref())
+      ?};
+      ST_ARCH.next() & _can_continue>0
+   !}
+?};
+ST_ARCH.cntx_pop();
+
+{? _can_continue>0
+|| _result:=1
+?};
+
+_result
+
+
+\erase_old_core
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Uruchamia kasowanie danych źródłowych
+::       Kontekst pracy - ST_ARCH
+::   WE: _a - DATE - data graniczna
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_date:=_a;
+_can_continue:=1;
+_result:=0;
+
+exec('cntx_psh','st_arch');
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+
+_can_continue:=exec('open','st_arch',ST_ARCH.MASK);
+
+_can_del:=1;
+::{? _can_continue>0
+::||
+:::: Przetwarzam maskę tylko jeżeli wszystkie rekordy w środku uda się usunąć
+:::: tzn mają datę wcześniejszą od granicznej. Jeżeli nie, to nie ma sensu usuwać,
+:::: bo nie zaoszczędzimy miejsca na dysku
+::   ST_SRC.cntx_psh();
+::   ST_SRC.index('SRC_DATE');
+::   {? ST_SRC.last()
+::   || {? ST_SRC.SRC_DATE<=_date
+::      || _can_del:=1
+::      ?}
+::   ?};
+::   ST_SRC.cntx_pop()
+::?};
+
+{? _can_continue>0 & _can_del>0
+||
+   _files:=tab_tmp(3,
+::    'POLE','TYP','Nazwa w oknie',
+      'UID_GRP','STRING[50]','Uid',
+      'FILEPATH','STRING[255]','Sciezka do pliku',
+      'FILENAME','STRING[50]','Nazwa pliku',
+      'PARSED','STRING[1]','Czy sparsowany'
+   );
+
+:: 1. Zbieram pliki do usunięcia
+   ST_SRC.cntx_psh();
+   ST_SRC.index('SRC_DATE');
+   {? ST_SRC.find_le(_date)
+   || {!
+      |? _next:=0;
+         _ref_nxt:=null();
+         ST_SRC.cntx_psh();
+         {? ST_SRC.prev()
+         || _ref_nxt:=ST_SRC.ref()
+         ?};
+         ST_SRC.cntx_pop();
+
+         {? ST_SRC.SRC_DATE<=_date & ST_SRC.PARSED<>'N'
+         ||
+
+            _files.prefix(ST_SRC.UID_GRP,);
+            {? _files.first()
+            || {? _files.PARSED<>'X' & ST_SRC.PARSED='X'
+               || _files.PARSED:='X';
+                  _can_continue:=_files.put()
+               ?}
+            || _files.blank();
+               _files.UID_GRP:=ST_SRC.UID_GRP;
+               _files.FILEPATH:=ST_SRC.FILEPATH;
+               _files.FILENAME:=ST_SRC.FILENAME;
+               _files.PARSED:=ST_SRC.PARSED;
+               _can_continue:=_files.add()
+            ?}
+         ?};
+         {? _ref_nxt<>null()
+         || _next:=ST_SRC.seek(_ref_nxt)
+         ?};
+         _next>0 & _can_continue>0
+      !}
+   ?};
+   ST_SRC.cntx_pop();
+
+:: 2. Usuwam zapisy źródłowe dot zebranych plików
+   _files.prefix();
+   {? _can_continue>0 & _files.first()
+   || {!
+      |? _uid:=_files.UID_GRP;
+         ST_SRC.cntx_psh();
+         ST_SRC.index('UID_GRP');
+         ST_SRC.prefix(_uid,);
+         {? ST_SRC.first()
+         || {!
+            |? _can_continue:=exec('delete','st_src',ST_SRC.ref());
+               ST_SRC.first() & _can_continue>0
+            !}
+         ?};
+         ST_SRC.cntx_pop();
+         _files.next() & _can_continue>0
+      !}
+   ?};
+
+:: 3. Przesuwam pliki
+   _files.prefix();
+   {? _can_continue>0 & _files.first()
+   || {!
+      |?
+         _parse_ok:=1;
+         {? _files.PARSED='X'
+         || _parse_ok:=0
+         ?};
+
+         {? fexists(_files.FILEPATH,0)
+         ||
+            _can_continue:=exec('copy_with_path','st_src',_files.FILEPATH,_files.FILENAME,_parse_ok);
+            {? _can_continue>0
+            || _can_continue:=ferase(_files.FILEPATH,0)
+            ?}
+         ?};
+         _files.next() & _can_continue>0
+      !}
+   ?}
+?};
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end() ?};
+
+{? _can_continue>0
+||
+:: Po transakcji sprawdzam czy istnieją jeszcze jakieś rekordy w masce i jeżeli nie,
+:: to robię tabeli erase() żeby wykonała się kompresja pliku mdb
+   ST_SRC.index('TM_STAMP');
+   ST_SRC.prefix();
+   {? ST_SRC.first()=0
+   || ST_SRC.erase()
+   ?}
+?};
+exec('cntx_pop','st_arch');
+_result
+
+
+\erase_proc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Usuń w procesie
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_date:=~~;
+_result:=0;
+
+{? var_pres('p01',params_get().in)=type_of(date())
+|| _date:=params_get().in.p01
+?};
+{? var_pres('p02',params_get().in)=type_of(date())
+|| _date:=params_get().in.p02
+?};
+
+{? type_of(_date)=type_of(date())
+|| _result:=exec('erase_old','st_src',_date)
+?};
+_result
+
+
+\reset_parsed_all
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Robi reset parsowania rekordów ST_SRC we wszystkich maskach
+::   WE: [_a] - INTEGER - 0/[1] czy podczas resetowania usuwać także ST_LOGi?
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_del_log:=1;
+{? var_pres('_a')=type_of(0)
+|| _del_log:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+VAR.GRUPA:='T';
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+
+_rule:="
+   _del_log:=_b;
+   _result:=1;
+   _can_continue:=1;
+   ST_SRC.cntx_psh();
+   ST_SRC.index('PARSED');
+   ST_SRC.prefix('T',);
+   {? ST_SRC.first()
+   || {!
+      |? _can_continue:=exec('reset_parsed','st_src',_del_log);
+         ST_SRC.first() & _can_continue>0
+      !}
+   ?};
+   ST_SRC.prefix('X',);
+   {? ST_SRC.first()
+   || {!
+      |? _can_continue:=exec('reset_parsed','st_src',_del_log);
+         ST_SRC.first() & _can_continue>0
+      !}
+   ?};
+
+   {? _can_continue<=0
+   || _result:=0
+   ?};
+   ST_SRC.cntx_pop();
+   _result
+";
+_can_continue:=exec('for_each_mask','#table',ST_SRC,_rule,,,_del_log,1);
+
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end() ?};
+VAR.GRUPA:='N';
+_result
+
+
+\erase_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja 'Wyczyść' w oknie wertowania tabeli ST_SRC
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_can_continue:=FUN.ask('Wyczyścić wszystkie zapisy źródłowe we wszystkich maskach?'@);
+
+{? _can_continue>0
+|| _can_continue:=exec('erase','st_src')
+?};
+grp_disp(ST_ARCH,'WER_GRP',1);
+~~
+
+
+\st_src_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Dołącz dla ST_SRC
+::----------------------------------------------------------------------------------------------------------------------
+ST_SRC.win_edit('RED');
+ST_SRC.blank();
+ST_SRC.memo_set('','LINE');
+{? ST_SRC.edit()
+|| {? ST_SRC.add()
+   || ST_SRC.memo_put(,'LINE')
+   ?}
+?};
+~~
+
+
+\st_src_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Usuń dla ST_SRC
+::----------------------------------------------------------------------------------------------------------------------
+{? VAR.GRUPA='T' | FUN.ask('Czy usunąć bieżący wiersz?'@)
+|| exec('delete','st_src',ST_SRC.ref())
+?};
+~~
+
+
+\st_src_mod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Popraw dla ST_SRC
+::----------------------------------------------------------------------------------------------------------------------
+ST_SRC.win_edit('RED');
+ST_SRC.memo_get(,'LINE',0);
+{? ST_SRC.edit()
+|| {? ST_SRC.put()
+   || ST_SRC.memo_put(,'LINE')
+   ?}
+?};
+~~
+
+
+\st_src_br
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Rekord dla ST_SRC
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+VAR.STRING:=ST_SRC.memo_txt(,1,'LINE');
+:: Kolorowanie
+{? ST_SRC.PARSED='X'
+|| _result:=Color.fnd_kol('ST_SRC#02')
+|? ST_SRC.FILE_DEL='T'
+|| _result:=Color.fnd_kol('ST_SRC#03')
+|? ST_SRC.PARSED='T'
+|| _result:=Color.fnd_kol('ST_SRC#01')
+?};
+_result
+
+
+\legenda
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Legenda dla ST_SRC
+::----------------------------------------------------------------------------------------------------------------------
+exec('legenda','color','ST_SRC#')
+
+
+\reset_parsed
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Reset parsowania dla ST_SRC - ustawia wartość pola PARSED na 'N'
+::   WE: [_a] - INTEGER - 0/[1] czy podczas resetowania usuwać także ST_LOGi?
+::----------------------------------------------------------------------------------------------------------------------
+_del_log:=1;
+{? var_pres('_a')=type_of(0)
+|| _del_log:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+{? VAR.GRUPA<>'T'
+|| _can_continue:=FUN.ask('Zresetować parsowanie całego zestawu rekordów: %1'@[ST_SRC.UID_GRP])
+?};
+
+_uid_grp:=ST_SRC.UID_GRP;
+
+{? _can_continue>0
+||
+   ST_SRC.cntx_psh();
+   ST_SRC.index('UID_GRP2');
+
+   _mydo:=do_state()=0;
+   {? _mydo || do() ?};
+
+:: Status sparsowane
+   ST_SRC.prefix(_uid_grp,'T',);
+   {? _can_continue>0 & ST_SRC.first()
+   || {!
+      |?
+         {? _del_log>0
+         || _can_continue:=exec('delete4grp','st_log',_uid_grp)
+         ?};
+         {? _can_continue>0
+         ||
+            ST_SRC.cntx_psh();
+            ST_SRC.prefix();
+            ST_SRC.PARSED:='N';
+            ST_SRC.HAS_MSG:='N';
+            _can_continue:=ST_SRC.put();
+            {? _can_continue>0
+            || ST_SRC.memo_set('','MESSAGE');
+               _can_continue:=ST_SRC.memo_put(,'MESSAGE')
+            ?};
+            ST_SRC.cntx_pop()
+         ?};
+         ST_SRC.first() & _can_continue>0
+      !}
+   ?};
+
+:: Status błędnie sparsowane
+   ST_SRC.prefix(_uid_grp,'X',);
+   {? _can_continue>0 & ST_SRC.first()
+   || {!
+      |?
+         {? _del_log>0
+         || _can_continue:=exec('delete4grp','st_log',_uid_grp)
+         ?};
+         {? _can_continue>0
+         ||
+            ST_SRC.cntx_psh();
+            ST_SRC.prefix();
+            ST_SRC.PARSED:='N';
+            ST_SRC.HAS_MSG:='N';
+            _can_continue:=ST_SRC.put();
+            {? _can_continue>0
+            || ST_SRC.memo_set('','MESSAGE');
+               _can_continue:=ST_SRC.memo_put(,'MESSAGE')
+            ?};
+            ST_SRC.cntx_pop()
+         ?};
+         ST_SRC.first() & _can_continue>0
+      !}
+   ?};
+
+   {? _can_continue<=0
+   || undo()
+   ?};
+   {? _mydo || end() ?};
+   ST_SRC.cntx_pop()
+?};
+
+{? _can_continue>0
+|| _result:=1
+|| _msg:='Reset parsowania grupy: %1 zakończony niepowodzeniem'@[_uid_grp];
+   {? VAR.GRUPA='T'
+   || KOMM.add(_msg,2,,1)
+   || FUN.emsg(_msg)
+   ?}
+?};
+_result
+
+
+\reset_parsed_bg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Reset parsowania dla ST_SRC (przed grupą rekordów)
+::----------------------------------------------------------------------------------------------------------------------
+sel_nchk();
+{? FUN.ask('Zresetować parsowanie wybranych zapisów źródłowych?'@)
+|| VAR.GRUPA:='T';
+   KOMM.init(200,,'Resetowanie parsowania zapisów źródłowych'@);
+   1
+|| 0
+?}
+
+
+\reset_parsed_ag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Reset parsowania dla ST_SRC (po grupie rekordów)
+::----------------------------------------------------------------------------------------------------------------------
+VAR.GRUPA:='N';
+KOMM.select();
+~~
+
+
+\st_src_del_bg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Usuń przed dla grupy rekordów (tabela ST_SRC)
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask('Czy usunąć zaznaczone wiersze?'@)
+|| VAR.GRUPA:='T';
+   1
+|| 0
+?}
+
+
+\st_src_del_ag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [20.42]
+:: OPIS: Akcja Usuń po dla grupy rekordów (tabela ST_SRC)
+::----------------------------------------------------------------------------------------------------------------------
+VAR.GRUPA:='N';
+~~
+
+
+\st_src_file_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Akcja Usuń plik źródłowy dla ST_SRC - kasuje pliki źródłwe .mstat
+::   WE: [_a] - INTEGER - 0/1/2 - czy wyświetlać komunikaty
+::----------------------------------------------------------------------------------------------------------------------
+_display:=1;
+{? var_pres('_a')=type_of(0)
+|| _display:=_a
+?};
+{? VAR.GRUPA='T'
+|| _display:=2
+?};
+
+_result:=0;
+_can_continue:=1;
+
+{? _can_continue>0 & _display=1
+|| _can_continue:=FUN.ask('Usunąć plik źródłowy: %1?\nOperacja jest nieodwracalna!'@[ST_SRC.FILEPATH])
+?};
+
+{? _can_continue>0
+||
+   {? ST_SRC.FILEPATH=''
+   || _can_continue:=0;
+      _msg:='Brak ścieżki do pliku.'@;
+      {? _display=2
+      || ~~
+::         KOMM.add(_msg,2,,1)
+      |? _display=1
+      || FUN.emsg(_msg)
+      ?}
+   ?}
+?};
+
+::{? _can_continue>0
+::||
+::   {? ST_SRC.PARSED<>'T'
+::   || _can_continue:=0;
+::      _msg:='Plik: %1, nie został sparsowany, jego usunięcie nie jest możliwe.'@[ST_SRC.FILEPATH];
+::      {? _display=2
+::      || KOMM.add(_msg,2,,1)
+::      |? _display=1
+::      || FUN.emsg(_msg)
+::      ?}
+::   ?}
+::?};
+
+_filepath:=ST_SRC.FILEPATH;
+
+{? _can_continue>0
+||
+   ST_SRC.cntx_psh();
+   ST_SRC.index('FILEPATH');
+
+   {? fexists(ST_SRC.FILEPATH,0)
+   || _mydo:=do_state()=0;
+      {? _mydo || do() ?};
+
+      _can_continue:=ferase(ST_SRC.FILEPATH,0);
+      {? _can_continue>0
+      || {? _display=2
+         || _msg:='Usunięto plik: %1'@[ST_SRC.FILEPATH];
+            KOMM.add(_msg,1,,1)
+         ?};
+         ST_SRC.prefix(ST_SRC.FILEPATH,);
+         {? ST_SRC.first()
+         || {!
+            |? _next:=0;
+               _ref_nxt:=null();
+               ST_SRC.cntx_psh();
+               {? ST_SRC.next()
+               || _ref_nxt:=ST_SRC.ref()
+               ?};
+               ST_SRC.cntx_pop();
+
+               ST_SRC.cntx_psh();
+               ST_SRC.prefix();
+               ST_SRC.FILE_DEL:='T';
+               ST_SRC.FILEHASH:='';
+               ST_SRC.FILENAME:='';
+               ST_SRC.FILEPATH:='';
+               _can_continue:=ST_SRC.put();
+               ST_SRC.cntx_pop();
+
+               {? _ref_nxt<>null()
+               || _next:=ST_SRC.seek(_ref_nxt)
+               ?};
+               _next>0 & _can_continue>0
+            !}
+         ?}
+      ?};
+      {? _can_continue<=0
+      || undo()
+      ?};
+      {? _mydo || end() ?}
+   || _msg:='Nie znaleziono pliku: %1, być może został wcześniej usuniety.'@[ST_SRC.FILEPATH];
+      {? _display=2
+      || KOMM.add(_msg,2,,1)
+      |? _display=1
+      || FUN.emsg(_msg)
+      ?}
+   ?};
+
+   ST_SRC.cntx_pop();
+
+   {? _can_continue<=0
+   || _msg:='Usunięcie pliku: %1 zakończone niepowodzeniem'@[_filepath];
+      {? _display=2
+      || KOMM.add(_msg,2,,1)
+      |? _display=1
+      || FUN.emsg(_msg)
+      ?}
+   ?}
+?};
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\st_src_file_del_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Grupa przed 'Usuń pliki źródłowe' w ST_SRC
+::   WY: 0/1
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+sel_nchk();
+{? FUN.ask('Usunąć wybrane pliki źródłowe?\nOperacja jest nieodwracalna!'@)
+|| VAR.GRUPA:='T';
+   KOMM.init(200,,'Usuwanie plików źródłowych'@);
+   1
+|| 0
+?}
+
+
+\st_src_file_del_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Grupa po 'Usuń pliki źródłowe' w ST_SRC
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+VAR.GRUPA:='N';
+KOMM.select();
+~~
+
+
+\st_src_import_action
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Importuje pliki .mstat na serwer
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <MBUILDER>
+:: ~OST: INFCOPY
+::----------------------------------------------------------------------------------------------------------------------
+_env:=exec('env_parse','st_common');
+_env.DIALOG:=2;
+
+{? exec('interm','#system')
+|| FUN.emsg(exec('interm_nacc_msg','#system'));
+   return()
+?};
+
+KOMM.init(250,,'Import plików: %1 na serwer'@[_env.EXT_LOCAL]);
+
+_can_continue:=1;
+
+_selected:=exec('dialog_path_import','st_src',_env);
+_selected.clear();
+{? _selected.first()=0
+|| _can_continue:=0;
+   KOMM.add('Nie wybrano żadnego pliku do importu'@,2,,1)
+?};
+
+_dst_dir:='';
+
+_sep:=exec('sep','#file',1);
+
+{? _can_continue>0
+||
+:: Ścieżka do katalogu w którym umieścić pliki
+   _dst_dir:=exec('dir','st_common');
+
+   _year:=$(date()~1);
+   _month:=form(date()~2,-2);
+   _chk:=_dst_dir+_sep+_year+_sep+_month+_sep+'manual';
+
+   {? fexists(_chk,0)
+   || _dst_dir:=_chk
+   ||
+::    Nie ma katalogu 'manual', zakładam go
+      {? fmkdir(_dst_dir,_year)<>''
+      || {? fmkdir(_dst_dir+_sep+_year,_month)<>''
+         || _dst_dir:=fmkdir(_dst_dir+_sep+_year+_sep+_month,'manual')
+         ?}
+      ?};
+
+      {? _dst_dir=''
+      || _can_continue:=0;
+         KOMM.add('Nie udało się założyć katalogu: %1 na serwerze'@[_chk])
+      ?}
+   ?}
+?};
+
+{? _can_continue>0 & _dst_dir<>''
+|| {? _selected.first()
+   || {!
+      |? {? _selected.FILENAME<>'' & _selected.DIR<>''
+         || _path_src:=_selected.DIR+_sep+_selected.FILENAME;
+            _path_dst:=_dst_dir+_sep+_selected.FILENAME;
+
+            _path_dst:=gsub(_path_dst,_env.EXT_LOCAL,_env.EXTENSION);
+
+            _can_add:=1;
+            {? fexists(_path_dst,0)
+            || _path_dst:=exec('import_name_gen','st_src',_env,_path_src,_dst_dir,_selected.FILENAME,0);
+               {? _path_dst=''
+               || _can_add:=0
+               ?}
+            ?};
+            {? _can_add>0 & _can_continue>0
+            ||
+               {? fcopy('@'+_path_src,_path_dst,0,0,0)=0
+               || KOMM.add('Nie udał się import pliku: %1 na serwer.'@[_path_src])
+               ?}
+            ||  KOMM.add('Plik: %1 już istnieje na serwerze, nie został dodany'@[_selected.FILENAME],2,,1)
+            ?}
+         ?};
+         _selected.next()
+      !}
+   ?}
+?};
+KOMM.select();
+~~
+
+
+\import_name_gen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Generuje nową nazwę po stronie serwera dla pliku
+::   WE: _a - obj_new - obiekt środowiska, wynik działania exec('env_parse','st_common')
+::       _b - STRING - ścieżka pliku źródłowego
+::       _c - STRING - katalog docelowy
+::       _d - STRING - nazwa pliku
+::       _e - INTEGER - kolejny numer pliku
+::   WY: STRING - wygenerowana ścieżka lub '' jeżeli się nie udało
+::  TAG: <PRYWATNA>
+:: ~OST: INFOPEN
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_path_src:=_b;
+_dst_dir:=_c;
+_filename:=_d;
+_suffix:=_e;
+
+_result:='';
+
+{? exec('interm','#system')
+|| FUN.emsg(exec('interm_nacc_msg','#system'));
+   return(_result)
+?};
+
+_file_src:=fopen('@'+_path_src,'ur',,,1);
+_sep:=exec('sep','#file',1);
+_fname:=gsub(_filename,_env.EXTENSION,'');
+_path_dst:=_dst_dir+_sep+_fname+'_'+$_suffix+_env.EXTENSION;
+{? fexists(_path_dst,0)=0
+|| _path_dst:=gsub(_path_dst,_env.EXT_LOCAL,_env.EXTENSION);
+   _result:=_path_dst
+||
+   _file_dst:=fopen('@'+_path_dst,'ur',,,1);
+
+   {? _file_src.is_open() & _file_dst.is_open()
+   || _hash_src:=hash(_file_src);
+      _hash_dst:=hash(_file_dst);
+
+      {? _hash_src<>_hash_dst
+      ||
+::       Pliki mają taką samą nazwę, ale się różnią - wymyślam nową nazwę docelową
+::       !!! REKURENCJA !!!
+         _result:=exec('import_name_gen','st_src',_env,_path_src,_dst_dir,_filename,_suffix+1)
+      ?};
+      _file_src.fclose();
+      _file_dst.fclose();
+      ~~
+   || _can_continue:=0;
+      KOMM.add('Wystąpił konflikt nazw - nie udało się wyznaczyć hashy plików'@)
+   ?}
+?};
+_result
+
+
+\dialog_path_import
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.42]
+:: OPIS: Wyświetla dialog z pytaniem o wybór plików do wgrania na serwer
+::   WE: _a - obj_new - obiekt środowiska, wynik działania exec('env_parse','st_common')
+::       [_a] - STRING - opcjonalny tytul okienka
+::   WY: tab_tmp - tabela tymczasowa z wybranymi plikami o strukturze: DIR,FILENAME,I___NR
+::  TAG: <PUBLICZNA>
+:: ~OST: INFILECHOOSER
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_result:=~~;
+
+{? exec('interm','#system')>0
+|| FUN.emsg(exec('interm_nacc_msg','#system'));
+   return('')
+?};
+
+_txt:='Import plików';
+_force_txt:=~~;
+{? var_pres('_b')=type_of('')
+|| _force_txt:=_b
+?};
+{? type_of(_force_txt)=type_of('')
+|| {? _force_txt<>''
+   || _txt:=_force_txt
+   ?}
+?};
+
+ctr_set('!application', 'filechooser','reset');
+ctr_set('!application', 'filechooser','setMultiSelectionEnabled',1);
+ctr_set('!application', 'filechooser','addDefaultFilter','Pliki statystyk',1-_env.EXT_LOCAL);
+ctr_set('!application', 'filechooser','setFileSelectionMode','FILES_ONLY');
+ctr_set('!application', 'filechooser','setDialogTitle',_txt);
+_can_continue:=ctr_call('!application', 'filechooser','showOpenDialog');
+{? _can_continue>0
+|| _result:=ctr_call('!application', 'filechooser','getSelectedFiles')
+|| _result:=tab_tmp(3,
+      'DIR','STRING[100]','Nazwa pola 1',
+      'FILENAME','STRING[100]','Nazwa pola 2',
+      'I___NR','INTEGER','Kolejnosc'
+   )
+?};
+_result
+
+
+\dialog_path_download
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Wyświetla dialog z pytaniem o wybór ścieżki do zapisania lokalnie pliku
+::   WE: _a - obj_new - obiekt środowiska, wynik działania exec('env_parse','st_common')
+::       [_a] - STRING - opcjonalny tytul okienka
+::   WY: STRING - ścieżka do folderu
+::  TAG: <PUBLICZNA>
+:: ~OST: INFILECHOOSER
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_result:='';
+
+{? exec('interm','#system')
+|| FUN.emsg(exec('interm_nacc_msg','#system'));
+   return('')
+?};
+
+_txt:='Ściąganie pliku';
+_force_txt:=~~;
+{? var_pres('_b')=type_of('')
+|| _force_txt:=_b
+?};
+{? type_of(_force_txt)=type_of('')
+|| {? _force_txt<>''
+   || _txt:=_force_txt
+   ?}
+?};
+
+ctr_set('!application', 'filechooser','reset');
+ctr_set('!application', 'filechooser','setMultiSelectionEnabled',1);
+::ctr_set('!application', 'filechooser','addDefaultFilter','Pliki statystyk',1-_env.EXT_LOCAL);
+ctr_set('!application', 'filechooser','setFileSelectionMode','DIRECTORIES_ONLY');
+ctr_set('!application', 'filechooser','setDialogTitle',_txt);
+_can_continue:=ctr_call('!application', 'filechooser','showSaveDialog');
+{? _can_continue>0
+|| _result:=ctr_call('!application', 'filechooser','getSelectedFile')
+?};
+_result
+
+
+\download_file
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Funkcja Pobierz plik - pobiera zaznaczony plik na lokalny terminal
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <MBUILDER>
+:: ~OST: INFCOPY
+::----------------------------------------------------------------------------------------------------------------------
+_env:=exec('env_parse','st_common');
+
+{? exec('interm','#system')
+|| FUN.emsg(exec('interm_nacc_msg','#system'));
+   return()
+?};
+
+_dir:=exec('dialog_path_download','st_src',_env);
+
+_result:=0;
+{? _dir<>''
+|| _sep:=exec('sep','#file');
+   _filelocal:=_dir+_sep+ST_SRC.FILENAME;
+   _result:=fcopy(ST_SRC.FILEPATH,'@'+_filelocal,0,0,1)
+?};
+_result
+
+
+\napraw_src_daty
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Nawija pola ST_SRC.SRC_DATE i ST_SRC.SRC_TIME, ST_ARCH.STARTD, ST_ARCH.ENDD
+::   WE:
+::   WY:
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+
+_result:=0;
+_can_continue:=1;
+
+_env:=exec('env_parse','st_common');
+
+_args:=obj_new('ENV');
+_args.ENV:=_env;
+
+_rule:="
+   _args:=_b;
+   _env:=_args.ENV;
+   _result:=1;
+   _can_continue:=1;
+   ST_SRC.cntx_psh();
+   ST_SRC.index('TM_STAMP');
+   ST_SRC.prefix();
+
+   {? ST_SRC.first()
+   || {!
+      |? _put:=0;
+         _utc:='';
+         {? ST_SRC.SRC_DATE=date(0,0,0)
+         ||
+            _line:=ST_SRC.memo_txt(,1,'LINE');
+            {? _line<>''
+            || {? var_pres('_split')>100
+               || obj_del(_split)
+               ?};
+               _split:=spli_str(_line,_env.SEPARATOR);
+               _len:=obj_len(_split);
+               {? _len>1
+               || _kind:=_split[1];
+                  _utc:=_split[2]
+               ?}
+            ?};
+            {? _utc<>''
+            || _tm_stamp:=#_utc;
+               _date:=utc_date(_tm_stamp);
+               _time:=utc_time(_tm_stamp);
+
+               ST_SRC.SRC_DATE:=_date;
+               ST_SRC.SRC_TIME:=_time;
+               _put:=1;
+
+               _msk:=ST_SRC.name()+4;
+
+               ST_ARCH.cntx_psh();
+               ST_ARCH.index('MASK');
+               ST_ARCH.prefix(_msk,);
+               {? ST_ARCH.first() & ST_SRC.SRC_DATE>date(0,0,0)
+               ||
+                  {? ST_ARCH.STARTD=date(0,0,0) | ST_ARCH.STARTD>ST_SRC.SRC_DATE
+                  || ST_ARCH.STARTD:=ST_SRC.SRC_DATE
+                  ?};
+                  {? ST_ARCH.ENDD=date(0,0,0) | ST_ARCH.ENDD<ST_SRC.SRC_DATE
+                  || ST_ARCH.ENDD:=ST_SRC.SRC_DATE
+                  ?};
+                  ST_ARCH.put()
+               ?};
+               ST_ARCH.cntx_pop()
+            ?}
+         ?};
+         {? _put>0
+         || _can_continue:=ST_SRC.put()
+         ?};
+         ST_SRC.next() & _can_continue>0
+      !}
+   ?};
+
+   {? _can_continue<=0
+   || _result:=0
+   ?};
+   ST_SRC.cntx_pop();
+   _result
+";
+_can_continue:=exec('for_each_mask','#table',ST_SRC,_rule,,,_args,1);
+
+{? _can_continue>0
+|| _result:=1
+?};
+
+_result
+
+
+\copy_with_path
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [21.14]
+:: OPIS: Kopiuje plik do podanego folderu na serwerze razem z całą ścieżką podfolderów
+::   WE: _a - STRING - ścieżka do pliku
+::       _b - STRING - nazwa pliku
+::       _c - INTEGER - czy plik poprawnie sparsowany
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_filepath:=_a;
+_filename:=_b;
+_parse_ok:=_c;
+
+_newfilepath:=exec('swap_dir','st_common',_filepath,_filename,_parse_ok);
+
+_result:=0;
+_can_continue:=1;
+
+_sep:=exec('sep','#file',1);
+
+_tmp:=tab_tmp(1,
+   'LP','INTEGER','Nr',
+   'NAME','STRING[255]','Nazwa folderu');
+
+_split:=spli_str(_newfilepath,_sep);
+_len:=obj_len(_split);
+
+{? _len>0
+|| {! _it:=1.._len
+   |? _can_continue>0
+   |! _tmp.blank();
+      _tmp.LP:=_it;
+      _tmp.NAME:=_split[_it];
+      {? _tmp.NAME<>_filename
+      || _can_continue:=_tmp.add()
+      ?}
+   !}
+?};
+
+{? _can_continue>0 & _tmp.first()
+|| _pth_part:='';
+   {!
+   |? _path:=_tmp.NAME;
+      {? _path<>''
+      || {? _pth_part<>''
+         || _res:=fmkdir(_pth_part,_path);
+            {? _res<>''
+            || _pth_part:=_res
+            || _can_continue:=0
+            ?}
+         || _pth_part:=_path+_sep
+         ?}
+      ||
+::       Jeżeli LINUX to pierwszy pusty element oznacza katalog główny dlatego trzeba
+::       dokleić /
+         {? _sep='/'
+         || _pth_part:=_sep
+         ?}
+      ?};
+      _tmp.next() & _can_continue>0
+   !}
+?};
+
+{? _can_continue>0
+|| _can_continue:=fcopy(_filepath,_newfilepath,0,0,1)
+?};
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\files_status
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [22.26]
+:: OPIS: Pokazuje które pliki są w folderze i które z nich zostały wczytane już do bazy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+exec('init','st_common',1);
+_env:=exec('env_parse','st_common');
+
+_result:=0;
+_can_continue:=1;
+
+_dir:=exec('dir','st_src',_env.DIR);
+_files:=_env.TAB_FILES;
+_tab_src:=_env.TAB_SRC;
+
+{? _dir.first()
+|| {!
+   |? {? _dir.FILENAME*_env.EXTENSION>0 & _dir.IS_FILE>0
+      ||
+          _can_add:=exec('can_add','st_src',_dir.FILEPATH);
+          {? _can_add>0
+          || _dir.LOADED:='N'
+          || _dir.LOADED:='T'
+          ?};
+          _dir.put()
+      ?};
+      _dir.next()
+   !}
+?};
+_dir.first();
+_wer:=_dir.mk_sel('Status plików mstat',,,'#mstat_fstat',,,,,'U');
+_dir.win_fld(_wer,,'FILEPATH',,,50,,,'Ścieżka');
+_dir.win_fld(_wer,,'LOADED',,,5,,,'Czy wczytany?');
+_dir.win_fld(_wer,,'MOD_DATE',,,5,,,'Data mod.');
+_dir.win_fld(_wer,,'MOD_TIME',,,5,,,'Czas mod.');
+_dir.win_sel(_wer);
+_dir.select();
+~~
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:35 d324d08f4d6746f91e79dd008bbe3e5cd903aa81bca9c60d68e77491a8ef2e662dd461edfee3d7cc021922eb882f04af5db390b7017d1f08b6c410e48bd5274d9a2e69ddbcdac8f43c385de4db1973bb0afe434658437a2a3629fcd9eac7cf638525680af5f7a38f18421175b237234ca8b6cdf4c0dd6e1977f87c023ee7adde

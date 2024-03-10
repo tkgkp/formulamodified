@@ -1,0 +1,464 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ppl_grp_rimp.fml
+:: Utworzony: 10.05.2018
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PPL_GRP_RIMP - Import składników płacowych.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Import składników płacowych - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('import','!ppl_grp_rimp')
+
+
+\import
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Właściwy import danych z pliku.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~FUNKCJE.JESTLIST()
+|| FUN.emsg('Lista płac nie jest wybrana.'@);
+   return('ERROR')
+|? VAR.O().Z='T'
+|| FUN.emsg('Lista płac jest zamknięta. Import składników nie jest możliwy.'@);
+   return('ERROR')
+?};
+
+_par:=exec('par','!ppl_grp_rimp');
+{? ~_par.OK
+|| return('ESC')
+?};
+
+_firma:=exec('ref_firma','ustawienia');
+_fzatr:='P';
+
+_PUPR:=exec('dostepne_p','schemat','PPL',_fzatr);
+
+O_P.cntx_psh();
+O_P.index('UNIQUE');
+O_P.prefix(VAR.O);
+OSOBA.cntx_psh();
+OSOBA.prefix();
+P.cntx_psh();
+P.index('PRACOIP');
+P.prefix(_firma,_fzatr,);
+CP.cntx_psh();
+CP.prefix();
+KK.cntx_psh();
+KK.prefix();
+LS.cntx_psh();
+LS.index('PRACORUB');
+_lskkblank:=LS.fld_fml('KK','*BLANK');
+
+_TAB:=exec('tab','!ppl_grp_rimp');
+
+:: Import realizowany będzie "ręcznie". Da to nam większą możliwość obróbki kwoty. - - - - - - - - - - - - - - - - - - -
+_patt:=obj_new(2);
+_repl:=obj_new(2);
+_patt[1]:=' ';    _repl[1]:='';
+_patt[2]:=',';    _repl[2]:='.';
+_fh:=fopen(_par.PLIK,'r',0,1,1,1);
+{? _fh.is_open()
+|| {!
+   |? (_linia:=_fh.fread())<>'\n'
+   |! _fld:=spli_str(gsub(_linia,_patt,_repl),';');
+      _TAB.blank();
+      _TAB.IP:=#_fld[1];
+      _TAB.IMKW:=(#_fld[2])$2;
+      {? ~P.find_key(_TAB.IP)
+      || _TAB.KOMENT:='Brak pracownika o podanym identyfikatorze.'@;
+         _TAB.STATUS:='X'
+      |? ~_PUPR.find_key($P.ref(),)
+      || _TAB.KOMENT:='Brak uprawnień do jednostki organizacyjnej pracownika.'@;
+         _TAB.STATUS:='X'
+      |? _TAB.NAZWISKO:=P.OSOBA().NAZWISKO;
+         _TAB.PIERWSZE:=OSOBA.PIERWSZE;
+         _TAB.PESEL:=OSOBA.PESEL;
+         _TAB.CP:=P.CP().CP;
+         _TAB.PREF:=$P.ref();
+         {? KK.seek({? _par.KK || _par.KK || _lskkblank() ?})
+         || _TAB.KK:=KK.SYM;
+            _TAB.KKREF:=$KK.ref()
+         ?};
+         _TAB.ZA:=P.ZA;
+         ~O_P.find_key(P.ref())
+      || _TAB.KOMENT:='Pracownik nie jest rozliczany na bieżącej liście.'@;
+         _TAB.STATUS:='X'
+      |? LS.find_key(P.ref(),_par.R)
+      || _TAB.LSKW:=LS.KW$2;
+         {? _TAB.LSKW=_TAB.IMKW
+         || _TAB.KOMENT:='Kwota zgodna.'@
+         || _TAB.KOMENT:='Zmiana kwoty.'@
+         ?};
+         _TAB.STATUS:='N'
+      || _TAB.STATUS:='T'
+      ?};
+      _TAB.add();
+      obj_del(_fld)
+   !};
+   _fh.fclose()
+|| _ret:='Brak dostępu do pliku [%1].' [_par.PLIK]
+?};
+obj_del(_fh);
+
+_TAB.hdr_sel('Import składników płacowych (%1)'@ [VAR.NAZWALIS]);
+:: Parametr niezbędny do obsługi akcji grupowej Popraw.
+params_set('cfg',obj_new('KW'));
+_inTerm:=exec('interm','#system');
+{? _inTerm
+|| _tmp_dir:=fmk_tmp_dir(0);
+   {? type_of(_tmp_dir)<>type_of(~~)
+   || _pth:=_tmp_dir.get_path();
+      _sep:=exec('sep','#file',2);
+      _path:=spli_str(_par.PLIK,_sep);
+      _fn:=_path[obj_len(_path)];
+      _dir:=_pth+_sep;
+      _fna:=spli_str(_fn,'.');
+      _ext:=_fna[obj_len(_fna)];
+      _par.RAPORT:=_dir+'Raport_'+date()$0+time()$0+'.'+_ext
+   ?}
+?};
+{? _TAB.select()
+:: Zapis na listę. - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+|| _fh:=fopen(_par.RAPORT,'Uw',0,1,1);
+   {? _fh.is_open()
+   || _fh.fwrite('Identyfikator;Nazwisko;Imię;Numer składnika;Nazwa składnika;Kwota;Konto kosztów;Status;');
+      _loop:=_TAB.first();
+      {!
+      |? _loop
+      |! _raport:='';
+         {? _TAB.STATUS='T'
+         || {? ~P.seek(_TAB.PREF)
+            || _raport:='Nie udało się odnaleźć pracownika.'@
+            |? _TAB.KKREF<>'' & ~KK.seek(_TAB.KKREF)
+            || _raport:='Nie udało się ustalić konta kosztów.'@
+            |? LS.find_key(P.ref(),_par.R)
+            || LS.KW:=_TAB.IMKW;
+               LS.KK:={? _TAB.KKREF<>'' || KK.ref() || null() ?};
+               _raport:=
+                  {? LS.put()
+                  || 'Kwota na liście została zaktualizowana.'@
+                  || 'Kwoty na liście nie udało się zaktualizować.'@
+                  ?}
+            || LS.blank();
+               LS.P:=P.ref();
+               LS.RB:=_par.R;
+               LS.KW:=_TAB.IMKW;
+               LS.O:=VAR.O;
+               _raport:=
+                  {? LS.add()
+                  || 'Składnik został umieszczony na liście płac.'@
+                  || 'Składnika nie udło się umieścić na liscie płac'@
+                  ?}
+            ?}
+         || _raport:='Wiersz nie był importowany.'@
+         ?};
+         _fh.fwrite(
+            '%1;%2;%3;%4;%5;%6;%7;%8;'
+            [$_TAB.IP,_TAB.NAZWISKO,_TAB.PIERWSZE,$_par.RRN,_par.RRT,form(_TAB.IMKW,,2,'9.'),_TAB.KK,_raport]
+         );
+         _loop:=_TAB.next()
+      !};
+      _fh.fclose();
+      {? _inTerm
+      || dlg_save(_par.RAPORT,,)
+      || FUN.info('Raport z importu został zapisany do pliku\n%1'@ [1-_par.RAPORT])
+      ?}
+   ?};
+   obj_del(_fh)
+?};
+
+CP.cntx_pop();
+KK.cntx_pop();
+LS.cntx_pop();
+P.cntx_pop();
+OSOBA.cntx_pop();
+O_P.cntx_pop();
+
+~~
+
+
+\tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła tworzy tabele tymczasową z interfejsem do obsługi importu.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=tab_tmp(1,
+:: Dane z pliku
+   'IP','INTEGER',MS.name(P,'IP'),
+   'IMKW','REAL','Kwota importowana'@,
+:: Pola identyfikacyjne
+   'NAZWISKO','STRING[%1]' [$MS.fld_len(OSOBA,'NAZWISKO')],MS.name(OSOBA,'NAZWISKO'),
+   'PIERWSZE','STRING[%1]' [$MS.fld_len(OSOBA,'PIERWSZE')],MS.name(OSOBA,'PIERWSZE'),
+   'PESEL','STRING[%1]' [$MS.fld_len(OSOBA,'PESEL')],MS.name(OSOBA,'PESEL'),
+   'CP','STRING[%1]'[$MS.fld_len(CP,'CP')],MS.name(P,'CP'),
+   'KK','STRING[%1]'[$MS.fld_len(KK,'SYM')],MS.name(P,'KK'),
+   'ZA','STRING[1]',MS.name(P,'ZA'),
+   'LSKW','REAL','Kwota na liście'@,
+:: Pozostałe pola do prezentacji
+   'KOMENT','STRING[60]','Komentarz'@,
+:: Pola techniczne
+:: STATUS - gotowość do importu
+::    X - import nie jest możliwy;
+::    N - wiersz nie będzie zaimportowany;
+::    T - wiersz będzie zaimportowany;
+   'STATUS','STRING[1]','Status'@,
+   'PREF','STRING[16]','$P.ref()',
+   'KKREF','STRING[16]','$KK.ref()'
+);
+
+_TAB.fld_fml('KOMENT','BEFORE_DISPLAY',
+   "  _TAB:=cur_tab(1,1);
+      {? _TAB.STATUS='T' & _TAB.KOMENT<>''
+      || _col:=int(60*2.55);
+         '%1:%1:%1' [$_col]
+      || ''
+      ?}
+   "
+);
+
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+_ws:=_TAB.mk_sel(,,,,,,,,'U',,,,,'html_maximized');
+_TAB.win_fld(_ws,,'IP',,,11,,,,,MS.comment(P,'IP'));
+_TAB.win_fld(_ws,,'NAZWISKO',,,-30,,,,,MS.comment(OSOBA,'NAZWISKO'));
+_TAB.win_fld(_ws,,'PIERWSZE',,,-20,,,,,MS.comment(OSOBA,'PIERWSZE'));
+_TAB.win_fld(_ws,,'PESEL',,,'-11,12',,,,,MS.comment(OSOBA,'PESEL'));
+_TAB.win_fld(_ws,,'CP',,,'-9,10',,,,,MS.comment(P,'CP'));
+_TAB.win_fld(_ws,,'KK',,,-15,,,,,MS.comment(P,'KK'));
+_TAB.win_fld(_ws,,'ZA',,,-3,,,,,MS.comment(P,'ZA'),2,,"'T'","'N'");
+_TAB.win_fld(_ws,,'LSKW',,,12,2,,,,'Kwota na liście'@);
+_TAB.win_fld(_ws,,'IMKW',,,12,2,,,,'Importowana kwota'@);
+_TAB.win_fld(_ws,,'STATUS',,,-3,,,,,'Znacznik gotowości do importu [T/N/X]'@);
+_TAB.win_fld(_ws,,'KOMENT',,,-60,,,,,'Komentarz'@);
+_TAB.win_act(_ws,,'Formuła','Popraw'@,,'Poprawienie kwoty składnika'@,
+   "  _TAB:=cur_tab(1,1);
+      _we:=_TAB.win_edit('?');
+      {? _TAB.sel_size()
+      || {? _TAB.STATUS<>'X'
+         || _TAB.IMKW:=params_get().cfg.KW;
+            _TAB.STATUS:='T';
+            _TAB.put()
+         ?}
+      || {? _TAB.edit()
+         || _TAB.STATUS:='T';
+            _TAB.put()
+         ?}
+      ?}
+   ",,,1,
+   "  _TAB:=cur_tab(1,1);
+      _we:=_TAB.win_edit('?');
+      _TAB.efld_opt(_we,'enable=0');
+      _TAB.efld_opt(_we,'enable=1',,'IMKW');
+      {? _TAB.edit() & FUN.ask('Czy na pewno chcesz poprawic kwotę we wszystkich zaznaczonych wierszach?'@)
+      || params_get().cfg.KW:=_TAB.IMKW;
+         _ret:=1
+      || _ret:=0
+      ?};
+      _TAB.efld_opt(_we,'enable=1');
+      _ret
+   ","",
+   'P'
+);
+_TAB.win_act(_ws,,'Formuła','P&omiń'@,,'Pominięcie wiersza w dalszym przetwarzaniu'@,
+   "  _TAB:=cur_tab(1,1);
+      {? _TAB.STATUS='T'
+      || _TAB.STATUS:='N';
+         _TAB.put()
+      ?}
+   ",,,
+   1,
+   "FUN.ask('Czy na pewno chcesz pominąć w dalszym przetwarzaniu zaznaczone wiersze?'@)",,
+   'O'
+);
+_TAB.win_act(_ws,,'Formuła','Uwzględnij'@,,'Uwzględnienie wiersza w dalszym przetwarzaniu'@,
+   "  _TAB:=cur_tab(1,1);
+      {? _TAB.STATUS='N'
+      || _TAB.STATUS:='T';
+         _TAB.put()
+      ?}
+   ",,,
+   1,
+   "FUN.ask('Czy na pewno chcesz uwzględnić w dalszym przetwarzaniu zaznaczone wiersze?'@)",,
+   'U'
+);
+_TAB.win_act(_ws,,'Formuła','Dalej'@,,'Przejście do kolejnego kroku przetwarzania'@,
+   "  {? FUN.ask(
+            'Czy na pewno chcesz umieścić na liście płac %1\n'
+            'składniki z wartością ""T"" w kolumnie ""Status""?'
+            [VAR.NAZWALIS]
+         )
+      || sel_exit()
+      ?}
+   ",,,,,,
+   'D',,'target=window'
+);
+_TAB.win_act(_ws,,'Szukaj');
+_TAB.win_act(_ws,,'Kolejność');
+_TAB.win_act(_ws,,'Rekord',,,,
+   "  {? _a
+      || _TAB:=cur_tab(1,1);
+         _ws:=cur_win(1,1);
+         {? _TAB.sel_size()
+         || _ag:=_ad:=':'
+         |? _TAB.STATUS='T'
+         || _ag:='U';
+            _ad:='O'
+         |? _TAB.STATUS='N'
+         || _ag:='O';
+            _ad:='U'
+         || _ag:='POU';
+            _ad:=':'
+         ?};
+         _TAB.actions_grayed(_ws,_ag);
+         _TAB.actions(_ws,,_ad,1)
+      ?}
+   "
+);
+
+_TAB.win_btn(_ws,'text=%1,icon=xwin16.png:22,panel=bottom,align=end' ['Dalej'@],'menu:D');
+
+_grp:=_TAB.grp_make(,,,,,"_a='sel_exit' | FUN.ask('Czy na pewno rezygnujesz z dalszego przetwarzania?'@)"
+                    ,,'html_maximized');
+_TAB.grp_sel(_grp,,_ws,,,,,,,,,,'maximized');
+_TAB.win_sel(_grp);
+
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+_szer:=40;
+_we:=_TAB.mk_edit();
+_TAB.win_esep(_we,'Dane podstawowe'@);
+_TAB.win_efld(_we,,'IP',,,_szer,,1,,,MS.comment(P,'IP'));
+_TAB.win_efld(_we,,'NAZWISKO',,,_szer,,1,,,MS.comment(OSOBA,'NAZWISKO'));
+_TAB.win_efld(_we,,'PIERWSZE',,,_szer,,1,,,MS.comment(OSOBA,'PIERWSZE'));
+_TAB.win_efld(_we,,'PESEL',,,_szer,,1,,,MS.comment(OSOBA,'PESEL'));
+_TAB.win_efld(_we,,'CP',,,_szer,,1,,,MS.comment(P,'CP'));
+_TAB.win_efld(_we,,'KK',,,_szer,,1,,,MS.comment(P,'KK'));
+_TAB.win_efld(_we,,'ZA',,,,,1,'Jest zatrudniony',,MS.comment(P,'ZA'),'check-box','check_label=%1' ['Zatrudniony'@],
+   "'T'","'N'"
+);
+_TAB.win_efld(_we,,'LSKW',,,_szer,2,1,,,'Kwota na liście'@);
+_TAB.win_efld(_we,,'IMKW',,,_szer,2,,,,'Importowana kwota'@);
+exec('ok_esc','#window',_TAB,_we,,,,,,,exec('text_red_ok','#window'));
+_TAB.win_edit(_we);
+
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+_TAB
+
+
+\par
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Główna formuła
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=
+   exec('obj_ntab_set','#array',,
+      'OK',0,
+      'PLIK','',
+      'RAPORT','',
+      'R',null(),
+      'RRN',0,
+      'RRT','',
+      'KK',null(),
+      'KKSYM',''
+   );
+
+O.cntx_psh();
+O.prefix();
+LS.cntx_psh();
+LS.prefix();
+LS.blank(1);
+R.cntx_psh();
+R.prefix();
+_rfiltr:=exec('get','#filter',R);
+:: Przygotowanie zapytania SQL, z rubrykami do pominięcia (niedostępnymi do wyboru / importu).
+_pomin:=
+:: Rubryki z formułami
+   'select distinct FM.R from FM where FM.TP=\''+VAR.O().F+'\''
+   'union all '
+:: Składniki okresowe
+   'select distinct PAR_POKR.R from PAR_POKR ';
+:: Premie miesięczne przyznawane przez dysponentów
+_pmd:=__RUB.sys_sql(1004);
+{? _pmd<>''
+|| _pomin+=
+      'union all '
+      'select REFERENCE as R from R where RN in ('+_pmd+')'
+?};
+R.f_set('RN','','"R".RK=\'S\' and "R".REFERENCE not in (select R from :_a)',sql(_pomin));
+KK.cntx_psh();
+KK.prefix();
+KK.blank(1);
+
+_PAR:=tab_tmp(1,'PLIK','BLOBRAW','Nazwa pliku'@);
+_PAR.fld_fml('PLIK','PATTERN',"'Plik CSV;*.csv;;Pliki TXT;*.txt;;Wszystkie pliki;*.*'");
+
+_dl:=35;
+_we:=_PAR.mk_edit('Import składników płacowych (%1)'@ [VAR.NAZWALIS]);
+_PAR.win_esep(_we,'Parametry'@);
+_PAR.win_efld(_we,,'PLIK',,,_dl,,,,,'Pełna ścieżka dostępu do importowanego pliku'@,,'F3_button=1');
+_PAR.efld_opt(_we,'mark=1',,'PLIK');
+_PAR.win_efld(_we,LS,'RB','RN','*',_dl,,,'Składnik'@,,'Numer składnika płacowego'@);
+_PAR.win_efld(_we,LS,'RB','RT',,_dl,,1,,1,'Nazwa składnika płacowego'@);
+_PAR.efld_opt(_we,'mark=1',LS,'RB','RN');
+_PAR.win_efld(_we,LS,'KK','SYM','KONTAKOD',_dl,,,'Konto kosztowe'@,,'Symbol konta kosztowego'@);
+_PAR.win_efld(_we,LS,'KK','NAZWA',,_dl,,,,1,'Nazwa konta kosztowego'@);
+exec('ok_esc','#window',_PAR,_we);
+_PAR.win_edit(_we);
+{? _PAR.edit("exec('par_valid','!ppl_grp_rimp')")
+|| _ret.OK:=1;
+   _ret.PLIK:=_PAR.bl_file('PLIK');
+   _sep:=exec('sep','#file');
+   _path:=spli_str(_ret.PLIK,_sep);
+   _fn:=_path[obj_len(_path)];
+   _dir:=_ret.PLIK-(+_fn);
+   _fna:=spli_str(_fn,'.');
+   _ext:=_fna[obj_len(_fna)];
+   _ret.RAPORT:=_dir+_fn-(1++_ext)+'_'+date()$0+time()$0+'.'+_ext;
+   _ret.R:=LS.RB;
+   _ret.RRN:=LS.RB().RN;
+   _ret.RRT:=LS.RB().RT;
+   _ret.KK:=LS.KK;
+   _ret.KKSYM:=LS.KK().SYM
+?};
+KK.cntx_pop();
+exec('set','#filter',R,_rfiltr);
+R.cntx_pop();
+LS.cntx_pop();
+O.cntx_pop();
+
+_ret
+
+
+\par_valid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.22]
+:: OPIS: Formuła sprawdzająca poprawność parametrów.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_PAR:=cur_tab(1,1);
+{? (_ret:=__CHK.record(_PAR,,'PLIK'))<>''
+|| return(_ret)
+?};
+{? (_ret:=__CHK.record(LS,,'RB'))<>''
+|| return(_ret)
+?};
+''
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:38 d78a939182d59124b1fc9ae7025b905d259038c431c1962c934756dea64c7e07ac599337c47f5cc653e771025c7a2cc0057d46cda974dde535ff1be25984a72fa4804c87c9dc4877fb951668b48f80fcd16d1033fcb2a4e559c82ec8f00e5df6b2fa975e5cdeba37368bd7c835164e1e6539f298bf45b253f9e2d014f9a596b3

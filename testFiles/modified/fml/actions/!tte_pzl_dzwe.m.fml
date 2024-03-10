@@ -1,0 +1,695 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_dzwe.fml
+:: Utworzony: 12.11.2015
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_DZWE - Generowanie zlecenia na podstawie pozycji zamówienia
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła główna czynności generowania zleceń na podstawie pozycji zamówienia (TTE_PZL_DZWE)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+:: WŁAŚCIWOŚCI CZYNNOŚCI
+::# permissions=ODDZ,LMG
+::# parses=exec('parses','!tte_pzl_dzwe')
+::# properties=SERVICE,LOOP
+::# condition=Jest zlecenie, act_uid=, auto=N, formula=_a.ZL<>~~ & _a.ZL<>null()
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZTP, type=_ZTP, name=Typ zlecenia, required=N, fml_val="exec('ztp_select','zl_head','P')", fml_exp="exec('ztp_export','zl_head',_a)"
+{? var_pres('ZTP',_in)<>type_of(~~) & var_pres('ZTP',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZTP',_in)=type_of(~~) || _in.ZTP:=null() ?};
+::# kind=WE, symbol=ZK_N, type=_ZK_N, name=Zamówienie źródłowe, required=N, keyref=T
+{? var_pres('ZK_N',_in)<>type_of(~~) & var_pres('ZK_N',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZK_N',_in)=type_of(~~) || _in.ZK_N:=null() ?};
+::# kind=WE, symbol=ZK_P, type=_ZK_P, name=Źródłowa pozycja zamówienia, required=N
+{? var_pres('ZK_P',_in)<>type_of(~~) & var_pres('ZK_P',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZK_P',_in)=type_of(~~) || _in.ZK_P:=null() ?};
+::# kind=WE, symbol=ZLOZONE, type=STRING, name=Podpowiedź znacznika dla procesu z półfabrykatami, required=N, fml_val="exec('complex_select','!tte_pzl_dzwe')"
+{? var_pres('ZLOZONE',_in)<>type_of(~~) & var_pres('ZLOZONE',_in)<>type_of('') || return() ?};
+{? var_pres('ZLOZONE',_in)=type_of(~~) || _in.ZLOZONE:='P' ?};
+::# kind=WE, symbol=GRP_KEY, type=STRING, name=Klucz grupujący, required=N, keyref=N
+{? var_pres('GRP_KEY',_in)<>type_of(~~) & var_pres('GRP_KEY',_in)<>type_of('') || return() ?};
+{? var_pres('GRP_KEY',_in)=type_of(~~) || _in.GRP_KEY:='' ?};
+
+:: Parametry WEW:
+::# kind=WEW, symbol=GRP_KEY, type=STRING, name=Klucz grupujący, required=N, keyref=N
+{? var_pres('GRP_KEY',_int)<>type_of(~~) & var_pres('GRP_KEY',_int)<>type_of('') || return() ?};
+{? var_pres('GRP_KEY',_int)=type_of(~~) || _int.GRP_KEY:='' ?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=ZL, type=_ZL, name=Zlecenie, required=N
+{? var_pres('ZL',_out)<>type_of(~~) & var_pres('ZL',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=ZL_MERGE, type=_ZL, name=Powiązane zlecenie, required=N
+{? var_pres('ZL_MERGE',_out)<>type_of(~~) & var_pres('ZL_MERGE',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=KATEGORIA, type=STRING, name=Kategoria zlecenia, required=N
+{? var_pres('KATEGORIA',_out)<>type_of(~~) & var_pres('KATEGORIA',_out)<>type_of('') || return() ?};
+::# kind=WY, symbol=GRP_KEY, type=STRING, name=Klucz grupujący, required=N
+{? var_pres('GRP_KEY',_out)<>type_of(~~) & var_pres('GRP_KEY',_out)<>type_of('') || return() ?};
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik czynności (OK, gdy zlecenie zostało poprawnie wygenerowane)", required=N
+{? var_pres('RESULT',_out)<>type_of(~~) & var_pres('RESULT',_out)<>type_of('') || return() ?};
+
+:: Ustawiam wartość domyślną argumentu LOOP żeby brama się nie zawiesiła
+_out.LOOP:='N';
+
+ZL.cntx_psh(); ZL.clear();
+ZK_N.cntx_psh(); ZK_N.clear();
+ZK_P.cntx_psh(); ZK_P.clear();
+ZLZAM.cntx_psh();
+
+:: Czy pytania na ekran
+_dialog:={? _mp.isService() | (_mp.isAutoRun() & _in.ZK_P) || 0 || 1 ?};
+_can_continue:=1;
+
+:: NUCO - dialog z pytaniem o kartę technologiczną
+_q_tktl_dialog:={? ~_mp.isService() & exec('get_w','#params',9986,2,OPERATOR.USER)='T'
+                || 1
+                || 0
+                ?};
+VAR_DEL.delete('Q_WYB_TKTL');
+
+{? _in.ZK_N | _in.ZK_P | _in.GRP_KEY<>'' | _int.GRP_KEY<>''
+||
+   _proj_zkp:=null();
+   _proj_nad:=null();
+   {? _in.ZK_P
+   || _proj_zkp:=exec('FindAndGet','#table','ZK_P',_in.ZK_P,,"PROJEKTY",null())
+   ?};
+   {? _mp.akcja()='GENERUJ_PODZLECENIE' & _context.ZL_NAD<>null()
+   || _proj_nad:=exec('FindAndGet','#table',ZL,_context.ZL_NAD,,"PROJEKTY",null())
+   ?};
+:: Sprawdzam, czy kategoria oraz typ zlecenia zostały określone w procesie, jeżeli nie to wyświetlam okno
+:: z parametrami  generowania
+:: ZLEC.CHK1 - czy wyświetlano już okno redakcyjne z parametrami
+:: ZLEC.CHK2 - wybrana wartość kategorii zlecenia w oknie redakcyjnym z parametrami (proste/zlozone)
+   _show_params:=0;
+   {? _in.ZTP=null()
+   || {? _mp.isService() | (_mp.isAutoRun() & _in.ZK_P)
+      || _can_continue:=0
+      || {? ZLEC.ZTP<>null()
+         || _in.ZTP:=ZLEC.ZTP
+         || {? _mp.isGroup()
+            || _show_params:=1
+            ?}
+         ?}
+      ?}
+   ?};
+   {? ~_mp.isService() & ~_mp.isAutoRun() & _mp.isGroup() & _in.ZLOZONE='P'
+   || {? ZLEC.CHK2<>''
+      ||
+::       Jak wybrano złożone to ustawiam wartość P, aby ustalać kategorię zlecenia na podstawie technologii
+::       (wartość brana z _context)
+         _in.ZLOZONE:={? ZLEC.CHK2='T' || 'P' || 'N' ?}
+      || _show_params:=1
+      ?}
+   ?};
+   {?  ~_mp.isService() & ~_mp.isAutoRun() & _show_params>0
+   || {? ZLEC.CHK1<>'T'
+      ||
+::       Wyświetlam okno z parametrami generowania (jeżeli typ nie zotał podany lub dla parametru ZLOZONE
+::       wybrano opcję z pytaniem przy generowaniu)
+         _env_gen:=exec('env_gen','zl_gen');
+         _env_gen.edit_ZTP:={? _in.ZTP<>null() || 0 || 1 ?};
+         _env_gen.edit_COMPLEX:={? _in.ZLOZONE<>'P' || 0 || 1 ?};
+         ZLEC.ZTP:=_in.ZTP;
+         ZLEC.TKTL:=null();
+         ZLEC.COMPLEX:={? _in.ZLOZONE<>'P' || _in.ZLOZONE || 'N' ?};
+
+         ZTP.f_clear();
+         _typy:=exec('typy_zlecen','zl_head','P');
+         ZTP.f_set('TYP',,'ZTP.REFERENCE in (select :_a.REF from :_a)',_typy);
+         obj_del(_typy);
+         ZTP.win_dict('SLO');
+         params_set('env_gen',_env_gen);
+         ZLEC.win_edit('ZL_GEN_P');
+         ZLEC.CHK1:='T';
+         {? ZLEC.edit("__CHK.record(ZLEC,,'ZTP')")
+         || {? _env_gen.edit_ZTP>0
+            || _in.ZTP:=ZLEC.ZTP
+            ?};
+            {? _env_gen.edit_COMPLEX>0
+            || ZLEC.CHK2:=ZLEC.COMPLEX;
+               _in.ZLOZONE:={? ZLEC.CHK2='T' || 'P' || 'N' ?}
+            ?}
+         || _can_continue:=-1
+         ?}
+      ||
+::       Okno z parametrami było już wcześniej wyświetlane i zrezygnowano z redakcji
+         _can_continue:=-1
+      ?}
+   ?};
+:: warunki wyłączające...
+   {? _can_continue=-1
+   || _mp.cancel()
+   |? _mp.akcja()='GENERUJ_PODZLECENIE'
+      & _in.ZTP<>null()
+      & _in.ZTP<>exec('FindAndGet','#table',ZL,_context.ZL_NAD,,"TYP",null())
+   || _msg:=
+         'Niezgodność wywołania czynności.\n'
+         'Typ zlecenia nadrzędnego musi być zgodny z typem zlecenia przekazanym w procesie.'@@;
+      {? ~_mp.isService() || FUN.emsg(_msg) ?};
+      _mp.error(_msg)
+   |? _proj_nad<>null() & _proj_zkp<>null() & _proj_nad<>_proj_zkp
+   ||
+      _msg:='Nie można uruchomić czynności.\nProjekt na zleceniu nadrzędnym i zamówieniu sprzedaży musi być taki sam.'@;
+      _result:=0;
+      {? _mp.isService()
+      || _mp.error(_msg)
+      || FUN.emsg(_msg);
+         _mp.cancel()
+      ?}
+
+   |? (_mp.isService() & (_in.ZTP=null() | _in.ZK_P=null())) | (_mp.isAutoRun() & _in.ZK_P<>null() & _in.ZTP=null())
+   || _msg:='Błędna konfiguracja procesu — Parametr %1 oraz %2 musi być podany.'@@['ZK_P','ZTP'];
+      {? _mp.isAutoRun()
+      || FUN.emsg(_msg)
+      ?};
+      _mp.error(_msg)
+
+   || _key:=_in.GRP_KEY;
+
+::    Zmienne:
+::    - czy wystawiać zlecenie na wyjście
+      _wystaw:=1;
+::    - czy zrobić done() jak brak zleceń na wyjściu
+      _zakoncz:=1;
+
+      {? _mp.loop()=0 | 7+_mp.akcja()='GENERUJ'
+      ||
+::       Sprawdzam czy istnieje już zapamiętany klucz grupujący (np nastąpił powrót do tej instancji czynności na skutek
+::       jakiejś awarii i instancja nr 1 jest uruchomiona ponownie)
+         {? _int.GRP_KEY<>''
+         || _key:=_int.GRP_KEY
+         || _key:=exec('uid','#blank')
+         ?};
+
+         {? _key<>''
+         ||
+::          Zapisuję identyfikator jako parametr wewnętrzny
+            _int.GRP_KEY:=_key;
+            _mp.save(_int);
+
+::          Rozpoczynam generowanie
+            _grp_key_on:=_key+'1';
+
+::          z widoku zleceń - akcja: Dołącz->Zlecenie na podstawie->Pozycji zamówień | Generuj
+::          z widoku pozycji zamówienia: Funkcje->Zlecenia
+::          w kontekście rekordu ZK_P - akcja dla pojedynczego rekordu
+            {? _mp.akcja()='GENERUJ'
+            || _args_zl:=exec('zkp2args','zl_gen');
+               _args_zl.ZTP:=_in.ZTP;
+               _args_zl.COMPLEX:=_in.ZLOZONE;
+               _args_zl.MERGE:=1;
+               _args_zl.GRP_KEY:=_grp_key_on;
+               params_exec('auto_zkp','!tte_pzl_dzwe',_args_zl);
+               _wystaw:=(exec('zl_grp_key_size','!tte_pzl_dzwe',_key)>0);
+               {? _args_zl.ZL_MERGE<>null()
+               || _out.ZL_MERGE:=_args_zl.ZL_MERGE;
+                  _out.KATEGORIA:=exec('FindAndGet','#table',ZL,_args_zl.ZL_MERGE,,"RODZAJ",'P');
+                  _mp.save(,_out);
+                  _zakoncz:=1
+               || _zakoncz:=_wystaw
+               ?}
+
+::          z widoku zleceń - akcja: Dołącz->Podzlecenie na podstawie->Pozycji zamówień | Generuj
+            |? _mp.akcja()='GENERUJ_PODZLECENIE'
+            || _args_zl:=exec('zkp2args','zl_gen');
+               _args_zl.ZTP:=exec('FindAndGet','#table',ZL,_context.ZL_NAD,,"TYP",null());
+               _args_zl.ZL_NAD:=_context.ZL_NAD;
+               _args_zl.COMPLEX:='N';
+               _args_zl.MERGE:=0;
+               _args_zl.GRP_KEY:=_grp_key_on;
+               params_exec('auto_zkp','!tte_pzl_dzwe',_args_zl);
+               _zakoncz:=1;
+               _wystaw:=(exec('zl_grp_key_size','!tte_pzl_dzwe',_key)>0)
+
+::          z widoku zleceń - akcja: Dołącz->Zlecenie na podstawie->Pozycji zamówień | Generuj
+::          z widoku pozycji zamówienia: Funkcje->Zlecenia
+::          w kontekście rekordu ZK_P - akcja dla pojedynczego rekordu w akcji grupowej
+            |? _mp.akcja()='GENERUJ_W_GRUPIE'
+            || _args_zl:=exec('zkp2args','zl_gen');
+               _args_zl.GRUPA:=1;
+               _args_zl.DIALOG:=0;
+               _args_zl.ZTP:={? _in.ZTP || _in.ZTP || _context.ZTP ?};
+               _args_zl.ZL_NAD:=_context.ZL_NAD;
+               _args_zl.COMPLEX:={? _in.ZLOZONE<>'P' || _in.ZLOZONE || _context.ZLOZONE ?};
+               _args_zl.MERGE:=0;
+               _args_zl.TKTL:=_context.TKTL;
+               _args_zl.ILOSC:=_context.ILOSC;
+               _args_zl.GRP_KEY:=_grp_key_on;
+               _args_zl.OPIS:=_context.OPIS;
+               {? var_pres('DK_C',_context)>0 || _args_zl.DK_C:=_context.DK_C ?};
+               {? var_pres('KTM',_context)>0
+               || M.cntx_psh();
+                  M.prefix();
+                  {? M.seek(_context.KTM)
+                  || _args_zl.M:=$M.ref();
+                     _args_zl.KTM:=M.KTM;
+                     _args_zl.M_ATR:=M.M_ATR
+                  ?};
+                  M.cntx_pop()
+               ?};
+               {? _context.MERGE_SIZE>1
+               ||  _args_zl.UWAGI:='';
+                  {? var_pres('OPIS_DOD',_args_zl)>100 || obj_del(_args_zl.OPIS_DOD) ?};
+                  _args_zl.OPIS_DOD:='';
+                  _args_zl.MG:=null()
+               ?};
+               params_exec('auto_zkp','!tte_pzl_dzwe',_args_zl);
+               _context.ZL:={? _args_zl.RESULT.tab.first()
+                            || exec('FindAndGet','#table',ZL,_args_zl.RESULT.tab.SQL,,"ref()",null())
+                            || null()
+                            ?};
+               _zakoncz:=1;
+               _wystaw:=(exec('zl_grp_key_size','!tte_pzl_dzwe',_key)>0)
+
+::          z widoku zleceń - akcja: Dołącz->Zlecenie na podstawie->Pozycji zamówień | Generuj
+::          (przypadek, gdy kolejne pozycje zamówień dołączane są do wygenerowanego zlecenia)
+            |? _mp.akcja()='POWIĄŻ_W_GRUPIE'
+            || _args_zl:=exec('zkp2args','zl_gen');
+               _args_zl.GRUPA:=1;
+               _args_zl.DIALOG:=0;
+               _args_zl.ZTP:={? _in.ZTP || _in.ZTP || _context.ZTP ?};
+               _args_zl.MERGE:=1;
+               _args_zl.ZL_MERGE:=_context.ZL;
+               _args_zl.TKTL:=_context.TKTL;
+               _args_zl.ILOSC:=_context.ILOSC;
+               params_exec('auto_zkp','!tte_pzl_dzwe',_args_zl);
+               _zakoncz:=1;
+               {? _args_zl.ZL_MERGE<>null()
+               || _out.ZL_MERGE:=_args_zl.ZL_MERGE;
+                  _out.KATEGORIA:=exec('FindAndGet','#table',ZL,_args_zl.ZL_MERGE,,"RODZAJ",'P');
+                  _mp.save(,_out)
+               ?}
+
+::          z proces dla zamówienia lub z widoku nagłówka zamówienia: Funkcje->Zlecenia
+::          w kontekście rekordu ZK_N - akcja dla pojedynczego rekordu
+            |? _mp.akcja()='GENERUJ_ZKN'
+            || _args_zl:=exec('zkp2args','zl_gen');
+               _args_zl.ZTP:=_in.ZTP;
+               _args_zl.COMPLEX:=_in.ZLOZONE;
+               _args_zl.MERGE:=1;
+               _args_zl.GRP_KEY:=_grp_key_on;
+               params_exec('auto_zkp','!tte_pzl_dzwe',_args_zl);
+::             Jak z obszaru roboczego to kończę, jak z listy ToDo to zostawiam, paczka zostanie wysłana później
+               {? _mp.pathArea()
+               || _wystaw:=(exec('zl_grp_key_size','!tte_pzl_dzwe',_key)>0);
+                  {? _args_zl.ZL_MERGE<>null()
+                  || _out.ZL_MERGE:=_args_zl.ZL_MERGE;
+                     _out.KATEGORIA:=exec('FindAndGet','#table',ZL,_args_zl.ZL_MERGE,,"RODZAJ",'P');
+                     _mp.save(,_out);
+                     _zakoncz:=1
+                  || _zakoncz:=_wystaw
+                  ?}
+               || _zakoncz:=0;
+                  _wystaw:=0
+               ?}
+
+::          z procesu, gdy podany _in.ZK_P
+            |? (_mp.pathProc() | _mp.pathTodo() | _mp.isService() | _mp.isAutoRun()) & _in.ZK_P
+            || ZK_P.prefix();
+               {? ZK_P.seek(_in.ZK_P)
+               || _args_zl:=exec('zkp2args','zl_gen');
+                  _args_zl.DIALOG:=_dialog;
+                  _args_zl.ZTP:=_in.ZTP;
+                  _args_zl.COMPLEX:=_in.ZLOZONE;
+                  _args_zl.MERGE:=0;
+                  _args_zl.GRP_KEY:=_grp_key_on;
+                  {? _mp.isService() | _mp.isAutoRun()
+                  ||
+::                   Ustalenie karty technologicznej
+                     M.cntx_psh();
+                     M.clear();
+                     {? exec('enabled','zl_uslugi')
+                     || M.index('MATKTM');
+                        M.prefix(_args_zl.KTM,)
+                     || M.index('RODZ');
+                        M.prefix('T',_args_zl.KTM,)
+                     ?};
+:: NUCO - obsługa karty domyślnej i ewentualnego jej nie wskazania - wybierana jest karta pierwsza z brzegu
+                     {? M.first()
+                     || _args_zl.TKTL:=exec('wyb_ktl','zl_gen',_q_tktl_dialog,0);
+                        {? _args_zl.TKTL=null()
+                        || _args_zl.TKTL:=exec('getdefaulttech','tech_common',M.ref(),1)
+                        ?};
+                        {? _args_zl.TKTL=null()
+                        || _can_continue:=0;
+                           {? _mp.isService()
+                           || _msg:='Nie można uruchomić czynności.\n'
+                                    'Materiał %1 nie ma przypisanej domyślnej technologii.'@[M.KTM];
+                              _mp.error(_msg)
+                           || _msg:='Materiał %1 nie ma przypisanej domyślnej technologii.'@[M.KTM];
+                              FUN.emsg(_msg);
+                              _mp.cancel()
+                           ?}
+                        ?}
+                     ?};
+                     M.cntx_pop()
+                  ?};
+                  {? _can_continue>0
+                  || params_exec('auto_zkp','!tte_pzl_dzwe',_args_zl)
+                  ?}
+               ?};
+               _zakoncz:=1;
+               _wystaw:=(exec('zl_grp_key_size','!tte_pzl_dzwe',_key)>0);
+               {? _mp.pathTodo() || _zakoncz:=_wystaw ?}
+
+::          z procesu albo z ToDo albo automatycznie, gdy podany _in.ZK_N
+            |? (_mp.pathProc() | _mp.pathTodo() | _mp.isAutoRun()) & _in.ZK_N & ~_mp.isService()
+            || _mp.keep();
+               _zakoncz:=exec('zlisty','!tte_pzl_dzwe',3,,_in.ZK_N);
+               _wystaw:=(exec('zl_grp_key_size','!tte_pzl_dzwe',_key)>0)
+
+            || _zakoncz:=0;
+               _wystaw:=0
+            ?}
+         ?}
+      ?};
+      {? _can_continue>0
+      || {? _key<>''
+         ||
+::          Generacja - wypycham pierwsze zlecenie na wyjście
+            {? _wystaw>0
+            || _grp_key_on:=_key+'1';
+               _grp_key_off:=_key+'0';
+
+               ZL.cntx_psh();
+               ZL.index('GRP_KEY');
+               ZL.prefix(_grp_key_on);
+               {? ZL.first()
+               || ZL.cntx_psh();
+                  ZL.prefix();
+                  ZL.GRP_KEY:=_grp_key_off;
+                  do();
+                  _can_continue:=ZL.put();
+                  end();
+                  _out.ZL:=ZL.ref();
+                  _out.KATEGORIA:=ZL.RODZAJ;
+                  _out.GRP_KEY:=_key;
+                  _out.RESULT:='OK';
+                  ZL.cntx_pop();
+                  {? ZL.first()
+                  ||
+::                   Jeżeli są jeszcze jakieś zlecenia to kontynuuję pętlę
+                     _out.LOOP:='T'
+                  ?};
+                  _mp.save(,_out);
+                  _mp.done()
+               || _mp.save(,_out);
+                  {? _zakoncz || _mp.done() ?}
+               ?};
+               ZL.cntx_pop()
+
+::          Zakończenie (nie powstało żadne zlecenie) - wypycham nullowe zlecenie na wyjście
+            |? _zakoncz>0
+            || {? _mp.isMicro() | _mp.isAutoRun()
+               || _mp.cancel()
+               || _out.RESULT:='BŁĄD';
+                  _out.ZL:=null();
+                  _mp.save(,_out);
+                  _mp.done()
+               ?}
+            |? _mp.isService()
+            || _out.RESULT:='BŁĄD';
+               _out.ZL:=null();
+               _mp.save(,_out);
+               _mp.done()
+            ?}
+         || _mp.error('Brak oczekiwanego parametru %1.'@@['GRP_KEY'])
+         ?}
+      ?}
+   ?}
+
+|? _mp.pathProc()
+|| exec('zlisty','!tte_pzl_dzwe')
+
+|| _mp.error('Parametr %1, %2 albo %3 musi być podany.'@@['ZK_N','ZK_P','GRP_KEY'])
+?};
+ZLZAM.cntx_pop();
+ZK_P.cntx_pop();
+ZK_N.cntx_pop();
+ZL.cntx_pop();
+~~
+
+
+\auto_zkp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [12.41]
+:: OPIS: Akcja generowania jednego lub wielu zleceń na podstawie pozycji zamówienia
+::       Funkcja najbardziej ogólna, umożliwia wygenerowanie zlecenia na podstawie planu
+::   WE: _args - argumenty dla funkcji generujacej, wynik dzialania exec('auto_args','zl_gen')
+::  OLD: \auto_zkp/zl.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('auto_args','zl_gen')
+?};
+_mp:=params_get().mp;
+_in:=params_get().in;
+
+_result:=0;
+_can_continue:=1;
+:: Czy wyświetlać pytania
+_dialog:={? _mp.isService() | (_mp.isAutoRun() & _in.ZK_P) || 0 || 1 ?};
+
+ZLZAM.cntx_psh();
+ZL.cntx_psh();
+ZK_P.cntx_psh();
+ZK_P.use(form(8+_args.SRC_REF));
+ZK_P.clear();
+
+{? ZK_P.seek(_args.SRC_REF)
+||
+   _what:=_args.SYMBOL+' poz.'+$_args.POZ;
+:: Blokuję pozycję zamówienia na czas generowania zlecenia
+   _ses_id:=exec('blk_lock','#table','ZK_P',ZK_P.ref(),,2);
+   {? _ses_id=ZK_P.ses_id()
+   || _locked:=1
+   || _locked:=0;
+      _msg:='Pozycja zamówienia: %1 jest redagowana przez użytkownika \'%2\' na terminalu \'%3\'.'@
+            [_what,ZK_P.ses_info(_ses_id,'log_name'),ZK_P.ses_info(_ses_id,'log_tty')];
+      {? ~_mp.isService()
+      || FUN.info(_msg)
+      ?}
+   ?};
+
+   {? _locked>0
+   ||
+::    Sprawdzenie produktu w zleceniach nadrzędnych
+:: NUCO - zmiana - Dodatkowa weryfikacja zlecenia nadrzędnego
+      {? _can_continue>0 & _args.ZL_NAD<>null() & exec('FindAndGet','#table',ZL,_args.ZL_NAD,,"RODZAJ<>'N'",0)
+      || {? exec('FindAndGet','#table',ZL,_args.ZL_NAD,,"$KTM=_b.M",0,_args)
+         || _msg:='Indeks produktu jest wykorzystany w zleceniu wyższego poziomu.'@;
+            {? _args.GRUPA>0
+            || KOMM.add(_msg,4)
+            || FUN.info(_msg)
+            ?};
+            _can_continue:=0
+         || {? exec('FindAndGet','#table',ZL,_args.ZL_NAD,,
+                  "exec('chk_ktm','zl_head',TREE,exec('FindAndGet','#table',M,_b.M))>0",0,_args
+               )
+            || _msg:='Indeks produktu jest wykorzystany w zleceniu wyższego poziomu.'@;
+               {? _args.GRUPA>0
+               || KOMM.add(_msg,4)
+               || FUN.info(_msg)
+               ?};
+
+               _can_continue:=0
+            ?}
+         ?}
+      ?};
+
+::    Sprawdzenie terminu realizacji
+      {? _can_continue>0
+      || {? _args.DIALOG>0
+         || {? _args.PL_DATA<date()
+            || {? ~FUN.ask('Generowanie zlecenia\n\n'
+                     'Termin realizacji dla %1 jest wcześniejszy, niż data powołania zlecenia.\n'
+                     'Czy wygenerować zlecenie (konieczna będzie korekta daty na zleceniu)?'@[_what],
+                  )
+               || _can_continue:=0
+               ?}
+            ?}
+         || {? _args.PL_DATA<date()
+            || _can_continue:=0;
+               _msg:='Termin realizacji dla %1 jest wcześniejszy, niż data powołania zlecenia.'@[_what];
+               {? _args.GRUPA>0
+               || KOMM.add(_msg,4)
+               || FUN.info(_msg)
+               ?}
+            ?}
+         ?}
+      ?};
+
+::    Sprawdzam czy na zamówieniu była podana partia i jeśli tak to blokuję tworzenie zlecenia
+      {? _can_continue>0 & _args.DK_C<>''
+      || DK_C.cntx_psh();
+         DK_C.use(form(8+_args.DK_C));
+         DK_C.clear();
+         {? DK_C.seek(_args.DK_C)
+         || _buf_zam:=exec('buffer','mat_atr');
+            _buf_zam.get_dkc();
+            {? _buf_zam.has_part()>0
+            || _can_continue:=0;
+               _msg:='Pozycja zamówienia: %1 posiada atrybut typu \'Partia\'. '
+                     'Tworzenie zlecenia na jej podstawie niedozwolone.'@[_what];
+               {? _args.GRUPA>0
+               || KOMM.add(_msg,2)
+               || FUN.emsg(_msg)
+               ?}
+            ?}
+         ?};
+         DK_C.cntx_pop()
+      ?};
+
+      {? _can_continue>0
+      || ZK_P.clear();
+         {? ZK_P.seek(_args.SRC_REF)
+         || _refp:=ZK_P.ref();
+            _refn:=ZK_N.ref();
+            {? exec('sprdt','zl_head')
+            ||
+::             Sprawdzamy czy zamówienie zostało zaplanowane w planie opercyjnym, jeśli tak to łączymy zlecenie z planem
+               _planzas:=exec('zam_planned','po_plan',_args.SRC_REF);
+
+               {? _planzas>0 & _args.IL_WYTW>0
+               ||
+                  {? _planzas<=_args.IL_WYTW
+                  ||
+::                   PLAN OPERACYJNY
+                     _msg:='Pozycja zamówienia: %1 została zaplanowana w planie operacyjnym w ilości: %2 %3.\n\n'
+                           'Aby utworzyć zlecenie najpierw należy je usunąć z planu'@[_what,$_planzas,_args.JM_SYM];
+                     {? _args.DIALOG>0
+                     || _ask:=FUN.choice(_msg,,'Usuń plan'@)
+                     || FUN.info(_msg);
+                        _ask:=0
+                     ?};
+                     {? _ask=1
+                     || {? exec('del_zam','po_plan',_args.SRC_REF)>0
+                        || exec('auto_zl_core','zl_gen',_args)
+                        ?}
+                     |? _ask=2
+                     ||
+::                      Ta ścieżka jest już martwa ponieważ brakuje czynności przekształcającej
+::                      plan operacyjny zamówienia w plan zlecenia. Jeżeli taka czynność by była
+::                      to można by zbudować proces który odzwierciedlał starą funkcjonalność czyli:
+::                      1. Wygenerowanie zlecenia
+::                      2. Wygenerowanie technologii zlecenia i zatwierdzenie jej
+::                      3. Wygenerowanie przewodników zlecenia na podstawie planu operacyjnego
+::                      4. Przepięcie planu operacyjnego na zlecenie (nowa czynność)
+
+::                      Jeśli typ zlecenia nie wskazany to pokazuje okno z wyborem
+                        {? _args.ZTP=null()
+                        || _args.ZTP:=exec('sel_tpzl','zl_gen')
+                        ?};
+
+                        {? _args.ZTP<>null()
+                        ||
+::                         1. Dodajemy zlecenie
+                           KOMM.init(,,'Generowanie zlecenia'@,'');
+::                         szukam technologii wg której powstał plan zamówienia
+                           _tech:=exec('zam_tech','po_plan',_args.SRC_REF);
+                           exec('add_ref','zl_gen');
+                           __REF.ZAMPOZ:=_args.SRC_REF;
+                           __REF.T:=BIT.sqlint(_args.M);
+                           __REF.IL:=_args.IL_WYTW;
+                           __REF.ILZL:=_args.IL_ZL;
+                           __REF.SYM:=_args.SYMBOL;
+                           __REF.add();
+
+                           {? var_pres('_args_gen')>100
+                           || obj_del(_args_gen)
+                           ?};
+                           _args_gen:=exec('gen_zlec_a','zl_gen');
+                           _args_gen.KTM:=_args.KTM;
+                           _args_gen.DTR:=_args.DTR;
+                           _args_gen.ILOSC:=_args.IL_WYTW;
+                           _args_gen.KH:=_args.KH_REF;
+                           _args_gen.TKTL:=_tech;
+                           _args_gen.PL_DATA:=_args.PL_DATA;
+                           _args_gen.PL_TIME:=_args.PL_TIME;
+                           _args_gen.PL_DIR:=_args.PL_DIR;
+                           _args_gen.PL_FORCE:=_args.PL_FORCE;
+                           _args_gen.DK_C:=_args.DK_C;
+                           _args_gen.ZTP:=_args.ZTP;
+                           _args_gen.ZL_NAD:=_args.ZL_NAD;
+                           _args_gen.COMPLEX:=_args.COMPLEX;
+                           _args_gen.PROJEKTY:=_args.PROJEKTY;
+                           _args_gen.OPIS:=_args.OPIS+' (na podstawie planu operacyjnego)';
+                           _args_gen.UWAGI:=_args.UWAGI;
+                           _args_gen.OPIS_DOD:=_args.OPIS_DOD;
+
+                           _zl:=exec('gen_zlec','zl_gen',_args_gen);
+
+                           exec('aktznzkp','zamsiw_poz',_refp,1);
+                           exec('aktznzkn','zamsiw_nag',_refn,1);
+
+                           {? _zl<>null()
+                           || _ok:=1;
+::                            Dodaje utworzone zlecenie do tabeli wynikowej
+                              _args.RESULT.add(_zl)
+                           || _ok:=0
+                           ?}
+                        ?}
+                     ?}
+                  ||
+::                   Na zamówieniu zostało mniej do realizacji niż pierwotnie było zaplanowane w planie operacyjnym
+::                   więc pytam czy usunąć plan
+                     _msg0:='';
+                     _msg1:='Pozycja zamówienia: '+_what;
+                     _msg2:='została zaplanowana w planie operacyjnym w ilości większej niż pozostało do realizacji na zamówieniu.';
+                     _msg3:='Zaleca się usunięcie tej pozycji z planu operacyjnego i utworzenie zlecenia nie powiązanego z planem.';
+                     _msg4:='Aby zlecenie to pojawiło się w planie operacyjnym należy je ręcznie zaplanować.';
+                     _msg_glued:=exec('form','#string','L',_msg1
+                                                         ,_msg2
+                                                         ,_msg0
+                                                         ,_msg3
+                                                         ,_msg4);
+                     {? _args.DIALOG>0
+                     || _ask:=FUN.choice(_msg_glued,,'Usuń plan zamówienia'@)
+                     || FUN.info(_msg_glued);
+                        _ask:=0
+                     ?};
+                     {? _ask=1
+                     || {? exec('del_zam','po_plan',_args.SRC_REF)>0
+                        || exec('auto_zl_core','zl_gen',_args)
+                        ?}
+                     ?}
+                  ?}
+               || exec('auto_zl_core','zl_gen',_args)
+               ?}
+            ?}
+         ||
+            {? _args.GRUPA>0
+            || KOMM.add('Wskazana pozycja zamówienia została już usunięta.'@,14)
+            || FUN.emsg('Wskazana pozycja zamówienia została już usunięta.\n'
+                        'Proszę ponownie uruchomić funkcję.'@)
+            ?}
+         ?}
+      ?};
+::    Odblokowuje ZK_P
+      exec('blk_unlock','#table','ZK_P',ZK_P.ref())
+   ?}
+?};
+ZK_P.cntx_pop();
+ZLZAM.cntx_pop();
+ZL.cntx_pop();
+~~
+

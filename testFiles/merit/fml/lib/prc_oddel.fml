@@ -1,0 +1,447 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku: p_oddel.fml
+:: Utworzony: 19.05.2014 [TMR]
+:: Autor:
+:: Systemy:
+::======================================================================================================================
+:: Zawartosc: Plik z formułami do oddelegować pracownika
+::======================================================================================================================
+
+\getKod4Plan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Wyszukuje kod oddelegowania do planowania. Jeżeli nie ma takiego zapisu to go doda.
+::   WY: [REFERENCE] - wskazanie na słownik slo_kod
+::  OLD: \getKod4Plan/p_oddel.fml
+::----------------------------------------------------------------------------------------------------------------------
+_kod:=null();
+SLO_TYP.cntx_psh();
+SLO_KOD.cntx_psh();
+{? _typ:=exec('slo_typ','ext_slo','P_ODDEL')
+|| _kod:=exec('kod_ref','ext_slo',_typ,'PLAN','Planowanie czasu pracy')
+?};
+SLO_KOD.cntx_pop();
+SLO_TYP.cntx_pop();
+_kod
+
+
+\find
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Wyszukanie pracowników oddelegowanych pomiędzy wskazanymi datami
+::   WE: _a   - [REFERENCE] - wskazanie na kod oddelegowania
+::       _b   - [REFERENCE] - wskazanie na pracownika, dla którego wyszukujemy pracowników oddelegowanych (kierownika)
+::       [_c] - [REFERENCE] - wskazanie na pracownika oddelegowanego (podwładnego)
+::       _d   - [STRING]    - określenie dla kogo wyszukujemy pracowników oddelegowanych ('FROM' lub 'TO')
+::       _e   - [DATE]      - data_od
+::       _f   - [DATE]      - data_do
+::       [_g] - [INTEGER]   - 0 - pobiera informacje na każdy dzień; 1 - pobiera tylko samych pracowników oddelegowanych
+::       [_h] - [INTEGER]   - 1 - pobiera informacje dla osoby a nie pracownika (kierownika)
+::       [_i] - [TABLE]     - tabela z wydziałami (kierownika)
+::   WY: Tabela z pracownikami oddelegowanymi
+::  OLD: \find/p_oddel.fml
+::----------------------------------------------------------------------------------------------------------------------
+    _kod:={? var_pres('_a')=type_of(null()) || _a || return(0) ?};
+  _k_ref:={? var_pres('_b')=type_of(null()) || _b || return(0) ?};
+  _p_ref:={? var_pres('_c')=type_of(null()) || _c || null()    ?};
+    _kto:={? var_pres('_d')=type_of('')     || _d || return(0) ?};
+_data_od:={? var_pres('_e')=type_of(date()) || _e || return(0) ?};
+_data_do:={? var_pres('_f')=type_of(date()) || _f || return(0) ?};
+_onlyPra:={? var_pres('_g')=type_of(0)      || _g || 0         ?};
+  _osoba:={? var_pres('_h')=type_of(0)      || _h || 0         ?};
+
+_kto:=(~-_kto);
+{? _kto<>'FROM' & _kto<>'TO' || return(0) ?};
+
+_is_wydz:=(var_pres('WYDZ',P_ODDEL)>0);
+
+_os_ref:=null();
+_nawias:=0;
+
+P.cntx_psh();
+P.prefix();
+{? P.seek(_k_ref)
+|| _os_ref:=P.OSOBA
+?};
+P.cntx_pop();
+
+_tabWydz:={? var_pres('_i')=type_of(SYSLOG)
+          || _i
+          || _tw:=exec('tabWydz','prc_oddel',_k_ref);
+::           dodanie wszystkich wydziałów kierownika jako osoby
+             exec('addWydz4Osoba','prc_oddel',_os_ref,_tw,_data_od,_data_do);
+             _tw
+          ?};
+
+_sql:='select distinct P, P_FROM, P_TO'+
+      {? _onlyPra || '' || ', DATA' ?}+
+      {? _is_wydz || ', WYDZ' || '' ?}+
+      ' from P_ODDEL'+
+      {? _osoba
+      || ' left join P using (P_ODDEL.P_'+_kto+', P.reference)'
+      || ''
+      ?}
+      +' where P_ODDEL.KOD=:_a  and (P_ODDEL.DATA between to_date(:_d) and to_date(:_e)) '+
+      {? _osoba
+      || {? _kto='TO' || _nawias:=1;'and (P.OSOBA=:_f' || '' ?}
+      || {? _kto='TO' || _nawias:=1;'and (P_ODDEL.P_'+_kto+'=:_b' || '' ?}
+      ?}+
+      {? _kto='TO'
+      || {? _is_wydz & _tabWydz.size() || ' or P_ODDEL.WYDZ in (select WYDZIAL from :_g) ' || '' ?}
+      || ''
+      ?}+
+      {? _nawias=1 || ')' || '' ?}+
+      {? _p_ref=null() || '' || ' and P_ODDEL.P=:_c' ?};
+
+_tab:=sql(_sql,_kod,_k_ref,_p_ref,_data_od,_data_do,_os_ref,_tabWydz);
+{? _onlyPra
+|| _ndx:=_tab.ndx_tmp(,1,'P',,)
+|| _ndx:=_tab.ndx_tmp(,1,'DATA',,)
+?};
+_tab.index(_ndx);
+_tab
+
+
+\add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Dodaje oddelegowanie dla pracownika na wskazaną datę
+::   WE: _a [REFERENCE] - wskazanie na kod oddelegowania
+::       _b [REFERENCE] - wskazanie na pracownika, który oddelegowuje (P_FROM)
+::       _c [REFERENCE] - wskazanie na pracownika, do którego oddelegowujemy (P_TO)
+::       _d [REFERENCE] - wskazanie na pracownika oddelegowanego (P)
+::       _e [DATE]      - data
+::   WY: -2 - próba wywołania formuły ze wskazaniem na wydział przy braku pola WYDZ w tabeli P_ODDEL
+::       -1 - ten sam P_FROM i P_TO
+::        0 - nie udało się dodać zapisu
+::        1 - dodanie zapisu powiodło się
+::        2 - istnieje już inny zapis na wskazaną datę
+::  OLD: \add/p_oddel.fml
+::----------------------------------------------------------------------------------------------------------------------
+    _kod:={? var_pres('_a')=type_of(null()) || _a || return(0) ?};
+   _from:={? var_pres('_b')=type_of(null()) || _b || return(0) ?};
+     _to:={? var_pres('_c')=type_of(null()) || _c || return(0) ?};
+  _p_ref:={? var_pres('_d')=type_of(null()) || _d || return(0) ?};
+   _data:={? var_pres('_e')=type_of(date()) || _e || return(0) ?};
+_res:=0;
+
+_is_wydz:=(var_pres('WYDZ',P_ODDEL)>0);
+_na_wydz:=($_to)*'ud_skl';
+
+{? ~_is_wydz & _na_wydz || return(-2) ?};
+
+:: sprawdzenie poprawności wywołania
+P.cntx_psh();
+_os_from:=null();
+_os_to:=null();
+_ud_skl:=null();
+
+{? P.seek(_from)
+|| _os_from:=P.OSOBA
+?};
+
+:: podczytanie osoby
+{? _na_wydz
+|| 1
+|? P.seek(_to)
+|| _os_to:=P.OSOBA
+?};
+P.cntx_pop();
+
+:: sprawdzenie, czy nie wywołujemy dla tego samego pracownika lub tej samej osoby
+{? _from=_to | _os_from=_os_to || return(-1) ?};
+
+P_ODDEL.cntx_psh();
+P_ODDEL.index('KPD');
+P_ODDEL.prefix(_kod,_p_ref,_data);
+{? P_ODDEL.first()
+|| {? _na_wydz
+   || {? P_ODDEL.P_FROM<>_from | P_ODDEL.WYDZ<>_to
+      || _res:=2
+      || _res:=1
+      ?}
+   || {? P_ODDEL.P_FROM<>_from | P_ODDEL.P_TO<>_to
+      || _res:=2
+      || _res:=1
+      ?}
+   ?}
+|| P_ODDEL.blank(1);
+   P_ODDEL.KOD:=_kod;
+   P_ODDEL.P_FROM:=_from;
+   {? _na_wydz
+   || P_ODDEL.WYDZ:=_to
+   || P_ODDEL.P_TO:=_to
+   ?};
+   P_ODDEL.P:=_p_ref;
+   P_ODDEL.DATA:=_data;
+   {? P_ODDEL.add()
+   || _res:=1
+   ?}
+?};
+P_ODDEL.cntx_pop();
+_res
+
+
+\del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Usuwa oddelegowanie dla pracownika na wskazaną datę
+::   WE: _a [REFERENCE] - wskazanie na kod oddelegowania
+::       _b [REFERENCE] - wskazanie na pracownika (kierownika), który chce usunąć oddelegowanie
+::       _c [REFERENCE] - wskazanie na pracownika oddelegowanego (P)
+::       _d [DATE]      - data
+::   WY: 0 - nie udało się usunąć zapisu
+::      >1 - usunięcie zapisu powiodło się
+::      -1 - nie można usunąć oddelegowania - kto inny je wprowadził lub nie jest przypisane do pracownika usuwającego
+::  OLD: \del/p_oddel.fml
+::----------------------------------------------------------------------------------------------------------------------
+  _kod:={? var_pres('_a')=type_of(null()) || _a || return(0) ?};
+ _kier:={? var_pres('_b')=type_of(null()) || _b || return(0) ?};
+_p_ref:={? var_pres('_c')=type_of(null()) || _c || return(0) ?};
+ _data:={? var_pres('_d')=type_of(date()) || _d || return(0) ?};
+_res:=0;
+
+_is_wydz:=(var_pres('WYDZ',P_ODDEL)>0);
+_os_ref:=null();
+
+{? _is_wydz
+|| P.cntx_psh();
+   P.prefix();
+   {? P.seek(_kier)
+   || _os_ref:=P.OSOBA
+   ?};
+   P.cntx_pop()
+?};
+
+_tabWydz:=exec('tabWydz','prc_oddel',_kier);
+
+:: dodanie wszystkich wydziałów kierownika jako osoby
+exec('addWydz4Osoba','prc_oddel',_os_ref,_tabWydz,_data,_data);
+
+P_ODDEL.cntx_psh();
+P_ODDEL.index('KPD');
+P_ODDEL.prefix(_kod,_p_ref,_data);
+{? P_ODDEL.first()
+|| {? P_ODDEL.P_FROM=_kier | P_ODDEL.P_TO=_kier
+      | (_is_wydz & (_tabWydz.WYDZIAL:=$P_ODDEL.WYDZ;_tabWydz.find_rec()))
+   || _res:=P_ODDEL.del(1,1)
+   || _res:=-1
+   ?}
+|| _res:=1
+?};
+P_ODDEL.cntx_pop();
+_res
+
+
+\tabWydz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Wyszukuje wydziały dla zastępst lub obowiązków, w których trzeba sprawdzić oddelegowania pracowników.
+::       Dodatkowo przeszukuwane są wszystkie wydziały w dół drzewka począwszy od wydziału przekazanego pracownika.
+::   WE: _a [REFERENCE] - wskazanie na pracownika
+::   WY: tabela z refami wydziałów
+::  OLD: \tabWydz/p_oddel.fml
+::----------------------------------------------------------------------------------------------------------------------
+_p_ref:={? var_pres('_a')=type_of(null)   || _a || null() ?};
+_par232:=(PAR_SKID.get(232)='T');
+
+_slo_kod:=exec('kod','ext_slo','TYPPOZ','PLANCZP');
+
+_sql:=''+
+"
+select
+   P_PO.WYDZIAL, P_PO.NB, P_PO.P, P_PO.ST,'O' as TYP
+from
+   P_PO
+where
+   P_PO.P=:_a and P_PO.TYP=:_b and
+   (P_PO.CO='N' or (P_PO.CO='T' and P_PO.DO>=to_date(:_c) and P_PO.OD<=to_date(:_c)))
+
+union
+
+select "+
+   {? _par232
+   || "STRST_P.UD_SKL"
+   || "UD_SKL.REFERENCE"
+   ?}
+   +" as WYDZAL, P_PZ.NB,  P_PZ.P, '' as ST, 'Z' as TYP
+from
+   P_PZ
+   join P using(P_PZ.P, P.REFERENCE)"+
+   {? _par232
+   || " join STRST_P using(STRST_P.P, P.REFERENCE) "
+   || " join UD_SKL using(P.WYDZIAL, UD_SKL.REFERENCE) "
+   ?}+
+   "
+where
+   P_PZ.PZ=:_a and P_PZ.TYP=:_b and
+   (P_PZ.CO='N' or (P_PZ.CO='T' and P_PZ.DO<>to_date(:_d) and P_PZ.DO>=to_date(:_c) and P_PZ.OD<=to_date(:_c)))
+";
+
+_tab:=sql(_sql,_p_ref,_slo_kod,date(),date(0,0,0));
+
+:: obowiązki i zależności tylko na czas nieobecności
+UD_SKL.cntx_psh();
+UD_SKL.prefix();
+STN.cntx_psh();
+STN.prefix();
+P.cntx_psh();
+P.index('PRACOWST');
+P.prefix();
+
+{? _tab.first()
+|| {!
+   |? _obecny:=0;
+      {? _tab.NB='T' & _tab.TYP='O'
+      || _ud_skl:={? UD_SKL.seek(BIT.sqlint(_tab.WYDZIAL),) || UD_SKL.ref() || null() ?};
+         _stn:={? STN.seek(BIT.sqlint(_tab.ST),) || STN.ref() || null() ?};
+         P.prefix(_ud_skl,_stn,'T');
+         {? P.first()
+         || {!
+            |? {? ~exec('czy_jest','nieobecnosc',P.ref())
+               || _obecny:=1
+               ?};
+               ~_obecny & P.next()
+            !}
+         ?}
+      |? _tab.NB='T' & _tab.TYP='Z'
+      || P.cntx_psh();
+         P.prefix();
+         {? P.seek(BIT.sqlint(_tab.P),)
+         || {? ~exec('czy_jest','nieobecnosc',P.ref())
+            || _obecny:=1
+            ?}
+         ?};
+         P.cntx_pop()
+      ?};
+      {? _obecny || _tab.del(,1)=2 || _tab.next() ?}
+   !}
+?};
+P.cntx_pop();
+STN.cntx_pop();
+UD_SKL.cntx_pop();
+
+_tab
+
+
+\par317Wydz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Dla parametru 317='T' dodajemy wszystkie wydziały w dół drzewka
+::   WE: _a [REFERENCE] - wskazanie na pracownika
+::       _b [TABLE]     - tabela z wydziałami
+::       _c [INTEGER]   - czy parametr 232 ustawiony na 'T'? (0/1)
+::   WY:
+::  OLD: \par317Wydz/p_oddel.fml
+::----------------------------------------------------------------------------------------------------------------------
+ _p_ref:={? var_pres('_a')=type_of(null) || _a || return(0)               ?};
+   _tab:={? var_pres('_b')=type_of(P)    || _b || return(0)               ?};
+_par232:={? var_pres('_c')=type_of(0)    || _c || (PAR_SKID.get(232)='T') ?};
+
+UD_SKL.cntx_psh();
+P.cntx_psh();
+P.prefix();
+{? P.seek(_p_ref)
+|| _LWYD:=exec('lwyd_buff','stanprac');
+   _lstwyd:=exec('lwyd_form','stanprac');
+
+   {? _par232
+   || _sch:=exec('szukaj_ud_sch','schemat','PODZORG','STR_STAN');
+      STRST_P.cntx_psh();
+      STRST_P.index('P');
+      STRST_P.prefix(_p_ref);
+      {? STRST_P.first()
+      || {!
+         |? _p_wydz:=STRST_P.UD_SKL;
+            _lstwyd(_LWYD,_sch,_p_wydz,_lstwyd,0,1);
+            STRST_P.next()
+         !}
+      ?};
+      STRST_P.cntx_pop()
+
+   || _sch:=exec('szukaj_ud_sch','schemat','PODZORG','STRORG');
+      _lstwyd(_LWYD,_sch,P.WYDZIAL,_lstwyd,0,1)
+   ?};
+
+   UD_SKL.prefix();
+   {? _LWYD.first()
+   || {!
+      |? {? UD_SKL.seek(_LWYD.WYD,)
+         || _tab.WYDZIAL:=$UD_SKL.ref();
+            {? ~_tab.find_rec()
+            || _tab.add()
+            ?}
+         ?};
+         _LWYD.next()
+      !}
+   ?}
+?};
+P.cntx_pop();
+UD_SKL.cntx_pop();
+1
+
+
+\addWydz4Osoba
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [12.41]
+:: OPIS: Dodanie wszystkich wydziałów kierownika jako osoby
+::   WE: _a [REFERENCE] - wskazanie na osobę
+::       _b [TABLE]     - tabela z wydziałami
+::       _c [DATE]      - data_od
+::       _d [DATE]      - data_do
+::   WY: 0/1
+::  OLD: \addWydz4Osoba/p_oddel.fml
+::----------------------------------------------------------------------------------------------------------------------
+ _os_ref:={? var_pres('_a')=type_of(null)   || _a || return(0)   ?};
+_tabWydz:={? var_pres('_b')=type_of(SYSLOG) || _b || return(0)   ?};
+_data_od:={? var_pres('_c')=type_of(date()) || _c || date(0,0,0) ?};
+_data_do:={? var_pres('_d')=type_of(date()) || _d || date(0,0,0) ?};
+
+_z_date:=date(0,0,0);
+
+:: czy sprawdzać zatrudnienie pracownika w podanym zakresie dat?
+_chk_dz:=_data_od<>_z_date & _data_do<>_z_date;
+
+{? _os_ref<>null()
+||
+:: Sprawdzamy parametr 232 czy ma to być STRORG czy STR_STAN
+   _par232:=PAR_SKID.get(232)='T';
+   _par317:=PAR_SKID.get(317)='T';
+
+   STRST_P.cntx_psh();
+   P.cntx_psh();
+   P.index('OSOBA');
+   P.prefix(_os_ref);
+   {? P.first()
+   || {!
+      |? {? ~_chk_dz | (_chk_dz & (P.DZA<=_data_do) & (P.DZ=date(0,0,0) | (P.DZ>=_data_od)))
+         || {? _par232
+            || STRST_P.prefix(P.ref());
+               {? STRST_P.first()
+               || {!
+                  |? _tabWydz.blank(1);
+                     _tabWydz.WYDZIAL:=$STRST_P.UD_SKL;
+                     _tabWydz.add(1);
+                     STRST_P.next()
+                  !}
+               ?}
+            ||
+               _tabWydz.blank(1);
+               _tabWydz.WYDZIAL:=$P.WYDZIAL;
+               _tabWydz.add(1)
+            ?};
+            {? _par317
+            || exec('par317Wydz','prc_oddel',P.ref(),_tabWydz,_par232)
+            ?}
+         ?};
+         P.next()
+      !}
+   ?};
+   P.cntx_pop();
+   STRST_P.cntx_pop()
+?};
+1
+
+:Sign Version 2.0 jowisz:1045 2021/09/17 15:17:10 316840753b54705d518c01e2d47611c51c899b5ee3e6c58d15f4c413e76763b14428f50e1029ac57adfea30c879b18a3c718adc000dfd053631a8fed4897ba26b4228f24eb20e9e1844d27ed8b281e35a5f89422a3a0c8eae12918c1dd1637d788dd9bcea545cc23cbe0377d2c3f1a8366461b7c03bb5d915cc0d90769279421

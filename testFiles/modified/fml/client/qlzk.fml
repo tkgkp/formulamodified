@@ -1,0 +1,486 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: qlzk.fml
+:: Utworzony: 29.01.2021
+:: Autor: PeKa
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Formuły do obslugi funkcji dla klienta w dziedzinie Zakupy
+::======================================================================================================================
+
+\akc_zd_nag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa
+:: OPIS: Formula akceptacji zamowienia (uzyta w typie zamowienia dostawy)
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=1;
+:: weryfikacja czy zamowienie ma wygenerowany obieg - zamowienia mozna puscic do realizacji jesli przejdzie obieg
+{? ZD_NAG.T().T<>'ZDO' & ZD_NAG.OBI_POW=''
+|| FUN.info('Zamówienie wymaga autoryzacji poprzez obieg wniosku.'
+            +'\nProszę uruchomić obieg do zamówienia (Funkcje -> Uruchom obieg)');
+   _wyn:=0
+?};
+_wyn
+
+
+\walid_zd_nag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TP [NUCO_CPD]
+:: OPIS: Walidacja nagłówka zamówienia
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=1;
+:: czy zamówienie ma wypełnione pole NIPUE dla zamówień ZDU
+{? ZD_NAG.T().T='ZDU' & ZD_NAG.NIP_UE=''
+|| FUN.emsg('Dla zamówienia dostawy UE wymagane jest uzupełnienie pola NIP UE');
+   _wyn:=0
+:: kontrola uzupełnienia magazynu w nagłówku
+|? ZD_NAG.MG=null
+|| FUN.emsg('Dla dalszego etapu obsługi zamówienia wymagane jest uzupełnienie magazynu w jego nagłówku.');
+   _wyn:=0
+::----------------------------------------------------------------------------------------------------------------------
+::  MOD: PeKa [23.06.2022]
+:: OPIS: Dodanie walidacji na datę potwierdzonej dostawy według zalozen ustalonych z NUCO
+::       "dla zamówień wszystkich poza tymi, które mają realizację na magazyn SUR
+::       wprowadzić obowiązek uzupełniania daty planowanej realizacji w nagłówku zamówienia (formuła na walidację zamówienia)"
+::----------------------------------------------------------------------------------------------------------------------
+:: Merit_2325_test - modyfikacja:  2024 Lut 28
+:: PeKa, opis : dodanie wariantu dla magazynu SUR3 (Zgłoszenie: Z/03830/0051/24)
+::----------------------------------------------------------------------------------------------------------------------
+|? ZD_NAG.MG().SYM<>'SUR' & ZD_NAG.MG().SYM<>'SUR3' & ZD_NAG.DTPREAL=date(0,0,0)
+|| FUN.emsg('Proszę uzupełnić planowaną datę realizacji.');
+   _wyn:=0
+|? ZD_NAG.T().T<>'ZDO'
+|| {? ZD_NAG.WAL=INFO.NAROD
+   || _cz:=sql('select ZD_POZ.REFERENCE from ZD_POZ where ZD_POZ.ZD_NAG=:_a and ZD_POZ.CENA=0',ZD_NAG.ref).size>0
+   || _cz:=sql('select ZD_POZ.REFERENCE from ZD_POZ where ZD_POZ.ZD_NAG=:_a and ZD_POZ.CWAL=0',ZD_NAG.ref).size>0
+   ?};
+   {? _cz
+   || FUN.emsg('Nie wszystkie pozycje zamówienia posiadają uzupełnioną cenę zakupu.'+
+               '\nProszę uzupełnić dane przed zakończeniem redakcji zamówienia.');
+      _wyn:=0
+   ?}
+::----------------------------------------------------------------------------------------------------------------------
+?};
+::----------------------------------------------------------------------------------------------------------------------
+::  MOD: PeKa [23.06.2022]
+::  MOD: PeKa [23.05.2023] - na prosbe NUCO przeniesiono z formuly akceptacji
+::       do formuly walidacyjnej (ustalenia na spotkaniu w dniui 22.05.2023)
+:: OPIS: dodanie obslugi uzupelniania pola na pozycji zamowienia "najblizsza dostawa" dla zamówień, które mają trafić
+::       do magazynu SUR. Data ustalon z NUCO jako 9999/01/01 - ma to dalsze konsekwencje w planie dostaw oraz dla
+::       bilansowania surowców z magazynami wydzialowymi
+:: wariant 1 - zalozenia
+:: "Dla zamówień typu ZDI (import) innych niż przyjęcie do magazynu SUR ta sama formuła akceptacji powinna zachować się inaczej.
+::  Przyjęto założenie, że do daty z nagłówka, która jest wpisywana dla innych typów to do daty wpisane przez operatora
+::  na nagłówku należy dodać 3miesiące do daty z nagłówka i taką datą uzupełnić pozycje w zamówieniu"
+{? _wyn & ZD_NAG.T().T='ZDI' & ZD_NAG.MG().SYM<>'SUR'
+|| ZD_POZ.cntx_psh;
+   ZD_POZ.index('MG');
+   ZD_POZ.prefix(ZD_NAG.ref);
+   {? ZD_POZ.first
+   || _date:=exec('add_months','#interval',ZD_NAG.DTPREAL,3);
+      {!
+      |? {? ZD_POZ.D_POTW=date(0,0,0)
+         || ZD_POZ.D_POTW:=_date;
+            ZD_POZ.put
+         ?};
+         ZD_POZ.next()
+      !}
+   ?};
+   ZD_POZ.cntx_pop()
+:: wariant 2 - zalozenia
+:: "Dla zamówień na magazyn SUR, które nie jest możliwe określenie daty zostanie wprowadzona przez system przy jego
+::  akceptacji (formuła na akceptację zamówienia), która wykona automatycznie uzupełnienie techniczną datą (np. 9999/01/01)"
+::----------------------------------------------------------------------------------------------------------------------
+:: Merit_2325_test - modyfikacja:  2024 Lut 28
+:: PeKa, opis : dodanie wariantu dla magazynu SUR3 (Zgłoszenie: Z/03830/0051/24)
+::----------------------------------------------------------------------------------------------------------------------
+||
+   {? _wyn
+   || _mgsur:=exec('FindInSet','#table','MG','MAGAZYNY','SUR',,,1);
+      _mgsur3:=exec('FindInSet','#table','MG','MAGAZYNY','SUR3',,,1);
+:: weryfikacja dla SUR
+      ZD_POZ.cntx_psh;
+      ZD_POZ.index('MG');
+      ZD_POZ.prefix(ZD_NAG.ref,_mgsur);
+      {? ZD_POZ.first
+      || {!
+         |? {? ZD_POZ.D_POTW=date(0,0,0)
+            || {? ZD_NAG.DTPREAL=date(0,0,0)
+               || ZD_POZ.D_POTW:=date(9999,1,1)
+               || ZD_POZ.D_POTW:=ZD_NAG.DTPREAL
+               ?};
+               ZD_POZ.put
+            ?};
+            ZD_POZ.next()
+         !}
+      ?};
+      ZD_POZ.cntx_pop();
+:: weryfikacja dla SUR3
+      ZD_POZ.cntx_psh;
+      ZD_POZ.index('MG');
+      ZD_POZ.prefix(ZD_NAG.ref,_mgsur3);
+      {? ZD_POZ.first
+      || {!
+         |? {? ZD_POZ.D_POTW=date(0,0,0)
+            || {? ZD_NAG.DTPREAL=date(0,0,0)
+               || ZD_POZ.D_POTW:=date(9999,1,1)
+               || ZD_POZ.D_POTW:=ZD_NAG.DTPREAL
+               ?};
+               ZD_POZ.put
+            ?};
+            ZD_POZ.next()
+         !}
+      ?};
+      ZD_POZ.cntx_pop()
+   ?}
+?};
+::----------------------------------------------------------------------------------------------------------------------
+_wyn
+
+
+\zdnag_win_edit_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Ustawia okno redakcji tabeli ZD_NAG, wymagane pola, okna słowników dla potrzeb poprawiania
+::       Magazynu itp.
+::   WE:
+::----------------------------------------------------------------------------------------------------------------------
+BPMN.END:=0;
+
+_win_red:=ZD_NAG.mk_edit('Zamówienie do dostawcy'@);
+ZD_NAG.win_ewin(_win_red,,'RED');
+exec('ok_esc','#window',ZD_NAG,_win_red,1);
+ZD_NAG.win_edit(_win_red);
+exec('set_efld_opt','zamdst_nag',_win_red);
+exec('sel_win_kh','ustawienia')
+
+
+\zdnag_akc_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TP [NUCO]
+:: OPIS: Redakcja zaakceptowanego zamówienia w tym możliwość poprawiania pól wg. potrzeb NUCO
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('czy_rola','qprocesy','Poprawianie zaakceptowanych zamówień dostaw')
+|| FUN.error('Nie masz uprawnień do uruchomienia tej funkcji.')
+|| {? ZD_NAG.STAN='N' & ZD_NAG.STAT_REJ='N'
+   || FUN.emsg('Zamóienie nie jest zaakceptowane - użyj standardowej funkcji Popraw')
+   |? ZD_NAG.STAN='Z'
+   || FUN.emsg('Zamóienie jest w statusie zrealizowane, modyfikacja nie jest możliwa')
+   || exec('magazyny','zamdst_wspolne');
+      BEER.KRS:=ZD_NAG.KRS;
+      _wal:=ZD_NAG.WAL;
+      _kh:=#ZD_NAG.KH;
+      ZD_NAG.cntx_psh();
+      {? exec('zam_lock','zamdst_nag') & ZD_NAG.r_lock(1,1,1)
+      ||
+         _var_zdnagpop:=exec('var_zdnagpop','zamdst_nag');
+         _var_zdnagpop.PROJEKTY:=ZD_NAG.PROJEKTY;
+         _var_zdnagpop.KH:=ZD_NAG.KH;
+         _var_zdnagpop.WAL:=ZD_NAG.WAL;
+         _var_zdnagpop.KRS:=ZD_NAG.KRS;
+         _var_zdnagpop.MG:=ZD_NAG.MG;
+         _var_zdnagpop.D_POTW:=ZD_NAG.D_POTW;
+         _var_zdnagpop.KH_MSC:=ZD_NAG.KH_MSC;
+         _var_zdnagpop.PO_FIRST:=0;
+
+:: Parametr 'context' wykorzystywany w:
+:: - exec('zamdst_pozycje_red','zamdst_nag')
+:: - exec('zamdst_zakoncz_red','zamdst_nag')
+:: Parametr 'var_zdnagpop' wykorzystywany w:
+:: - exec('zamdst_pozycje_red','zamdst_nag')
+:: - exec('zamdst_zakoncz_red','zamdst_nag')
+:: - exec('zdnag_pop_po','zamdst_nag',_dod_nag)
+         params_set('context',params_get(),'var_zdnagpop',_var_zdnagpop);
+         exec('zdnag_win_edit_set','qlzk');
+:: Zabezpieczenie pól tylko do tych możliwych do redackji na zamówieniu zaakceptowanym/zakończonym
+::    Zapamiętujemy i zmieniamy formuły na 0 - blokada pola
+         _be_kh:=ZD_NAG.fld_fml('KH','*BEFORE_EDIT');ZD_NAG.fld_fml('KH','BEFORE_EDIT',"0");
+         _be_data:=ZD_NAG.fld_fml('DATA','*BEFORE_EDIT');ZD_NAG.fld_fml('DATA','BEFORE_EDIT',"0");
+         _be_wal:=ZD_NAG.fld_fml('WAL','*BEFORE_EDIT');ZD_NAG.fld_fml('WAL','BEFORE_EDIT',"0");
+         _be_swal:=ZD_NAG.fld_fml('SWAL','*BEFORE_EDIT');ZD_NAG.fld_fml('SWAL','BEFORE_EDIT',"0");
+         _be_krs:=ZD_NAG.fld_fml('KRS','*BEFORE_EDIT');ZD_NAG.fld_fml('KRS','BEFORE_EDIT',"0");
+         _be_dtk:=ZD_NAG.fld_fml('DTK','*BEFORE_EDIT');ZD_NAG.fld_fml('DTK','BEFORE_EDIT',"0");
+
+         ZD_NAG.memo_get(,'UW');
+         _stat_rej:=ZD_NAG.STAT_REJ;
+         {? ZD_NAG.edit("params_exec('zdnag_chk','zamdst_nag')")
+         || exec('zdnag_pop_po','zamdst_nag',1)
+         ?};
+:: Przywracamy formuły z przed zmiany dla okienka redagownia zaakceptowanego nagłówka
+         ZD_NAG.fld_fml('KH','BEFORE_EDIT',_be_kh);
+         ZD_NAG.fld_fml('DATA','BEFORE_EDIT',_be_data);
+         ZD_NAG.fld_fml('WAL','BEFORE_EDIT',_be_wal);
+         ZD_NAG.fld_fml('SWAL','BEFORE_EDIT',_be_swal);
+         ZD_NAG.fld_fml('KRS','BEFORE_EDIT',_be_krs);
+         ZD_NAG.fld_fml('DTK','BEFORE_EDIT',_be_dtk)
+      ?};
+      MG.f_clear()
+   ?}
+?};
+''
+
+
+\zkn_akc_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TP [NUCO]
+:: OPIS: Funkcja umożliwia akcję popraw na zamkniętym zamówieniu sprzedarzy pola uzgodnione z NUCO
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('czy_rola','qprocesy','Poprawianie zaakceptowanych zamówień sprzedaży')
+|| FUN.error('Nie masz uprawnień do uruchomienia tej funkcji.')
+|? ZK_N.T().R='W'
+|| FUN.error('Funkcja dostępna tylko dla zamówień sprzedaży')
+|? ZK_N.DT<=date()
+|| FUN.error('Termin realizacji poprawianego zamówienia nie może być w przeszłości,\n'+
+             'wykonaj standardową funkcje Popraw aby uaktualnić termin realizacji.')
+|| {? ZK_N.STAT_REJ='N' & ZK_N.A='A'
+   || FUN.emsg('Zamóienie nie jest zaakceptowane - użyj standardowej funkcji Popraw')
+   |? ZK_N.A<>'A'
+   || FUN.emsg('Zamóienie jest nieaktywne - poprawianie jest niemożliwe')
+   || {?  exec('zam_sprz','zamsiw_nag')
+      || POM.TAB:='ZK_N';
+         POM.TYPDOK:=ZK_N.T().KOD;
+
+         _bie_zam:=#ZK_N.ref();
+         _new_zam:=null;
+
+         ZK_N.cntx_psh();
+         ZK_N.prefix();
+         {? ZK_N.r_lock(1,1,1)
+         ||
+            HELP.POP:=1;
+            _wal:=#ZK_N.WAL;
+            _krs:=ZK_N.KRS;
+            _rab:=TAZ.RAB_N_BE:=ZK_N.RAB;
+            _dom_mag:=ZK_N.MG;
+            _term:=ZK_N.DT;
+            _term_wew:=ZK_N.PL_DATA;
+            _data_wew:=ZK_N.PL_TIME;
+            _tran:=ZK_N.TRN;
+            _sam:=ZK_N.POJAZD;
+            _kh:=ZK_N.KH;
+            _odb:=ZK_N.ODB;
+            _pl:=ZK_N.PL;
+            BEER.FIS:=ZK_N.CB;
+            ZK_N.memo_get(,'UW');
+            exec('pop_exit','faktury_plat',0,ZK_N.ref());
+
+            _var_zknagpop:=exec('var_zknagpop','zamsiw_nag');
+            _var_zknagpop.ZK_N.get();
+            _var_zknagpop.PROJEKTY:=ZK_N.PROJEKTY;
+            _var_zknagpop.KH:=ZK_N.KH;
+            _var_zknagpop.WAL:=ZK_N.WAL;
+            _var_zknagpop.KRS:=ZK_N.KRS;
+            _var_zknagpop.MG:=ZK_N.MG;
+            _var_zknagpop.PL:=ZK_N.PL;
+            _var_zknagpop.ODB:=ZK_N.ODB;
+            _var_zknagpop.DT:=ZK_N.DT;
+            _var_zknagpop.PL_DATA:=ZK_N.PL_DATA;
+            _var_zknagpop.PL_TIME:=ZK_N.PL_TIME;
+            _var_zknagpop.TRN:=ZK_N.TRN;
+            _var_zknagpop.SAM:=ZK_N.POJAZD;
+            _var_zknagpop.RAB:=ZK_N.RAB;
+            _var_zknagpop.PO_FIRST:=0;
+            _var_zknagpop.HAN:=ZK_N.HAN;
+            _var_zknagpop.KRAJ_VAT:=ZK_N.KRAJ_VAT;
+
+            params_set('context',params_get(),'var_zknagpop',_var_zknagpop);
+
+            exec('zknag_win_edit_set','qlzk');
+::            Blokada pól do edycji dla poraw zaakceptowane - dla NUCO
+            _be_KH:=ZK_N.fld_fml('KH','*BEFORE_EDIT');ZK_N.fld_fml('KH','BEFORE_EDIT',"0");
+            _be_DP:=ZK_N.fld_fml('DP','*BEFORE_EDIT');ZK_N.fld_fml('DP','BEFORE_EDIT',"0");
+            _be_TP:=ZK_N.fld_fml('TP','*BEFORE_EDIT');ZK_N.fld_fml('TP','BEFORE_EDIT',"0");
+            _be_PL:=ZK_N.fld_fml('PL','*BEFORE_EDIT');ZK_N.fld_fml('PL','BEFORE_EDIT',"0");
+            _be_TZ:=ZK_N.fld_fml('TZ','*BEFORE_EDIT');ZK_N.fld_fml('TZ','BEFORE_EDIT',"0");
+            _be_RAB:=ZK_N.fld_fml('RAB','*BEFORE_EDIT');ZK_N.fld_fml('RAB','BEFORE_EDIT',"0");
+            _be_MG:=ZK_N.fld_fml('MG','*BEFORE_EDIT');ZK_N.fld_fml('MG','BEFORE_EDIT',"0");
+            _be_TR:=ZK_N.fld_fml('TR','*BEFORE_EDIT');ZK_N.fld_fml('TR','BEFORE_EDIT',"0");
+            _be_DT:=ZK_N.fld_fml('DT','*BEFORE_EDIT');ZK_N.fld_fml('DT','BEFORE_EDIT',"0");
+            _be_PL_DATA:=ZK_N.fld_fml('PL_DATA','*BEFORE_EDIT');ZK_N.fld_fml('PL_DATA','BEFORE_EDIT',"0");
+            _be_PL_TIME:=ZK_N.fld_fml('PL_TIME','*BEFORE_EDIT');ZK_N.fld_fml('PL_TIME','BEFORE_EDIT',"0");
+            _be_PL_DIR:=ZK_N.fld_fml('PL_DIR','*BEFORE_EDIT');ZK_N.fld_fml('PL_DIR','BEFORE_EDIT',"0");
+            _be_PL_FORCE:=ZK_N.fld_fml('PL_FORCE','*BEFORE_EDIT');ZK_N.fld_fml('PL_FORCE','BEFORE_EDIT',"0");
+            _be_WAL:=ZK_N.fld_fml('WAL','*BEFORE_EDIT');ZK_N.fld_fml('WAL','BEFORE_EDIT',"0");
+            _be_SWAL:=ZK_N.fld_fml('SWAL','*BEFORE_EDIT');ZK_N.fld_fml('SWAL','BEFORE_EDIT',"0");
+            _be_KRS:=ZK_N.fld_fml('KRS','*BEFORE_EDIT');ZK_N.fld_fml('KRS','BEFORE_EDIT',"0");
+            _be_DTK:=ZK_N.fld_fml('DTK','*BEFORE_EDIT');ZK_N.fld_fml('DTK','BEFORE_EDIT',"0");
+            _be_FORMAPLA:=FZ.fld_fml('FORMAPLA','*BEFORE_EDIT');FZ.fld_fml('FORMAPLA','BEFORE_EDIT',"0");
+            _be_TERMPLAT:=FZ.fld_fml('TERMPLAT','*BEFORE_EDIT');FZ.fld_fml('TERMPLAT','BEFORE_EDIT',"0");
+            ZK_N.memo_get(,'UW');
+            _nag_edit:=ZK_N.edit("params_exec('spr_nzam','zamsiw_nag')");
+            {? _nag_edit
+            || exec('addTR_HKH','transport_wspolne',ZK_N);
+               params_set('context',params_get(),'var_zknagpop',_var_zknagpop);
+               exec('zknag_pop_po','zamsiw_nag',_nag_edit,0,1);
+               ZK_N.memo_put()
+            ||
+               exec('pop_exit','faktury_plat',1,ZK_N.ref())
+            ?};
+::            Przywrócenie domyślnych formuł - odblokowanie pól do edycji - dla NUCO
+            ZK_N.fld_fml('KH','BEFORE_EDIT',_be_KH);
+            ZK_N.fld_fml('DP','BEFORE_EDIT',_be_DP);
+            ZK_N.fld_fml('TP','BEFORE_EDIT',_be_TP);
+            ZK_N.fld_fml('PL','BEFORE_EDIT',_be_PL);
+            ZK_N.fld_fml('TZ','BEFORE_EDIT',_be_TZ);
+            ZK_N.fld_fml('RAB','BEFORE_EDIT',_be_RAB);
+            ZK_N.fld_fml('MG','BEFORE_EDIT',_be_MG);
+            ZK_N.fld_fml('TR','BEFORE_EDIT',_be_TR);
+            ZK_N.fld_fml('DT','BEFORE_EDIT',_be_DT);
+            ZK_N.fld_fml('PL_DATA','BEFORE_EDIT',_be_PL_DATA);
+            ZK_N.fld_fml('PL_TIME','BEFORE_EDIT',_be_PL_TIME);
+            ZK_N.fld_fml('PL_DIR','BEFORE_EDIT',_be_PL_DIR);
+            ZK_N.fld_fml('PL_FORCE','BEFORE_EDIT',_be_PL_FORCE);
+            ZK_N.fld_fml('WAL','BEFORE_EDIT',_be_WAL);
+            ZK_N.fld_fml('SWAL','BEFORE_EDIT',_be_SWAL);
+            ZK_N.fld_fml('KRS','BEFORE_EDIT',_be_KRS);
+            ZK_N.fld_fml('DTK','BEFORE_EDIT',_be_DTK);
+            FZ.fld_fml('FORMAPLA','BEFORE_EDIT',_be_FORMAPLA);
+            FZ.fld_fml('TERMPLAT','BEFORE_EDIT',_be_TERMPLAT);
+
+            exec('obl_warz','zamsiw_nag',ZK_N.ref,0,,0);
+            ZK_N.r_unlock()
+         ?};
+         ZK_N.cntx_pop();
+         MG.f_clear();
+         TYPYSP.f_clear();
+         {? _bie_zam>0 || ZK_N.seek(_bie_zam,) ?}
+      ?}
+   ?}
+?};
+''
+
+
+\zknag_win_edit_set
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TP [21.14]
+:: OPIS: Ustawia okno redakcji tabeli ZK_N, wymagane pola, okna słowników dla potrzeb poprawiania
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+BPMN.END:=0;
+VAR_DEL.delete('__ZKNAG_WIN_EDIT');
+__ZKNAG_WIN_EDIT:=obj_new('BTN_SP_NIPUE','BTN_SP_PODAT');
+
+_win_red:=ZK_N.mk_edit('Zamówienie sprzedaży'@,,'#edzk_nspr');
+ZK_N.win_ewin(_win_red,,'RED');
+_ff:="params_exec('priority_action_red','#b__box')";
+ZK_N.win_ebtn(_win_red,'text=%1,btn_label_align=center,panel=bottom,align=begin'['Pr&iorytet'@],_ff);
+exec('ok_esc','#window',ZK_N,_win_red,1);
+ZK_N.win_edit(_win_red);
+exec('set_efld_opt','zamsiw_nag',_win_red);
+exec('sel_win_kh','ustawienia');
+exec('sel_win_typysp','ustawienia')
+
+
+\zmiany_cen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO_22.26]
+:: OPIS: Funkcja przygotowuje tabele z pozycjami, ktore posiadaja zmieniona cene miedzy pozycja zamowienia dostawy
+::       i pozycja potwierdzenia
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: NUCO - sitek - dodanie ilości potwierdzonej
+:: pozycje potwierdzen
+_zdp:=sql('select ZD_N_SYM,
+                  ZD_POZ,
+                  IL as ILP,
+                  CENA as CENAP,
+                  CWAL as CWALP,
+                  ZDP_NAG.SYM,
+                  M.KTM,
+                  M.N,
+                  SLO.KOD as WAL,
+                  ZDP_POZ.REFERENCE as ZDPREF
+             from @ZDP_POZ
+             left join @ZDP_NAG using (ZDP_POZ.ZDP_NAG,ZDP_NAG.reference)
+             left join M using(ZDP_POZ.M, M.reference)
+             left join SLO using(ZDP_POZ.WAL,SLO.reference)
+             where CWAL>0 and CENA>0
+             order by ZDP_POZ.ZD_POZ');
+:: pozycje zamowien
+_zd:=sql('select ZD_POZ.REFERENCE as ZDREF,
+                 ZD_POZ.CENA as CENAZ,
+                 ZD_POZ.CWAL as CWALZ
+            from @ZD_POZ left join M using(ZD_POZ.M, M.reference)
+            order by ZDREF');
+:: polaczenie wynikow
+_all:=sql('select :_a.*,
+                  :_b.*
+             from :_a
+             left join :_b using(:_a.ZD_POZ,:_b.ZDREF)
+             where :_b.ZDREF<>\'\' and
+             (:_a.CENAP<>\'\' and :_a.CWALP<>\'\') and :_a.CENAP<>:_b.CENAZ or
+             (:_b.CENAZ<>\'\' and :_b.CWALZ<>\'\') and :_a.CWALP<>:_b.CWALZ',_zdp,_zd);
+:: lista indeksow, ktore dodatkowo pomniejszam o pozycje, ktore posiadaja juz fakturę zakupową
+{? _all.first()
+|| {!
+   |? _reapoz:=sql('select ZD_RP.REFERENCE as ZDRPREF from @ZD_RP where ZD_RP.ZDP_POZ=\':_a\'',_all.ZDPREF).ZDRPREF;
+      {? _reapoz<>''
+      || _dk:=sql('select DK.REFERENCE as DKREF from @DK where DK.ZAM_RP=\':_a\'',_reapoz).DKREF;
+         _faks:=sql('select FAP2DK.FAKS as FAKSSYM from @FAP2DK where FAP2DK.DK=\':_a\'',_dk).FAKSSYM;
+         {? _faks<>''
+         || _all.del
+         || _all.next
+         ?}
+      || _all.next
+      ?}
+   !}
+?};
+_all
+
+
+\status_zdi
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO_22.26]
+:: OPIS: Formula ustawia ikone w zaleznosci od statusu zamowienia ZDI (status ustawiany w informacji dodatkowej)
+::----------------------------------------------------------------------------------------------------------------------
+_icon:=sql('select O from @FAKSO where ZD_NAG=:_a and T=\'Status zamówienia ZDI\'',ZD_NAG.ref).O;
+{? _icon<>''
+|| BEER.PZM01:=_icon; ''
+|| BEER.PZM01:=''; ''
+?}
+
+
+\dkurs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO_22.26]
+:: OPIS: Procedura zwracajaca wartosc kursu typu _b dla banku _a w dniu _c i napelnia pola w FAKS
+::   WE: _a - SLO.ref wskaznie na domyslny bank,
+::       _b - typ kursu,
+::       [_c] - data kursu
+::       {_d] - waluta
+::       {_e] - waluta tabeli kursowej
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=3 || {? type_of(_c)<>4 || _c:=date(0,0,0) ?} || _c:=date(0,0,0) ?};
+TKRS.cntx_psh();
+KRS.cntx_psh();
+_iledni:=1;
+_wal:=_d;
+_wal_tkrs:=_e;
+_wyn:=PD_K.KRS;
+_tk:=_c-_iledni;
+{! |? exec('spr_kal','faktury_plat',_tk)=1 |! _tk-=1 !};
+_acr:=KRS.ndx_tmp('',0,'TKRS','BANK',0,'TKRS','WAL',0,'WAL',,0,'TKRS','DT',0);
+KRS.index(_acr);
+KRS.prefix(_a,_wal_tkrs,_wal,_tk);
+_wyn:=0;
+_sel:=1;
+{? KRS.first()
+|| KRS.win_sel('SLO');
+   {? ~KRS.next()
+   || _wyn:={? _b=0 || KRS.SP |? _b=1 || KRS.KP |? _b=2 || KRS.SR ?}
+   ?}
+?};
+KRS.ndx_drop(_acr);
+KRS.cntx_pop();
+TKRS.cntx_pop();
+_wyn

@@ -1,0 +1,325 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_wyk_ipkp.fml
+:: Utworzony: 01.02.2016
+:: Autor: TMR
+::======================================================================================================================
+:: Zawartość: Obsługa czynności TTE_WYK_IPKP - Przesłanie godz. do płac
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Przesłanie godzin do płac - główna formuła czynności.
+::       Czynność pobiera dane o godzinach akordowych dla wszystkich pracowników
+::       ze wszystkich oddziałów w ramach wskazanego roku i miesiąca
+::----------------------------------------------------------------------------------------------------------------------
+::# kind=WE, symbol=ROK,     type=NUMBER, name=Rok,                                required=N
+::# kind=WE, symbol=MIESIAC, type=NUMBER, name=Miesiąc,                            required=N
+::# kind=WE, symbol=WSTECZ,  type=NUMBER, name=Naliczanie z miesiąca poprzedniego, required=N, fml_val="exec('wstecz','!tte_wyk_ipkp')"
+::
+::# kind=WY, symbol=ROK,     type=NUMBER, name=Rok,                                required=N
+::# kind=WY, symbol=MIESIAC, type=NUMBER, name=Miesiąc,                            required=N
+::# kind=WY, symbol=RESULT,  type=STRING, name="Wynik czynności (OK, BŁĄD)", required=N
+::
+::# properties=SERVICE
+
+params_set(params_get());
+_mp:=params_get().mp;
+_in:=params_get().in;
+_out:=params_get().out;
+_context:=params_get().context;
+
+:: podczytanie wartości z parametrów wejściowych
+_rok:={? var_pres('ROK',_in)=type_of(0) || _in.ROK || 0 ?};
+_miesiac:={? var_pres('MIESIAC',_in)=type_of(0) || _in.MIESIAC || 0 ?};
+_wstecz:={? var_pres('WSTECZ',_in)=type_of(0) || _in.WSTECZ || 0 ?};
+
+_result:='';
+
+:: Uruchomienie w trybie serwisowym
+:: - aktualizuje godziny dla okresu kalendarzowego bieżącego albo poprzedniego (bez pytania)
+{? _mp.isService()
+|| {? _rok=0 | _miesiac=0
+   || _rok:=date(date()~1,(date()~2)+_wstecz,1)~1;
+      _miesiac:=date(date()~1,(date()~2)+_wstecz,1)~2
+   ?};
+   _aktualizuj:=exec('aktualizuj','!tte_wyk_ipkp',_rok,_miesiac,_mp.isService());
+   {? _aktualizuj.OK>0 || _out.RESULT:='OK' || _out.RESULT:='BŁĄD' ?};
+   _out.ROK:=_rok;
+   _out.MIESIAC:=_miesiac;
+   _mp.save(,_out);
+   _mp.done()
+
+:: Uruchomienie z obszaru TTE_WYK (funkcja "Prześlij do płac")
+:: Uruchomienie jako czynność startowa
+:: Uruchomienie z listy zadań
+:: - aktualizuje godziny dla roku i miesiąca (z pytaniem)
+|? _mp.akcja()='AKTUALIZUJ' | _mp.pathProc() | _mp.pathTodo()
+|| {? _rok=0 | _miesiac=0
+   || _rok_miesiac:=exec('wybierz_rok_miesiac','daty',
+         {? var_pres('_context')<>type_of(~~) & var_pres('ROK',_context)=type_of(0) || _context.ROK || 0 ?},
+         {? var_pres('_context')<>type_of(~~) & var_pres('MIESIAC',_context)=type_of(0) || _context.MIESIAC || 0 ?}
+      );
+      _rok:=_rok_miesiac.R;
+      _miesiac:=_rok_miesiac.M
+   ?};
+   {? _rok<>0 & _miesiac<>0
+   || _aktualizuj:=exec('aktualizuj','!tte_wyk_ipkp',_rok,_miesiac,_mp.isService());
+      {? _aktualizuj.OK>0
+      || _out.ROK:=_rok;
+         _out.MIESIAC:=_miesiac;
+         _out.RESULT:='OK';
+         _mp.save(,_out);
+         _mp.done()
+      || _result:=_aktualizuj.MSG
+      ?}
+   ?}
+
+|| _result:='Nie obsłużony kontekst wywołania czynności.'@@
+
+?};
+
+:: Obsługa błędów
+{? _result<>''
+|| _mp.error(_result);
+   {? ~_mp.isService() || FUN.emsg(_result) ?}
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Formuła opisu zadania.
+::   WY: opis czynności na liście zadań
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_rok:={? var_pres('ROK',_in)=type_of(0) || _in.ROK || 0 ?};
+_msc:={? var_pres('MIESIAC',_in)=type_of(0) || _in.MIESIAC || 0 ?};
+
+{? _rok<>0 & _msc<>0
+|| _desc:='Prześlij dane akordowe do płac (miesiąc %1/%2)'@@ [$_rok,(('0'+($_msc))+2)]
+|| _desc:='Prześlij dane akordowe do płac'@@
+?};
+_desc
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Zwraca treść komunikatu błędu
+::   WE: [_a] [STRING] - dodatkowy tekst błędu
+::   WY: treść komunikatu
+::----------------------------------------------------------------------------------------------------------------------
+_result:='Przesłanie danych akordowych do płac nie jest możliwe.';
+_text:={? var_pres('_a')=type_of('') || _a || '' ?};
+_result+='\n'+_text;
+_result
+
+
+\action_send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Funkcja 'Prześlij do płac' w oknie PROD_REJ
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='TTE_WYK_IPKP';
+_params.UIDREF:=null();
+_params.AKCJA:='AKTUALIZUJ';
+_params.PROC_START:='T';
+_params.CONTEXT:=obj_new('ROK','MIESIAC'); _params.CONTEXT.ROK:=ST.AR; _params.CONTEXT.MIESIAC:=ST.AM;
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+
+exec('mp_run','#b__box',_params)
+
+
+\aktualizuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Formuła aktualizująca/przenosząca godziny z produkcji (ZLGD, ZLGB) do tabeli godzin akordowych (G - rodzaj 'A')
+::   WE: _a [INTEGER]   - rok
+::       _b [INTEGER]   - miesiąc
+::       _c [INTEGER]   - czy uruchomiona jako serwisowa
+::   WY: Obiekt z wynikiem aktualizacji
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('OK','MSG');
+_result.OK:=0;
+_result.MSG:=exec('error','!tte_wyk_ipkp','Błędne parametry wywołania funkcji aktualizującej dane akordowe.');
+
+      _rok:={? var_pres('_a')=type_of(0) || _a || return(_result) ?};
+      _msc:={? var_pres('_b')=type_of(0) || _b || return(_result) ?};
+_isService:={? var_pres('_c')=type_of(0) || _c || return(_result) ?};
+
+{? _rok<=0 | _msc<=0 | _msc>12
+|| return(_result)
+?};
+
+_result.MSG:='';
+{? ~exec('ustaw_maski','godziny',_rok,_msc)
+|| _result.MSG:=exec('error','!tte_wyk_ipkp','Błąd otwarcia maski tabeli godzin.');
+   return(_result)
+?};
+
+_rodzaj:='A';
+:: maska godzin otwarta przy wchodzeniu do czynności
+G.cntx_psh();
+G.index('MSCRODZ');
+G.prefix(exec('ref_firma','#firma'),_msc,_rodzaj);
+
+:: ustalenie czy już były naliczenia na liście płac i czy lista jest zamknięta
+_zablokowane:=0;
+
+{? G.first()
+|| {!
+   |? {? G.LT<>'' & exec('o_writable','lista_plac',G.LT,0)=0
+      ||
+::         {? ~_isService
+::         || FUN.info('Aktualizacja danych nie jest możliwa. Godziny akordowe mają przypisaną zamkniętą listę płac.'@)
+::         ?};
+         _zablokowane:=1
+      ?};
+      _zablokowane=0 & G.next()
+   !}
+?};
+
+{? _zablokowane=1
+|| _result.OK:=0;
+   _result.MSG:=exec('error','!tte_wyk_ipkp','Godziny akordowe mają przypisaną zamkniętą listę płac.')
+
+|| {? FUN.ask('Czy przesłać dane akordowe do płac (miesiąc %1/%2)?'@[$_rok,form(_msc,-2,0)])
+   || _result.OK:=2;
+
+::    powrót w przypadku zerwanej transakcji
+      {? do_state()=2 || G.cntx_pop(); return(null()) ?};
+
+::    założenie transakcji
+      _mydo:=do_state()=0;
+      {? _mydo || do() ?};
+
+::    usuwanie poprzednich zapisów
+      {? G.first()
+      || {!
+         |? CON_KG.index('CON_GRD');
+            CON_KG.prefix(G.ref());
+            {? CON_KG.first() || CON_KG.del() ?};
+            G.del()
+         !}
+      ?};
+
+::    Otwarcie masek ZLGD i ZLGB
+      ODDZ.cntx_psh();
+      ODDZ.prefix();
+      {? ODDZ.first()
+      || {!
+         |? _mask:=5+ZLGD.name();
+            _mask+=ODDZ.KOD+form(_rok-2000,-2,0,'99');
+            ZLGD.use(_mask);
+
+            _mask:=5+ZLGB.name();
+            _mask+=ODDZ.KOD+form(_rok-2000,-2,0,'99');
+            ZLGB.use(_mask);
+
+::          Dołączanie
+            ZLGD.cntx_psh();
+            ZLGD.index('MIESIAC');
+            ZLGD.prefix(_rok,_msc);
+            {? ZLGD.first()
+            || ZLGB.cntx_psh();
+               {!
+               |? ZLGB.clear();
+                  ZLGB.index('ZLGD');
+                  ZLGB.prefix(ZLGD.ref());
+                  {? ZLGB.first()
+                  || {!
+                     |? {? ZLGB.P<>null()
+                        || _result.OK+=exec('podz_godz','!tte_wyk_ipkp')
+                        ?};
+                        ZLGB.next()
+                     !}
+                  ?};
+                  ZLGD.next()
+               !};
+               ZLGB.cntx_pop()
+            ?};
+            ZLGD.cntx_pop();
+
+            ODDZ.next()
+         !}
+      ?};
+      ODDZ.cntx_pop();
+
+::    zakończenie transakcji
+      {? _mydo || end() ?}
+
+:: Rezygnacja z przeliczania
+   || _result.OK:=-1
+   ?}
+?};
+
+G.cntx_pop();
+
+{? ~_isService & _result.OK=2
+|| FUN.info('Nie zaktualizowano danych akordowych — brak zapisów źródłowych.'@)
+|? ~_isService & _result.OK>2
+|| FUN.info('Zaktualizowano dane akordowe.'@)
+?};
+
+_result
+
+
+\podz_godz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [2008]
+:: OPIS: Tworzy zapisy dla godzin - tabela G
+::       Wołana w: exec('zamknij','zl_akord')
+::       Kontekst: rekordy ZLGD, ZLGB
+::   WY: Liczba poprawionych/dodanych rekordów
+::  OLD: \podz_godz/zl_akor1.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+G.cntx_psh();
+G.index('MSCKW_KK');
+_mc:=ZLGB.ZLGD().O().MC;
+_dt:=ZLGD.DT;
+_kk:=ZLGD.ZL().KK;
+_projekt:=ZL.PROJEKTY;
+_rubr:=ZLGD.R;
+_rn:=ZLGD.R().RN;
+G.prefix(ZLGB.P,_mc,'A',_rn,_kk,_projekt,_dt);
+{? G.first()
+||
+   G.G+={? exec('get','#params',500605,2)='P' || ZLGB.TIME_P || ZLGB.TIME ?};
+   G.WAR+=ZLGB.KW;
+   _result+=G.put()
+||
+   G.blank(1);
+   G.P:=ZLGB.P;
+   G.M:=_mc;
+   G.D:=_dt;
+   G.K:=_rubr;
+   G.G:={? exec('get','#params',500605,2)='P' || ZLGB.TIME_P || ZLGB.TIME ?};
+   G.KK:=_kk;
+   G.PROJEKTY:=_projekt;
+   G.R:='A';
+   G.WAR:=ZLGB.KW;
+   G.BL:=exec('str_n_','#blank');
+   _result+=G.add()
+?};
+G.cntx_pop();
+_result
+
+
+\wstecz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Wybór wariantu działania czynności (ustawienie wartości parametru wejściowego "WSTECZ" czynności)
+::----------------------------------------------------------------------------------------------------------------------
+_choice:=FUN.choice('Wybór wariantu czynności.\n\nPrzekazanie danych za:'@,,'Wybrany miesiąc'@,'Poprzedni miesiąc'@);
+_result:={? _choice=1 || 0 |? _choice=2 || -1 || ~~ ?};
+_result
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:22:54 7cf595711ba564ec738d3c491e0c6dc1b62d75755d1f46b9f86f794f65c8fb407613453c87a5ff64353022184f093f0fde4a576502ebe84b26e9ffadd5abd05b64c657b215e89aa0f7c151e9116e05a2dadfcd0cacc2e0cf732e55b0c3c0efd3355668eaaa49881777edb971384e2c6dedf0bd456f985b9f89976eddc8cca281

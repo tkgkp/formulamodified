@@ -1,0 +1,340 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_dpoz.fml
+:: Utworzony: 17.09.2015
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_DPOZ - Rejestracja danych dodatkowych zlecenia
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Formuła główna czynności rejestracji danych dodatkowych zlecenia (TTE_PZL_DPOZ)
+::       Zadaniem czynności jest zredagowanie atrybutów i dokumentów do zlecenia
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+::# permissions=ODDZ
+::# properties=SERVICE
+::# parses=exec('parses','!tte_pzl_dpoz')
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=T, keyref=T
+{? var_pres('ZL',_in)<>type_of(~~) & var_pres('ZL',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZL',_in)=type_of(~~) || return() ?};
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik działania (OK, BŁĄD)", required=N
+
+_ok:=0;
+_res:=~~;
+
+_akcja:=_mp.akcja();
+
+_clean_result:=params_exec('clean','!tte_pzl_dpoz',_mp,_in);
+_can_continue:=_clean_result.RESULT;
+_zl:=_clean_result.ZL;
+
+:: WSTĘPNE WALIDACJE
+{? _can_continue>0 & _mp.isService() & _zl=null()
+|| _msg:='Błędna konfiguracja procesu — nie przekazano zlecenia.'@;
+   _mp.error(_msg);
+   _can_continue:=0
+?};
+
+ZL.cntx_psh();
+{? _can_continue>0
+||
+   ZL.clear();
+   {? ZL.seek(_zl)
+   || _mp.descTodo();
+
+::    Zmienne
+      VAR.A_ZLEC:=ZL.ref();
+
+::    Właściwa obsługa
+::    Zakończenie automatyczne (serwisowe)
+      {? _mp.isService()
+      || {? exec('zl_lock','zl_common',#ZL.ref(),'I')
+         || {? ZL.STAN='Z'
+            || _msg:='Rejestrowanie danych dodatkowych dla zlecenia zamkniętego jest niedozwolone.'@;
+               _mp.error(_msg)
+            || _out.RESULT:='OK';
+               _mp.save(,_out);
+               _mp.done()
+            ?}
+         ?};
+         exec('zl_unlock','zl_common',#ZL.ref(),'I')
+::    Zakończenie rejestrowania - E-z pytaniem, F-bez pytania
+      |? _akcja='ZAKOŃCZ_Z_PYTANIEM' | _akcja='ZAKOŃCZ_BEZ_PYTANIA'
+      || {? exec('zl_lock','zl_common',#ZL.ref(),'I')
+         || {? _akcja='ZAKOŃCZ_BEZ_PYTANIA'
+                  |
+               FUN.ask('Czy zakończyć rejestrację danych dodatkowych zlecenia?'@)
+            || _out.RESULT:='OK';
+               _mp.save(,_out);
+               _mp.done()
+            ?}
+         ?};
+         exec('zl_unlock','zl_common',#ZL.ref(),'I')
+
+::    Wejście do okienka w ramach obszaru roboczego - uruchomienie czynności
+      |? _akcja='START'
+      || _mp.keyRef(ZL.uidref());
+         _mp.lock()
+
+::    Wyjście z okienka w ramach obszaru roboczego - anulowanie czynności
+      |? _akcja='STOP'
+      || {? _mp.isMicro()
+         || _mp.delRef(ZL.uidref());
+            _mp.cancel()
+         ?};
+         _mp.unlock()
+
+::    Atrybuty
+      |? _akcja='ATR'
+      || exec('ZL','tech_atr',ZL.ref())
+
+::    Dokumentacja
+      |? _akcja='DOK'
+      || exec('ZL','tech_doc',ZL.ref())
+
+::    Lista TODO
+      |? _mp.pathTodo()
+      || {? exec('zl_lock','zl_common',#ZL.ref(),'I')
+         || {? ZL.STAN='Z'
+            || _komm:=1;
+               _msg:='Rejestrowanie danych dodatkowych dla zlecenia zamkniętego jest niedozwolone.'@;
+               {? _mp.isAutoRun()
+               || _komm:=0
+               ?};
+               _mp.error(_msg);
+               {? _komm>0
+               || KOMM.init(250,,'Rejestracja danych dodatkowych zlecenia'@);
+                  exec('komm_add','zl_common','Zlecenie jest zamknięte — czynność rejestrowania danych dodatkowych zostaje zakończona.'@);
+                  KOMM.select()
+               ?}
+            || ATR.MJS:='ZL';
+               DK_C.cntx_psh();
+               {? ZL.DK_C<>null() & ref_name(ZL.DK_C)<>DK_C.name() || DK_C.use(ref_name(ZL.DK_C)) ?};
+               _atryb:=exec('czytadkc','mat_atr',ZL.DK_C,ZL.RDKC);
+::             Ustawiam zmienne potrzebne gdyby karta technologiczna źródłowa była w archiwum
+               {? ZL.RKTL<>''
+               || exec('display_vars','tech_common',ZL.RKTL)
+               ?};
+::             Podczytuje M_ATR
+               {? _atryb>0
+               || ZL.KTM().M_ATR()
+               ?};
+
+               _wp:=ZL.TYP().WP;
+               _red:=ZL.mk_edit('Dane dodatkowe zlecenia'@,,'zl_d_dred'+(-_wp));
+               ZL.win_ewin(_red,,'DISP_'+{? _wp='W' || 'WAR' || 'PRO' ?});
+               ZL.win_edit(_red);
+               _btn:=ZL.win_ebtn(_red,'text=%1,align=begin,display=1'['Atrybu&ty'@],
+                  "exec('action_attrib','!tte_pzl_dpoz')"
+               );
+               _btn:=ZL.win_ebtn(_red,'text=%1,align=begin,display=1'['Doku&mentacja'@],
+                  "exec('action_docum','!tte_pzl_dpoz')"
+               );
+               {? exec('chk_role','#b__box',OPERATOR.USER,'TTE_PZL_DPOZ')
+               || _btn:=ZL.win_ebtn(_red,'text=%1,align=end,display=1'['&Zakończ'@],
+                     "params_exec('dpoz_dalej','!tte_pzl_dpoz')"
+                  );
+                  ZL.btn_eopt(_red,_btn,{? ZL.STAT_N='N' || 'state=grayed' || 'state=normal' ?})
+               ?};
+               _btn:=ZL.win_ebtn(_red,'text=%1,align=end,display=1'['&Anuluj'@],"'key:Esc'");
+
+               _buffer:=exec('buffer','zl_head'); _buffer.get();
+               _args:=obj_new('buffer','sprawdz','edit','end');
+               _args.buffer:=_buffer; _args.sprawdz:=1; _args.edit:=0; _args.end:=0;
+               params_set('args',_args);
+
+::            exec('ustaw_pola','zl_head');
+               exec('efld_opt','zl_head',_red);
+               ZL.DK_C();
+               _mp.keep();
+               ZL.display();
+               {? _args.end=1
+               || _out.RESULT:='OK';
+                  _mp.save(,_out);
+                  _mp.done()
+               ?};
+               DK_C.cntx_pop()
+            ?}
+         ?};
+         exec('zl_unlock','zl_common',#ZL.ref(),'I')
+
+      || _msg:='Nie obsłużony kontekst wywołania.';
+         FUN.info(_msg);
+         _mp.error(_msg)
+
+      ?}
+   ?}
+?};
+ZL.cntx_pop();
+_res
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Opis dla czynności rejestracji danych dodatkowych zlecenia (TTE_PZL_DPOZ)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+
+:: jest rekord kluczowy to ustawiam odpowiednie ZL
+{? var_pres('[1]',_keyRefs)
+|| _tmp:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"SYM",'');
+   _desc:={? _tmp<>'' || 'Zarejestruj dane dodatkowe zlecenia %1'@@[_tmp] || '' ?}
+::|| _desc:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"'Zarejestruj dane dodatkowe zlecenia %1'@@[SYM]",'')
+?};
+_desc
+
+
+\action_docum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie danych dodatkowych zlecenia - akcja 'Dokumentacja' z menu okna wertowania
+::----------------------------------------------------------------------------------------------------------------------
+{? ZL.STAT_N='N'
+|| FUN.info('Nie można uruchomić czynności.\nRejestrowanie nagłówka zlecenia nie zostało zakończone.'@)
+|? ZL.STAN='Z'
+|| exec('ZL','tech_doc',ZL.ref(),1)
+|| _args:=exec('mp_run_a','#b__box');
+   _args.ACT_UID:='TTE_PZL_DPOZ';
+   _args.UIDREF:=ZL.uidref();
+   _args.AKCJA:='DOK';
+   _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+   exec('mp_run','#b__box',_args)
+?};
+''
+
+
+\action_attrib
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie danych dodatkowych zlecenia - akcja 'Atrybuty' z menu okna wertowania
+::----------------------------------------------------------------------------------------------------------------------
+{? ZL.STAT_N='N'
+|| FUN.info('Nie można uruchomić czynności.\nRejestrowanie nagłówka zlecenia nie zostało zakończone.'@)
+|? ZL.STAN='Z'
+|| exec('ZL','tech_atr',ZL.ref(),1)
+|| _args:=exec('mp_run_a','#b__box');
+   _args.ACT_UID:='TTE_PZL_DPOZ';
+   _args.UIDREF:=ZL.uidref();
+   _args.AKCJA:='ATR';
+   _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+   exec('mp_run','#b__box',_args)
+?};
+''
+
+
+\action_end
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie danych dodatkowych zlecenia - akcja 'Zakończ' z menu okna wertowania (obsługa z pytaniem)
+::----------------------------------------------------------------------------------------------------------------------
+{? ZL.STAT_N='N'
+|| FUN.info('Nie można uruchomić czynności.\nRejestrowanie nagłówka zlecenia nie zostało zakończone.'@)
+|| _args:=exec('mp_run_a','#b__box');
+   _args.ACT_UID:='TTE_PZL_DPOZ';
+   _args.UIDREF:=ZL.uidref();
+   _args.AKCJA:='ZAKOŃCZ_Z_PYTANIEM';
+   _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+   exec('mp_run','#b__box',_args)
+?};
+'key:Esc'
+
+
+\action_finish
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Rejestrowanie danych dodatkowych zlecenia - akcja 'Zakończ' z menu okna wertowania (obsługa bez pytania)
+::----------------------------------------------------------------------------------------------------------------------
+{? ZL.STAT_N='N'
+|| FUN.info('Nie można uruchomić czynności.\nRejestrowanie nagłówka zlecenia nie zostało zakończone.'@)
+|| _args:=exec('mp_run_a','#b__box');
+   _args.ACT_UID:='TTE_PZL_DPOZ';
+   _args.UIDREF:=ZL.uidref();
+   _args.AKCJA:='ZAKOŃCZ_BEZ_PYTANIA';
+   _args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+   exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+   exec('mp_run','#b__box',_args)
+?};
+'key:Esc'
+
+
+\dpoz_dalej
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Obsługa przycisku 'Zakończ' w oknie redagowania ZL
+::       Zatwierdza dodatkowe dane i popycha proces dalej
+::       Kontekst wywołania - rekord ZL
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+{? exec('zl_lock','zl_common',ZL.ref(),'I')
+|| {? FUN.ask('Czy zakończyć rejestrację danych dodatkowych zlecenia?'@)
+   || params_get().args.end:=1;
+      _result:='key:F2'
+   ?};
+   exec('zl_unlock','zl_common',ZL.ref(),'I')
+?};
+_result
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [18.22]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+params_exec('zl_clean','zl_common',_mp,_in,'ERROR')
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [23.25]
+:: OPIS: Formuła ustalająca PARSES
+::   WE:
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+params_exec('zl_parses','zl_common')
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 610de9d560bb90b3b7f36c7f224353dfb49686e6074064bcf20f4e2daf4997d5889b7e8d1ea7b7f64cb72023be8eaa81be2167f9f0b3f8f3c397fa374abc669443ea00ade79e47072fa5bc3a1242d843b916b0f7dd3f4ccb9c689b06516b8330be962cba11b462a381e93a47d60b6a9fe60585ec23c3e5a4fca2b33514608bc4

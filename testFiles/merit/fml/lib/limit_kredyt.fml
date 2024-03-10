@@ -1,0 +1,1052 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: limit_kredyt.fml
+:: Utworzony: 02.07.2015
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Limit kredytowy - formuły do sprawdzenia
+::======================================================================================================================
+
+
+\lim_kred
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2008]
+:: OPIS: kontrola wartosci/przekroczenia wykorzystanego limitu kredytowego na dzien _b
+::       Jezeli jest przekazany 5 parametr (tabela kontroli limitow) wartosc wykorzystanego
+::       limtu kredytowego jest liczona na podstawie w niej zdefiniowanych parametrow
+::   WE:  _a  - kontrahent (KH.ref)
+::        _b  - na dzien (Date)
+::        _c  - waluta (SLO.ref)
+::        _d  - miejsce wywolania (Integer)
+::        _e  - tabela kontroli limitow (KLIM.ref)
+::        _f  - wartosc powiekszajaca wykorzystanie limitu (wartosc operacji wplywajacej na limit)
+::       [_g] - czy komunikaty
+::       [_h] - name tabeli sprawdzanej (domyslnie 5+cur_tab.name)
+::       [_i] - funkcja
+::       [_j] - zmienna do ktorej przypisana bedzie wartosc wykorzystany limit + wartosc dodana (z biezacego dokumentu)
+::   WY: _wyn -
+::           1 - limitu nie przekroczono lub zdecydowano o kontynuowaniu operacji
+::           0 - przekroczono limit i/lub zablokowano wykonanie operacji
+::  OLD: \lim_kred/lim_kred.fml
+::----------------------------------------------------------------------------------------------------------------------
+:: _limit - wartosc wykorzystanego limitu
+:: _nSaldoWn - saldo Winien (naleznosci kontrahenta)
+:: _nSaldoMa - saldo Ma (zobowiazania wobec kontrahenta)
+:: _nNal - uwzglednianie naleznosci przy wyznaczaniu wykorzystania limitu
+:: _nZam - uwzglednianie zamowien przy wyznaczaniu wykorzystania limitu
+:: _nWyd - niezafakturowane dokumenty wydania
+:: _nFak - niezaksiegowane zaakceptowane dokumenty sprzedazy
+:: _ok - zmienna sterujaca
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=7 || {? type_of(_g)<>1 || _g:=1 ?} || _g:=1 ?};
+{? _>=8 || {? type_of(_h)<>2 || _h:=5+cur_tab.name() ?} || _h:=5+cur_tab.name() ?};
+{? _>=0 || {? var_pres('_i')<>3 || _i:="" ?} || _i:="" ?};
+{? _>=10 || {? var_pres('_j')<>2 || _j:='' ?} || _j:='' ?};
+
+_wyn:=1;
+_ok:=1;
+_czy_msg:=_g;
+
+{? _h='nagdo' & (ND.TYP().Z='N' | ND.TYP().P='T' | ND.TYP().DS='N' | ND.TYP().DK='T')
+|| _ok:=0
+?};
+
+{? _h='faktu' & (FAKS.WHERE='L' | FAKS.WHERE='E')
+|| _ok:=0
+?};
+
+{? _ok
+||
+   KLIM.prefix();
+   _ok:=KLIM.seek(_e);
+
+   _limit:=0;
+   _nSaldoWn:=0;
+   _WnNal:=_WnZam:=_WnWyd:=_WnFak:=0;
+
+:: sprawdzanie limitu kredytowego
+   {? _ok & exec('czykontr','limit_kredyt',_d)
+   ||
+::    sprawdza rozrachunki
+      {? KLIM.NAL_SAL='T'
+      ||
+         OP.cntx_psh();
+         ZAP_OP.cntx_psh();
+
+         SKID.ROK_F:=exec('zwrrok_f','okresy',date(ST.AR,ST.AM,0));
+         {? SKID.ROK_F<>null
+         || OP.use('operac'+SKID.ROK_F().KOD);
+            ZAP_OP.use('rozzap'+SKID.ROK_F().KOD)
+         ?};
+
+         {? exec('get','#params',100134,2)='T'
+         ||
+            OP.index('KH2');
+            OP.prefix(_c,_a,'NAL')
+         ||
+            OP.index('KH');
+            OP.prefix(_c,_a)
+         ?};
+         {? OP.first()
+         ||
+            {!
+            |?
+               ZAP_OP.prefix(OP.ref());
+               {? ZAP_OP.first()
+               ||
+                  {!
+                  |?
+                     _Wn:=ZAP_OP.WN-ZAP_OP.MA;
+                     _nSaldoWn+=_Wn;
+                     _WnNal+=_Wn;
+                     {? _i<>""
+                     || _i(KH.KOD
+                           ,$KH.ref()
+                           ,ZAP_OP.DATA
+                           ,OP.TZ
+                           ,''
+                           ,OP.SYM
+                           ,ZAP_OP.WN
+                           ,ZAP_OP.MA
+                           ,'Zapisy OP'
+                           ,0
+                           ,OP.OP
+                           ,$OP.ref())
+                     ?};
+                     ZAP_OP.next()
+                  !}
+               ?};
+               OP.next()
+            !}
+         ?};
+
+         ZAP_OP.cntx_pop();
+         OP.cntx_pop()
+      ?};
+
+::    kontrola dokumentow
+      FAKS.cntx_psh();
+      ND.cntx_psh();
+      DK.cntx_psh();
+
+      _kod:='';
+      KH.cntx_psh();
+      KH.prefix();
+      {? KH.seek(_a)
+      || _kod:=KH.KOD
+      ?};
+      KH.cntx_pop();
+
+      _Dokmask:=exec('mask_dok','limit_kredyt',0);
+      _ndx1:=_Dokmask.ndx_tmp('',0,'NAME',,);
+      _ndx2:=_Dokmask.ndx_tmp('',0,'ROKB',,);
+      _ndx3:=_Dokmask.ndx_tmp('',0,'ROKE',,);
+::    sprawdza niezaksiegowane dokumenty sprzedazy (z biezacego roku i oddzialu)
+      {? do_state() & var_pres('X_Xd')=type_of(FAKS)
+      ||
+         X_Xd.prefix(7);
+         _loop:=X_Xd.first();
+         {!
+         |? _loop
+         |!
+            _Wn:=X_Xd.WN;
+            _nSaldoWn+=_Wn;
+            _WnFak+=_Wn;
+            _loop:=X_Xd.next()
+         !}
+      ||
+         OKR.cntx_psh(); DOK.cntx_psh();
+         OKR.index('MC'); OKR.prefix(REF.FIRMA,1);
+         _loop:=OKR.first();
+         {? _loop
+         || {!
+            |? _loop:=0;
+               _rok:=OKR.ROK;
+               _Dokmask.index(_ndx2); _Dokmask.prefix(_rok);
+               {? _Dokmask.first()
+               || _loop:=1
+               || _Dokmask.index(_ndx2); _Dokmask.prefix(_rok+1);
+                  {? _Dokmask.first()
+                  || _loop:=1
+                  || _Dokmask.index(_ndx3); _Dokmask.prefix(_rok);
+                     {? _Dokmask.first()
+                     || _loop:=1
+                     || _Dokmask.index(_ndx3); _Dokmask.prefix(_rok+1);
+                        {? _Dokmask.first() || _loop:=1 ?}
+                     ?}
+                  ?}
+               ?};
+
+               {? ~_loop || _loop:=OKR.next() || 0 ?}
+            !}
+         ?};
+
+         {!
+         |? _loop
+         |! _onlyzak:=(_Dokmask.index(_ndx2); _Dokmask.prefix(OKR.ROK); ~_Dokmask.first());
+            FAKS.use(5+FAKS.name()+ST.ODDZ+($OKR.ROK+2));
+            FAKS.index('FAK_KH');
+            FAKS.prefix('S',_kod);
+            {? FAKS.first()
+             & {? ~_onlyzak
+               || FAKS.find_tab('first','AKC',,'=','T','WHERE',,'<>','L','WHERE',,'<>','E','WHERE',,'<>','K')
+               || FAKS.find_tab('first','ZAK',,'=','T','AKC',,'=','T','WHERE',,'<>','L','WHERE',,'<>','E','WHERE',,'<>','K')
+               ?}
+            || {!
+               |? _nieksie:=1;
+                  _maska:='';
+                  _noakc:=0;
+::                ustalam maskę korekty wynikające z korekty zbiorczej
+                  FAKS.cntx_psh();
+                  {? FAKS.T().KOR='T'
+                  || _jest:=0;
+                     FAKS_KZF.prefix();
+                     {? FAKS_KZF.first()
+                     || {!
+                        |? {? FAKS_KZF.KOR=$FAKS.ref()
+                           || _noakc:=exec('FindAndGet','#table',FAKS,$FAKS_KZF.FAKS,,"AKC<>'T'",0);
+                              _maska:='K'+FAKS_KZF.FAKS().ODDZ
+                                         +(($(FAKS_KZF.FAKS().AR))+2)
+                                         +form(#FAKS_KZF.FAKS,,,'99');
+                              _jest:=1
+                           ?};
+                           ~_jest & FAKS_KZF.next()
+                        !}
+                     ?}
+                  ?};
+                  FAKS.cntx_pop();
+                  {? ~_noakc & FAKS.ZAK='T'
+                  || _byl:=0;
+                     {? _maska='' || _maska:=exec('maska','dok_fks_aut_dok','F') ?};
+                     _Dokmask.index(_ndx1);
+                     _loop:=_Dokmask.last();
+                     {!
+                     |? _loop
+                     |! {? _Dokmask.ROKB>=(OKR.ROK-1) & _Dokmask.ROKB<=(OKR.ROK+1)
+                        || DOK.use(_Dokmask.NAME);
+                           DOK.index('DOKZRODL'); DOK.prefix(_maska,);
+                           _loop:=
+                           {? DOK.first()
+                           || _byl:=1; {? DOK.A='T' || _nieksie:=0 ?}; 0
+                           || _Dokmask.prev()
+                           ?}
+                        || _loop:=_Dokmask.prev()
+                        ?}
+                     !};
+                     {? _nieksie & _onlyzak & ~_byl || _nieksie:=0 ?}
+                  ?};
+                  {? ~_noakc & _nieksie
+                  ||
+                     _Wn:=FAKS.BRUTTO;
+                     _nSaldoWn+=_Wn;
+                     _WnFak+=_Wn;
+                     {? _i<>""
+                     || exec('wystypza','limit_kredyt',7);
+                        _i(KH.KOD
+                           ,$KH.ref()
+                           ,FAKS.DW
+                           ,FAKS.TZ
+                           ,''
+                           ,FAKS.SYM
+                           ,FAKS.BRUTTO
+                           ,0
+                           ,SKID.TYP_ZAP
+                           ,7
+                           ,FAKS.T().NAZ
+                           ,$FAKS.ref())
+                     ?}
+                  ?};
+                  {? ~_onlyzak
+                  || FAKS.find_tab('next','AKC',,'=','T','WHERE',,'<>','L','WHERE',,'<>','E','WHERE',,'<>','K')
+                  || FAKS.find_tab('next','ZAK',,'=','T','AKC',,'=','T','WHERE',,'<>','L','WHERE',,'<>','E','WHERE',,'<>','K')
+                  ?}
+               !}
+            ?};
+            _loop:=OKR.next();
+            {? _loop
+            || {!
+               |? _loop:=0;
+                  _rok:=OKR.ROK;
+                  _Dokmask.index(_ndx2); _Dokmask.prefix(_rok);
+                  {? _Dokmask.first()
+                  || _loop:=1
+                  || _Dokmask.index(_ndx2); _Dokmask.prefix(_rok+1);
+                     {? _Dokmask.first()
+                     || _loop:=1
+                     || _Dokmask.index(_ndx3); _Dokmask.prefix(_rok);
+                        {? _Dokmask.first()
+                        || _loop:=1
+                        || _Dokmask.index(_ndx3); _Dokmask.prefix(_rok+1);
+                           {? _Dokmask.first() || _loop:=1 ?}
+                        ?}
+                     ?}
+                  ?};
+
+                  {? ~_loop || _loop:=OKR.next() || 0  ?}
+               !}
+            ?};
+            _loop
+         !};
+         OKR.cntx_pop(); DOK.cntx_pop()
+      ?};
+
+::    sprawdza WZ do ktorych nie wystawiono jeszcze faktury (z biez roku i oddzialu)
+      {? KLIM.DOK_SUM='T'
+      ||
+         {? do_state() & var_pres('X_Xd')=type_of(FAKS)
+         || X_Xd.prefix(8);
+            _loop:=X_Xd.first();
+            {!
+            |? _loop
+            |!
+               _Wn:=X_Xd.WN$2;
+               _nSaldoWn+=_Wn;
+               _WnWyd+=_Wn;
+               _loop:=X_Xd.next()
+            !}
+         ||
+            OKR.cntx_psh();
+            OKR.index('MC'); OKR.prefix(REF.FIRMA,1);
+            _loop:=OKR.first();
+            {? _loop
+            || {!
+               |? _loop:=0;
+                  _rok:=OKR.ROK;
+                  _Dokmask.index(_ndx2); _Dokmask.prefix(_rok);
+                  {? _Dokmask.first()
+                  || _loop:=1
+                  || _Dokmask.index(_ndx2); _Dokmask.prefix(_rok+1);
+                     {? _Dokmask.first()
+                     || _loop:=1
+                     || _Dokmask.index(_ndx3); _Dokmask.prefix(_rok);
+                        {? _Dokmask.first()
+                        || _loop:=1
+                        || _Dokmask.index(_ndx3); _Dokmask.prefix(_rok+1);
+                           {? _Dokmask.first() || _loop:=1 ?}
+                        ?}
+                     ?}
+                  ?};
+
+                  {? ~_loop || _loop:=OKR.next() || 0 ?}
+               !}
+            ?};
+            {!
+            |? _loop
+            |!
+               ND.use(5+ND.name()+ST.ODDZ+($OKR.ROK+2));
+               DK.use('dokma'+ST.ODDZ+($OKR.ROK+2));
+               ND.index('KH');
+               ND.prefix(_a,'N','T');
+               {? ND.first() & ND.find_tab('first','TYP','Z','=','T','TYP','DK','=','N','Z',,'=','T')
+               ||
+                  DK.index('DOKMAG');
+                  {!
+                  |?
+                     {? exec('nd_ok','limit_kredyt')
+                     ||
+                        DK.prefix(ND.ref());
+                        {? DK.first()
+                        || __dk_brt:=0;
+                           {!
+                           |?
+                              _Wn:=DK.WB$2;
+                              _nSaldoWn+=_Wn;
+                              _WnWyd+=_Wn;
+                              __dk_brt+=DK.WB$2;
+                              DK.next()
+                           !};
+                           {? _i<>""
+                           || exec('wystypza','limit_kredyt',8);
+                              _i(KH.KOD
+                                 ,$KH.ref()
+                                 ,ND.D
+                                 ,date(0,0,0)
+                                 ,''
+                                 ,ND.SYM
+                                 ,__dk_brt
+                                 ,0
+                                 ,SKID.TYP_ZAP
+                                 ,8
+                                 ,ND.TYP().NAZ
+                                 ,$ND.ref())
+                           ?}
+                        ?}
+                     ?};
+                     ND.find_tab('next','TYP','Z','=','T','TYP','DK','=','N','Z',,'=','T')
+                  !};
+                  VAR_DEL.delete('__dk_brt')
+               ?};
+               _loop:=OKR.next();
+               {? _loop
+               || {!
+                  |? _loop:=0;
+                     _rok:=OKR.ROK;
+                     _Dokmask.index(_ndx2); _Dokmask.prefix(_rok);
+                     {? _Dokmask.first()
+                     || _loop:=1
+                     || _Dokmask.index(_ndx2); _Dokmask.prefix(_rok+1);
+                        {? _Dokmask.first()
+                        || _loop:=1
+                        || _Dokmask.index(_ndx3); _Dokmask.prefix(_rok);
+                           {? _Dokmask.first()
+                           || _loop:=1
+                           || _Dokmask.index(_ndx3); _Dokmask.prefix(_rok+1);
+                              {? _Dokmask.first() || _loop:=1 ?}
+                           ?}
+                        ?}
+                     ?};
+
+                     {? ~_loop || _loop:=OKR.next() || 0  ?}
+                  !}
+               ?};
+               _loop
+            !};
+            OKR.cntx_pop()
+         ?}
+      ?};
+      _Dokmask.ndx_drop();
+      &_ndx1; &_ndx2; &_ndx3;
+      obj_del(_Dokmask);
+::    sprawdza niezrealizowane zamowienia (z biezacego oddzialu)
+      {? KLIM.ZAM_SUM='T'
+      ||
+         {? do_state() & var_pres('X_Xd')=type_of(FAKS)
+         || X_Xd.prefix(9);
+            _loop:=X_Xd.first();
+            {!
+            |? _loop
+            |!
+               _Wn:=X_Xd.WN$2;
+               _nSaldoWn+=_Wn;
+               _WnWyd+=_Wn;
+               _loop:=X_Xd.next()
+            !}
+         ||
+            ZK_N.cntx_psh();
+            ZK_N.index('ZAM_KL');
+            ZK_N.prefix('Z',_a);
+            {? ZK_N.first()
+            ||
+               {!
+               |?
+                  {? ZK_N.A='A' & ZK_N.AKC='T'
+                  || _Wn:=ZK_N.BRT;
+                     _nSaldoWn+=_Wn;
+                     _WnZam+=_Wn;
+                     {? _i<>""
+                     || exec('wystypza','limit_kredyt',9);
+                        _i(KH.KOD
+                           ,$KH.ref()
+                           ,ZK_N.DP
+                           ,date(0,0,0)
+                           ,''
+                           ,ZK_N.SYM
+                           ,ZK_N.BRT
+                           ,0
+                           ,SKID.TYP_ZAP
+                           ,9
+                           ,ZK_N.T().NAZ
+                           ,$ZK_N.ref())
+                     ?}
+                  ?};
+                  ZK_N.next()
+               !}
+            ?};
+            ZK_N.cntx_pop()
+         ?}
+      ?};
+
+      DK.cntx_pop();
+      ND.cntx_pop();
+      FAKS.cntx_pop();
+
+::    reakcja
+      _limit:=_nSaldoWn;
+
+      KH.cntx_psh();
+      KH.prefix();
+      {? KH.seek(_a)
+      || _wyn:=exec('reakcja','limit_kredyt',_limit+_f,_WnNal,0,_WnZam,_WnWyd,_WnFak,0,0,_czy_msg,_f,_d);
+         {? _j<>''
+         || ($_j)():={? _limit+_f>0 || __War_f('KH_DOD','LK',KH.ref)-(_limit+_f) || __War_f('KH_DOD','LK',KH.ref) ?}
+         ?}
+      || _wyn:=0
+      ?};
+      KH.cntx_pop()
+   ?}
+?};
+_wyn
+
+
+\lim_kred_pla
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2008]
+:: OPIS: kontrola wartosci/przekroczenia wykorzystanego limitu kredytowego na dzien _b
+::       Jezeli jest przekazany 5 parametr (tabela kontroli limitow) wartosc wykorzystanego
+::       limtu kredytowego jest liczona na podstawie w niej zdefiniowanych parametrow
+::   WE: _a - kontrahent (KH.ref)
+::       _b - na dzien (Date)
+::       _c - waluta (SLO.ref)
+::       _d - miejsce wywolania (Integer)
+::       _e - tabela kontroli limitow (KLIM.ref)
+::       _f - wartosc powiekszajaca wykorzystanie limitu (wartosc operacji wplywajacej na limit)
+::       _g - czy komunikaty
+::       _h - funkcja
+::       [_i] - zmienna do ktorej przypisana bedzie wartosc wykorzystany limit + wartosc dodana (z biezacego dokumentu)
+::   WY: _wyn -
+::           1 - limitu nie przekroczono lub zdecydowano o kontynuowaniu operacji
+::           0 - przekroczono limit i/lub zablokowano wykonanie operacji
+::  OLD: \lim_kred/skid_pla.fml
+::----------------------------------------------------------------------------
+:: _limit - wartosc wykorzystanego limitu
+:: _nSaldoWn - saldo Winien (naleznosci kontrahenta)
+:: _nSaldoMa - saldo Ma (zobowiazania wobec kontrahenta)
+:: _nNal - uwzglednianie naleznosci przy wyznaczaniu wykorzystania limitu
+:: _nNalP - uwzglednianie naleznosci przeterminowanych przy wyznaczaniu wykorzystania limitu
+:: _nZob - uwzglednianie zobowiazan przy wyznaczaniu wykorzystania limitu (parametr 134)
+:: _nZobP - uwzglednianie zobowiazan przeterminowanych przy wyznaczaniu limitu (parametr 134)
+:: _nZam - uwzglednianie zamowien przy wyznaczaniu wykorzystania limitu
+:: _nWyd - niezafakturowane dokumenty wydania
+:: _nFak - niezaksiegowane zaakceptowane dokumenty sprzedazy
+:: _nKasa - dokumenty kasowe
+:: _nPrzel - przelewy bankowe
+:: _ok - zmienna sterujaca
+::----------------------------------------------------------------------------------------------------------------------
+
+{? var_pres('_i')<>type_of('stringi') || _i:='' ?};
+
+_wyn:=1;
+_czy_msg:=_g;
+KH.clear();
+KH.cntx_psh();
+_ok:=KH.seek(_a);
+{? _ok
+||
+   KLIM.clear();
+   _ok:=KLIM.seek(_e)
+?};
+{? _ok & exec('par29','limit_kredyt') & exec('czykontr','limit_kredyt',_d) & exec('use_tab','limit_kredyt',1,_a)
+||
+   _par_134:=exec('get','#params',100134,2);
+:: zainicjowanie struktury do wyswietlania "skladowych" wykorzystania limitu
+   exec('del_tab','limit_kredyt');
+   exec('iniTab','limit_kredyt',0,0);
+
+   _nNal:=(KLIM.NAL_SAL='T');
+   _nNalP:=(KLIM.NAL_PRZ='T');
+
+   _nZob:=(_par_134='N' & KLIM.ZOB_SAL='T');
+   _nZobP:=(_par_134='N' & KLIM.ZOB_PRZ='T');
+
+   _nZam:=(KLIM.ZAM_SUM='T');
+   _nWyd:=(KLIM.DOK_SUM='T');
+   _nFak:=1;
+
+   _nKasa:=(KLIM.KAS='T');
+   _nPrzel:=(KLIM.PRZEL='T');
+
+   _limit:=0;
+   _nSaldoWn:=_nSaldoMa:=0;
+   _WnNal:=_WnNalP:=_WnZam:=_WnWyd:=_WnFak:=_WnKasa:=_WnPrzel:=0;
+
+   SKIDPLAT.index('KH');
+   SKIDPLAT.prefix(_a,_c,'T');
+   {? SKIDPLAT.first()
+   ||
+      {!
+      |?
+         {? 1+SKIDPLAT.TID='N'
+         ||
+            _Wn:=(SKIDPLAT.WN-SKIDPLAT.MA);
+            {? _nZam & SKIDPLAT.TYP=9
+            ||
+               _nSaldoWn+=_Wn;
+               _WnZam+=_Wn;
+               exec('addTmp','limit_kredyt',_h)
+            |? _nWyd & SKIDPLAT.TYP=8
+            ||
+               _nSaldoWn+=_Wn;
+               _WnWyd+=_Wn;
+               exec('addTmp','limit_kredyt',_h)
+            |? _nFak & SKIDPLAT.TYP=7
+            ||
+               _nSaldoWn+=_Wn;
+               _WnFak+=_Wn;
+               exec('addTmp','limit_kredyt',_h)
+            |? _nKasa
+            ||
+               _nSaldoWn+=_Wn;
+               _WnKasa+=_Wn;
+               exec('addTmp','limit_kredyt',_h)
+            |? _nPrzel
+            ||
+               _nSaldoWn+=_Wn;
+               _WnPrzel+=_Wn;
+               exec('addTmp','limit_kredyt',_h)
+            |? _nNal & _Wn<>0 & SKIDPLAT.TYP<7
+            ||
+               _nSaldoWn+=_Wn;
+               _WnNal+=_Wn;
+               exec('addTmp','limit_kredyt',_h)
+            |? _nNalP & (SKIDPLAT.TP<=_b | ~#SKIDPLAT.TP)
+            ||
+               _nSaldoWn+=_Wn;
+               _WnNalP+=_Wn;
+               exec('addTmp','limit_kredyt',_h)
+            ?}
+         |?
+::          zobowiazania
+            1+SKIDPLAT.TID='Z'
+               &
+::          rozrachunki z terminem realizacji <_b i =date(0,0,0)
+            (_nZob | (SKIDPLAT.TP<=_b | ~#SKIDPLAT.TP))
+               &
+::          zamowienia lub inne typu <10 (czyli 7 sprzedaz, 8 wydania)
+            (_nZam | (~_nZam & SKIDPLAT.TYP<11))
+         ||
+            _nSaldoMa+=(SKIDPLAT.MA-SKIDPLAT.WN)
+         ?};
+         SKIDPLAT.next()
+      !};
+      _limit+={? _nNal | _nNalP || _nSaldoWn ?};
+      _limit-={? _nZob | _nZobP || _nSaldoMa ?}
+   ?};
+   {? _h=""
+   ||
+      _wyn:=exec('reakcja','limit_kredyt'
+         ,_limit+_f,_WnNal,_WnNalP,_WnZam,_WnWyd,_WnFak,_WnKasa,_WnPrzel,_czy_msg,_f,_d,_nSaldoMa)
+   ?};
+   {? _i<>''
+   || ($_i)():={? _limit+_f>0 || __War_f('KH_DOD','LK',KH.ref)-(_limit+_f) || __War_f('KH_DOD','LK',KH.ref) ?}
+   ?};
+::   {? __War_f('KH_DOD','LK',KH.ref)>0 || PLATPOZ.select() ?};
+   exec('del_tab','limit_kredyt')
+?};
+KH.cntx_pop();
+_wyn
+
+
+\par29
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2006]
+:: OPIS: Sprawdza wartosc parametru numer 29 (rejestrowanie rozliczen)
+::  OLD: \par29/skid_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+0
+
+
+\czykontr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2008]
+:: OPIS: Funkcja sprawdzajaca, czy w miejscu o numerze _a powinna byc
+::       przeprowadzana kontrola limitu
+::   WE: _a miejsce uruchomienia
+::  OLD: \czykontr/lim_kred.fml
+::----------------------------------------------------------------------------------------------------------------------
+_czy:=0;
+:: zamowienia
+{? _a=1 & KLIM.ZAM_W='T' || 'wystawianie';   _czy:=1
+|? _a=2 & KLIM.ZAM_R='T' || 'akceptacja';    _czy:=1
+:: wydania
+|? _a=3 & KLIM.DOK_D='T' || 'wystawianie';   _czy:=1
+|? _a=4 & KLIM.ZAM_A='T' || 'akceptacja';    _czy:=1
+:: sprzedaz
+|? _a=5 & KLIM.DOK_W='T' || 'wystawianie';   _czy:=1
+|? _a=6 & KLIM.DOK_A='T' || 'akceptacja';    _czy:=1
+|? _a=7 || 'wydruk fir_06.rpm';    _czy:=1
+|? _a=8 || 'lim_kred@lotsync'; _czy:=1
+?};
+_czy
+
+
+\use_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2006]
+:: OPIS: Otwiera bazy maskowane dla kontrahenta lub osoby
+::   WE: _a - (1/0) - kontrahent/osoba
+::       _b - ref kontrahenta lub osoby
+::  OLD: \use_tab/skid_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+_maska:={? _a=1 || 'ypk' || 'ypo' ?};
+_ilewmas:=0; _ref:=#_b;
+_calk:=_ref%_ilewmas; _ulamek:=_ref%*_ilewmas;
+_numer:=$(_calk+{? _ulamek>0 || 1 || 0 ?});
+_numer:=(('00000'+_numer)+5);
+_maska+=_numer;
+_ok:=((_maska+5)<>'00000');
+{? _ok || SKIDPLAT.use(_maska) ?};
+_ok
+
+
+\del_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2006]
+:: OPIS: Skasowanie zmiennych globalnych i tabel tymczasowych
+::  OLD: \del_tab/skid_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+VAR_DEL.delete('PLATNOSC','PLATPOZ','PLATIND1','PLATIND2','PLATIND3','PLATIND4');
+VAR_DEL.delete('PLATIND5','PLATIND6','PLATIND7','PLATIND8','PLATIND9','PLATINDA','PLATPOKN');
+VAR_DEL.delete('GRPSEL1','GRPSEL2','GRPSEL3','GRPSEL4');
+VAR_DEL.delete('PLATOK1','PLATOK2','PLATOK3','PLATOK4')
+
+
+\iniTab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BL [2006]
+:: OPIS: Stworzenie definicji tabeli z dokumentami wchodzacymi do wykorzystania limitu
+::  OLD: \iniTab/skid_plb.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('PLATPOZ')>0
+|| PLATNOSC.erase(); PLATPOZ.erase()
+|| PLATPOZ:=tab_tmp(3,'DATA','DATE','Data',
+                     'TP','DATE','Termin płatności',
+                     'SYSTEM','STRING[10]','System',
+                     'SYMBOL','STRING[20]','Symbol dokumentu',
+                     'WN','REAL','Winien',
+                     'MA','REAL','Ma',
+                     'TYP_ZAP','STRING[35]','Miejsce powstania',
+                     'TYP','INTEGER','Typ zapisu',
+                     'OPIS','STRING[200]','Opis',
+                     'POCH','STRING[16]','Źródło pochodzenia'
+                   );
+   PLAT_OKN:=PLATPOZ.mk_sel('Elementy uwzględnione do wyznaczenia wykorzystania limitu'@,,,'platpoz_wer');
+   PLATPOZ.win_fld(PLAT_OKN,,'DATA',,,,,,'Data'@);
+   PLATPOZ.win_fld(PLAT_OKN,,'SYSTEM',,,,,,'System'@);
+   PLATPOZ.win_fld(PLAT_OKN,,'SYMBOL',,,,,,'Symbol dokumentu'@);
+   PLATPOZ.win_fld(PLAT_OKN,,'TYP_ZAP',,,20,,,'Miejsce powstania'@);
+   PLATPOZ.win_fld(PLAT_OKN,,'WN',,,14,2,,'Winien'@);
+   PLATPOZ.win_fld(PLAT_OKN,,'MA',,,14,2,,'Ma'@);
+   PLATPOZ.win_fld(PLAT_OKN,,'OPIS',,,27,,,'Opis'@);
+:: DRO [rr]: brak pliku ciok_02.fml
+::   PLATPOZ.win_act(PLAT_OKN,0, 'Formuła','&Szczegóły'@@,,,"
+::                  {? PLATPOZ.TYP>=7 & PLATPOZ.TYP<=10
+::                  || exec('dok_ten','ciok_02',BB.sqlint(PLATPOZ.POCH),(8+PLATPOZ.POCH),0)
+::                  || exec('zam_ten','ciok_02',BB.sqlint(PLATPOZ.POCH),(8+PLATPOZ.POCH),0)
+::                  ?}",,1,,,,'S');
+::   PLATPOZ.win_act(PLAT_OKN,0, 'Wyświetl',,,,"
+::                  {? PLATPOZ.TYP>=7 & PLATPOZ.TYP<=10
+::                  || exec('dok_wysw','ciok_02',BB.sqlint(PLATPOZ.POCH),(8+PLATPOZ.POCH))
+::                  || exec('zam_wysw','ciok_02',BB.sqlint(PLATPOZ.POCH),(8+PLATPOZ.POCH))
+::                  ?}",,0);
+   PLATPOZ.win_sel(PLAT_OKN)
+?}
+
+
+\addTmp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BL [2006]
+:: OPIS: Dodanie zapisu o dokumencie wchodzacym do wykorzystania limitu kredytowego
+::   WE: _a - funkcja
+::  OLD: \addTmp/skid_plb.fml
+::----------------------------------------------------------------------------------------------------------------------
+PLATPOZ.prefix();
+PLATPOZ.WN:=SKIDPLAT.WN;
+PLATPOZ.MA:=SKIDPLAT.MA;
+PLATPOZ.DATA:=SKIDPLAT.DATA;
+PLATPOZ.TP:=SKIDPLAT.TP;
+PLATPOZ.SYSTEM:=SKIDPLAT.SYSTEM;
+PLATPOZ.SYMBOL:=SKIDPLAT.SYM;
+PLATPOZ.OPIS:=SKIDPLAT.OPIS;
+PLATPOZ.POCH:=SKIDPLAT.ZRODLO;
+PLATPOZ.TYP:=SKIDPLAT.TYP;
+exec('wystypza','limit_kredyt',SKIDPLAT.TYP);
+PLATPOZ.TYP_ZAP:=SKID.TYP_ZAP;
+{? PLATPOZ.add()
+|| _a(KH.KOD
+      ,$KH.ref()
+      ,PLATPOZ.DATA
+      ,PLATPOZ.TP
+      ,PLATPOZ.SYSTEM
+      ,PLATPOZ.SYMBOL
+      ,PLATPOZ.WN
+      ,PLATPOZ.MA
+      ,PLATPOZ.TYP_ZAP
+      ,PLATPOZ.TYP
+      ,PLATPOZ.OPIS
+      ,PLATPOZ.POCH);
+   1
+|| 0
+?}
+
+
+\wystypza
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2006]
+:: OPIS: Ustawienie pola SKID.TYP_ZAP (miejsce powstania zapisu)
+::   WE: _a - zadeklarowane na podstawie _a w przeciwnym wypadku na podstawie
+::       SKIDPLAT.TYP
+::  OLD: \wystypza/skid_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<=0 || _a:=SKIDPLAT.TYP ?};
+SKID.TYP_ZAP:={? _a=1
+              || 'dokument źródłowy'
+              |? _a=2
+              || 'rozrachunek'
+              |? _a=3
+              || 'rozliczenie rozrachunków'
+              |? _a=4
+              || 'umowa dotycząca rozrachunków'
+              |? _a=5
+              || 'przelew zaakceptowany'
+              |? _a=6
+              || 'dokument kasowy'
+              |? _a=7
+              || 'dokument sprzedaży'
+              |? _a=8
+              || 'dokument wydania bez faktury'
+              |? _a=9
+              || 'niezrealizowane zamówienie sprzedaży'
+              |? _a=10
+              || 'dokument zakupu'
+              |? _a=11
+              || 'zamówienie zakupu'
+              |? _a=12
+              || 'dokument w obiegu'
+              || '- brak danych -'
+              ?};
+1
+
+
+\reakcja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2008]
+:: OPIS: Obsluga reakcji po kontroli limitu, przy jego wykorzystaniu
+::       limitu w kwocie _a
+::       UWAGA KLIM.ref w buforze (pociagniete w skid_pla.fml \lim_kred)
+::   WE: _a - wykorzystany limit + wartosc dodana (z biezacego dokumentu)
+::       _b - nierozliczone rozrachunki
+::       _c - przeterminowane rozrachunki
+::       _d - niezrealizowane zamowienia
+::       _e - zaakceptowane i niezafkturowane dokumenty wydania
+::       _f - niezaksiegowana sprzedaz
+::       _g - dokumenty kasowe
+::       _h - przelewy bankowe
+::      [_i]- czy komunikaty
+::      [_j]- wartosc dodana (z biezacego dokumentu)
+::      [_k]- miejsce wystawiania
+::      [_l]- zobowiazania
+::   WY: _ok - 0/1 - czy mozliwa dalsze edycja
+::  OLD: \reakcja/lim_kred.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=9 || {? type_of(_i)<>1 || _i:=1 ?} || _i:=1 ?};
+{? _>=10 || {? type_of(_j)<>1 || _j:=0 ?} || _j:=0 ?};
+{? _>=11 || {? type_of(_k)<>1 || _k:=0 ?} || _k:=0 ?};
+{? _>=12 || {? type_of(_l)<>1 || _l:=0 ?} || _l:=0 ?};
+
+_kom:={? KLIM.KOM_ZAW='T' || 1 || (__War_f('KH_DOD','LK',KH.ref)$2-_a<0) ?};
+_ok:=1;
+_ln:='';
+_txt:='';
+_kol1:=45;
+_kol2:=20;
+_czy_gotow:='N';
+{? _kom & __War_f('KH_DOD','LK',KH.ref)>0
+||
+   {? _k=1 | _k=2
+   ||
+      {? type_of(cur_tab)>=100 & 5+cur_tab.name()='zknag'
+      ||
+         _czy_gotow:=exec('czy_got','limit_kredyt',ZK_N.PL);
+         _txt+='Zamówienie sprzedaży %1 z dnia %2\n\n'@[ZK_N.SYM,$ZK_N.DP]
+      ||
+         _txt+='Oferta %1 z dnia %2\n\n'@[OFE.SYM,$OFE.DU]
+      ?}
+   |? _k=3 | _k=4
+   ||
+      ZK_RN.cntx_psh();
+      ZK_RN.index('ND');
+      ZK_RN.prefix($ND.ref(),ND.SYM);
+      {? ZK_RN.first()
+      ||
+         ZK_N.cntx_psh();
+         _czy_gotow:=exec('czy_got','limit_kredyt',ZK_RN.N().PL);
+         ZK_N.cntx_pop()
+      ?};
+      ZK_RN.cntx_pop();
+      _txt+='Dokument magazynowy %1 z dnia %2\n\n'@[ND.SYM,$ND.D]
+   |? _k=5 | _k=6
+   ||
+      _czy_gotow:=exec('czy_got','limit_kredyt',FAKS.PL);
+      _txt+='Dokument sprzedaży %1 z dnia %2\n\n'@[FAKS.SYM,$FAKS.DW]
+   ?};
+
+   _limit:=__War_f('KH_DOD','LK',KH.ref)$2;
+   'Limit kredytowy kontrahenta '@;
+   _ln:="form('Limit kredytowy kontrahenta '@+KH.SKR+':',_a)+' '+form(_c,_b,2)";
+   _txt+=_ln(_kol1,_kol2,_limit)+'\n';
+   exec('add_kom','#message',_ln(0,0,_limit),7);
+
+   {? _a<0 || _a:=0 ?};
+   'Wykorzystanie limitu:'@;
+   _ln:="form('Wykorzystanie limitu:'@,_a)+' '+form(_c,_b,2)";
+   _txt+=_ln(_kol1,_kol2,_a)+'\n\n';
+   exec('add_kom','#message',_ln(0,0,_a),7);
+
+   {? _b$2<>0
+   || ' - nierozliczone rozrachunki: '@;
+      _ln:="form(' - nierozliczone rozrachunki: ',_a)+' '+form(_c,_b,2)";
+      _txt+=_ln(_kol1,_kol2,_b)+'\n';
+      exec('add_kom','#message',_ln(0,0,_b),7)
+   ?};
+   {? _c$2<>0
+   || ' - przeterminowane rozrachunki: '@;
+      _ln:="form(' - przeterminowane rozrachunki: ',_a)+' '+form(_c,_b,2)";
+      _txt+=_ln(_kol1,_kol2,_c)+'\n';
+      exec('add_kom','#message',_ln(0,0,_c),7)
+   ?};
+   {? _d$2<>0
+   || ' - niezrealizowane zamówienia: '@;
+      _ln:="form(' - niezrealizowane zamówienia: ',_a)+' '+form(_c,_b,2)";
+      _txt+=_ln(_kol1,_kol2,_d)+'\n';
+      exec('add_kom','#message',_ln(0,0,_d),7)
+   ?};
+   {? _e$2<>0
+   || ' - niezafkturowane dokumenty wydania: '@;
+      _ln:="form(' - niezafakturowane dokumenty wydania: ',_a)+' '+form(_c,_b,2)";
+      _txt+=_ln(_kol1,_kol2,_e)+'\n';
+      exec('add_kom','#message',_ln(0,0,_e),7)
+   ?};
+   {? _f$2<>0
+   || ' - niezaksięgowana sprzedaż: '@;
+      _ln:="form(' - niezaksięgowana sprzedaż: ',_a)+' '+form(_c,_b,2)";
+      _txt+=_ln(_kol1,_kol2,_f)+'\n';
+      exec('add_kom','#message',_ln(0,0,_f),7)
+   ?};
+   {? _g$2<>0
+   || ' - dokumenty kasowe: '@;
+      _ln:="form(' - dokumenty kasowe: ',_a)+' '+form(_c,_b,2)";
+      _txt+=_ln(_kol1,_kol2,_g)+'\n';
+      exec('add_kom','#message',_ln(0,0,_g),7)
+   ?};
+   {? _h$2<>0
+   || ' - przelewy bankowe: '@;
+      _ln:="form(' - przelewy bankowe: ',_a)+' '+form(_c,_b,2)";
+      _txt+=_ln(_kol1,_kol2,_h)+'\n';
+      exec('add_kom','#message',_ln(0,0,_h),7)
+   ?};
+   {? _j$2<>0
+   || ' - wartość bieżącego dokumentu: '@;
+      _ln:="form(' - wartość bieżącego dokumentu: ',_a)+' '+form(_c,_b,2)";
+      _txt+=_ln(_kol1,_kol2,_j)+'\n';
+      exec('add_kom','#message',_ln(0,0,_j),7)
+   ?};
+   {? _l$2<>0
+   || ' + zobowiązania: '@;
+      _ln:="form(' + zobowiązania: ',_a)+' '+form(_c,_b,2)";
+      _txt+='\n'+_ln(_kol1,_kol2,_l)+'\n';
+      exec('add_kom','#message',_ln(0,0,_l),7)
+   ?};
+   _lim:=_a$2-__War_f('KH_DOD','LK',KH.ref)$2;
+   {? _lim>0
+   ||
+      'Limit został przekroczony o kwotę:'@;
+      _ln:="form('Limit został przekroczony o kwotę:',_a)+' '+form(_c,_b,2)";
+      _txt+='\n'+_ln(_kol1,_kol2,_lim)+'\n';
+      exec('add_kom','#message',_ln(0,0,_lim),9);
+      {? KLIM.KOM_BL='T' & _czy_gotow='N'
+      ||
+         'Dla kontrahenta obowiązuje blokada wystawiania nowych dokumentów.'@;
+         _ln:="form('Dla kontrahenta obowiązuje blokada wystawiania nowych dokumentów.',_a+_b)";
+         _txt+='\n'+_ln(_kol1,_kol2);
+         exec('add_kom','#message',_ln(0,0),11);
+         {? _i=1 || FUN.info('~#Kontrahent: '@+KH.KOD+' - '+KH.SKR+'\n\n'+_txt) ?};
+         _ok:=0
+      ||
+         _ask:='Kontynuować'@;
+         {? _k=5 | _k=3 | _k=1
+         || _ask+=' wystawianie dokumentu'@
+         |? _k=6 | _k=4 | _k=2
+         || _ask+=' akceptację dokumentu'@
+         ?};
+         _ok:=
+            {? _i<>2
+            || FUN.ask('~#Kontrahent: '@+KH.KOD+' - '+KH.SKR+'\n\n'+_txt+'\n\n\n'+_ask+'?')
+            || 0
+            ?};
+         {? _ok
+         || exec('add_kom','#message','Użytkownik zezwolił na kontynuację operacji.'@,12)
+         || exec('add_kom','#message','Użytkownik przerwał operację.'@,14)
+         ?}
+      ?}
+   || 'Pozostały do wykorzystania limit kredytowy:'@;
+      _ln:="form('Pozostały do wykorzystania limit kredytowy:',_a)+' '+form(_c,_b,2)";
+      _txt+='\n'+_ln(_kol1,_kol2,-_lim);
+      exec('add_kom','#message',_ln(0,0,-_lim),7);
+      {? _i=1 || FUN.info('~#Kontrahent: '@+KH.KOD+' - '+KH.SKR+'\n\n'+_txt) ?};
+      _ok:=1
+   ?}
+?};
+_ok
+
+
+\czy_got
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009+]
+:: OPIS: czy platnosc gotowka
+::   WE: _a - SLO.ref() slownik platnosci
+::   WY: _wyn T/N
+::  OLD: \czy_got/lim_kred.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:='N';
+ZR_SLO.index('SLO_NR');
+ZR_SLO.prefix(_a,1);
+{? ZR_SLO.first()
+|| _wyn:=ZR_SLO.WAR
+?};
+_wyn
+
+
+\mask_dok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [12.10]
+:: OPIS: zwraca maski DOK-a
+::   WE: [_a] - 1(domyślnie) - wszystkie 0-bez zamkniętych
+::   WY: _wyn - tabela masek
+::  OLD: \mask_dok/lim_kred.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=tab_tmp(1,'NAME','STRING[8]','','ROKB','INTEGER',,'ROKE','INTEGER','');
+_zam:={? var_pres('_a')=type_of(0) || _a || 1 ?};
+
+OKRO_F.cntx_psh();
+OKRO_F.index('FIRMA_NR');
+{? OKRO_F.first()
+|| {!
+   |? {? _zam | (~_zam & OKRO_F.ROK().ZAM<>'T' & OKRO_F.ROK().FIRMA=REF.FIRMA)
+      || _maska:='doku'+OKRO_F.ROK().KOD+form(OKRO_F.NR,-2);
+         _wyn.clear();
+         {? ~_wyn.find_key(_maska)
+         || _wyn.blank();
+            _wyn.NAME:=_maska;
+            _wyn.ROKB:=OKRO_F.ROK().POCZ_ROK~1;
+            _wyn.ROKE:=OKRO_F.ROK().KON_ROK~1;
+            _wyn.add(1)
+         ?}
+      ?};
+      OKRO_F.next()
+   !}
+?};
+OKRO_F.cntx_pop();
+_wyn
+
+
+\nd_ok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2008]
+:: OPIS: sprawdza czy powiazana faktura jest zaakceptowana (ND w buforze)
+::  OLD: \nd_ok/skid_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=1;
+{? ND.FAKS_REF<>''
+||
+   FAKS.cntx_psh();
+   FAKS.use(8+ND.FAKS_REF);
+   FAKS.clear();
+   {? FAKS.seek(ND.FAKS_REF,8+ND.FAKS_REF) & FAKS.AKC='T'
+   || _wyn:=0
+   ?};
+   FAKS.cntx_pop()
+?};
+_wyn
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:39 62040540a48e788d7c4fde915ee3770459319f0a3b095d7079a62e272eabeb7f92f223acf1f61721e2db82c6a1e9d4e32cd21c5c44440d92c2f330fbbcbc53d094608b9a99f56b93f2650ebd466ee8602601bcc655405d015d8f71077a0eff4151fb67d7b968c3546f01b815cfc007dde89e0bf0728cdfaf872727b517ac15fc

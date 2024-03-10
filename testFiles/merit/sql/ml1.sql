@@ -1,0 +1,1 @@
+select KH.SKR ATTR, EXTRACT(YEAR from FAKS.D) as YR, EXTRACT(MONTH from FAKS.D) AS MTH, sum(FAP.IL) as VALUE from @FAP join @FAKS using (FAKS.REFERENCE, FAP.FAKS) join KH using (KH.REFERENCE, FAKS.KH) join M  left join MGR group by KH.SKR, EXTRACT(YEAR from FAKS.D) , EXTRACT(MONTH from FAKS.D)

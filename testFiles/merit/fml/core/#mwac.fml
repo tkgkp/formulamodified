@@ -1,0 +1,405 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #mwac.fml
+:: Utworzony: 15.01.2020
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły pomocnicze do MacroWebApiCLIENT
+::======================================================================================================================
+
+
+\methods_table
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Zwraca tabelę tymczasową z listą metod wybranego webserwisu.
+::   WE:  _a  [STRING/OBJ] - Nazwa pliku MWAC lub uchwyt obiektu klasy MWAC_CLIENT.
+::   WY: Tabela tymczasowa lub ~~.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of('') & fexists(_a,1)
+|| _mwac:=_a;
+   _client:=exec('client','__mwac',_mwac)
+|? var_pres('_a')=type_of(@.CLASS.MWAC_CLIENT)
+|| _client:=_a
+|| return()
+?};
+{? ~_client.Valid
+|| return()
+?};
+
+_tab:=tab_tmp(1,
+   'METHOD','STRING[50]','Metoda'@,
+   'FRQ','INTEGER','Szablon wywołania uzupełniony?'@,
+   'FRS','INTEGER','Szablon odpowiedzi uzupełniony?'@,
+   'REQUEST','SYS_MEMO','Szablon wywołania'@,
+   'RESPONSE','SYS_MEMO','Szablon odpowiedzi'@
+);
+{! _it:=1 .. obj_len(_client.Methods)
+|! _tab.METHOD:=_client.Methods[_it].NAME;
+   _tab.add()
+!};
+_tab
+
+
+\methods_select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wywołuje selekcję tabeli metod wybranego webserwisu
+::   WE:  _a  [STRING] - Nazwa pliku MWAC.
+::        _b  [STRING] - Nazwa metody, od której zacząć selekcję.
+::       [_c] [NUMBER] - Czy prezentować szablon? [0*/1].
+::   WY: nazwa wybranej metody / ~~
+::----------------------------------------------------------------------------------------------------------------------
+_result:=~~;
+
+_mwac:={? var_pres('_a')=type_of('') || _a || return(_result) ?};
+_method:={? var_pres('_b')=type_of('') || _b || '' ?};
+_templ:=var_pres('_c')=type_of(0) & _c;
+
+_client:=exec('client','__mwac',_mwac);
+
+_tab:=exec('methods_table','#mwac',_client);
+_tab.prefix();
+_tab.find_key(_method);
+
+_wer:=_tab.mk_sel('Metody webserwisu'@,,,'webmethods',,,,,'U');
+_tab.win_fld(_wer,,'METHOD');
+_tab.win_act(_wer,,'Formuła','Wybierz'@@,,,"sel_exit()",,1,,,,'W');
+{? _templ
+|| _tab.win_act(_wer,,'Formuła','Szablon wywołania'@@,,'Prezentacja szablonu wywołania'@,"
+      _tab:=cur_tab(1,1);
+      {? ~_tab.FRQ
+      || _ometh:=params_get().client.getMethod(_tab.METHOD);
+         {? _ometh.Valid
+         || _templ:=gsub(_ometh.getRequestTemplate(),spli_str('{;,',';'),spli_str('{%1;,%1' [%10],';'));
+            _tab.memo_set(_templ,'REQUEST');
+            _tab.FRQ:=1;
+            _tab.put();
+            _tab.memo_put(,'REQUEST')
+         ?}
+      ?};
+      _tab.memo_view(,'REQUEST')
+   ",,,,,,'S');
+   _tab.win_act(_wer,,'Formuła','Szablon &odpowiedzi'@@,,'Prezentacja szablonu odpowiedzi'@,"
+      _tab:=cur_tab(1,1);
+      {? ~_tab.FRS
+      || _ometh:=params_get().client.getMethod(_tab.METHOD);
+         {? _ometh.Valid
+         || _templ:=gsub(_ometh.getResponseTemplate(),spli_str('{;,',';'),spli_str('{%1;,%1' [%10],';'));
+            _tab.memo_set(_templ,'RESPONSE');
+            _tab.FRS:=1;
+            _tab.put();
+            _tab.memo_put(,'RESPONSE')
+         ?}
+      ?};
+      _tab.memo_view(,'RESPONSE')
+   ",,,,,,'O')
+?};
+_tab.win_act(_wer,,'Wyświetl',,,,"
+   _tab:=cur_tab(1,1);
+   _ometh:=params_get().client.getMethod(_tab.METHOD);
+   {? _ometh.Valid
+   || _uri:=_ometh.Definition.uri
+   ?};
+   FUN.info(
+      'Bazowy URL: %1'@[params_get().client.BaseUrl]+'\n\n'+
+      'URI dla metody %1: %2'@[_tab.METHOD,_uri]
+   )
+");
+_tab.win_sel(_wer);
+params_set('client',_client);
+{? _tab.select(,1,5)
+|| _result:=_tab.METHOD
+?};
+
+_result
+
+
+\mwac_log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14]
+:: OPIS: Funkcja zapisu do rejestru zadarzeń MWAC
+::   WE: _a - nazwa metody
+::       _b - url
+::       _c - metoda (GET, POST, PUT...)
+::       _d - status
+::       _e - początek wywołania (utc)
+::       _f - koniec wywołania (utc)
+::       _g - treść request
+::       _h - treść response
+::       _i - nagłówek request
+::       _j - nagłówek response
+::   WY: identyfikator zapisu w logu
+::----------------------------------------------------------------------------------------------------------------------
+_status:='ERROR';
+{? _d>=100 & _d<200 || _status:='INFO%1'[$_d]
+|? _d=200 || _status:='OK'
+|? _d>200 & _d<300 || _status:='OK%1'[$_d]
+|? _d>=300 & _d<400 || _status:='REDIR%1'[$_d]
+|? _d>=400 & _d<500 || _status:='ERR%1'[$_d]
+|? _d>=500 || _status:='ERR%1'[$_d]
+?};
+_result:=mwac_log(
+   _a,
+   _b,
+   _c,
+   _status,
+   _d,
+   '%1 %2.%3'[utc_date(_e)$1,utc_time(_e)$3,2-form(frac(_e),,3)],
+   _f-_e,
+   _g,
+   _h,
+   _i,
+   _j
+);
+_result
+
+
+\mwac_log_app
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14]
+:: OPIS: Funkcja dopisania informacji aplikacyjnych do rejestru zdarzeń MWAC
+::       UWAGA: domyślnie nadpisuje poprzednie wartości
+::   WE: _a - identyfikator zapisu w logu
+::       _b - status biznesowy
+::       _c - opis dodatkowy
+::       [_d] - nadpisywanie [1] / dopisywanie 0
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_d')=type_of(0)
+|| _overwrite:=_d
+|| _overwrite:=1
+?};
+{? _overwrite
+|| mwac_log_app(_a,_b,_c)
+||
+:: musi być tabela z logiem
+   _SYSSMACL:=exec('valid_log_table','__mwac2');
+   {? type_of(_SYSSMACL)=type_of(~~) || return(0) ?};
+
+   _args:=obj_new('APP_STAT','APP_TEXT'); _args.APP_STAT:=''; _args.APP_TEXT:='';
+   _formula:="
+      _SYSSMACL:=_a;
+      _args:=_b;
+      _args.APP_STAT:=_SYSSMACL.APP_STAT;
+      _args.APP_TEXT:=_SYSSMACL.memo_txt(,1,'APP_TEXT');
+      ~~
+   ";
+   exec('FindAndGet','#table',_SYSSMACL,_a,,_formula,~~,_args);
+   mwac_log_app(_a,_args.APP_STAT+_b,_args.APP_TEXT+'\n'+_c)
+?};
+~~
+
+
+\mwac_log_clear
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [21.14]
+:: OPIS: Funkcja czyszczenia rejestru zdarzeń MWAC
+::----------------------------------------------------------------------------------------------------------------------
+_result:=~~;
+
+_tab:=tab_tmp(1
+   ,'ALL','INTEGER','Czy kasować cały rejestr'@
+   ,'DT_START','DATE','Data początkowa'@
+   ,'DT_STOP','DATE','Data końcowa'@
+   ,'URL','INTEGER','Url'@
+   ,'REQ_TEXT','INTEGER','Treść zapytania'@
+   ,'REQ_HEAD','INTEGER','Nagłówek zapytania'@
+   ,'RES_TEXT','INTEGER','Treść odpowiedzi'@
+   ,'RES_HEAD','INTEGER','Nagłówek odpowiedzi'@
+   ,'APP_TEXT','INTEGER','Opis biznesowy'@
+);
+
+_efld_opt:="
+   _tab:=params_get().tab;
+   _red:=params_get().red;
+   _enable:=$(_tab.ALL=-1);
+   _tab.efld_opt(_red,'enable=%1'[_enable],,'URL');
+   _tab.efld_opt(_red,'enable=%1'[_enable],,'REQ_TEXT');
+   _tab.efld_opt(_red,'enable=%1'[_enable],,'REQ_HEAD');
+   _tab.efld_opt(_red,'enable=%1'[_enable],,'RES_TEXT');
+   _tab.efld_opt(_red,'enable=%1'[_enable],,'RES_HEAD');
+   _tab.efld_opt(_red,'enable=%1'[_enable],,'APP_TEXT');
+   ~~
+";
+_tab.fld_fml('ALL','AFTER_EDIT',_efld_opt);
+
+_red:=_tab.mk_edit('Parametry usuwania zapisów z rejestru zdarzeń'@,,'mwaclogdel');
+_tab.win_esep(_red,'Parametry'@);
+_tab.win_efld(_red,,'ALL',,,,,,' ',,,'radio-buttons',,
+   'Wszystkie dane'@,"1",
+   'Tylko notatki i załączniki'@,"0",
+   'Wybrane notatki i załączniki'@,"-1"
+);
+_tab.win_ecol(_red);
+_tab.win_esep(_red,'Zakres danych'@);
+_tab.win_efld(_red,,'URL',,,,,,,,,'check-box',,"1","0");
+_tab.win_efld(_red,,'REQ_TEXT',,,,,,,,,'check-box',,"1","0");
+_tab.win_efld(_red,,'REQ_HEAD',,,,,,,,,'check-box',,"1","0");
+_tab.win_efld(_red,,'RES_TEXT',,,,,,,,,'check-box',,"1","0");
+_tab.win_efld(_red,,'RES_HEAD',,,,,,,,,'check-box',,"1","0");
+_tab.win_efld(_red,,'APP_TEXT',,,,,,,,,'check-box',,"1","0");
+_tab.win_ecol(_red);
+_tab.win_esep(_red,'Zakres dat'@);
+_tab.win_efld(_red,,'DT_START',,,,,,'Początek'@);
+_tab.win_efld(_red,,'DT_STOP',,,,,,'Koniec'@);
+exec('ok_esc','#window',_tab,_red);
+_tab.win_edit(_red);
+
+params_set('tab',_tab,'red',_red);
+
+_tab.blank();
+_tab.ALL:=-1;
+_tab.DT_STOP:=date()-1;
+_efld_opt();
+
+_valid:="
+   _tab:=cur_tab(1,1);
+   {? _tab.DT_STOP>=date()
+   || FUN.info('Należy podać datę końcową wcześniejszą niż dzisiejsza.'@);
+      'DT_STOP'
+   |? _tab.DT_START<>date(0,0,0) & _tab.DT_STOP<>date(0,0,0) & _tab.DT_START>_tab.DT_STOP
+   || FUN.info('Należy podać datę początkową wcześniejszą niż końcową.'@);
+      'DT_START'
+   |? _tab.ALL=-1 & _tab.URL=0 & _tab.REQ_TEXT=0 & _tab.REQ_HEAD=0 & _tab.RES_TEXT=0 & _tab.RES_HEAD=0 & _tab.APP_TEXT=0
+   || FUN.info('Należy podać conajmniej jeden zakres danych lub zmienić parametry.'@);
+      'URL'
+   || 1
+   ?}
+";
+{? _tab.edit(_valid)
+|| _ask:=
+      {? _tab.ALL=1
+      || {? _tab.DT_START<>date(0,0,0) & _tab.DT_STOP<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwszystkie zapisy od %1 do %2?'@[$_tab.DT_START,$_tab.DT_STOP]
+         |? _tab.DT_START<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwszystkie zapisy od %1?'@[$_tab.DT_START]
+         |? _tab.DT_STOP<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwszystkie zapisy do %1?'@[$_tab.DT_STOP]
+         || 'Czy na pewno usunąć z rejestru zdarzeń wszystkie zapisy?'@
+         ?}
+      |? _tab.ALL=0
+      || {? _tab.DT_START<>date(0,0,0) & _tab.DT_STOP<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwszystkie notatki i załączniki od %1 do %2?'@[$_tab.DT_START,$_tab.DT_STOP]
+         |? _tab.DT_START<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwszystkie notatki i załączniki od %1?'@[$_tab.DT_START]
+         |? _tab.DT_STOP<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwszystkie notatki i załączniki do %1?'@[$_tab.DT_STOP]
+         || 'Czy na pewno usunąć z rejestru zdarzeń wszystkie notatki i załączniki?'@
+         ?}
+      || {? _tab.DT_START<>date(0,0,0) & _tab.DT_STOP<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwybrany zakres danych od %1 do %2?'@[$_tab.DT_START,$_tab.DT_STOP]
+         |? _tab.DT_START<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwybrany zakres danych od %1?'@[$_tab.DT_START]
+         |? _tab.DT_STOP<>date(0,0,0)
+         || 'Czy na pewno usunąć z rejestru zdarzeń\nwybrany zakres danych do %1?'@[$_tab.DT_STOP]
+         || 'Czy na pewno usunąć z rejestru zdarzeń wybrany zakres danych?'@
+         ?}
+      ?};
+   {? FUN.ask(_ask)
+   || {? _tab.ALL>=0
+      || _result:=mwac_log_clear(_tab.DT_START,_tab.DT_STOP,_tab.ALL)
+      || _range:='';
+         {? _tab.URL>0 || _range+='URL,' ?};
+         {? _tab.REQ_TEXT>0 || _range+='REQ_DATA,REQ_TEXT,' ?};
+         {? _tab.REQ_HEAD>0 || _range+='REQ_HEAD,' ?};
+         {? _tab.RES_TEXT>0 || _range+='RES_DATA,RES_TEXT,' ?};
+         {? _tab.RES_HEAD>0 || _range+='RES_HEAD,' ?};
+         {? _tab.APP_TEXT>0 || _range+='APP_TEXT,' ?};
+         _result:=mwac_log_clear(_tab.DT_START,_tab.DT_STOP,_range);
+         ~~
+      ?}
+   ?}
+?};
+
+_result
+
+
+\mwac_log_search
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Wyszukiwanie w rejestrze zdarzeń klienta API
+::----------------------------------------------------------------------------------------------------------------------
+:: Wyszukiwanie tylko w bieżącej masce tabeli rejestru
+_tab:=__MWAC__.Log.Tab;
+
+:: Wyszukiwanie w polach:
+:: + APP_STAT [STRING]
+:: + APP_TEXT [SYS_MEMO]
+:: + REQ_TEXT [SYS_MEMO]
+:: + RES_TEXT [SYS_MEMO]
+:: + URL [STRING]
+:: Nie ma wyszukiwania w polach:
+:: - REQ_DATA [BLOBRAW]
+:: - RES_DATA [BLOBRAW]
+
+_param:=tab_tmp(1
+   ,'TXT','STRING[255]','Tekst'@
+   ,'APP_STAT','STRING[1]','Status biznesowy'@
+   ,'APP_TEXT','STRING[1]','Opis biznesowy'@
+   ,'URL','STRING[1]','Url'@
+   ,'REQ','STRING[1]','Żądanie'@
+   ,'RES','STRING[1]','Odpowiedź'@
+:: PLACE: to'B'egin, 'A'll, to'E'nd
+   ,'PLACE','STRING[1]','Miejsce'@
+);
+_red:=_param.mk_edit('Wyszukiwanie zaawansowane'@,,'searchmwaclog');
+_param.win_esep(_red,'Szukane wartości'@);
+_param.win_efld(_red,,'TXT',,,100);
+_param.win_esep(_red,'Wyszukiwanie w polach'@);
+_param.win_efld(_red,,'APP_STAT',,,,,,,,,'check-box',,"'T'","'N'");
+_param.win_efld(_red,,'APP_TEXT',,,,,,,,,'check-box',,"'T'","'N'");
+_param.win_efld(_red,,'URL',,,,,,,,,'check-box',,"'T'","'N'");
+_param.win_efld(_red,,'REQ',,,,,,,,,'check-box',,"'T'","'N'");
+_param.win_efld(_red,,'RES',,,,,,,,,'check-box',,"'T'","'N'");
+_param.win_esep(_red,'Parametry wyszukiwania'@);
+_param.win_efld(_red,,'PLACE',,,,,,,,,'radio-buttons',,
+   '↑ '+'Od wskazanego miejsca do początku (w górę)'@,"'B'",
+   '↕ '+'Całość'@,"'A'",
+   '↓ '+'Od wskazanego miejsca do końca (w dół)'@,"'E'"
+);
+exec('ok_esc','#window',_param,_red);
+
+_param.APP_STAT:='T';
+_param.PLACE:='E';
+
+_ret:=0;
+
+_param.win_edit(_red);
+{? _param.edit()
+|| _filter:=sql(
+      'select IDA from :_a'+
+      ' where '+
+      {? _param.PLACE='B'
+      || ':_a.DATETIME<=\'%1\' and '[_tab.DATETIME]
+      |? _param.PLACE='E'
+      || ':_a.DATETIME>=\'%1\' and '[_tab.DATETIME]
+      || ''
+      ?}+
+      '(0=1 '+
+      {? _param.APP_STAT='T' || ' or :_a.APP_STAT like \'%%%1%%\''[_param.TXT] || '' ?}+
+      {? _param.APP_TEXT='T' || ' or :_a.APP_TEXT like \'%%%1%%\''[_param.TXT] || '' ?}+
+      {? _param.URL='T' || ' or :_a.URL like \'%%%1%%\''[_param.TXT] || '' ?}+
+      {? _param.REQ='T' || ' or :_a.REQ_TEXT like \'%%%1%%\' or :_a.REQ_TEXT like \'%%%2%%\''[_param.TXT,json_value(_param.TXT)] || '' ?}+
+      {? _param.RES='T' || ' or :_a.RES_TEXT like \'%%%1%%\' or :_a.RES_TEXT like \'%%%2%%\''[_param.TXT,json_value(_param.TXT)] || '' ?}+
+      ')'
+   ,_tab);
+   {? type_of(_filter)>100
+   || _ret:=_tab.f_set(,,'IDA in (select IDA from :_a)',_filter)
+   ?};
+   win_disp();
+   ~~
+?};
+
+return(_ret)
+
+
+\logviewer
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Podgląd rejestru zdarzeń klienta API
+::----------------------------------------------------------------------------------------------------------------------
+params_set('LogCustomFilterFormula',"exec('mwac_log_search','#mwac')");
+exec('logviewer','__mwac');
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:13:35 d681d5650e547dbba7628d0a0910565c596e7dd2df4a07fb9de6a24aaf0306f0cd0f71adc4a924fd08cd1e10d0c8a3a42c35171edc16f32ead093c30d9ce87fc29a018c650b5d648a44637dc2d74b5e70beb2ab7bd4fcde7a8982f671bd1d39feb9765ccac33508055519e6e62bfaf42a9d7b9406dd661ffca4adfe52f9cafb9

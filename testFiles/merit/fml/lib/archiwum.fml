@@ -1,0 +1,1089 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: archiwum.fml
+:: Utworzony: 07.05.2021
+:: Autor: MicKoc [21.37]
+::======================================================================================================================
+:: Zawartość: Obsługa archiwum załączników
+::======================================================================================================================
+:Metoda dołączania pliku do archiwum: .add(TABELA, ‘AKRONIM_POLA_BLOB’) – tworzy rekord w ARCH_BLB, automatycznie
+:  inkrementuje istniejący nr wersji
+:Metoda dołączania pliku do archiwum: .add(TABELA, ‘AKRONIM_POLA_BLOB’,1) – jw., przechodzi po schemacie tabeli i
+:  odkłada do ARCH_INF wszystkie typy proste (STRING, DATE, TIME, IDADD, IDPUT, IDTIME, INTEGER, REAL)
+:Metoda dołączania pliku do archiwum: .add(TABELA, ‘AKRONIM_POLA_BLOB’,’LISTA_AKRONIMÓW_PÓL’) – jw., ale tylko wskazane
+:  akronimy, również złączeniowe
+:
+:Metoda .erase(TABELA, ‘AKRONIM_POLA_BLOB’) – usuwa wszystkie zapisy z historii pliku z ARCH_BLB i ARCH_INF
+:
+:Metoda .del(TABELA, ‘AKRONIM_POLA_BLOB’, numer_wersji) – usuwa wskazany zapis z historii z ARCH_BLB i ARCH_INF
+:
+:Metody add, erase, del zwracają uchwyt do obiektu z polami RET 0/1, STATUS opis
+:
+:Metoda .get(TABELA, ‘AKRONIM_POLA_BLOB’) – zwraca w postaci uchwytu do tabeli wszystkie zarchiwizowane załączniki, na
+:  podstawie struktury tabeli źródłowej wypełnia pola informacyjne
+:Metoda .get(TABELA, ‘AKRONIM_POLA_BLOB’, numer_wersji) – jw., dla konkretnej wersji
+
+
+\add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Dołączanie załącznika do archiwum
+::   WE: _a - TABELA, z której pochodzi załącznik
+::       _b - STRING, akronim pola z załącznikiem
+::       [_c] - OBJ, zmienna przechowująca hash pliku i ref bloba
+::       [_d] - INTEGER, jeśli 1, to wszystkie wartości z pól tabeli zostaną odłożone w historii
+::            - STRING, lista pól oddzielana ",", przykład: 'FIRMA().OPIS,DATA'
+::   WY: uchwyt do tablicy nazwanej z polami RET 0/1 i STATUS
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=obj_new('RET','STATUS');
+_ret.RET:=0;
+_ret.STATUS:='';
+{? _<2 || _ret.STATUS:='Brak argumentów'@; return(_ret) ?};
+{? var_pres('_a')<>type_of(SYSLOG) | var_pres('_b')<>type_of('')
+|| _ret.STATUS:='Nieprawidłowe argumenty wywołania'@;
+   return(_ret)
+?};
+{? var_pres(_b,_a)<>33
+|| _ret.STATUS:='Wskazane pole nie jest typu BLOBRAW'@;
+   return(_ret)
+?};
+{? _=4
+|| {? ~(var_pres('_d')=type_of(0) | var_pres('_d')=type_of(''))
+   || _ret.STATUS:='Nieprawidłowe argumenty wywołania'@;
+      return(_ret)
+   ?}
+?};
+{? (_=4 & var_pres('_d')=type_of(0) & _d=1)
+|| _d:='';
+   {! _licz:=1..obj_len(_a) |!
+      _acr:=_a.fld_acr(_licz);
+      _typ:=var_pres(_acr,_a);
+      {? exec('czy_typ_ok','archiwum',_typ)
+      || _d+=_acr+','
+      ?}
+   !};
+   _d-=1
+?};
+_uid:=_a.uidref();
+{? _=4 & var_pres('_d')=type_of('') & +|_d
+|| _pola:=exec('pola','archiwum',_a,_d)
+|| _pola:=~~
+?};
+_z_trg:=var_pres('_c')>100 & _c.REF_BLB;
+{? ~_z_trg
+|| _blb:=($((2-!_a)+'.'+_b))();
+   _plik:=fopen(_blb,'r',0,0,1);
+   _nazwa:=($((2-!_a)+'.'+_b+'().NAME'))()
+?};
+{? _z_trg | (~_z_trg & _plik.is_open())
+|| ARCH_BLB.cntx_psh();
+   ARCH_BLB.index('UNIQ');
+   ARCH_BLB.prefix(_uid,_b,);
+   _ver:={? ARCH_BLB.first() || ARCH_BLB.VER || 0 ?}+1;
+   ARCH_BLB.blank(1);
+   ARCH_BLB.UIDREF:=_uid;
+   ARCH_BLB.FLD:=_b;
+   ARCH_BLB.VER:=_ver;
+   ARCH_BLB.FIRMA:=exec('firma','ustawienia');
+   ARCH_BLB.TAB:=2-!ref_tab(_uid);
+   {? _z_trg
+   || ARCH_BLB.FILE:=_c.REF_BLB;
+      _uch:=fopen(ARCH_BLB.FILE,'r',0,0,1,0);
+      {? _uch.is_open()
+      || {? _c.HASH_HIST<>hash(_uch)
+         || _ret.RET:=ARCH_BLB.add()
+         || _ret.RET:=0;
+            _ret.STATUS+=' Plik już dołączony do archiwum plików.'@
+         ?};
+         fclose(&_uch)
+      || _ret.RET:=0;
+         _ret.STATUS+=' Brak pliku.'@
+      ?}
+   || _ret.RET:=ARCH_BLB.add()
+   ?};
+   {? _ret.RET
+   || _ret.STATUS:='Dołączono rekord do archiwum plików.'@;
+      {? ~_z_trg
+      || _ret.RET*=ARCH_BLB.bl_put('FILE',_plik,0,1,_nazwa,0)
+      ?};
+      {? _ret.RET
+      || _ret.STATUS+=' Dołączono plik.'@;
+         {? var_pres('_pola')<>type_of(~~)
+         || _ret.STATUS+=' '+exec('add_fld_info','archiwum',ARCH_BLB.ref(),_pola)
+         ?}
+      || _ret.STATUS+=' Nie dołączono pliku.'@
+      ?}
+   || _ret.STATUS:='Nie dołączono rekordu do archiwum plików.'@
+   ?};
+   ARCH_BLB.cntx_pop();
+   {? ~_z_trg || fclose(&_plik) ?}
+?};
+_ret
+
+
+\pola
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Analiza pól
+::   WE: _a [TABELA] - tabela
+::       _b [STRING] - lista pól
+::   WY: obiekt z definicją pól
+::----------------------------------------------------------------------------------------------------------------------
+_pola:=spli_str(_b,',');
+_obj:=obj_new(obj_len(_pola));
+{! _licz:=1..obj_len(_pola) |!
+   _obj[_licz]:=obj_new('FLD','JTAB','JFLD','VAL','TYPE');
+   {? var_pres('_test')>0 || &_test ?};
+   _test:=spli_str(_pola[_licz],'().');
+   _obj[_licz].FLD:=_test[1];
+   {? obj_len(_test)=2
+   || _obj[_licz].JTAB:=MS.join(_a,_obj[_licz].FLD);
+      _obj[_licz].JFLD:=_test[2];
+      ($('_a.cntx_psh()'))(($(_obj[_licz].JTAB))());
+      _obj[_licz].VAL:=exec('to_string','#convert',($((2-!_a)+'.'+_pola[_licz]))());
+      _obj[_licz].TYPE:=var_pres(_obj[_licz].JFLD,($(_obj[_licz].JTAB))());
+      ($('_a.cntx_pop()'))(($(_obj[_licz].JTAB))())
+   || _obj[_licz].VAL:=exec('to_string','#convert',($((2-!_a)+'.'+_pola[_licz]))());
+      _obj[_licz].TYPE:=var_pres(_obj[_licz].FLD,($(2-!_a))())
+   ?}
+!};
+_obj
+
+
+\czy_typ_ok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Sprawdza czy typ danych jest godny
+::   WE: _a [INTEGER] - numer typu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_a=20 | _a=21 | _a=22 | _a=27 | _a=29 | _a=36
+
+
+\add_fld_info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Dołącza opis
+::   WE: _a [REF] - wskazanie na nagłówek
+::       _b [OBIEKT] - obiekt z definicją pól
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+_pola:=_b;
+ARCH_INF.cntx_psh();
+ARCH_INF.index('UNIQ');
+ARCH_INF.prefix(_a,);
+{? ARCH_INF.first()
+|| ARCH_INF.cntx_pop();
+   return('%1 %2'['Nie dołączono informacji dodatkowych.','Zapisy już istnieją.'])
+?};
+ARCH_INF.blank(1);
+ARCH_INF.ARCH_BLB:=_a;
+_ok:=0;
+{! _licz:=1..obj_len(_pola) |!
+   {? var_pres('JTAB',_pola[_licz])=type_of('')
+   || ARCH_INF.FLD:=_pola[_licz].JTAB+'.'+_pola[_licz].JFLD
+   || ARCH_INF.FLD:=_pola[_licz].FLD
+   ?};
+   ARCH_INF.TYPE:=_pola[_licz].TYPE;
+   ARCH_INF.VAL:=_pola[_licz].VAL;
+   {? ARCH_INF.add()
+   || _ok+=1;
+      {? ARCH_INF.TYPE=36
+      || ARCH_INF.memo_set(_pola[_licz].MEMO,'FLD');
+         ARCH_INF.memo_put(,'MEMO')
+      ?}
+   ?}
+!};
+{? _ok || _ret:='Dołączono informacje dodatkowe.'@ ?};
+ARCH_INF.cntx_pop();
+_ret
+
+
+\arch_blb_delb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Wyzwalacz na usuwanie przed
+::   WE:
+::   WY: 1/0
+::----------------------------------------------------------------------------------------------------------------------
+ARCH_INF.cntx_psh();
+ARCH_INF.index('UNIQ');
+ARCH_INF.prefix(ARCH_BLB.ref());
+{? ARCH_INF.first()
+|| {! |? ARCH_INF.del() !}
+?};
+ARCH_INF.cntx_pop();
+1
+
+
+\ustawienia
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Interfejs ustawień
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=obj_new('TAB','NDX','WS');
+_obj.TAB:=exec('tabela','archiwum');
+_obj.NDX:=obj_new('TREE','UNIQ');
+_obj.NDX.TREE:=_obj.TAB.ndx_tmp('Lp',1,'TREE',,0, 'ACR',,0);
+_obj.NDX.UNIQ:=_obj.TAB.ndx_tmp('Unikalny',1,'UNIQ',,0);
+_obj.WS:=_obj.TAB.mk_sel('Ustawienia archiwizacji plików'@,'P',0,'#arch_ust_ws',,,,1,,,1,,,'html_maximized');
+_obj.TAB.win_fld(_obj.WS,,'ACR',,,,,,'Akronim tabeli/pola'@,,'Akronim tabeli/pola'@);
+_obj.TAB.win_fld(_obj.WS,,'NAZ',,,,,,'Nazwa tabeli/pola'@,,'Nazwa tabeli/pola'@,,,,,,'mobile_visible=1');
+_obj.TAB.win_fld(_obj.WS,,'A',,,,,,'Aktywne'@,,'Aktywne [T/N]'@,2,,"'T'","'N'",,'mobile_visible=1');
+_obj.TAB.win_act(_obj.WS,0,'Formuła','Zwiń/&rozwiń'@,,'Zwijanie / rozwijanie drzewa'@,"exec('zwin_rozwin','#tree')",
+   ,,,,,,,'target=window'
+);
+_txt:='&Włącz'@;
+_for:="exec('on_off','archiwum','on')";
+_obj.TAB.win_act(_obj.WS,0,'Formuła',_txt,,'Włączenie archiwizacji pliku'@,_for,,,1,,,'W');
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=right,align=begin'[_txt],'menu:W');
+_txt:='W&yłącz'@;
+_for:="exec('on_off','archiwum','off')";
+_obj.TAB.win_act(_obj.WS,0,'Formuła',_txt,,'Wyłączenie archiwizacji pliku'@,_for,,,1,,,'Y');
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=right,align=begin'[_txt],'menu:Y');
+_txt:='&Ustawienia'@;
+_for:="exec('ustaw_dodatkowe_informacje','archiwum')";
+_obj.TAB.win_act(_obj.WS,0,'Formuła',_txt,,'Rozszerzone opcje zapisu informacji dodatkowych'@,_for,,,,,,'U');
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=right,align=begin'[_txt],'menu:U');
+_txt:='W&arunek'@;
+_for:="exec('ustaw_warunek','archiwum')";
+_obj.TAB.win_act(_obj.WS,0,'Formuła',_txt,,'Warunek na wykonanie wyzwalacza'@,_for,,,,,,'A');
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=right,align=begin'[_txt],'menu:A');
+_for:="
+   _tab:=cur_tab(1,1);
+   _win:=cur_win(1,1);
+   {? _tab.UNIQ*'.'
+   || {? _tab.A='T' || _tab.actions_grayed(_win,'W') || _tab.actions_grayed(_win,'YUA') ?}
+   || _tab.actions_grayed(_win,'WYUA')
+   ?}
+";
+_obj.TAB.win_act(_obj.WS,0,'Rekord',,,,_for);
+_for:="
+   _tab:=cur_tab(1,1);
+   'xwin16.png:'+$
+   {? _tab.A='T'
+   || 38
+   |? _tab.A='-'
+   || 8
+   || {? _tab.TREE=0 || 125
+      |? _tab.TREE<>0 || 190
+      ?}
+  ?}
+";
+_obj.TAB.win_fml(_obj.WS,,'ACR',,'ICON_BEFORE',_for);
+_obj.TAB.win_sel(_obj.WS);
+exec('aktualizacja','archiwum',_obj);
+_obj.TAB.index(_obj.NDX.TREE);
+_obj.TAB.prefix();
+_obj.TAB.first();
+_obj.TAB.select()
+
+
+\on_off
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Włącza/Wyłącza archiwizację dla pola tabeli
+::   WE: _a [STRING] - identyfikator akcji ('on' lun nie 'on')
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=cur_tab(1,1);
+{? _tab.TREE
+|| ARCH_UST.cntx_psh();
+   ARCH_UST.index('UNIQ');
+   ARCH_UST.prefix(exec('firma','ustawienia'),spli_str(_tab.UNIQ,'.')[1],spli_str(_tab.UNIQ,'.')[2],);
+   {? _a='on'
+   || _tab.A:='T';
+      _put:=ARCH_UST.first();
+      ARCH_UST.MODCZAS:=time();
+      ARCH_UST.MODDATA:=date();
+      ARCH_UST.MODKTO:=exec('username','#users');
+      ARCH_UST.AKT:='T';
+      {? _put
+      || ARCH_UST.put();
+         {? ~+|ARCH_UST.memo_txt(,1,'LST')
+         || ARCH_UST.memo_set('1','LST');
+            ARCH_UST.memo_put(,'LST')
+         ?}
+      || ARCH_UST.FIRMA:=exec('firma','ustawienia');
+         ARCH_UST.TAB:=spli_str(_tab.UNIQ,'.')[1];
+         ARCH_UST.FLD:=spli_str(_tab.UNIQ,'.')[2];
+         ARCH_UST.add();
+         ARCH_UST.memo_set('1','LST');
+         ARCH_UST.memo_put(,'LST')
+      ?};
+      _tab.cntx_psh();
+      {? _tab.seek(_tab.TREE,) || _tab.A:='T'; _tab.put() ?};
+      _tab.cntx_pop()
+   || _tab.A:='N';
+      {? ARCH_UST.first() || ARCH_UST.del() ?};
+       _cur:=_tab.ref();
+      _tab.cntx_psh();
+      {? _tab.seek(_tab.TREE,)
+      || _tab.cntx_psh();
+         _tab.prefix(_tab.ref());
+         _zm:=1;
+         {? _tab.first()
+         || {!
+            |? {? _tab.A='T' & _tab.ref()<>_cur || _zm:=0 ?};
+               _tab.next()
+            !}
+         ?};
+         _tab.cntx_pop();
+         {? _zm || _tab.A:='N'; _tab.put() ?}
+      ?};
+      _tab.cntx_pop()
+   ?};
+   ARCH_UST.cntx_pop();
+   _tab.put()
+?}
+
+
+\set_triggers
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Ustawia wyzwalacze dla zdefiniowanych pól tabeli
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+ARCH_UST.cntx_psh();
+ARCH_UST.index('UNIQ');
+ARCH_UST.prefix(exec('firma','ustawienia'));
+{? ARCH_UST.first()
+|| {!
+   |? {? ARCH_UST.AKT='T' & +|ARCH_UST.TAB & +|ARCH_UST.FLD
+      || _typ:=var_pres(ARCH_UST.FLD,($(ARCH_UST.TAB))());
+         {? _typ=33 | _typ=37
+         || exec('set_trigger','archiwum',ARCH_UST.TAB,ARCH_UST.FLD,ARCH_UST.FORM,ARCH_UST.memo_txt(,1,'LST'))
+         ?}
+      ?};
+      ARCH_UST.next()
+   !}
+?};
+ARCH_UST.cntx_pop()
+
+
+\set_trigger
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Ustawienie wyzwalacza dla pola tabeli
+::   WE: _a [STRING] - akronim tabeli
+::       _b [STRING] - akronim pola
+::       _c [STRING] - warunek dla wyzwalacza
+::       _d [STRING] - zakres informacji dodatkowych
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=($(_a))();
+_fld:=_b;
+{? ~+|_c || _c:='1' ?};
+_for:=$("
+   {? ~_a | do_state()<>1
+   || return()
+   ?};
+   _ok:=1;
+   {? "+$(+_c)+" || _ok*="+_c+" ?};
+   {? _ok || exec('set_one_trigger','archiwum','puta','"+_a+"','"+_b+"','"+_d+"') || ~~ ?}
+");
+_tab.trig_a('put',_for,'archiwum_plików');
+_for:=$("exec('set_one_trigger','archiwum','delb','"+_a+"','"+_b+"')");
+_tab.trig_b('del',_for,'archiwum_plików');
+1
+
+
+\set_one_trigger
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Formuła dla wyzwalacza
+::   WE: _a [STRING] - identyfikator akcji wyzwalacza ('puta', 'delb')
+::       _b [STRING] - akronim tabeli
+::       _c [STRING] - akronim pola
+::       _d [STRING] - zakres informacji dodatkowych
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=($(_b))();
+_fld:=_c;
+_val:=($(_b+'.'+_fld))();
+{? _a='puta'
+|| {? bfld(_fld)
+   || _ob:=obj_new('REF_BLB','HASH_HIST');
+      _ob.REF_BLB:=bfld(_fld);
+      _ob.HASH_HIST:=exec('hash_hist','archiwum',_tab.uidref(),_fld);
+      {? +|_d
+      || exec('add','archiwum',_tab,_fld,_ob,{? _d='1' || 1 || _d ?})
+      || exec('add','archiwum',_tab,_fld,_ob)
+      ?}
+   ?};
+   ~~
+|? _a='delb'
+|| _ok:=1;
+   ARCH_BLB.cntx_psh();
+   ARCH_BLB.index('UNIQ');
+   ARCH_BLB.prefix(_tab.uidref(),_fld);
+   {? ARCH_BLB.first()
+   || {! |?
+         _val:=ARCH_BLB.del(,1);
+         _ok*=_val;
+         {? _val=1 || 0 || 1 ?}
+      !}
+   ?};
+   ARCH_BLB.cntx_pop();
+   _ok
+?}
+
+
+\hash_hist
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Hash ostatniej wersji załącznika z archiwum
+::   WE: _a [STRING] - uidref
+::       _b [STRING] - akronim pola z załącznikiem
+::   WY: hash pliku lub pusty string
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+ARCH_BLB.cntx_psh();
+ARCH_BLB.index('UNIQ');
+ARCH_BLB.prefix(_a,_b);
+{? ARCH_BLB.first() & ARCH_BLB.FILE
+|| _uch:=fopen(ARCH_BLB.FILE,'r',0,0,1,0);
+   {? _uch.is_open()
+   || _ret:=hash(_uch);
+      fclose(&_uch)
+   ?}
+?};
+ARCH_BLB.cntx_pop();
+_ret
+
+
+\wyklucz_tabele
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Lista tabel z polami typu BLOB* wykluczonymi z mechanizmu
+::   WY: [STRING]
+::----------------------------------------------------------------------------------------------------------------------
+',ARCH_BLB,BI_PROC,BI_BLOP,B_PROC,SYSSMWAL,S01,FIS_BAK,EDI_I,WSLOG,TMPBLOB,'
+
+
+\archiwum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Przeglądanie wersji plików
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=obj_new('TAB','NDX','WS');
+_obj.TAB:=exec('tabela','archiwum');
+_obj.NDX:=obj_new('TREE','UNIQ');
+_obj.NDX.TREE:=_obj.TAB.ndx_tmp('Lp',1,'TREE',,0, 'ACR',,0);
+_obj.NDX.UNIQ:=_obj.TAB.ndx_tmp('Unikalny',1,'UNIQ',,0);
+_obj.WS:=_obj.TAB.mk_sel('Przeglądanie historii plików'@,'P',0,'#arch_sel_ws',,,,1,,,1,,,'html_maximized');
+_obj.TAB.win_fld(_obj.WS,,'ACR',,,,,,'Akronim tabeli/pola'@,,'Akronim tabeli/pola'@);
+_obj.TAB.win_fld(_obj.WS,,'NAZ',,,,,,'Nazwa tabeli/pola'@,,'Nazwa tabeli/pola'@,,,,,,'mobile_visible=1');
+_obj.TAB.win_fld(_obj.WS,,'A',,,,,,'Aktywne'@,,'Aktywne [T/N]'@,2,,"'T'","'N'",,'mobile_visible=1');
+_obj.TAB.win_act(_obj.WS,0,'Formuła','Zwiń/&rozwiń'@,,'Zwijanie / rozwijanie drzewa'@,"exec('zwin_rozwin','#tree')",
+   ,,,,,,,'target=window'
+);
+_txt:='&Wybierz'@;
+_for:="
+   _tab:=cur_tab(1,1);
+   _par:=exec('ustaw_par','archiwum');
+   params_set('par',_par);
+   ARCH_BLB.cntx_psh();
+   ARCH_BLB.index('TABELAF');
+   ARCH_BLB.prefix(exec('firma','ustawienia'),spli_str(_tab.UNIQ,'.')[1],spli_str(_tab.UNIQ,'.')[2],);
+   ARCH_BLB.win_sel('GRP');
+   ARCH_BLB.win_patt('WZO');
+   ARCH_INF.win_patt('WZO');
+   ARCH_BLB.select();
+   ARCH_BLB.cntx_pop()
+";
+_obj.TAB.win_act(_obj.WS,0,'Formuła',_txt,,'Wybierz'@,_for,,1,,,,'W');
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=right,align=begin'[_txt],'menu:W');
+_for:="
+   _tab:=cur_tab(1,1);
+   _win:=cur_win(1,1);
+   _ok:=0;
+   {? _tab.UNIQ*'.'
+   || ARCH_BLB.index('TABELAF');
+      ARCH_BLB.prefix(exec('firma','ustawienia'));
+      _ok:=ARCH_BLB.find_key(spli_str(_tab.UNIQ,'.')[1],spli_str(_tab.UNIQ,'.')[2],)
+   ?};
+   {? ~_ok
+   || _tab.actions_grayed(_win,'W')
+   || _tab.actions_grayed(_win)
+   ?}
+";
+_obj.TAB.win_act(_obj.WS,0,'Rekord',,,,_for);
+_for:="
+   _tab:=cur_tab(1,1);
+   'xwin16.png:'+$
+   {? _tab.A='T'
+   || 38
+   |? _tab.A='-'
+   || 8
+   || {? _tab.TREE=0 || 125
+      |? _tab.TREE<>0 || 190
+      ?}
+  ?}
+";
+_obj.TAB.win_fml(_obj.WS,,'ACR',,'ICON_BEFORE',_for);
+_obj.TAB.win_sel(_obj.WS);
+exec('aktualizacja','archiwum',_obj);
+_obj.TAB.index(_obj.NDX.TREE);
+_obj.TAB.prefix();
+_obj.TAB.first();
+_obj.TAB.select()
+
+
+\aktualizacja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Aktualizacja danych
+::   WE: _a [OBIEKT] - obiekt z definicją intejfejsu
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=_a;
+_max:=tab_num();
+ARCH_UST.index('UNIQ');
+ARCH_UST.prefix(exec('firma','ustawienia'));
+PROGRESS.set(_max+ARCH_UST.size(),'Aktualizacja ustawień archiwizacji plików ...'@);
+_exct:=exec('wyklucz_tabele','archiwum');
+_tree:=0;
+_loop:=_max>0;
+_cur_tab:='';
+{! |? _loop<_max |!
+   _obj.TAB.index(_obj.NDX.UNIQ);
+   {? var_pres('_tab')>0 || &_tab ?};
+   {? tab_real(_loop) & _exct*(','+tab_acr(_loop)+',')=0
+   || _tab:=($(tab_acr(_loop)))();
+      {! _fld:=1.._tab.fld_num() |!
+         {? var_pres(_tab.fld_acr(_fld),_tab)=33 | var_pres(_tab.fld_acr(_fld),_tab)=37
+         || _inny:=_cur_tab<>tab_acr(_loop);
+            _obj.TAB.ACR:=tab_acr(_loop);
+            _cur_tab:=tab_acr(_loop);
+            {? _inny
+            || _obj.TAB.TREE:=0;
+               _obj.TAB.NAZ:=_tab.comment();
+               _obj.TAB.A:={? _obj.TAB.ACR='ARCH_BLB' || '-' || 'N' ?};
+               _obj.TAB.UNIQ:=_obj.TAB.ACR;
+               _obj.TAB.NR:=_loop;
+               _obj.TAB.prefix(_obj.TAB.UNIQ,);
+               _obj.TAB.add();
+               _tree:=_obj.TAB.ref()
+            ?};
+            _obj.TAB.TREE:=_tree;
+            _obj.TAB.NAZ:=_tab.fld_name(_fld);
+            _obj.TAB.ACR:=_tab.fld_acr(_fld);
+            _obj.TAB.UNIQ:=(2-!_tab)+'.'+_obj.TAB.ACR;
+            _obj.TAB.A:=
+               {? (2-!_tab)='ARCH_BLB' || '-'
+               |? ARCH_UST.find_key((2-!_tab),_obj.TAB.ACR,) || ARCH_UST.AKT
+               || 'N'
+               ?};
+            {? _obj.TAB.A='T'
+            || _obj.TAB.cntx_psh();
+               {? _obj.TAB.seek(_obj.TAB.TREE,) || _obj.TAB.A:='T'; _obj.TAB.put() ?};
+               _obj.TAB.cntx_pop()
+            ?};
+            _obj.TAB.prefix(_obj.TAB.UNIQ,);
+            _obj.TAB.add()
+         ?}
+      !}
+   ?};
+   PROGRESS.next();
+   _loop+=1
+!};
+_obj.TAB.clear();
+{? ARCH_UST.first()
+|| {!
+   |? PROGRESS.next();
+      {? ~_obj.TAB.find_key(ARCH_UST.TAB+'.'+ARCH_UST.FLD,)
+      || ARCH_UST.del()
+      || ARCH_UST.next()
+      ?}
+   !}
+?};
+PROGRESS.close()
+
+
+\arch_blb_ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Formuła po odświeżeniu okna WER tabeli ARCH_BLB
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_par.par.CZY_ANULUJ:=0;
+ARCH_INF.index('UNIQ');
+ARCH_INF.prefix(ARCH_BLB.ref());
+grp_disp(ARCH_INF,'WER')
+
+
+\arch_blb_otworz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Formuła akcji przed Otwórz
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ARCH_BLB.FILE
+|| exec('bl_view','#blob',ARCH_BLB,'FILE')
+|| FUN.error('Brak pliku.'@)
+?}
+
+
+\arch_blb_zapisz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Formuła akcji przed Zapisz
+::   WE:
+::   WY:
+:: ~OST: INFILECHOOSER
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+{? _par.par.CZY_ANULUJ || return(0) ?};
+{? _par.par.INTERM
+|| _par.par.WYBOR:=exec('bl_save','#blob',ARCH_BLB,'FILE')<>'';
+   return(_par.par.WYBOR)
+?};
+{? ~_par.par.CZY_DEF
+|| _name:='SaveDir';
+   _par.par.DIR:=exec('get','#profile',,ARCH_BLB.TAB,_name);
+   ctr_set('!application','filechooser','reset');
+   ctr_set('!application','filechooser','setDialogTitle','Wybór katalogu'@);
+   ctr_set('!application','filechooser','setCurrentDirectory',_par.par.DIR);
+   ctr_set('!application','filechooser','setMultiSelectionEnabled',0);
+   ctr_set('!application','filechooser','setFileSelectionMode','DIRECTORIES_ONLY');
+   {? ctr_call('!application','filechooser','showSaveDialog')
+   || _par.par.DIR:=ctr_call('!application','filechooser','getSelectedFile');
+      exec('set','#profile',,ARCH_BLB.TAB,_name,_par.par.DIR)
+   || _par.par.CZY_ANULUJ:=1;
+      return(0)
+   ?};
+   {? _par.par.DIR<>''
+   || _par.par.DIR:='@'+_par.par.DIR
+   ?};
+   _par.par.CZY_DEF:=1
+?};
+_sep:=exec('sep','#file');
+errno();
+_fn:=ARCH_BLB.bl_info('FILE','NAME');
+_again:=1;
+{!
+|? _again
+|! _again:=0;
+   _fp:=_par.par.DIR+_sep+_fn;
+   {? _par.par.OVR<>12
+   || {? fexists(_fp,0)
+      || _txt:='Plik "%1" już istnieje. Nadpisać?'@ [1-_fp];
+         _par.par.WYBOR:=
+            {? _par.par.CZY_GRUPA
+            || FUN.choice(_txt,,'&Nadpisz'@,'Nadpisz &wszystkie'@,'&Zmień nazwę'@,'&Pomiń'@,,'&Anuluj'@)+10
+            || FUN.choice(_txt,,'&Nadpisz'@,'&Zmień nazwę'@,,,'&Anuluj'@)
+            ?};
+         {? _par.par.WYBOR=1 | _par.par.WYBOR=11 | _par.par.WYBOR=12 || _par.par.OVR:=_par.par.WYBOR
+         |? _par.par.WYBOR=2 | _par.par.WYBOR=13
+         || undefine();
+            define('H1',~~,'Dane podstawowe'@);
+            define('FILE',_fn,'Nazwa pliku'@,,64);
+            def_btn('text=%1'['Zapisz'@@],"'key:F2'");
+            def_btn('text=%1'['Anuluj'@@],"'key:Esc'");
+            def_opt('label_color=','H1');
+            def_opt('mark=1','FILE');
+            _for:="
+               {? ~+|DEFINE.FILE
+               || FUN.emsg('Pole %1 musi być wypełnione.\nNależy uzupełnić brakujące informacje.'@['\"Nazwa pliku\"'@@])
+               || 1
+               ?}
+            ";
+            {? def_edit(_for,'Zmień nazwę pliku'@)
+            || _fn:=DEFINE.FILE
+            ?};
+            _again:=1
+
+         |? _par.par.WYBOR=14
+:              Pomiń
+         || _par.par.OVR:=0
+         |? _par.par.WYBOR=0 | _par.par.WYBOR=10
+         || _par.par.CZY_ANULUJ:=1
+         ?}
+      || _par.par.OVR:=1
+      ?}
+   ?}
+!};
+{? _par.par.OVR
+|| _nm:=no_msg(1);
+   {? ~ARCH_BLB.bl_get('FILE',_fp,0) | errno()
+   || FUN.info('Zapisanie pliku "%1" na dysku użytkownika nie powiodło się.'@ [1-_fp])
+   || _par.par.WYBOR:=1
+   ?};
+   no_msg(_nm)
+?};
+undefine();
+_par.par.WYBOR
+
+
+\arch_blb_zapisz_a
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Formuła akcji po Zapisz
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+{? ~_par.par.CZY_GRUPA
+|| _par.par.CZY_DEF:=0;
+   _par.par.CZY_ANULUJ:=0
+?};
+1
+
+
+\arch_blb_zapisz_gb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Formuła akcji grupa przed Zapisz
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_par.par.CZY_GRUPA:=1;
+1
+
+
+\arch_blb_zapisz_ga
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Formuła akcji grupa po Zapisz
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_par.par.WYBOR:=0;
+_par.par.CZY_DEF:=0;
+_par.par.CZY_GRUPA:=0;
+_par.par.DIR:='';
+_par.par.OVR:=1;
+_par.par.CZY_ANULUJ:=0;
+1
+
+
+\arch_blb_przywroc_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Formuła akcji przed Przywróć
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_tab:=ref_tab(ARCH_BLB.UIDREF);
+_typ:=var_pres(ARCH_BLB.FLD,_tab);
+{? _typ=33 | _typ=37
+|| _tab.cntx_psh();
+   _tab.clear();
+   {? _tab.seek(ARCH_BLB.UIDREF)
+   || ($((2-!_tab)+'.'+ARCH_BLB.FLD+':=ARCH_BLB.FILE'))();
+      _par.par.CZY_PRZYWROC:=_tab.put()
+   ?};
+   _tab.cntx_pop()
+?};
+1
+
+
+\ustaw_dodatkowe_informacje
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Ustawienie zakresu danych dodatkowych informacji
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+ARCH_UST.cntx_psh();
+ARCH_UST.index('UNIQ');
+ARCH_UST.prefix(exec('firma','ustawienia'),spli_str(cur_tab(1,1).UNIQ,'.')[1],spli_str(cur_tab(1,1).UNIQ,'.')[2],);
+{? ARCH_UST.first()
+|| _test:=ARCH_UST.memo_txt(,1,'LST');
+   _txt:='';
+   {? +|_test
+   || {? _test='1'
+      || _def:=1;
+         _txt:='Wszystkie pola'@
+      || _def:=2;
+         _txt:='Indywidualny wybór pól'@
+      ?}
+   || _def:=0
+   ?};
+   {? _def || FUN.info('Zdefiniowano zakres informacji dodatkowych: %1'@[_txt]) ?};
+   _co:=FUN.choice('Wybór informacji dodatkowych'@,_def,'Wszystkie pola'@,'Indywidualny wybór pól'@,'W&yłącz'@);
+   {? _co=1
+   || ARCH_UST.memo_set('1','LST')
+   |? _co=2
+   || _ret:=exec('wybor_pol','archiwum',ARCH_UST.TAB,ARCH_UST.memo_txt(,1,'LST'));
+      {? _ret.RET
+      || ARCH_UST.memo_set(_ret.VAL,'LST')
+      ?}
+   |? _co=3
+   || ARCH_UST.memo_set('','LST')
+   ?};
+   {? _co || ARCH_UST.memo_put(,'LST') ?}
+|| FUN.emsg('Błąd systemu'@)
+?};
+ARCH_UST.cntx_pop()
+
+
+\ustaw_warunek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Ustawienie warunku dla wyzwalacza
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+ARCH_UST.cntx_psh();
+ARCH_UST.index('UNIQ');
+ARCH_UST.prefix(exec('firma','ustawienia'),spli_str(cur_tab(1,1).UNIQ,'.')[1],spli_str(cur_tab(1,1).UNIQ,'.')[2],);
+{? ARCH_UST.first()
+|| undefine();
+   define('H1',~~,'Dane podstawowe'@);
+   define('EXEC',ARCH_UST.FORM,'Formuła warunkowa'@,,64);
+   _for:="
+      _fml:=exec('sel_fml','libfml');
+      {? _fml<>''
+      || DEFINE.EXEC:=_fml+')';
+         _err:=form_chk($DEFINE.EXEC);
+         {? _err.first()
+         || FUN.emsg('Formuła ma nieprawidłową składnię.\n\nZnak: %1\n%2\n\nNależy poprawić treść formuły.'@
+               [$_err.ERR_COL,_err.ERR_DESC]
+            )
+         ?}
+      ?};
+      ''
+   ";
+   def_btn('text=%1'['Wybierz'@@],_for);
+   def_btn('text=%1'['Zapisz'@@],"'key:F2'");
+   def_btn('text=%1'['Anuluj'@@],"'key:Esc'");
+   _for:="
+      {? +|DEFINE.EXEC
+      || _err:=form_chk($DEFINE.EXEC);
+         {? _err.first()
+         || FUN.emsg('Formuła ma nieprawidłową składnię.\n\nZnak: %1\n%2\n\nNależy poprawić treść formuły.'@
+               [$_err.ERR_COL,_err.ERR_DESC]
+            );
+            0
+         || 1
+         ?}
+      || 1
+      ?}
+   ";
+   {? def_edit(_for,'Treść formuły'@)
+   || ARCH_UST.FORM:=DEFINE.EXEC;
+      ARCH_UST.put()
+   ?}
+|| FUN.emsg('Błąd systemu'@)
+?};
+undefine();
+ARCH_UST.cntx_pop()
+
+
+\wybor_pol
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Interfejs wyboru pól dla zakresu informacji dodatkowych
+::   WE: _a [STRING] - akronim tabeli
+::       _b [STRING] - lista pól zakresu informacji dodatkowych
+::   WY: obiekt z polami RET [0/1], VAL lista pól
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=obj_new('RET','VAL');
+_ret.RET:=0;
+_ret.VAL:='';
+_tab:=($(_a))();
+_pola:={? +|_b & _b<>'1' || exec('pola','archiwum',_tab,_b) || ~~ ?};
+_obj:=obj_new('TAB','NDX','WS');
+_obj.TAB:=tab_tmp(1,
+   'TREE','TREE_REF','Tree'@,
+   'ACR','STRING[8]','Akronim'@,
+   'NAZ','STRING[60]','Nazwa'@,
+   'COMM','STRING[150]','Opis'@,
+   'Z','STRING[1]','Zaznaczony'@,
+   'UNIQ','STRING[19]','Wartość'@
+);
+_obj.NDX:=obj_new('TREE','UNIQ');
+_obj.NDX.TREE:=_obj.TAB.ndx_tmp('Tree',,'TREE',,,'ACR',,);
+_obj.NDX.UNIQ:=_obj.TAB.ndx_tmp('Unikalny',,'UNIQ',,);
+_obj.WS:=_obj.TAB.mk_sel('Pola tabeli %1 %2'@[_a,_tab.comment()],'P',0,'#arch_wybor_pol',,,,1);
+_obj.TAB.win_fld(_obj.WS,,'ACR',,,20,,,'Akronim'@,,'Akronim'@);
+_obj.TAB.win_fld(_obj.WS,,'NAZ',,,30,,,'Nazwa'@,,'Nazwa'@);
+_obj.TAB.win_fld(_obj.WS,,'COMM',,,50,,,'Opis'@,,'Opis'@);
+_obj.TAB.win_fld(_obj.WS,,'Z',,,3,,,'Zaznaczony'@,,'Zaznaczony [T/N]'@,2,,"'T'","'N'");
+_obj.TAB.win_act(_obj.WS,0,'Formuła','Zwiń/&rozwiń'@,,'Zwijanie / rozwijanie drzewa'@,"exec('zwin_rozwin','#tree')"
+   ,,,,,,,,'target=window'
+);
+_txt:='&Włącz'@;
+_for:="
+   cur_tab(1,1).Z:='T';
+   cur_tab(1,1).put()
+";
+_obj.TAB.win_act(_obj.WS,0,'Formuła',_txt,,'Zaznacza rekord'@,_for,,,1,,,'W');
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=right,align=begin'[_txt],'menu:W');
+_txt:='W&yłącz'@;
+_for:="
+   cur_tab(1,1).Z:='N';
+   cur_tab(1,1).put()
+";
+_obj.TAB.win_act(_obj.WS,0,'Formuła',_txt,,'Odznacza rekord'@,_for,,,1,,,'Y');
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=right,align=begin'[_txt],'menu:Y');
+_txt:='&Zapisz'@;
+_obj.TAB.win_act(_obj.WS,0,'Formuła',_txt,,'Zatwierdza wybór'@,"sel_exit()",,,,,,'O');
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=bottom,align=end'[_txt],'menu:O');
+_txt:='&Anuluj'@;
+_obj.TAB.win_btn(_obj.WS,'text=%1,panel=bottom,align=end'[_txt],'key:Esc');
+_for:="
+   _tab:=cur_tab(1,1);
+   'xwin16.png:'+$
+   {? _tab.Z='T'
+   || 38
+   || {? _tab.TREE=0 || 125
+      |? _tab.TREE<>0 || 190
+      ?}
+  ?}
+";
+_obj.TAB.win_fml(_obj.WS,,'ACR',,'ICON_BEFORE',_for);
+_obj.TAB.win_sel(_obj.WS);
+_obj.TAB.index(_obj.NDX.TREE);
+_obj.TAB.prefix();
+{! _licz:=1.._tab.fld_num() |!
+   _obj.TAB.TREE:=0;
+   _obj.TAB.Z:='N';
+   _acr:=_tab.fld_acr(_licz);
+   _obj.TAB.ACR:=_acr;
+   _obj.TAB.NAZ:=_tab.fld_name(_licz);
+   _obj.TAB.COMM:=_tab.fld_comm(_licz);
+   _obj.TAB.UNIQ:=_acr;
+   {? var_pres('_join')>0 || &_join ?};
+   {? _obj.TAB.add() & +|_tab.fld_join(_licz)
+   || _ref:=_obj.TAB.ref();
+      _obj.TAB.TREE:=_ref;
+      _join:=($(_tab.fld_join(_licz)))();
+      {! _fld:=1.._join.fld_num() |!
+         {? exec('czy_typ_ok','archiwum',var_pres(_join.fld_acr(_fld),_join))
+         || _obj.TAB.ACR:=_join.fld_acr(_fld);
+            _obj.TAB.NAZ:=_join.fld_name(_fld);
+            _obj.TAB.COMM:=_join.fld_comm(_fld);
+            _obj.TAB.UNIQ:=_acr+'().'+_join.fld_acr(_fld);
+            _obj.TAB.add()
+         ?}
+      !}
+   ?}
+!};
+{? _obj.TAB.first()
+|| _ret.RET:=1;
+   {? var_pres('_pola')>100
+   || _obj.TAB.index(_obj.NDX.UNIQ);
+      {! _licz:=1..obj_len(_pola) |!
+         _fld:=_pola[_licz].FLD+{? var_pres('JFLD',_pola[_licz])>0 || '().'+_pola[_licz].JFLD || '' ?};
+         {? _obj.TAB.find_key(_fld,) || _obj.TAB.Z:='T'; _obj.TAB.put() ?}
+      !}
+   ?};
+   _obj.TAB.index(_obj.NDX.TREE);
+   {? _obj.TAB.first()
+   || {? _obj.TAB.select() & _obj.TAB.first()
+      || {!
+         |? {? _obj.TAB.Z='T'
+            || _ret.VAL+=_obj.TAB.UNIQ+','
+            ?};
+            _obj.TAB.next()
+         !};
+         _ret.VAL-=1
+      || _ret.VAL:=_b
+      ?}
+   ?}
+?};
+_ret
+
+
+\tabela
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Tabela tymczasowa konfiguracji
+::   WE:
+::   WY: tabela
+::----------------------------------------------------------------------------------------------------------------------
+tab_tmp(1,
+   'TREE','TREE_REF','Tree'@,
+   'ACR','STRING[8]','Akronim tabeli/pola'@,
+   'NAZ','STRING[60]','Nazwa tabeli/pola'@,
+   'A','STRING[1]','Aktywne'@,
+   'UNIQ','STRING[17]','Wartość'@,
+   'NR','INTEGER','Numer tabeli'@
+)
+
+
+\pokaz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Pokazuje wersje załącznika
+::   WE: _a [UIDREF] - uidref() tabeli źródłowej
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par:=exec('ustaw_par','archiwum');
+params_set('par',_par);
+ARCH_BLB.cntx_psh();
+ARCH_BLB.index('UNIQ');
+ARCH_BLB.prefix(_a);
+ARCH_BLB.win_sel('GRP');
+ARCH_BLB.win_patt('WZO');
+ARCH_INF.win_patt('WZO');
+ARCH_BLB.select();
+{? _par.CZY_PRZYWROC
+|| params_exec('tzalacz_fill','zalacz');
+   _par.CZY_PRZYWROC:=0
+?};
+ARCH_BLB.cntx_pop()
+
+
+\czy_archiwum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Czy jest aktywne archiwum
+::   WE: _a [STRING] - akronim tabeli
+::       _b [STRING] - akronim pola
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+ARCH_UST.cntx_psh();
+ARCH_UST.index('UNIQ');
+ARCH_UST.prefix(exec('firma','ustawienia'));
+_ret:=ARCH_UST.find_key(_a,_b,) & ARCH_UST.AKT='T';
+ARCH_UST.cntx_pop();
+_ret
+
+
+\ustaw_par
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Ustawienie parametrów grupowego zapisu załączników
+::   WE:
+::   WY: [OBIEKT]
+::----------------------------------------------------------------------------------------------------------------------
+_par:=obj_new('CZY_GRUPA','CZY_DEF','WYBOR','DIR','OVR','CZY_ANULUJ','CZY_PRZYWROC','INTERM');
+_par.WYBOR:=0;
+_par.CZY_DEF:=0;
+_par.CZY_GRUPA:=0;
+_par.DIR:='';
+_par.OVR:=0;
+_par.CZY_ANULUJ:=0;
+_par.CZY_PRZYWROC:=0;
+_par.INTERM:=exec('interm','#system');
+_par
+
+
+\arch_inf_wer_ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: J9SZAFRA [21.37]
+:: OPIS: Formuła po odświeżeniu dla okna WER tabeli ARCH_INF w oknie grupowym GRP tabeli ARCH_BLB
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+ARCH_INF.actions('WER',{? ~ARCH_BLB.size() || ':D' || '' ?},,1);
+grp_disp(ARCH_INF,'WER')
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:36 5f66ad3b41885aa730b48a8b7c94bfbdc748f32120afd0eb16299bf2f407fec1e0535f48d1690bc04bd6db987199f8773a02ab92ae781c7f2e2eefa07b239f20315ee8290bc18e59e9aecc543c7de5a09e385f6cbf0858f366f8df8c4ba88d1d7dc048b7302c8b487b94e3f56ca12c901c68f94766d1f176856d0079ed2ea891

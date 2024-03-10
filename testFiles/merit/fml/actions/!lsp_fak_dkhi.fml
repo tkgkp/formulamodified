@@ -1,0 +1,387 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lsp_fak_dkhi.fml
+:: Utworzony: 21.05.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Rejestracja - historyczna korekta dokumentu sprzedaży
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LSP,TARS
+::# kind=WE,   symbol=TYPYSP,    type=_TYPYSP,  name=Typ dokumentu sprzedaży, required=N, fml_val="exec('typysp','!lsp_fak_dkhi')", fml_exp="exec('typysp_export','typysp',_a)"
+::# kind=WY,   symbol=KORS,      type=_FAKS,    name=Korekta sprzedaży,       required=N
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+exec('init_fak','lsp');
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_area_lsp_fak:=_mp.pathArea('LSP_FAK') | _mp.pathArea('LSS_POS');
+_area:=_area_lsp_fak;
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | _mp.pathArea() & ~_area;
+_grupa:=_mp.isGroup();
+_autoakc:=exec('autoAkc','#b__box',_mp,300080,'LSP_FAK_EASP');
+
+{? _todo
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('KORS',_out)=type_of(null()) & _out.KORS
+:: Jest dokument korekty
+   || 1
+   |? ~_mp.isMicro()
+:: Brak dokumentu korekty
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego KORS.')
+   ?}
+?};
+
+:: Sprawdzenie uprawnień
+{? params_exec('permissions_chk','lsp','!lsp_fak_dkhi')=0 || return() ?};
+
+:: Wyzwalacz, który po dodaniu nagłówka korekty w masce rocznej:
+:: - add: dodaje rekord kluczowy nagłówka korekty
+::   del: usuwa rekord kluczowy nagłówka korekty
+:: - add: zapisuje parametr wyjściowy KORS - wskazanie na nagłówek korekty
+::   del: zapisuje parametr wyjściowy KORS - null
+_mp.trigRef('FAKS',,1,,exec('kind_out','#b_port'),'KORS',,"ref_name(FAKS.ref())+2<>'hs'");
+
+{? _akcja='Dołącz'
+   | _proc
+   | _akcja='START_TODO'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+|| _typysp_t:=
+      {? var_pres('TYPYSP',_in)=type_of(null())
+      || exec('FindAndGet','#table',TYPYSP,_in.TYPYSP,,"TYPYSP.T")
+      || ''
+      ?};
+   TAZ.RAB_N_BE:=0;
+   BEER.WYSTFAKS:=null;
+   HELP.WMAG:=0;
+
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   params_set('out',_out,'mp',_mp,'akcja',_akcja);
+   exec('kor_his','!lsp_fak_dkhi',_typysp_t);
+
+:: Podczytanie parametrów wyjściowych
+   _outa:=_mp.load(exec('kind_out','#b_port'));
+   {? var_pres('KORS',_outa)<>type_of(~~) & _outa.KORS
+:: Dodano dokument
+   ||
+::    Ustawienie się na dodanym dokumencie w widoku obszaru
+      params_exec('seek_dok','faktury_wspolne',_area_lsp_fak,_outa.KORS)
+:: Wycofanie czynności bo nie dodano dokumentu
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Popraw'
+   | _todo
+|| {? var_pres('KORS',_out)=type_of(null())
+:: Uruchomione w procesie
+   || FAKS.cntx_psh();
+      FAKS.prefix();
+      {? FAKS.seek(_out.KORS)
+      || exec('faks_win_edit_set','faktury_nag');
+
+         params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('fak_pop','faktury_nag');
+
+         _mp.descTodo()
+      ?};
+      FAKS.cntx_pop()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   || {? ~_todo
+      || params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('fak_pop','faktury_nag')
+      |? _akcja='Zakończ_wer'
+      || {? exec('faks_zakoncz','faktury_nag',,_autoakc) || _mp.done() ?}
+      || _mp.cancel()
+      ?}
+   |? _todo
+:: Uruchomione zadanie z listy todo i brak _out.FAKS wtedy zadanie wycofujemy
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('KORS',_out)=type_of(null())
+:: Uruchomione w procesie
+   || _faks:=null();
+      FAKS.cntx_psh();
+      {? ~_area_lsp_fak || FAKS.prefix() ?};
+      {? FAKS.seek(_out.KORS)
+      ||
+         exec('usun_fak','faktury_nag',{? _grupa || 2 || 1 ?});
+
+         {? ~FAKS.seek(_out.KORS)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _faks:=FAKS.ref()
+      ?};
+      FAKS.cntx_pop();
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+      {? _area_lsp_fak || {? _faks || FAKS.seek(_faks) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('usun_fak','faktury_nag',{? _grupa || 2 || 1 ?});
+
+      _mp.done()
+   ?}
+
+|? _akcja='Zakończ_wer' & _area_lsp_fak
+|| {? exec('faks_zakoncz','faktury_nag',_grupa,_autoakc) || _mp.done() ?}
+
+|| _mp.error('Nieobsługiwana ścieżka.')
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? var_pres('KORS',_out)=type_of(null()) & _out.KORS
+|| 'Zakończ rejestrację korekty sprzedaży: %1'@@[exec('record','#to_string',_out.KORS)]
+|| 'Zarejestruj korektę sprzedaży'@@
+?}
+
+
+\faks_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Faktura pozostała - Dołącz
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LSP_FAK_DKHI';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+
+exec('mp_run','#b__box',_params);
+
+FAKS.f_rfresh()
+
+
+\kor_his
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [2008]
+:: OPIS: redakcja korekty historycznej
+::   WE: _a - typ dokumnetu sprzedazy
+::  OLD: \kor_his/faktury0.fml
+::----------------------------------------------------------------------------------------------------------------------
+_typysp_t:=_a;
+
+FKOR.DF:=date(0,0,0);
+FKOR.NRKSEF:='';
+BEER.SZ:='S';
+{? exec('czy_z_ok','okresy',-2)
+|| FAKS.cntx_psh();
+   _where:=
+      {? _typysp_t=''
+      || 'TYPYSP.KOR=\'T\' and TYPYSP.HIS=\'T\''
+      || 'TYPYSP.KOR=\'T\' and TYPYSP.HIS=\'T\' and TYPYSP.T=\''+_typysp_t+'\''
+      ?};
+   _typ:=exec('tsp_upr','typysp',_where,,,,2);
+   {? _typ<>null
+   ||
+      POM.TYPDOK:=TYPYSP.KOD;
+      POM.NRT:=TYPYSP.NRT;
+      HELP.WHERE:='P';
+      _f_rok:='hs';
+
+      {? exec('get','#params',300215,2)='T'
+      ||
+         FZ.fld_fml('RAB','EDIT_FORMAT',"'in_prec=2'");
+         FZ.fld_fml('RAB','DISPLAY_FORMAT',"'out_prec=2'");
+
+         FKOR.fld_fml('BIL','EDIT_FORMAT',"'in_prec='+{? (2+cur_kwin())='e_' || $FAP.M().DOKL || $ST.DOKL ?}");
+         FKOR.fld_fml('BIL','DISPLAY_FORMAT',"'out_prec='+{? (2+cur_kwin())='e_' || $FAP.M().DOKL || $ST.DOKL ?}")
+      ?};
+
+      exec('open','open_tab',ST.ODDZ,_f_rok);
+      {? exec('add','faktury_nag',_typ,,,,,,,,,,,'T')
+      ||
+         _rsql:=$FAKS.ref();
+         _ofnum:=1;
+
+         exec('open','open_tab',ST.ODDZ,2-$ST.AR);
+         _data:={? ST.AM
+                || {? date()>=date(ST.AR,ST.AM,1) & date()<=date(ST.AR,ST.AM,0) || date() || date(ST.AR,ST.AM,0) ?}
+                || {? date()>=date(ST.AR,1,1) & date()<=date(ST.AR,12,0) || date() || date(ST.AR,12,0) ?}
+                ?};
+         {? exec('add','faktury_nag',_typ,_data,_rsql,,_rsql,,,,,,_data,,_ofnum)
+            & (_r_lock:=exec('r_lock_one','#table',FAKS,FAKS.ref()))
+         ||
+            ATR.MJS:='FAP';
+            FZ.RAB:=0;
+            FAKS.D:=date(0,0,0);
+            xx_ref:=0;
+            xx_nam:='';
+            xx_num:=0;
+            xx_daw:=FAKS.DW;
+            BEER.WYSTFAKS:=FAKS.ref;
+            _ref:=FAKS.ref;
+            exec('ustaw_ww','eurusd',{? BEER.SZ='S' || 'F' || 'K' ?}); exec('ust_lw','eurusd',1);
+
+            _var_korhis:=obj_new('KORHIS');
+            _var_fakpop:=exec('var_fakpop','faktury_nag');
+            _var_fakpop.RAB:=FAKS.RAB;
+            _var_fakpop.KRS:=FAKS.KRS;
+            _var_fakpop.NKRS:=FAKS.NKRS;
+            _var_fakpop.R_LOCK:=_r_lock;
+            _var_fakpop.PO_FIRST:=1;
+
+::          Parmater 'context' wykorzystywany w:
+::          - exec('faks_pozycje_red','faktury_nag')
+::          - exec('faks_zakoncz_red','faktury_nag')
+::          Parametry 'var_korhis', 'var_fakpop' wykorzystywany w:
+::          - exec('faks_pozycje_red','faktury_nag')
+::          - exec('faks_zakoncz_red','faktury_nag')
+::          - exec('put',faktury_nag') -> exec('putfak',faktury_nag') -> exec('putfakb',faktury_nag')
+::          - exec('fak_pop_po','faktury_nag',_dod_nag)
+::          - exec('kor_his_po','faktury_nag')
+            params_set('context',params_get(),'var_korhis',_var_korhis,'var_fakpop',_var_fakpop);
+
+            exec('faks_win_edit_set','faktury_nag');
+            _dod_nag:=exec('put','faktury_nag',1);
+            {? FAKS.STAT_REJ='N'
+            || _dod_nag:=exec('fak_pop_po','faktury_nag',{? _dod_nag || 1 || -1 ?},1);
+               {? _var_fakpop.PO_FIRST=1 || exec('kor_his_po','faktury_nag',_dod_nag) ?}
+            ?};
+            {? _dod_nag & exec('FindInSet','#table','FAP','FAP',FAKS.ref())=null()
+            || BPMN.END:=1;
+               params_exec('pozycje_fak','faktury_poz');
+               {? BPMN.END=2 & exec('FindInSet','#table','FAP','FAP',FAKS.ref())<>null()
+               || exec('faks_zakoncz_red','faktury_nag')
+               ?}
+            ?};
+            exec('r_unlock_one','#table',FAKS,_ref,_r_lock)
+
+         ?}
+      ?}
+   ?};
+   FAKS.cntx_pop()
+?};
+''
+
+
+\fz_rab_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [12.10]
+:: OPIS: przed redakcja FZ.RAB
+::  OLD: \fz_rab_be/faktury0.fml
+::  OLD: \fz_rab_be/faktury_nag.fml
+::----------------------------------------------------------------------------------------------------------------------
+DPOZ.WPR_R:=fld;
+exec('upr_cscz','ceny')
+
+
+\fz_rab_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [12.10]
+:: OPIS: po redackji FZ.RAB
+::  OLD: \fz_rab_ae/faktury0.fml
+::----------------------------------------------------------------------------------------------------------------------
+_p2130:=exec('get','#params',2130,2,OPERATOR.USER);
+{? FAKS.T().HIS='T' & (FAKS.RAB=0 & DPOZ.WPR_R<>fld | _p2130<>'W' & _p2130<>'N')
+||
+   FAKS.RAB:=FZ.RAB
+?};
+1
+
+
+\po_df_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [2008]
+:: OPIS: po redakcji pola Data dokumentu korygowanego
+::   WY: 1-jest poprawnie wypelniona 0-niewlasciwa data
+::  OLD: \po_df_kh/faktury0.fml
+::----------------------------------------------------------------------------------------------------------------------
+return(1);
+:: Kontrola przeniesiona po redakcji rekordu
+{? FKOR.DF=date(0,0,0)
+|| FUN.info('Data dokumentu korygowanego nie może być zerowa.'@);
+   0
+|? FKOR.DF>FAKS.DW
+|| FUN.info('Data dokumentu korygowanego nie może być większa od daty dokumentu.'@);
+   0
+|| xx_daw:=FKOR.DF;
+   1
+?}
+
+
+\typysp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła na wartość parametru TYPYSP
+::   WY: TYPYSP.ref()
+::----------------------------------------------------------------------------------------------------------------------
+BEER.SZ:='S';
+exec('tsp_fak','typysp','P',,,,,'HIS')
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+
+_wyn:=1;
+
+:: Sprawdzenie uprawnień do typu dokumentu
+{? _wyn & var_pres('TYPYSP',_in)=type_of(null()) & _in.TYPYSP
+|| _typysp_t:=exec('FindAndGet','#table',TYPYSP,$_in.TYPYSP,,"TYPYSP.T",'');
+   _wyn:=
+      {? _typysp_t<>''
+      || {? exec('FindInSet','#table','T2STS','UNIK',ST.STS)<>null()
+         || exec('FindInSet','#table','T2STS','UNIK',_in.TYPYSP,ST.STS)<>null()
+         || _where:=exec('tsp_where','typysp','P',,,,_typysp_t,'HIS');
+            exec('tsp_upr','typysp',_where,,0,,1,,_user)<>null()
+         ?}
+      || 1
+      ?}
+?};
+
+_wyn
+
+
+\display
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [19.02]
+:: OPIS: Lista zadań TO-DO, podgląd dokumentu
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+exec('display','faktury_nag',_out.KORS)
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 0d82d1657d707512ca6b3c7b501ff4d19d4c486c8c657482473bb3cb7a84b46ef283d26b5b992d4ee12d6dcaee00e11635b2674bbbca1c1f345dd71146b9022493a5323027a2ff7889bce7d72f791e18c85e772a28cdf29f5cfaff8e4f476e747ec621c0face4b328950f7518b29aebbd6efc7e84e91490ccb499da8c0a9b6c5

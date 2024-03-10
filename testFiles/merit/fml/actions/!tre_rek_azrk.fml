@@ -1,0 +1,199 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tre_rek_azrk.fml
+:: Utworzony: 19.03.2021
+:: Autor: MW
+::======================================================================================================================
+:: Zawartość: Formuły czynności TRE_REK_AZRK - Zamknięcie reklamacji klienta.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [21.14]
+:: OPIS: Formuła główna czynności TRE_REK_AZRK - Zamknięcie reklamacji klienta
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_action:=_mp.akcja();
+_context:=_mp.context;
+
+::# permissions=ODDZ
+
+::# kind=WE, symbol=REK_N, type=_REK_N, name=Reklamacja, required=T, keyref=T
+::# kind=WY, symbol=REK_N, type=_REK_N, name=Reklaamcja, required=N
+::# kind=WY, symbol=RESULT, type=STRING, name=Rezultat działania, required=N
+
+{? var_pres('REK_N',_in)<>type_of(~~) & var_pres('REK_N',_in)<>type_of(null())
+|| _msg:='Błędny parametr wejściowy \'%1\' dla czynności %2.'@@['REK_N','TRE_REK_AZRK'];
+   FUN.error(_msg);
+   _mp.error(_msg);
+   return()
+?};
+{? var_pres('REK_N',_in)=type_of(~~) || _in.REK_N:=null() ?};
+
+BEER.SZ:='S';
+_result:=0;
+_clean_result:=params_exec('clean','!tre_rek_azrk');
+_can_continue:=_clean_result.RESULT;
+_rek_n:=_clean_result.REK_N;
+
+REK_N.cntx_psh();
+REK_N.prefix();
+
+{? _can_continue>0 & _rek_n<>null()
+|| _can_continue:=REK_N.seek(_rek_n)
+|| _can_continue:=0
+?};
+
+{? _can_continue>0
+|| _out.REK_N=_rek_n;
+   _mp.save('OUT','REK_N',_rek_n);
+   exec('rek_n_win_edit_set','reklamacje',2);
+   _mp.keyRef(REK_N.uidref());
+:: Obsługa w obszarze roboczym albo z listy zadań
+   {? exec('blk_lock','#table','REK_N',REK_N.ref(),,,'Reklamacja jest redagowana'@)
+   || {? REK_N.STAT_REJ='T' & REK_N.RESULT='T'
+      || _st:=exec('status_akceptacja_zamkniecie','reklamacje')
+      |? REK_N.STAT_REJ='T' & REK_N.RESULT='N'
+      || _st:=exec('status_odrzucenie_zamkniecie','reklamacje')
+      || _st:=''
+      ?};
+      {? _st<>''
+      || REK_N.STAT_REJ:='X';
+         REK_N.DX:=date();
+         REK_N.XSR:=OPERATOR.USER;
+         REK_N.ST:=_st;
+         REK_N.memo_get(,'OPIS',);
+         REK_N.memo_get(,'RES_OPIS',);
+         REK_N.memo_get(,'X_OPIS',);
+         {? REK_N.edit()
+         || {? REK_N.put()
+            || {? REK_N.memo_put(,'X_OPIS')
+               || _result:=1
+               ?}
+            ?}
+         ?}
+      ?}
+   ?};
+   exec('blk_unlock','#table','REK_N',REK_N.ref());
+   {? _result>0 | _mp.isMicro()
+   || exec('desc_update','#b__box',REK_N.uidref());
+      _out.RESULT:='OK';
+      _mp.save(,_out);
+      _mp.done()
+   ?}
+?};
+
+REK_N.cntx_pop();
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [21.14]
+:: OPIS: Opis dla czynności zamknięcia reklamacji klienta (TRE_REK_AZRK)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+
+:: jest rekord kluczowy to ustawiam odpowiedniego REK_N
+{? var_pres('[1]',_keyRefs)
+|| _tmp:=exec('FindAndGet','#table',REK_N,_keyRefs[1],,"REK_N.SYM",'');
+   _res:=exec('FindAndGet','#table',REK_N,_keyRefs[1],,"REK_N.RESULT",'');
+   {? _tmp<>''
+   || {? _res='T'
+      || _desc:='Zamknij zaakceptowaną reklamację: %1'@@[_tmp]
+      || _desc:='Zamknij odrzuconą reklamację: %1'@@[_tmp]
+      ?}
+   ?}
+|| _desc:='Zamknij nową reklamację'@@
+?};
+_desc
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [21.14]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+_can_continue:=1;
+_obj:=obj_new('RESULT','REK_N');
+_obj.RESULT:=0;
+_obj.REK_N:=null();
+
+_keyRefs:=_mp.getRefs();
+
+{? obj_len(_keyRefs)>0
+||
+   {! _it:=1..obj_len(_keyRefs)
+   |! _kref:=_keyRefs[_it];
+
+      {? type_of(_kref)>0
+      ||
+         {? ref_name(_kref)=REK_N.name()
+         || _obj.REK_N:=exec('FindAndGet','#table',REK_N,_kref,,,null());
+
+            {? _obj.REK_N=null()
+            ||
+::             Nie znaleziono rekordu kluczowego powiązanego ze zgłoszeniem, więc robię error
+               _can_continue:=0;
+               exec('rek_n_deleted_in_proc','reklamacje',_mp)
+            ||
+::             Sprawdzenie statusu rejestracji zgłoszenia, jeżeli 'X', to popychanie
+               _stat_rej:=exec('FindAndGet','#table',REK_N,_obj.REK_N,,"STAT_REJ",'T');
+               {? _stat_rej='X'
+               || _can_continue:=0;
+                  FUN.info('Reklamacja została już zamknięta.'@);
+                  _mp.done()
+               ?}
+            ?}
+         ?}
+      ||
+::       Nie znaleziono rekordu kluczowego powiązanego ze zgłoszeniem, więc robię error
+         _can_continue:=0;
+         exec('rek_n_deleted_in_proc','reklamacje',_mp)
+      ?}
+   !}
+?};
+
+{? _can_continue>0
+||
+:: jest parametr wejściowy REK_n
+   {? _obj.REK_N=null() & var_pres('REK_N',_in)=type_of(null())
+   || _obj.REK_N:=_in.REK_N
+   ?}
+?};
+
+{? _can_continue>0
+|| _obj.RESULT:=1
+?};
+
+_obj
+
+:Sign Version 2.0 jowisz:1048 2021/04/09 15:19:41 381ca68398f4880105c572948d6eb63f415ce61d8e922de5248305f20d95aacf4d9f72bb383ff8a0e76d7b9064f510029e4f9228efd66edf09641bf2a13b8a33914ddf034b2d851a4e4de604b8fec797f8e57009ed0993ccf831fbd1c00e49b6142b3d96d3cdf29ffdc5298ea518e83aef7404b9d222f3f6fb12b6d9523082d3

@@ -1,0 +1,682 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !hbn_prz_dlus.fml
+:: Utworzony: 16.06.2016
+:: Autor: jaws
+::======================================================================================================================
+:: Zawartość: Obsługa czynności HBN_PRZ_DLUS - Utw. przelewów US z wynagr.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Utw. przelewów do umów zleceń - główna formuła czynności.
+::----------------------------------------------------------------------------------------------------------------------
+::# kind=WE, symbol=RP,     type=NUMBER, name=Rok podatkowy, required=T, keyref=T
+::# kind=WE, symbol=MP,     type=NUMBER, name=Miesiąc podatkowy, required=T, keyref=T
+::# kind=WE, symbol=RODZAJ, type=STRING, name=Rodzaj deklaracji, required=T, keyref=T, fml_val="exec('type','!hbn_prz_dlus',_a)"
+::
+::# kind=WEW, symbol=P_ZLEC, type=DATE,   name=Data zlecenia, required=N
+::# kind=WEW, symbol=P_DATA, type=DATE,   name=Data przelewu, required=N
+::# kind=WEW, symbol=KW_P04, type=NUMBER, name=Ograniczenie zaliczek, required=N
+::# kind=WEW, symbol=KW_P05, type=NUMBER, name=Kwota do pobrania, required=N
+::# kind=WEW, symbol=KW_P42, type=NUMBER, name=Kwota potrącenia, required=N
+::
+::# kind=WEW, symbol=DONE, type=NUMBER, name=Koniec działania, required=N
+::
+::# kind=WY, symbol=PB, type=_PB, name=Wskazanie polecenia przelewu, required=N
+
+::# permissions=F_ZATR,UD_SKL,HRB,HRP,FJKS
+
+_par:=params_get();
+params_set(_par);
+
+_in:=_par.in;
+_ib:=_par.int;
+_rv:=_par.out;
+_mp:=_par.mp;
+
+_result:='';
+{? _in.RP<1900 | _in.MP<1 | _in.MP>12 | (_in.RODZAJ<>'PIT-4' & _in.RODZAJ<>'PIT-8AR')
+|| _result:=exec('error','!hbn_prz_dlus')
+
+|| _id:='_%1/%2/%3'[$_in.RP,$_in.MP,_in.RODZAJ];
+   _mp.keyRef(_id,0,0);
+   {? exec('init','!hbn_prz_dlus')
+   || _value:=0;
+      {? _mp.isMicro() | _ib.DONE=1
+      || _value:=exec('send','!hbn_prz_dlus')
+      ?};
+      {? type_of(_value)=type_of(0)
+      || {? _mp.isMicro()
+         || _mp.cancel()
+         |? _ib.DONE
+         || _mp.done()
+         || _mp.keep()
+         ?}
+      |? type_of(_value)=type_of('')
+      || _result:=_value
+      ?}
+   || {? _mp.isMicro()
+      || _mp.cancel()
+      || _mp.keep()
+      ?}
+   ?}
+?};
+
+{? _result<>''
+:  obsługa błędów
+|| _mp.error(_result);
+   FUN.emsg(_result)
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().mp.load(exec('kind_in','#b_port'));
+_data:=date(_in.RP,_in.MP,0);
+{? _data<>date(0,0,0)
+|| 'Przelew do urzędu skarbowego za %1 dla formularza %2'@@[_data$8,_in.RODZAJ]
+|| 'Przelew do urzędu skarbowego'@@
+?}
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Zwraca treść komunikatu błędu.
+::   WE:
+::   WY: treść komunikatu
+::----------------------------------------------------------------------------------------------------------------------
+'Utworzenie przelewów do urzędu skarbowego niemożliwe.'@
+
+
+\type
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wybór typu deklaracji
+::   WE: _a [STRING] - dotychczasowa wartość parametru
+::   WY: nowa wartość parametru
+::----------------------------------------------------------------------------------------------------------------------
+_old:={? type_of(_a)=type_of('') || _a || '' ?};
+
+_choice:=FUN.choice('Rodzaj formularza podatkowego.'@,,'PIT-&4','PIT-&8AR');
+{? _choice=1 || 'PIT-4'
+|? _choice=2 || 'PIT-8AR'
+|| _old
+?}
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Przywróć zapamiętane wartości parametrów raportu.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('no_limit','schemat','PPL')
+|| return(0)
+?};
+
+_par:=params_get();
+params_set(_par);
+_in:=_par.in;
+_ib:=_par.int;
+_rv:=_par.out;
+_mp:=_par.mp;
+
+: sprawdzenie, czy w miesiącu podatkowym istnieją otwarte listy płac rozliczające wynagrodzenie pracowników
+{? _in.RODZAJ='PIT-4'
+|| _O:=sql(
+      'select count(*) as TEST '
+      'from O '
+      'join F_ZATR using (O.F_ZATR,F_ZATR.REFERENCE) '
+      'where O.FIRMA=:_a and O.Z=\'N\' and O.RP=:_b and O.MP=:_c and F_ZATR.KOD=\'P\'',
+      exec('ref_firma','ustawienia'),_in.RP,_in.MP
+   );
+   {? type_of(_O)=type_of(SYSLOG) & _O.first() & _O.TEST>0
+   || {? ~FUN.ask(
+            'Znaleziono otwarte listy płac za %1.\n'
+            'Czy kontynuować działanie?'@
+            [date(_in.RP,_in.MP,1)$8]
+         )
+      || return(0)
+      ?}
+   ?}
+?};
+
+{? ~exec('rachunki_banki','rachunki',exec('desc','!hbn_prz_dlus'))
+|| return(0)
+?};
+
+exec('czytaj','#stalesys',date(_in.RP,_in.MP,0),KST);
+exec('czytaj','#stalesys',,KST_PAR);
+
+_tmp:=tab_tmp(1,
+   'P_ZLEC','DATE','Data zlecenia'@,
+   'P_DATA','DATE','Data przelewu'@,
+   'KW_P04','REAL','Ograniczenie zaliczek'@,
+   'KW_P05','REAL','Kwota do pobrania'@,
+   'KW_P42','REAL','Kwota potrącenia'@
+);
+{? _in.RODZAJ='PIT-4'
+|| _wnd:=_tmp.mk_edit('Przelew podatku',0);
+   _tmp.win_esep(_wnd,'PIT-4');
+   _tmp.win_efld(_wnd,,'P_ZLEC',,,10);
+   _tmp.win_efld(_wnd,,'P_DATA',,,10);
+   _tmp.win_efld(_wnd,,'KW_P04',,,13,2,,,,'Kwota zaliczek, których pobór został ograniczony'@);
+   _tmp.win_efld(_wnd,,'KW_P05',,,13,2,,,,'Ograniczenie poboru zaliczek w poprzednich miesiącach'@);
+:: Jeśli parametr 293 jest wyłączony, to wynagrodzenie z tytułu terminowego wpłacania podatku wypełniamy ręcznie
+   {? PAR_SKID.get(293)<>'T'
+   || _tmp.win_efld(_wnd,,'KW_P42',,,13,0,,,,'Kwota z tytułu terminowego wpłacania podatku'@)
+   ?};
+   _tmp.win_edit(_wnd)
+
+|? _in.RODZAJ='PIT-8AR'
+|| _wnd:=_tmp.mk_edit('Przelew podatku',0);
+   _tmp.win_esep(_wnd,'PIT-8AR');
+   _tmp.win_efld(_wnd,,'P_ZLEC',,,10);
+   _tmp.win_efld(_wnd,,'P_DATA',,,10);
+   _tmp.win_efld(_wnd,,'KW_P42',,,13,0,,,,'Kwota z tytułu terminowego wpłacania podatku'@);
+   _tmp.win_edit(_wnd)
+
+|| return(0)
+?};
+_btn:=_tmp.win_ebtn(_wnd,'text=%1'['Zakończ przelew'@],"
+   params_get().int.DONE:=1; 'key:F2'
+");
+_tmp.btn_eopt(_wnd,_btn,
+     'state=%1'[{? _mp.isMicro() || 'grayed' || 'normal' ?}]+',tooltip='+exec('help_red_zakoncz','#window','H'));
+_btn2:=_tmp.win_ebtn(_wnd,'text=%1'['Zapi&sz'@],"
+   params_get().int.DONE:=0; 'key:F2'
+");
+_tmp.btn_eopt(_wnd,_btn2,'tooltip='+exec('help_red_ok','#window','Z'));
+_btnan:=_tmp.win_ebtn(_wnd,'text=%1'['Anuluj'@],"'key:Esc'");
+_tmp.btn_eopt(_wnd,_btnan,'tooltip='+exec('help_red_esc','#window','A'));
+
+_tmp.efld_opt(_wnd,'mark=1',,'P_ZLEC');
+_tmp.efld_opt(_wnd,'mark=1',,'P_DATA');
+
+_data:=date(_in.RP,_in.MP,0);
+
+{? type_of(_ib.P_ZLEC)=type_of(_tmp.P_ZLEC)
+|| _tmp.P_ZLEC:=_ib.P_ZLEC
+|| _tmp.P_ZLEC:=_data
+?};
+{? type_of(_ib.P_DATA)=type_of(_tmp.P_DATA)
+|| _tmp.P_DATA:=_ib.P_DATA
+|| _tmp.P_DATA:=_data
+?};
+{? type_of(_ib.KW_P04)=type_of(_tmp.KW_P04)
+|| _tmp.KW_P04:=_ib.KW_P04
+?};
+{? type_of(_ib.KW_P05)=type_of(_tmp.KW_P05)
+|| _tmp.KW_P05:=_ib.KW_P05
+?};
+{? type_of(_ib.KW_P42)=type_of(_tmp.KW_P42)
+|| _tmp.KW_P42:=_ib.KW_P42
+?};
+
+_ib.DONE:=0;
+
+{? ~_tmp.edit("__CHK.record(cur_tab(),,'P_ZLEC','P_DATA')")
+|| return(0)
+?};
+
+{? _tmp.P_DATA>=date(2020,01,01)
+|| SKID_RBK.cntx_psh();
+   SKID_RBK.index('TAB');
+   SKID_RBK.prefix(null,REF.INFOROR);
+   {? ~SKID_RBK.first()
+   || SKID_RBK.cntx_pop();
+      FUN.info('Brak zdefiniowanych mikrorachunków.'@);
+      return(0)
+   || {? SKID_RBK.size()>1
+      || _domy:=0;
+         {!
+         |? {? SKID_RBK.RD='N'
+            || SKID_RBK.next()
+            || _domy:=1;
+               0
+            ?}
+         !};
+         {? ~_domy
+         || SKID_RBK.cntx_pop();
+            FUN.info('Brak zdefiniowanego mikrorachunku domyślnego.'@);
+            return(0)
+         ?}
+      ?}
+   ?};
+   SKID_RBK.cntx_pop()
+?};
+
+_ib.P_ZLEC:=_tmp.P_ZLEC;
+_ib.P_DATA:=_tmp.P_DATA;
+_ib.KW_P04:=_tmp.KW_P04;
+_ib.KW_P05:=_tmp.KW_P05;
+_ib.KW_P42:=_tmp.KW_P42;
+
+_mp.save(_ib,_rv);
+1
+
+
+\send
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Przelew podatku od wynagrodzeń.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+params_set(_par);
+_in:=_par.in;
+
+exec('dekl','lista_plac');
+
+{? _in.RODZAJ='PIT-4' || exec('send_pit_4','!hbn_prz_dlus')
+|? _in.RODZAJ='PIT-8AR' || exec('send_pit_8ar','!hbn_prz_dlus')
+|| exec('error','!hbn_prz_dlus')
+?}
+
+
+\send_pit_4
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Przelew do urzędu skarbowego.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+params_set(_par);
+_in:=_par.in;
+_ib:=_par.int;
+_rv:=_par.out;
+_mp:=_par.mp;
+
+_pit:=obj_new(12);
+{! _n:=1..12
+|! _pit[_n]:=0
+!};
+
+_pit[1]:=_ib.KW_P04;
+_pit[2]:=_ib.KW_P05;
+_pit[4]:=_ib.KW_P42;
+
+DEKL_POD.use('pod_'+form(_in.RP,-4,0,'99'));
+DEKL_POD.index('DEKL_DAT');
+DEKL_POD.clear();
+
+{? DEKL_POD.find_key('P',_in.MP,'PIT-4')
+|| USERS.cntx_psh();
+   FUN.info(
+      'Za %1 generowano dane do przelewu %2.\nData: %3, operator: %4\n'
+      'Informacje zostaną zaktualizowane.'@
+      [date(_in.RP,_in.MP,1)$8,DEKL_POD.PIT,DEKL_POD.DATA$7,DEKL_POD.USER().KOD]
+   );
+   USERS.cntx_pop()
+?};
+
+KP.cntx_psh();
+KP.clear();
+KP.f_set(,'join P using (KP.P,P.REFERENCE)'
+         ,'KP.R=:_a and KP.M=:_b and P.FIRMA=:_c'
+         ,_in.RP,_in.MP,exec('ref_firma','ustawienia'));
+_loop:=KP.f_first();
+{!
+|? _loop
+|! _pit[5]+=(KP.S1<>0);
+   _pit[7]+=KP.S4;
+   {? (_kw:=KP.S7)>0
+   || _pit[8]+=_kw
+   || _pit[9]+=_kw*(-1)
+   ?};
+   _loop:=KP.f_next()
+!};
+KP.f_clear();
+KP.cntx_pop();
+
+RH.cntx_psh();
+RH.index('DOK');
+RH.prefix(exec('ref_firma','ustawienia'),_in.RP,_in.MP);
+_loop:=RH.first();
+{!
+|? _loop
+|! {? ~exec('licz_rhs','lista_licz',31)
+   || _pit[10]+=exec('licza_rhs','lista_licz',961)
+   ?};
+   _loop:=RH.next()
+!};
+RH.cntx_pop();
+
+_pit[11]:=_pit[7];
+_pit[12]:=_pit[11]+_pit[2]+_pit[8]+_pit[10];
+_pit[12]-=_pit[1]+_pit[9]+_pit[3];
+{? _pit[12]<0
+|| _pit[12]:=0
+?};
+:: Jeśli parametr 293 jest włączony, to wynagrodzenie z tytułu terminowego wpłacania podatku wyliczamy automatycznie
+{? PAR_SKID.get(293)='T'
+|| _pit[4]:=(_pit[12]*(KST.PW_TWP/100))$0
+?};
+_pit[6]:=_pit[12]-_pit[4];
+{? _pit[6]<0
+|| _pit[6]:=0
+?};
+
+{? _pit[6]<=0
+|| FUN.info('Brak kwoty do wykazania na przelewie (zerowa kwota podatku).'@)
+?};
+
+_okres:=($_in.RP+2)+'M'+(('0'+$_in.MP)+2);
+_kid:='PIT-4 '+date(_in.RP,_in.MP,0)$8;
+_pb:=exec('get_pb_by_id','hbn',_kid);
+{? _pb.ACTION='none'
+:  przelew zablokowany
+|| exec('cant_gen','hbn');
+   _rv.PB:=null;
+   _mp.save(,_rv)
+
+|| PB.cntx_psh();
+   PB.use('pbxxxx');
+   PB.index('PBKO');
+   PB.prefix();
+   {? _pb.ACTION='put'
+   || PB.seek(_pb.REF)
+   || PB.blank()
+   ?};
+   exec('ustaw_pb','rachunki','F');
+
+   _datap:=_ib.P_DATA;
+   _skid:=null();
+   {? _datap>=date(2020,01,01)
+   || SKID_RBK.cntx_psh();
+      SKID_RBK.index('TAB');
+      SKID_RBK.prefix(null,REF.INFOROR);
+      {? SKID_RBK.first()
+      || {? SKID_RBK.size()>1
+         || _domy:=0;
+            {!
+            |? {? SKID_RBK.RD='N'
+               || SKID_RBK.next()
+               || _domy:=1;
+                  0
+               ?}
+            !};
+            {? _domy
+            || _skid:=$SKID_RBK.ref()
+            ?}
+         || _skid:=SKID_RBK.ref()
+         ?}
+      ?};
+      SKID_RBK.cntx_pop()
+   ?};
+
+
+   PB.NR:=0;                     'numer w paczce';
+   PB.NBD:=SKID_RBK.BANK;        'bank i numer rachunku dłużnika';
+   PB.RD:=gsub(ROZNE.KONBAN,' ','');
+   PB.W:=KST.US().NU;            'nazwa wierzyciela';
+
+   {? _datap>=date(2020,01,01)
+   || SKID_RBK.cntx_psh();
+      SKID_RBK.prefix();
+      SKID_RBK.seek(_skid);
+      PB.NBW:=SKID_RBK.BANK;     'bank wierzyciela';
+      'numer rachunku wierzyciela';
+      PB.RW:=gsub(SKID_RBK.N,' ','');
+      SKID_RBK.cntx_pop()
+   || PB.NBW:=KST.US().BANK;     'bank wierzyciela';
+      'numer rachunku wierzyciela';
+      _rbk:=exec('us_rbk_tp','rachunki',KST.US,'PIT',date(_in.RP,_in.MP,0),1);
+      PB.RW:=gsub({? _rbk<>'' || _rbk || KST.US().B3 ?},' ','')
+   ?};
+
+   PB.KP:=6+KST.US().UK;         'kod pocztowy';
+   PB.M:=KST.US().MU;            'miasto';
+   PB.UL:=KST.US().UU;           'ulica';
+   PB.DZ:=_ib.P_ZLEC;            'data zlecenia';
+   PB.DP:=_ib.P_DATA;            'data przelewu';
+   {? KST.NIP<>''
+   || PB.USNIPREG:=gsub(KST.NIP,'-','');
+      PB.USTYPID:='N'
+   || PB.USNIPREG:=KST.REG;
+      PB.USTYPID:='R'
+   ?};
+   PB.USOKRES:=_okres;
+   PB.USTYPPL:='PIT4';
+   PB.USIDZOB:='';
+   PB.TYT:=form(PB.USNIPREG,15)+form(PB.USTYPID,4)+form(PB.USOKRES,7)+form(PB.USTYPPL,6)+PB.USIDZOB;
+   PB.KW:=_pit[6];               'kwota';
+   PB.KD:='PPL: US';             'Kod HB';
+   PB.PR:='N';                   'Przekazany?';
+   PB.KID:=_kid;
+   PB.WAL:=KST_PAR.NAROD;
+   PB.RODZ:='KU';
+   _rv.PB:=null;
+   {? _pb.ACTION='put'
+   || {? PB.KW<>0
+      || {? PB.put()
+         || _rv.PB:=PB.ref()
+         ?}
+      || PB.del()
+      ?}
+   || {? PB.KW<>0 & PB.add()
+      || _rv.PB:=PB.ref()
+      ?}
+   ?};
+   {? _rv.PB<>null
+   || FUN.info('Przygotowano dane do przelewu zaliczki miesięcznej do deklaracji rocznej PIT-4.'@)
+   || FUN.emsg('Przygotowanie danych do przelewu zaliczki miesięcznej do deklaracji rocznej PIT-4. nie powiodło się.'@)
+   ?};
+   _mp.save(,_rv);
+   PB.cntx_pop()
+?};
+obj_del(_pb);
+
+DEKL_POD.clear();
+DEKL_POD.blank();
+DEKL_POD.RODZAJ:='P';
+DEKL_POD.MSC:=_in.MP;
+DEKL_POD.DATA:=date();
+DEKL_POD.PIT:='PIT-4';
+DEKL_POD.S1:=_pit[5];
+DEKL_POD.S2:=0;
+DEKL_POD.S3:=_pit[6];
+DEKL_POD.USER:=OPERATOR.USER;
+DEKL_POD.add();
+1
+
+
+\send_pit_8ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Przelew do urzędu skarbowego.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+params_set(_par);
+_in:=_par.in;
+_ib:=_par.int;
+_rv:=_par.out;
+_mp:=_par.mp;
+
+_pit:=obj_new(12);
+{! _n:=1..12
+|! _pit[_n]:=0
+!};
+
+_pit[7]:=_ib.KW_P42;
+
+DEKL_POD.use('pod_'+form(_in.RP,-4,0,'99'));
+DEKL_POD.index('DEKL_DAT');
+DEKL_POD.clear();
+
+{? DEKL_POD.find_key('P',_in.MP,'PIT-8A')
+|| USERS.cntx_psh();
+   FUN.info(
+      'Za %1 generowano dane do przelewu %2.\nData: %3, operator: %4\n'
+      'Informacje zostaną zaktualizowane.'@
+      [date(_in.RP,_in.MP,1)$8,DEKL_POD.PIT,DEKL_POD.DATA$7,DEKL_POD.USER().KOD]
+   );
+   USERS.cntx_pop()
+?};
+
+RH.cntx_psh();
+RH.index('DOK');
+RH.prefix(exec('ref_firma','ustawienia'),_in.RP,_in.MP);
+_loop:=RH.first();
+{!
+|? _loop
+|! RH.ZLE().RU().K;
+   {? exec('licz_rhs','lista_licz',31)
+   || {? RU.K='7'
+      || _pit[1]+=exec('licza_rhs','lista_licz',961)
+      |? RU.K='8'
+      || _pit[2]+=exec('licza_rhs','lista_licz',961)
+      || _pit[3]+=exec('licza_rhs','lista_licz',961)
+      ?}
+   ?};
+   _loop:=RH.next()
+!};
+RH.cntx_pop();
+
+_pit[6]:=_pit[1]+_pit[2]+_pit[3];
+_pit[8]:=_pit[6]-_pit[7];
+{? _pit[8]<0
+|| _pit[8]:=0
+?};
+
+{? _pit[8]<=0
+|| FUN.info('Brak kwoty do wykazania na przelewie (zerowa kwota podatku).'@)
+?};
+
+DEKL_POD.clear();
+DEKL_POD.blank();
+DEKL_POD.RODZAJ:='P';
+DEKL_POD.MSC:=_in.MP;
+DEKL_POD.DATA:=date;
+DEKL_POD.PIT:='PIT-8A';
+DEKL_POD.S1:=0;
+DEKL_POD.S2:=0;
+DEKL_POD.S3:=_pit[8];
+DEKL_POD.USER:=OPERATOR.USER;
+DEKL_POD.add();
+
+_okres:=($_in.RP+2)+'M'+(('0'+$_in.MP)+2);
+_kid:='PIT-8A '+date(_in.RP,_in.MP,0)$8;
+_pb:=exec('get_pb_by_id','hbn',_kid);
+{? _pb.ACTION='none'
+:  przelew zablokowany
+|| exec('cant_gen','hbn');
+   _rv.PB:=null;
+   _mp.save(,_rv)
+
+|| PB.cntx_psh();
+   PB.use('pbxxxx');
+   PB.index('PBKO');
+   PB.prefix();
+   {? _pb.ACTION='put'
+   || PB.seek(_pb.REF)
+   || PB.blank()
+   ?};
+   exec('ustaw_pb','rachunki','F');
+
+   _datap:=_ib.P_DATA;
+   _skid:=null();
+   {? _datap>=date(2020,01,01)
+   || SKID_RBK.cntx_psh();
+      SKID_RBK.index('TAB');
+      SKID_RBK.prefix(null,REF.INFOROR);
+      {? SKID_RBK.first()
+      || {? SKID_RBK.size()>1
+         || _domy:=0;
+            {!
+            |? {? SKID_RBK.RD='N'
+               || SKID_RBK.next()
+               || _domy:=1;
+                  0
+               ?}
+            !};
+            {? _domy
+            || _skid:=$SKID_RBK.ref()
+            ?}
+         || _skid:=SKID_RBK.ref()
+         ?}
+      ?};
+      SKID_RBK.cntx_pop()
+   ?};
+
+   PB.NR:=0;                     'numer w paczce';
+   PB.NBD:=SKID_RBK.BANK;        'bank i numer rachunku dłużnika';
+   PB.RD:=gsub(ROZNE.KONBAN,' ','');
+   PB.W:=KST.US().NU;            'nazwa wierzyciela';
+
+   {? _datap>=date(2020,01,01)
+   || SKID_RBK.cntx_psh();
+      SKID_RBK.prefix();
+      SKID_RBK.seek(_skid);
+      PB.NBW:=SKID_RBK.BANK;     'bank wierzyciela';
+      'numer rachunku wierzyciela';
+      PB.RW:=gsub(SKID_RBK.N,' ','');
+      SKID_RBK.cntx_pop()
+   || PB.NBW:=KST.US().BANK;        'bank wierzyciela';
+      'numer rachunku wierzyciela';
+      _rbk:=exec('us_rbk_tp','rachunki',KST.US,'PIT',date(_in.RP,_in.MP,0),1);
+      PB.RW:=gsub({? _rbk<>'' || _rbk || KST.US().B3 ?},' ','')
+   ?};
+
+   PB.KP:=6+KST.US().UK;         'kod pocztowy';
+   PB.M:=KST.US().MU;            'miasto';
+   PB.UL:=KST.US().UU;           'ulica';
+   PB.DZ:=_ib.P_ZLEC;            'data zlecenia';
+   PB.DP:=_ib.P_DATA;            'data przelewu';
+   {? KST.NIP<>''
+   || PB.USNIPREG:=gsub(KST.NIP,'-','');
+      PB.USTYPID:='N'
+   || PB.USNIPREG:=KST.REG;
+      PB.USTYPID:='R'
+   ?};
+   PB.USOKRES:=_okres;
+   PB.USTYPPL:='PIT8AR';
+   PB.USIDZOB:='';
+   PB.TYT:=form(PB.USNIPREG,15)+form(PB.USTYPID,4)+form(PB.USOKRES,7)+form(PB.USTYPPL,6)+PB.USIDZOB;
+   PB.KW:=_pit[8];               'kwota';
+   PB.KD:='PPL: US';             'Kod HB';
+   PB.PR:='N';                   'Przekazany?';
+   PB.KID:=_kid;
+   PB.WAL:=KST_PAR.NAROD;
+   PB.RODZ:='KU';
+   _rv.PB:=null;
+   {? _pb.ACTION='put'
+   || {? PB.KW<>0
+      || {? PB.put()
+         || _rv.PB:=PB.ref()
+         ?}
+      || PB.del();
+         _info(0)
+      ?}
+   || {? PB.KW<>0 & PB.add()
+      || _rv.PB:=PB.ref()
+      ?}
+   ?};
+   {? _rv.PB<>null
+   || FUN.info('Przygotowano dane do przelewu zaliczki miesięcznej do deklaracji rocznej PIT-8AR.'@)
+   || FUN.emsg('Przygotowanie danych do przelewu zaliczki miesięcznej do deklaracji rocznej PIT-8AR nie powiodło się.'@)
+   ?};
+   _mp.save(,_rv);
+   PB.cntx_pop()
+?};
+
+obj_del(_pb);
+1
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:39 08c31e56f505ec4ad6a799bdd0069f13c33a77fbaba80055315cc948dc73b6fda37a8cebade7517299ce8f59e7c84bb3915091ef77abe4047893616b9949c44065aa04a711a1474caa5b8978aa0902e29c74a113e71144c032b797e55edf6c56bdd33d7bcf9361916c6ba4c937a64c6eb8251ea5c55217d968ff1e6138425a8c

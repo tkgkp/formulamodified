@@ -1,0 +1,120 @@
+﻿:!UTF-8
+
+\DECLARE_mwac_log_clear
+://jesli funkcja bedzie juz dostepna "systemowo", to jej uzyjemy
+{? var_pres('mwac_log_clear', @) > 100 || return ?};
+
+://ktos juz zajal te nazwe, wiec brutalnie przejmujemy
+_var_pres := var_pres('mwac_log_clear');
+{? _var_pres > 0 || &mwac_log_clear ?};
+
+:: mwac_log_clear([from], [to], [delete])
+:: WE:  from - DATE  - data poczatkowa usuwania - domyslnie zerowa, czyli usuwamy od poczatku
+::      to - DATE - data koncowa usuwania - jesli zerowa lub pominieta, to usuwa do konca
+::                  dodatkowo data koncowa nie moze byc mniejsza od poczatkowej
+::      delete - NUMBER - 0 - usuwa wszystkie zasoby SYS_MEMO i SYSBLOB (domyślnie)
+::                        1 - usuwa cale rekordy
+::               STRING - lista akronimow zasobow do wyzerowania (rozdzielona przecinkiem)
+::                        dodatkowo mozna podac na liscie
+::                        • REQ (oznacza wszystkie pola zadania REQ_*)
+::                        • RES (oznacza wszystkie pola odpowiedzi RES_*)
+::                        • HEAD (oznacza wszystkie pola naglowkow *_HEAD)
+::                        • DATA (oznacza wszystkie pola SYSBLOB *_DATA)
+::                        • TEXT (oznacza wszystkie pola SYS_MEMO *_TEXT)
+::                        • APP (oznacza pole APP_TEXT)
+::
+:: RETURN: liczba zmodyfikowanych / usunietych rekordow lub ~~ w przypadku bledow
+
+mwac_log_clear :=
+"
+  _p1 := {? var_pres('_a') > 0 || _a || date(0,0,0) ?};
+  _p2 := {? var_pres('_b') > 0 || _b || date(0,0,0) ?};
+  _p3 := {? var_pres('_c') > 0 || _c || 0 ?};
+
+  {? type_of(_p1) <> type_of(date()) || return ?};
+  {? type_of(_p2) <> type_of(date()) || return ?};
+  {? type_of(_p3) <> type_of(0) & type_of(_p3) <> type_of('') || return ?};
+
+: //walidacja dat
+  {? _p2 <> date(0,0,0) & _p2 < _p1 || return ?};
+
+: //nie moze byc wolana w transakcji
+  {? do_state() || return ?};
+
+: //musi byc tabela z logiem
+  _SYSSMACL := exec('valid_log_table', '__mwac2');
+  {? type_of(_SYSSMACL) = type_of(~~) || return(0) ?};
+
+  _from := {? _p1 <> date(0,0,0) || time_ident(_p1, time(0,0,0)) || '' ?};
+  _to := {? _p2 <> date(0,0,0) || time_ident(_p2 + 1, time(0,0,0)) || '' ?};
+  _delete := (type_of(_p3) = type_of(0) & _p3 <> 0);
+
+  _clear := ',URL,REQ_DATA,REQ_TEXT,RES_DATA,RES_TEXT,REQ_HEAD,RES_HEAD,APP_TEXT,';
+  _memo_flds := spli_str('URL,REQ_TEXT,RES_TEXT,REQ_HEAD,RES_HEAD,APP_TEXT', ',');
+  {? ~_delete & type_of(_p3) = type_of('') ||
+    _flds := gsub(_p3, ' ', '');
+:   //jak nie ma zadnych pol, to blad
+    {? gsub(_flds, ',', '') = '' || return ?};
+    _flds := ~-',%1,'[_flds];
+    {? _flds * ',REQ,' || _flds := gsub(_flds, ',REQ,', ',REQ_TEXT,REQ_DATA,REQ_HEAD,') ?};
+    {? _flds * ',RES,' || _flds := gsub(_flds, ',RES,', ',RES_TEXT,RES_DATA,RES_HEAD,') ?};
+    {? _flds * ',HEAD,' || _flds := gsub(_flds, ',HEAD,', ',REQ_HEAD,RES_HEAD,') ?};
+    {? _flds * ',DATA,' || _flds := gsub(_flds, ',DATA,', ',REQ_DATA,RES_DATA,') ?};
+    {? _flds * ',TEXT,' || _flds := gsub(_flds, ',TEXT,', ',REQ_TEXT,RES_TEXT,APP_TEXT,') ?};
+    {? _flds * ',APP,' || _flds := gsub(_flds, ',APP,', ',APP_TEXT,') ?};
+    _clear := _flds
+  ?};
+
+  _ret := 0;
+
+  _names := _SYSSMACL.names();
+  {? ~_names.first() || return(_ret) ?};
+
+  {! |?
+:   //biezemy pod uwage maski pasujace do [a-z]{3}[0-9]{5}
+    _name := gsub(_names.NAME, gsub(_SYSSMACL.name(1), '?', ''), '');
+    {? _names.SIZE <> 0 ||
+::      _SYSSMACL.lock(1);
+      _SYSSMACL.use(_names.NAME);
+:     //utworzymy indeks, jesli go jeszcze nie ma
+      {? var_pres('__SYSSMACL_IDA_NDX__') <> type_of('') ||
+        __SYSSMACL_IDA_NDX__ := _SYSSMACL.ndx_tmp(, 1, 'IDA',,)
+      ?};
+      _SYSSMACL.index(__SYSSMACL_IDA_NDX__);
+      _next := _SYSSMACL.find_ge(_from);
+      {! |?
+        _next & (_to = '' | _SYSSMACL.IDA < _to)
+      |!
+        {? _delete ||
+:         //operacja usuniecia
+          _next := _SYSSMACL.del();
+          _ret += 1
+        ||
+:         //operacja czyszczenia
+          _put := 0;
+:         //pola SYSBLOB
+          {? _clear * ',REQ_DATA,' & _SYSSMACL.REQ_DATA <> null || _SYSSMACL.REQ_DATA := null; _put := 1 ?};
+          {? _clear * ',RES_DATA,' & _SYSSMACL.RES_DATA <> null || _SYSSMACL.RES_DATA := null; _put := 1 ?};
+          {? _put || _put := _SYSSMACL.put() ?};
+:         //pola SYS_MEMO
+          {! _i := 1 .. obj_len(_memo_flds) |!
+            {? _clear * ',%1,'[_memo_flds[_i]] & _SYSSMACL.memo_lin(_memo_flds[_i]) <> '\n' ||
+              _SYSSMACL.memo_set(, _memo_flds[_i]);
+              _put := _SYSSMACL.memo_put(, _memo_flds[_i]) | _put
+            ?}
+          !};
+          _ret += _put;
+          _next := _SYSSMACL.next()
+        ?}
+      !};
+::      _SYSSMACL.unlock();
+      ~~
+    ?};
+    _names.next()
+  !};
+
+  return(_ret)
+";
+return
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:09 32f7bc1c6289b88f5142e753acb30f6cbdd4d109de7c3bd5a1c49ccad3fd5631c463f4c43faa96f338887ab8454e92d9e0918326c60d4d40258f01843caab873835a08b1d04d5c1e8b92d2370969b8e6e35e029963f1f66bf2329473a6cb8a2761eb3fff6bb20144fec93123d580ebda4eb3d9d36220af391cc1f2cd8bb36f1a

@@ -1,0 +1,750 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: qwtyczki.fml
+:: Utworzony: 12.08.2020
+:: Autor: TP
+:: Systemy: MERIT 20.14
+::======================================================================================================================
+:: Zawartość:
+::    Plik zawiera formuły dla potrzeb wtyczek wdrożeniowych
+::    Zakłądamy, że nazwy formuł znajdujących się w pliku wywoływanych poprzez wtyczki wdrożeniowe mają nazwy zgodne
+::    z kodem wtyczki. W metryce formuły powinien znaleźć się opis z bazy wtyczek.
+::======================================================================================================================
+
+\ZGH_F_ILGEN_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TP [NUCO_DEV]
+:: OPIS:
+::    Wtyczka służy do zdefiniowania własnego podziału ilości zlecenia na przewodniki.
+::    Wtyczka wywoływana jest dla zlecenia prostego albo dla zlecenia montażowego w zleceniu złożonym,
+::    pod warunkiem, że zlecenie nie jest zaplanowane operacyjnie ani nie są do niego utworzone partie.
+:: UWAGA: funkcja dla poprawnego działania potrzebuje ustawienie wcześniej parametrów z numerami atrybutów:
+::          (obecnie ustawiane są w qdef.fml - tak aby ich nie odnajdywać przy każdym przeliczeniu)
+::          q_parametry.par_czy
+::          q_parametry.par_min
+::          q_parametry.par_max
+::    Argumenty wywołania:
+::    _a - wskazanie na zlecenie - ZL.ref()
+::    _b - czy uruchamiać z dialogami - 0/1
+::    _c - pozostała ilość, na którą nie są jeszcze wygenerowane przewodniki
+::    Formuła obsługująca wtyczkę musi zwrócić tekst będący poprawnym JSON-em zawierającym tablicę elementów numerycznych
+::    czyli np. wynik _tab:=obj_new(10); 'zasilenie tablicy _tab'; json_obj(_tab)
+::   WE: _a - wskazanie na zlecenie - ZL.ref()
+::       _b - czy uruchamiać z dialogami - 0/1
+::       _c - pozostała ilość, na którą nie są jeszcze wygenerowane przewodniki
+::   WY: tekst będący poprawnym JSON-em zawierającym tablicę elementów numerycznych
+::----------------------------------------------------------------------------------------------------------------------
+::debug();
+exec('q_init','qtpp');
+
+_zlecenie:=_a;
+_dialog:=_b;
+_dalej:=1;
+
+:: ilość do podziału na przewodnikach
+_ilosc_do_podzialu:=_c;
+
+_ref_sql_tktl:=exec('FindAndGet','#table',ZL,_zlecenie,,"ZL.RTKTL",'');
+_ref_name_tktl:=ref_name(_ref_sql_tktl);
+_ref_num_tktl:=ref_num(_ref_sql_tktl);
+
+:: ilość serji optymalnej
+_ilosc_xjm:=exec('FindAndGet','#table',TKTL,_ref_sql_tktl,,"TKTL.XJM",0);
+
+:: Dokładność z jaką może być dzielony wyrób domyślnie - 4
+_dokl:=exec('FindAndGet','#table',TKTL,_ref_sql_tktl,,"TKTL.KTM().DOKL",4);
+
+:: Sprawdzenie czy więcej niż jedna operacja ma parametry do podziału jeśli tak to komunikat
+:: (bądź nie jeśli ma być bez kom.)
+_operacje:=sql('select TOPER.REFERENCE as REF from TOPER where TOPER.NRK=\':_a\'',_ref_sql_tktl);
+
+{? _operacje.first()
+|| _i:=0;
+   _oper_do_podzialu:='';
+   {!
+   |? _ref_operacji:=_operacje.REF;
+      _oper_name:=ref_name(_ref_operacji);
+      _oper_num:=ref_num(_ref_operacji);
+      {? -(sql('select UAT.WAR
+                from UAT join TAT
+                where UAT.TAB=\'TOPER*\' and UAT.ACT=\'T\' and UAT.REF=:_a and UAT.MSK=\':_b\' and TAT.NR=:_c'
+                , _oper_num, _oper_name, q_parametry.par_czy).WAR)='t'
+      || _i+=1;
+         _oper_do_podzialu:=_operacje.REF
+      ?};
+      _operacje.next()
+   !};
+   {? _i=1
+   || _czy_rozpisac:=1;
+      _oper_name:=ref_name(_oper_do_podzialu);
+      _oper_num:=ref_num(_oper_do_podzialu);
+:: atrybut 155 - wartość liczbowa - minimalna wielkość przewodnika
+      _ilosc_min:=#(sql('select UAT.WAR
+                      from UAT join TAT
+                      where UAT.TAB=\'TOPER*\' and UAT.ACT=\'T\' and UAT.REF=:_a and UAT.MSK=\':_b\' and TAT.NR=:_c'
+                     , _oper_num, _oper_name, q_parametry.par_min).WAR);
+:: atrybut 156 - wartość liczbowa - maksymalna wielkość przewodnika
+      _ilosc_max:=#(sql('select UAT.WAR
+                      from UAT join TAT
+                      where UAT.TAB=\'TOPER*\' and UAT.ACT=\'T\' and UAT.REF=:_a and UAT.MSK=\':_b\' and TAT.NR=:_c'
+                     , _oper_num, _oper_name, q_parametry.par_max).WAR)
+   |? _i>1
+   || {? _dialog
+      || FUN.emsg('Więcej niż jedna operacja ma ustawiony podział przewodników.\n'+
+                   'Automatyczny podział nie jest możliwy !!!')
+      ?};
+      _czy_rozpisac:=0
+   || _czy_rozpisac:=0
+   ?}
+||
+:: Jeśli nie ma atrybutów operacji to weryfikuję czy rozpisać wg. atrybutów technologii
+
+:: atrybut 158 - T/N - czy rozpisać przewodniki na części
+   _czy_rozpisac:=-(sql('select UAT.WAR
+                      from UAT join TAT
+                      where UAT.TAB=\'TKTL*\' and UAT.ACT=\'T\' and UAT.REF=:_a and UAT.MSK=\':_b\' and TAT.NR=:_c'
+                     , _ref_num_tktl, _ref_name_tktl, q_parametry.par_czy).WAR)='t';
+:: atrybut 155 - wartość liczbowa - minimalna wielkość przewodnika
+   _ilosc_min:=#(sql('select UAT.WAR
+                      from UAT join TAT
+                      where UAT.TAB=\'TKTL*\' and UAT.ACT=\'T\' and UAT.REF=:_a and UAT.MSK=\':_b\' and TAT.NR=:_c'
+                     , _ref_num_tktl, _ref_name_tktl, q_parametry.par_min).WAR);
+:: atrybut 156 - wartość liczbowa - maksymalna wielkość przewodnika
+   _ilosc_max:=#(sql('select UAT.WAR
+                      from UAT join TAT
+                      where UAT.TAB=\'TKTL*\' and UAT.ACT=\'T\' and UAT.REF=:_a and UAT.MSK=\':_b\' and TAT.NR=:_c'
+                     , _ref_num_tktl, _ref_name_tktl, q_parametry.par_max).WAR)
+?};
+
+:: Jeśli rozpisać i jet możliwy dialog, pytanie czy operator chce podzielić samodzielnie czy ma być automat
+{? _czy_rozpisac & _dialog
+|| _czy_rozpisac:=FUN.ask('Czy podzielić przewodniki zgodnie z atrybutami operacji?')
+?};
+
+:: Sprawdzamy czy rozpisać
+{? _czy_rozpisac
+|| {? _ilosc_do_podzialu<=_ilosc_xjm | _ilosc_do_podzialu<=_ilosc_max
+   || _ilosc_przewodnikow:=1;
+      _ilosc_opt:=_ilosc_xjm
+   ||
+::    Jeżeli ilość optymalna xjm nie mieści się pomiędzy min i max to do dalszych obliczeń ilość optymalna to max
+::      {? 'Ustawienie zawsze na ilość max'; 1 | _ilosc_xjm<=_ilosc_min | _ilosc_xjm>_ilosc_max
+::      || _ilosc_opt:=_ilosc_max
+::      || _ilosc_opt:=_ilosc_xjm
+::      ?};
+
+      _ilosc_opt:=_ilosc_max;
+
+::      Sprawdzenie czy ilość do podziału można dzielić przez max (może lepiej przez min - dla dwuch przewodników)\
+::      {? _ilosc_do_podzialu-_ilosc_max<=_ilosc_min
+::      || _ilosc_opt:=_ilosc_min
+::      ?};
+
+      {? _ilosc_opt>0
+      || _ilosc_przewodnikow:=ceil(_ilosc_do_podzialu/_ilosc_opt)
+      || _ilosc_przewodnikow:=1
+      ?};
+
+::     Reszta z ilość całkowita - (ilość optymalna * ilość przewodników-1) = reszta /
+::     na przewodnik o ile nie przekroczy max
+      {? _ilosc_przewodnikow>1
+      || _reszta_na_przew:=(_ilosc_do_podzialu-((_ilosc_przewodnikow-1)*_ilosc_opt))/(_ilosc_przewodnikow-1);
+         {? _ilosc_opt+_reszta_na_przew<=_ilosc_max
+         || _ilosc_opt:=_ilosc_opt+_reszta_na_przew;
+            _ilosc_przewodnikow:=_ilosc_przewodnikow-1
+         ?}
+      ?};
+
+
+::    1. Podział po równo na każdy przewodnik
+      _ilosc_na_przewodnik:=_ilosc_do_podzialu/_ilosc_przewodnikow;
+      {? _ilosc_na_przewodnik>=_ilosc_min
+      || _ilosc_opt:=_ilosc_na_przewodnik
+::    2. Podział po równo się nie powiódł więc podział wg. ilości optymalnej + ostatni przewodnik = reszta
+      || _ilosc_na_przewodnik:=_ilosc_opt
+      ?}
+   ?};
+
+   {? q_lista_jm<>'' & q_lista_jm*(','+exec('FindAndGet','#table',TKTL,_ref_sql_tktl,,"TKTL.JM().KOD",'-')+',')>0
+   || _ilosc_opt:=_ilosc_opt$0
+   || _ilosc_opt:=_ilosc_opt$_dokl
+   ?};
+
+   _wynik:=obj_new(_ilosc_przewodnikow);
+   {! _i:=1.. (_ilosc_przewodnikow-1)
+   |! _wynik[_i]:=_ilosc_opt;
+      _ilosc_do_podzialu-=_ilosc_opt
+   !};
+::      Ostatni przewodnik na zasadzie - co zostało - pozbycie się zaokrągleń
+   _wynik[_ilosc_przewodnikow]:=_ilosc_do_podzialu
+
+|| _wynik:=obj_new(1);
+   _wynik[1]:=0
+?};
+
+::   Wynik - tablica do rozpisania wg poszczególnychilości
+json_obj(_wynik)
+
+
+\PO_AFTER_CHANGE_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TP [NUCO_DEV]
+:: OPIS:
+::      Opis wtyczki PO_AFTER_CHANGE_001 - Formuła zwracająca treść problemu (STRING[255]) dla operacji w planie
+::      Jeżeli treść jest niepustym STRING na pozycji planu pojawi się konflikt o tej treści
+::      Wykonywana po dodaniu lub przesunięciu pozycji planu operacyjnego.
+::      Uwaga! Jest wykonywana w transakcji.
+::
+::      Argumenty wywołania:
+::   WE: _a - STRING - rodzaj zmiany:
+::                                   ADD - pozycja została dodana
+::                                   CHANGE_TIME - pozycja została przesunięta w czasie
+::                                   CHANGE_RES - pozycja została przesunięta na inny zasób
+::       _b - PL_OZ.ref - pozycja planu której dotyczy zmiana
+::
+::   WY: STRING - Tekst komunikat pokazywany jako komunikat o konflikcie.
+::----------------------------------------------------------------------------------------------------------------------
+
+_rodzaj_zmiany:=_a;
+_pozycja_planu:=_b;
+
+_komunikat:='';
+
+_pl_oz:=sql('select PL_OZ.TM_START, PL_OZ.TM_END, PL_OZ.PL_OPER, PL_OPER.SYMBOL
+               from PL_OZ join PL_OPER using(PL_OZ.PL_OPER,PL_OPER.REFERENCE)
+              where PL_OZ.REFERENCE=:_a',
+                    _pozycja_planu
+           );
+_toper:=exec('FindAndGet','#table',PL_OPER,_pl_oz.PL_OPER,,"$PL_OPER.ZGP().TOPER",'');
+_tktl:=sql('select NRK from @TOPER where TOPER.REFERENCE=\':_a\'',_toper).NRK;
+
+{? _toper<>'' & _tktl<>''
+|| 'NPU dla badanej operacji';
+   _npu:=sql('select TACTTLS.M as REF_M, M.KTM, TACTTLS.ILE
+                from TACTTLS join M using(TACTTLS.M,M.REFERENCE)
+               where TACTTLS.NRK=\':_a\' and TACTTLS.NROP=\':_b\'
+            order by 1',
+                     _tktl, _toper
+            );
+   'Lista unikalnych REF Materiałówych dla potrzeb ograniczenia szukania';
+   _material:=sql('select distinct REF_M from :_a', _npu);
+   {? _npu.first()
+   || 'Lista operacji w wykonywanych w tym samym czasie co operacja badana';
+      _lista_operacji:=sql('select PL_OZ.PL_OPER, PL_OPER.SYMBOL
+                             from PL_OZ join PL_OPER using(PL_OZ.PL_OPER,PL_OPER.REFERENCE)
+                            where PL_OZ.TM_START between :_a and :_b
+                                  or PL_OZ.TM_END between :_a and :_b
+                                  or (PL_OZ.TM_START<:_a and PL_OZ.TM_END>:_b)',
+                                  _pl_oz.TM_START, _pl_oz.TM_END
+                          );
+     {? _lista_operacji.first() & _lista_operacji.size()<>1
+     || 'Pentla po operacjach, dodanie ilości NPU z poszczególnych operacji';
+        {!
+        |? {? _lista_operacji.PL_OPER<>_pl_oz.PL_OPER
+           || _tmp_toper:=exec('FindAndGet','#table',PL_OPER,_lista_operacji.PL_OPER,,"$PL_OPER.ZGP().TOPER",'');
+              _tmp_tktl:=sql('select NRK from @TOPER where TOPER.REFERENCE=\':_a\'',_tmp_toper).NRK;
+              {? _tmp_tktl<>'' & _tmp_tktl<>''
+              || _npu_tmp:=sql('select TACTTLS.M as REF_M, M.KTM, TACTTLS.ILE
+                                  from TACTTLS join M using(TACTTLS.M,M.REFERENCE)
+                                 where TACTTLS.NRK=\':_a\'
+                                       and TACTTLS.NROP=\':_b\'
+                                       and TACTTLS.M in (select REF_M from :_c)',
+                                        _tmp_tktl, _tmp_toper, _material
+                               );
+                 {? _npu_tmp.first()
+                 || {!
+                    |? _npu.blank();
+                       _npu.REF_M:=_npu_tmp.REF_M;
+                       _npu.KTM:=_npu_tmp.KTM;
+                       _npu.ILE:=_npu_tmp.ILE;
+                       _npu.add();
+                       _npu_tmp.next()
+                    !}
+                 ?};
+                 VAR_DEL.delete('_npu_tmp');
+                 &_npu_tmp
+              ?}
+           ?};
+           _lista_operacji.next()
+        !};
+        'Sumujemy wszystkie NPU ze wszystkich operacji w tym samym czasie';
+        _npu_do_wer:=sql('select REF_M, M.KTM, sum(ILE) as ILE
+                            from :_a join M using(:_a.REF_M,M.REFERENCE)
+                        group by :_a.REF_M, M.KTM',
+                        _npu);
+        {? _npu_do_wer.first()
+        || _magazyn:=exec('get_w','#params',999004,type_of(''));
+           {!
+           |? _ilosc_magazyn:=sql('select SM.S
+                                     from SM join MG using (SM.MAG, MG.REFERENCE)
+                                    where SM.M=\':_a\' and MG.SYM=\':_b\'',
+                                  _npu_do_wer.REF_M, _magazyn).S;
+              {? _ilosc_magazyn<_npu_do_wer.ILE
+              || _komunikat+=_npu_do_wer.KTM+' - na oper.: '+ $_npu_do_wer.ILE +'; dostępne: '+ $_ilosc_magazyn +'\n'
+              ?};
+              _npu_do_wer.next()
+           !}
+        ?}
+     ?}
+   ?}
+?};
+
+_komunikat
+
+
+\ZL_MG_PODZLEC_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO]
+:: OPIS: Opis wtyczki ZL_MG_PODZLEC_001 - Formuła ustalająca domyślny magazyn dla podzleceń.
+::       Używana podczas generowania podzleceń w zleceniu złożonym (dla zleceń innych niż montażowe)
+::   WE: _a - STRING - kod oddziału, do którego przypisane jest zlecenie
+::       _b - M.ref() - produkt podzlecenia
+::       _c - SLO.ref() - wydział zlecenia
+::   WY: MG.ref() czyli złączenie do magazynu
+::----------------------------------------------------------------------------------------------------------------------
+{? var_press('_b')<>type_of(null) || _b:=null() ?};
+{? var_press('_c')<>type_of(null) || _c:=null() ?};
+
+_mg:=null();
+_wydzial:='';
+
+{? _c<>null()
+|| _wydzial:=exec('FindAndGet','#table',SLO,_c,,"SLO.KOD",'')
+|? _b<>null()
+|| _tktlw:=sql('select SLO.KOD, TKTLW.IDADD, TKTLW.DEFAULT
+                  from TKTLW join TKTL join SLO using(TKTL.JORG,SLO.REFERENCE)
+                 where TKTLW.KTM=:_a
+              order by TKTLW.DEFAULT, TKTLW.IDADD
+                ', _b);
+   {? _tktlw.last()
+   || _wydzial:=_tktlw.KOD
+   ?}
+?};
+
+:: magazyn ustalany na podstawie kodu wydzialu - zalozenie ze kod wydzialu-kod magazynu
+{? _wydzial<>''
+||_mg:=exec('FindInSet','#table','MG','MAGAZYNY',_wydzial,_wydzial,,1)
+?};
+
+_mg
+
+
+\DK_TW_GEN
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO]
+:: OPIS: Wtyczka służy do ustalenia wartości pola 'Termin ważności' podczas generowania pozycji dokumentu magazynowego.
+::       Wtyczka wywoływana jest podczas wywołania adddk z magdok_poz.fml (nie dotyczy okienka redagowania dokumentu)
+::       Kontekst działania: DK.ref który został utworzony
+::   WE:
+::   WY: Formuła obsługująca wtyczkę powinna zwrócić typ DATE różny od daty zerowej.
+::       Wartość innego typu lub data zerowa nie wpłyną na termin na dokumencie.
+::----------------------------------------------------------------------------------------------------------------------
+
+_result:=date(0,0,0);
+
+:: Weryfikacja czy dokument jest dokumentem raportującym produkcje
+{? DK.N().TYP().WYR='T' & DK.N().TYP().P='T' & DK.N().TYP().ZLEC='T' & DK.TW=date(0,0,0)
+||
+:: uzupelniam identyfikator dostawy z tabeli ZPARN - przejście na STD
+::   {? DK.PARTIA<>null & DK.SCEAN='' & ZPARN.ZPEAN<>''
+::   || DK.SCEAN:=ZPARN.ZPEAN
+::   ?};
+:: przypisanie TW z partii
+   {? ZPARN.TW<>date(0,0,0)
+   || _result:=ZPARN.TW
+   || ZL.cntx_psh();
+      {? ZPARN.ZL<>null()
+      || _ref_sql_tktl:=exec('FindAndGet','#table',ZL,ZPARN.ZL,,"ZL.RTKTL",'');
+         _ref_name_tktl:=ref_name(_ref_sql_tktl);
+         _ref_num_tktl:=ref_num(_ref_sql_tktl);
+         _miesiecy:=#sql('select UAT.WAR
+                        from UAT join TAT
+                        where UAT.TAB=\'TKTL*\' and UAT.ACT=\'T\' and UAT.REF=:_a and UAT.MSK=\':_b\' and TAT.NR=:_c'
+                        , _ref_num_tktl, _ref_name_tktl, 906).WAR;
+         {? _miesiecy>0
+         ||
+:: Ustalenie daty od której liczym termin ważności - data wykonania ostatniej operacji na zleceniu (uwzględniając zmianę 3)
+:: jeśli się nie uda to brana jest data dzisiejsza
+             _data_od:=date();
+             _daty:=sql('select ZLGD.DT,
+                                 START.DATA as STARTD,
+                                 ENDD.DATA as ENDD,
+                                 ZLGD.STARTT,
+                                 ZLGD.ENDT
+                            from @ZLGD left join DATY as START using(START.REFERENCE, ZLGD.STARTD)
+                                       left join DATY as ENDD using(ENDD.REFERENCE, ZLGD.ENDD)
+                           where ZLGD.ZPARN=:_a
+                        order by DT,STARTD,ENDD,ENDT',ZPARN.ref());
+             {? _daty.last()
+             || _data_od:={? _daty.STARTD<>date(0,0,0)
+                          || _daty.STARTD
+                          || _daty.DT
+                          ?}
+             ?};
+             _result:=exec('add_months','#interval',_data_od,_miesiecy);
+:: Przypisanie wartości terminu ważności do partii wyrobu
+             ZPARN.TW:=_result;
+             ZPARN.put()
+         || _result:=date(0,0,0)
+         ?}
+      ||_result:=date(0,0,0)
+      ?};
+      ZL.cntx_pop()
+   ?};
+   {? _result=date(0,0,0)
+   || FUN.info('UWAGA ! \n Brak możliwości ustalenia daty ważności dla raportowanego zlecenia.
+                              \n Dokument RP nie zostanie zaakceptowany,
+                              \n przed akceptacją należy uzupełnić termin ważności.')
+   ?}
+:: dla odpadów
+|? DK.N().TYP().T='RODP' & DK.M().SETW='P'
+|| _result:=date(2099,1,1)
+?};
+_result
+
+
+\EANL_NLIM_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO]
+:: OPIS: Formuła ustalająca domyślną lokalizację magazynu, z której pobierany będzie surowiec nielimitowany.
+::       Używana podczas rozliczania surowców nielimitowanych w trakcie rejestracji wykonania produkcji (tylko na ekiosku).
+::   WE:
+::       _a - kod oddziału, wyznaczony przy starcie terminala
+::       _b - wydział - SLO.ref()
+::       _c - pracownik uruchamiający terminal - P.ref()
+::       _d - magazyn, z którego pobierany będzie surowiec - MG.ref()
+::       _e - materiał - M.ref()
+::       _f - kod identyfikujący dostawę
+::   WY: Formuła obsługująca wtyczkę powinna zwrócić EANL.ref(), a więc złączenie do lokalizacji magazynu.
+::       Zwrócona lokalizacja musi być aktywna (pole ACT=T) oraz musi być dokiem załadunkowym/rozładunkowym (pole DOK=T).
+::----------------------------------------------------------------------------------------------------------------------
+_eanl:=null();
+_magsym:=sql('select SYM from MG where REFERENCE=:_a',_d).SYM;
+:: założenie, że lokalizacja ma ten sam kod co magazyn
+_eanl:=exec('FindInSet','#table','EANL','KOD',_magsym,_magsym,,1);
+_eanl
+
+
+\ZLIM_MG_LIM_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO]
+:: OPIS: Formuła ustalająca magazyn dla surowców limitowanych zlecenia.
+::       Używana podczas generowania i redagowania zapotrzebowania surowców (limitów) zlecenia
+::       oraz surowców planu strategicznego.
+::   WE: _a - STRING - kod oddziału, do którego przypisane jest zlecenie
+::       _b - materiał z pozycji zapotrzebowania - M.ref()
+::   WY: MG.ref() czyli złączenie do magazynu
+::----------------------------------------------------------------------------------------------------------------------
+{? var_press('_b')<>type_of(null) || _b:=null() ?};
+
+_mg:=null();
+_wydzial:='';
+
+:: jesli jestemy w PX-ach to magazyn pobieram z parametru domyslengo dla surowcow
+{? ZLIM.WYD<>null
+|| _wydzial:=exec('FindAndGet','#table',SLO,ZLIM.WYD,,"SLO.KOD",'');
+   {? _wydzial<>''
+   || _mg:=exec('FindInSet','#table','MG','MAGAZYNY',_wydzial,_wydzial,,1)
+   ?}
+?};
+{? _mg=null()
+|| _sur:=exec('get','#params',500004,2);
+   _mg:=exec('FindInSet','#table','MG','MAGAZYNY',_sur,_sur,,1)
+:: w innym przypadku jestem w kontekscie zlima gdzie mam wypelniony wydzial mimo, ze wtyczka go nie przekazuje
+?};
+:: magazyn ustalany na podstawie kodu wydzialu - zalozenie ze kod wydzialu=kod magazynu
+_mg
+
+
+\ZLIM_MG_NLIM_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO]
+:: OPIS: Formuła ustalająca magazyn dla surowców nielimitowanych zlecenia
+::       Używana podczas generowania i redagowania zapotrzebowania surowców (surowców nielimitowanych) zlecenia.
+::   WE: _a - STRING - kod oddziału, do którego przypisane jest zlecenie
+::       _b - wydział z pozycji zapotrzebowania - SLO.ref()
+::   WY: MG.ref() czyli złączenie do magazynu
+::----------------------------------------------------------------------------------------------------------------------
+{? var_press('_b')<>type_of(null) || _b:=null() ?};
+
+_mg:=null();
+_wydzial:='';
+
+{? _b<>null()
+|| _wydzial:=exec('FindAndGet','#table',SLO,_b,,"SLO.KOD",'')
+?};
+
+:: magazyn ustalany na podstawie kodu wydzialu - zalozenie ze kod wydzialu-kod magazynu
+{? _wydzial<>''
+||_mg:=exec('FindInSet','#table','MG','MAGAZYNY',_wydzial,_wydzial,,1)
+?};
+_mg
+
+
+\ZL_VALID_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TP [NUCO]
+:: OPIS: Formuła umożliwia wprowadzenie dodatkowej kontroli podczas dołączania/poprawiania zlecenia.
+::       Formuła wykonywana jest w kontekście aktualnie dołączanego/modyfikowanego zlecenia.
+::
+:: Argumenty wywołania:
+:: _a - tryb wywołania:
+::     'ADD' - dołączanie,
+::     'MOD' - poprawianie.
+:: _b - 1 z komunikatami, 0 - domyślnie -bez ko
+:: Formuła obsługująca wtyczkę musi zwrócić napis będący akronimem jednego z pól okienka, do redakcji którego ma wrócić.
+:: Zwrócenie napisu pustego lub napisu nie będącym akronimem jednego z pól aktualnie redagowanego okienka oznacza
+:: pomyślne przejście walidacji - działanie programu będzie kontynuowane.
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+
+:: NUCO Sprawdzenie czy jest podany wydział (jeśli tak to zmiana symbolu zlecenia
+{? ZL.JORG=null()
+|| FUN.emsg('Należy wypełnić pole Wydział.'@);
+   _result:='JORG'
+|| ZL.cntx_pop();
+   exec('symbol_zl','qtte');
+   ZL.cntx_psh()
+?};
+
+_tktl:=sql('select TKTL.REFERENCE as REF from TKTL where TKTL.NRK=\':_a\' and TKTL.WER=\':_b\'',VAR.ZRED_KTL,VAR.RED_WER).REF;
+
+_typ:=exec('FindAndGet','#table',TKTL,_tktl,,"@.TKTL.TYP().TYP",'');
+_nrk:=VAR.ZRED_KTL;
+
+{? _result='' & _typ='PRJ'
+|| _tmat:=sql('select M.KTM, M.N, MGR.KOD as MGR
+                 from TMAT join M using (TMAT.PT, M.REFERENCE)
+                           join MGR using (M.MGR, MGR.REFERENCE)
+                where TMAT.ACT=\'T\' and TMAT.NRK=\':_a\' and MGR.KOD=\'F0-0001\'
+              ', _tktl );
+   {? _tmat.first()
+   || FUN.emsg('W karcie technologicznej %1 znajdują się surowce z gupry F0-0001 (fantomy).\n'
+               'Utworzenie zlecenie na podstawie tej karty nie jest możliwe.'@[_nrk]
+               );
+      _result:='ZRED_KTL'
+   ?}
+?};
+_result
+
+
+\M_VALID_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO]
+:: OPIS: Opis wtyczki M_VALID_001 - Formuła na walidację towaru lub usługi.
+::       Formuła umożliwia wprowadzenie dodatkowej kontroli podczas dołączania/poprawiania towaru lub usługi.
+::       Formuła wykonywana jest w kontekście aktualnie dołączanego/modyfikowanego towaru lub usługi.
+::   WE: _a - tryb wywolania
+::             'ADD' - dołączanie,
+::             'MOD' - poprawianie.
+::       _b - miejsce wywolania
+::             0 - zwykłe,
+::             1 - webservice.
+::   WY: Formuła obsługująca wtyczkę musi zwrócić napis będący akronimem jednego z pól okienka, do redakcji którego ma wrócić.
+::       Zwrócenie napisu pustego lub napisu nie będącym akronimem jednego z pól aktualnie redagowanego
+::       okienka oznacza pomyślne przejście walidacji - działanie programu będzie kontynuowane.
+::----------------------------------------------------------------------------------------------------------------------
+{? (_a='ADD' | _a='MOD') & _b=0 & M.RODZ='T'
+||
+:: ustawiam dla jednostki szt dokladnosc dla ilosci 0
+:: {? M.J().KOD='szt' | M.J().KOD='op' || M.DOKL:=0 ?};
+:: ustawienie dokladnosci ceny sprzedazy na 4 miejsca
+   M.DOKL_S:=4;
+:: ustawiam wymaganie terminu waśności
+   M.CZY_TW:='T';
+:: ustawiam termin waznosci na dostawie
+   M.SETW:='P';
+:: uzupelniam kod kreskowy zgodny z indeskem
+   M.KODK:=M.KTM;
+:: ustawiam oznaczenie znacznika dla identyfikacji dostawy
+   M.IDMOB:='D';
+:: usunięcie apostrofu z pola nazwa materiału i zamiana na znak `
+   M.N:=STR.gsub(M.N, '\'', '`');
+:: ustawiam oznaczenie idendtyfikacji dla polproduktow i wyrobow (wg partii produkcyjnej)
+   {? M.R='P' | M.R='W' || M.IDZP:=1 ?};
+:: ustawiam oznaczenie atrybutu dostawy dla polproduktow i wyrobow
+   {? M.MGR().KOD<>'NPU'
+   || {? M.R='P' | M.R='W'
+   || M.M_ATR:=exec('FindInSet','#table','M_ATR','SYM','JOKO_ATR_B')
+   || M.M_ATR:=exec('FindInSet','#table','M_ATR','SYM','JOKO_ATR_A')
+      ?}
+   ?};
+:: Dla indeksów z grupy 04 dla ceny magazynowej i ceny zakupu ustawiono dokladnosc 5
+   {? 2+M.KTM='04' || M.DOKL_C:=M.DOKL_Z:=5 ?};
+:: dodanie dla wyrobów i półproduktów stalego oznaczenia kraj pochodzenia jako PL
+   {? M.R='W' | M.R='P' || M.KP:='PL' ?};
+:: wynik walidacji - jakby trzeba bylo cos kontrolowac dodatkowo to zwrocic w wyniku akronim pola
+   ''
+|| ''
+?}
+
+
+\ZLIM_MG_ODP_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO]
+:: OPIS: Formuła ustalająca magazyn dla odpadów
+::       Używana podczas generowania i redagowania zapotrzebowania surowców (surowców nielimitowanych) zlecenia.
+::   WE: _a - STRING - kod oddziału, do którego przypisane jest zlecenie
+::       _b - materiał z pozycji zapotrzebowania - M.ref()
+::   WY: MG.ref() czyli złączenie do magazynu
+::----------------------------------------------------------------------------------------------------------------------
+{? var_press('_b')<>type_of(null) || _b:=null() ?};
+
+_mg:=null();
+_wydzial:='';
+_px:=2+(2-!cur_tab)='PX';
+
+:: jesli jestemy w PX-ach to magazyn pobieram z parametru domyslengo dla materiałów pomocniczych
+{? _px
+|| _sur:=exec('get','#params',500017,2);
+   _mg:=exec('FindInSet','#table','MG','MAGAZYNY',_sur,_sur,,1)
+:: w innym przypadku jestem w kontekscie zlima gdzie mam wypelniony wydzial mimo, ze wtyczka go nie przekazuje
+|? ZLIM.WYD<>null
+|| _wydzial:=exec('FindAndGet','#table',SLO,ZLIM.WYD,,"SLO.KOD",'')
+?};
+
+:: magazyn ustalany na podstawie kodu wydzialu - zalozenie ze kod wydzialu=kod magazynu
+{? _wydzial<>''
+|| _mg:=exec('FindInSet','#table','MG','MAGAZYNY',_wydzial,_wydzial,,1)
+?};
+_mg
+
+
+\TERMPLAT_F_WGZAM_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [NUCO]
+:: OPIS: Opis wtyczki TERMPLAT_F_WGZAM_001 - Sposób i termin płatności dla dokumentu sprzedaży z zamówień.
+::       Formuła określająca sposób i termin płatności podczas wystawienia dokumentu sprzedaży na podstawie zamówienia.
+::       Argumenty wywołania:
+::   WE: _a - wskazanie na rekord ZK_N - zamówienie sprzedaży
+::       _b - wskazanie na rekord FAKS - dokument sprzedaży
+::   WY: Formuła musi zwrócić liczbę:
+::       1 - ustalono sposób i termin płatności
+::       0 - nie ustalono sposobu i terminu płatności (obsługa standardowa)
+::----------------------------------------------------------------------------------------------------------------------
+1
+
+
+\ZL_AKC_VALID_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TP [NUCO_TEST]
+:: OPIS: Opis wtyczki ZL_AKC_VALID_001 - Formuła na walidację podczas akceptacji zlecenia.
+::
+::         Formuła umożliwia wprowadzenie dodatkowej kontroli podczas akceptacji zlecenia.
+::         Formuła wykonywana jest w kontekście aktualnie akceptowanego zlecenia.
+::         Do ustalenia rodzaju zlecenia można wykorzystać pole ZL.TREE_TYP (wartość 'Z' oznacza zlecenie złożone nadrzędne, 'M' - montażowe, 'F' - podzlecenie półfabrykatowe, 'P' - zlecenie proste, 'N' - niezależne).
+::         Do wyświetlania komunikatów na ekran można wykorzystać funkcję "exec('komm_add','zl_common')".
+::
+::         Formuła obsługująca wtyczkę musi zwrócić liczbę - dla wartości 0 akceptacja kończy się niepowodzeniem.
+::   WE:
+::   WY: 1 - ok, 0 - nie ok
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+
+_tmat:=sql('select M.KTM, M.N, MGR.KOD as MGR
+               from TMAT join M using (TMAT.PT, M.REFERENCE)
+                         join MGR using (M.MGR, MGR.REFERENCE)
+              where TMAT.ACT=\'T\' and TMAT.NRK=:_a and MGR.KOD=\'F0-0001\'
+           ', ZL.TKTL);
+{? _tmat.first()
+|| FUN.emsg('W karcie technologicznej %1 znajdują się surowce z gupry F0-0001 (fantomy).\n'
+            'Utworzenie zlecenie na podstawie tej karty nie jest możliwe.'@[ZL.TKTL().NRK]
+            );
+   _result:=0
+?};
+
+_result
+
+
+\LEGEND_F_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [21.37]
+:: OPIS: Formuła ustawiająca ikony dla legendy
+::       Opis wtyczki LEGEND_F_001 - Ustawienie dodatkowych ikon dla legendy
+::       a - identyfikator, b - ikona, c - opis
+::       UWAGA!
+::       Format identyfikatorów dla okienek wertowania jest następujący:
+::       TABELA#XX#YY gdzie:
+::       TABELA - akronim tabeli, w której jest dane okienko (okienka) - duże litery
+::       XX - wystąpienie - jesli dane podświetlenie(a) rekordów mają być takie same w kilku okienkach mają one taki sam symbol XX np 01
+::       YY - kolejne możliwe stany podświetlenia np: 01, 02, itp.
+::
+::       Format identyfikatorów dla pól jest nastepujący:
+::       TABELA#POLE#OKIENKO#XX gdzie:
+::       TABELA - akronim tabeli lub zmiennej, z której jest dane pole - duże litery
+::       POLE - akronim pola
+::       OKIENKO - akronim okienka
+::       XX - kolejne możliwe stany podświetlenia np: 01, 02, itp.
+::
+::       Ważne jest także, jesli formuła wykorzystywana jest w kilku systemach by sprawdzać to i
+::       budować identyfikatory o takim samym prefiksie.
+::       Identyfikatory moga pomijać ostatnie człony (np. XX#YY dla okienek, OKIENKO#XX dla pól)
+::       jesli dalej zachowują one unikalność dla systemu
+::       Identyfikatory są unikalne w ramach całego Merit ERP
+
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: ikony do importu plików MSDS/TDS w kartotece
+Legend.add('__msds#01#01',1,'Status (T) - Plik gotowy do importu'@@,);
+Legend.add('__msds#01#02',5,'Status (B) - Plik posiada błędy - przed importem należy poprawić dane'@@);
+Legend.add('__msds#01#03',6,'Status (N) - Brak danych do importu'@@);
+Legend.add('__msds#01#04',7,'Status (A) - Plik jest nowszą wersją - nastąpi dodanie jego nowszej wersji'@@);
+~~
+
+
+\COLOR_F_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [22.26]
+:: OPIS: Opis wtyczki COLOR_F_001 - Ustawienie dodatkowych kolorów
+::   WE: a - identyfikator,
+::       b - formuła,
+::       c - opis,
+::       d - schemat kolorów
+::----------------------------------------------------------------------------------------------------------------------
+Color.add('QZKP#01#01',,'Pozycje zamówień bez powiązania z planem strategicznym'@@,'~Krytyczny');
+~~
+
+
+\EANP_INF_001
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa [23.25]
+:: OPIS: Pozwala dodać własną formułę umożliwiającą zwrócenie dodatkowej informacji w kontekście
+::       redagowanej pozycji operacji mobilnej.
+::   WE: _a - nagłówek operacji mobilnej (EANN)
+::       _b - materiał (M)
+::       _c - lokalizacja (EANL)
+::       _d - kod dostawy
+::       _e - paleta (PAL)
+::   WY: Formuła obsługująca wtyczkę musi zwrócić tekst - informacja dodatkowa dla pozycji operacji
+::----------------------------------------------------------------------------------------------------------------------
+_txt:='';
+:: PK - parametr moze przyjsc dwoma sposobami, jesli czysty kod to szukam bez przerobek, jesli przyszedl idsld to szukam inaczej
+{? (+_d)=31
+|| _mkodk:=exec('FindAndGet','#table',MKODK,_d,,"KODK",'');
+   {? _mkodk<>''
+   || _d:=_mkodk
+   ?}
+?};
+:: szukam aktualnego stanu z przekazanej lokalizacji i identyfikatora dostawy
+_wyn:=sql('select distinct SLD.IL from @SLD join @SL join EANL where SLD.SCEAN=\':_a\' and EANL.REFERENCE=:_b',_d,_c).IL;
+:: jeśli mam jakis wynik>0 to przekazuje na zewnątrz
+{? _wyn>0
+|| _txt:='Stan:'+' '+form(_wyn)
+?};
+_txt
+
+
+\AREA_TITLE_PREFIX
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PeKa Merit_2325_test:  2024 Lut 09
+:: OPIS: Wtyczka umożliwia zdefiniowanie dodatkowego tekstu umieszczanego w tytule zakładki programu.
+::       Przykłady (bieżąca firma '001' ma opis 'Firma pierwsza'):
+::      '[%1] '[__Firma] spowoduje wyświetlenie w miejsce tytułu: Administracja tytułu: [001] Administracja.
+::       '<%1> '[REF.FIRMA().OPIS] spowoduje wyświetlenie w miejsce tytułu: Administracja tytułu: <Firma pierwsza> Administracja.
+::   WE: PK - można wykorzystać ARETIT.AREA (np. LMG_MAG)
+::   WY: Formuła musi zwrócić tekst.
+::----------------------------------------------------------------------------------------------------------------------
+{? AREATIT.AREA='LMG_MAG' || '['+ST.MAG().SYM+']'+' ' || '' ?}
+

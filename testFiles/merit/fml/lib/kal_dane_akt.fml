@@ -1,0 +1,1502 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: kal_dane_akt.fml
+:: Utworzony:26.10.2020
+:: Autor: MicKoc [21.14]
+::======================================================================================================================
+:: Zawartość: Aktualizacja danych po zmianie definicji kalendarza
+::======================================================================================================================
+
+
+\aktualizacja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Główna funkcja aktualizująca dane
+::   WE:
+::   WY: obiekt, (STATUS, OK)
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_ret:=obj_new('STATUS','OK');
+_ret.STATUS:='';
+_ret.OK:=1;
+{? ~(var_pres('_par')>0 & var_pres('mp',_par)>100)
+|| _brak:='';
+   {? ~exec('no_limit','schemat','PKD',0)
+   || _brak+='\nBrak praw dostępu do wszystkich jednostek organizacyjnych przedsiębiorstwa.'@
+   ?};
+   _czyn:='PKD_EZK_ORNN';
+   {? ~exec('chk_role','#b__box',OPERATOR.USER,_czyn)
+   || _brak+='\nBrak uprawnień do czynności "%1".'@[exec('name','#b_action',_czyn)]
+   ?};
+   _czyn:='PPL_PLL_RNLS';
+   {? ~exec('chk_role','#b__box',OPERATOR.USER,_czyn)
+   || _brak+='\nBrak uprawnień do czynności "%1".'@[exec('name','#b_action',_czyn)]
+   ?};
+   _czyn:='PPL_ZLC_RNIE';
+   {? ~exec('chk_role','#b__box',OPERATOR.USER,_czyn)
+   || _brak+='\nBrak uprawnień do czynności "%1".'@[exec('name','#b_action',_czyn)]
+   ?};
+   {? +|_brak
+   || FUN.info('Uruchomienie funkcji nie powiodło się.\n%1'@[_brak]);
+      _ret.OK:=0;
+      return(_ret)
+   ?};
+   _par:=exec('liar','kal_dane_akt');
+   {? _par.in.CZY_LT='X' || return(~~) ?};
+   params_set('mp',_par.mp,'in',_par.in,'out',_par.out)
+?};
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+{? _in.CZY_LT=~~
+|| _czy_lt:=1;
+   _in.CZY_LT:='T'
+|| _czy_lt:=_in.CZY_LT='T'
+?};
+Cntx.psh(KAL_AKTN,KAL_AKTD,R_WZCZ,N,P,O,NWU,OS_N,OSOBA,PPSFN,PPSFP);
+{? R_WZCZ.name()<>'r_wzczas' || R_WZCZ.use('r_wzczas') ?};
+P.use('pracowni');
+Cntx.clr(KAL_AKTN,KAL_AKTD,R_WZCZ,N,P,O,NWU,OS_N,OSOBA,PPSFN,PPSFP);
+KAL_AKTN.index('ROK');
+KAL_AKTD.index('UNIQ');
+R_WZCZ.index('KAL_DATA');
+N.index('NIEOPRAC');
+OS_N.index('OND');
+O.index('LISTYPZN');
+{? var_pres('__KAL')<100
+|| exec('declare','kalendarz');
+   __KAL:=obj_new(@.CLASS.KALEND)
+?};
+exec('__RUB','object');
+exec('MASK','object');
+_przerwy:=exec('isEnabled','prc_przerwy');
+_loop:=KAL_AKTN.first();
+:: pętla ma się wykonać maksymalnie 2 razy
+_max:=2;
+{! |? _loop |!
+   _max-=1;
+:: optymalizacja zapisów, tworzenie ciągłości
+   {? var_pres('_tab')>0 || &_tab ?};
+   _tab:=tab_tmp(4,
+      'OD','DATE','Data od',
+      'DO','DATE','Data do',
+      'R','INTEGER','Rok',
+      'N','STRING['+$MS.fld_len(KAL_NAZW,'NAZWA')+']','Nazwa'
+      );
+   _tab.blank(1);
+   _tab.OD:=KAL_AKTN.DT;
+   _tab.DO:=KAL_AKTN.DT;
+   _tab.R:=KAL_AKTN.KAL_ROK;
+   _tab.N:=KAL_AKTN.KAL_NAZW;
+   {! |? KAL_AKTN.next() |!
+      {? _tab.DO+1=KAL_AKTN.DT & _tab.R=KAL_AKTN.KAL_ROK & _tab.N=KAL_AKTN.KAL_NAZW
+      || _tab.DO:=KAL_AKTN.DT
+      || _tab.prefix(_tab.OD);
+         _tab.add();
+         _tab.OD:=KAL_AKTN.DT;
+         _tab.DO:=KAL_AKTN.DT;
+         _tab.R:=KAL_AKTN.KAL_ROK;
+         _tab.N:=KAL_AKTN.KAL_NAZW
+      ?}
+   !};
+   _tab.prefix(_tab.OD);
+   _tab.add();
+   _tab.prefix();
+:: główna pętla
+   {? _tab.first()
+   || PROGRESS.set(_tab.size(),'Trwa aktualizacja danych dla pracowników ...');
+      {!
+      |?
+:: kalendarz ze wzorca czasu pracy, dla pojedynczego pracownika
+         {? (1+_tab.N)=%255 & _tab.N*'pracown' & P.seek(1-_tab.N)
+         || exec('dni_godziny','kal_dane_akt',_tab,P.OSOBA,P.ref(),_tab.OD,_tab.DO,_czy_lt)
+         ||
+:: kalendarz z definicji kalendarzy, wielu pracowników
+            {? var_pres('_rwz')>100 || &_rwz ?};
+            _rwz:=sql('
+               select distinct R_WZCZ.P P, R_WZCZ.REKORD R
+               from R_WZCZ join KAL_NAZW using(R_WZCZ.KAL,KAL_NAZW.REFERENCE)
+               where R_WZCZ.MASKA=\':_a\' and KAL_NAZW.NAZWA=\':_b\'
+               order by P
+               ','pracowni',_tab.N);
+            {? _rwz.first()
+            || {!
+               |? R_WZCZ.index('R_WZCZ');
+                  R_WZCZ.prefix('pracowni',_rwz.R);
+                  _jest:=R_WZCZ.find_le(_tab.OD) | R_WZCZ.first();
+                  {? var_pres('_wzcz')>100 || &_wzcz ?};
+                  _wzcz:=tab_tmp(1,'OD','DATE','Od','DO','DATE','Do','G','STRING[1]','Grafik');
+                  {! |?
+                     {? R_WZCZ.KAL().NAZWA=_tab.N & R_WZCZ.OD<=_tab.DO
+                     || _wzcz.OD:={? R_WZCZ.OD>=_tab.OD || R_WZCZ.OD || _tab.OD ?};
+                        _wzcz.G:=R_WZCZ.GRAFIK;
+                        R_WZCZ.cntx_psh();
+                        {? R_WZCZ.next()
+                        || _wzcz.DO:={? (R_WZCZ.OD-1)>=_tab.DO || _tab.DO || R_WZCZ.OD-1 ?}
+                        || _wzcz.DO:=_tab.DO
+                        ?};
+                        _wzcz.add();
+                        R_WZCZ.cntx_pop()
+                     ?};
+                     R_WZCZ.next()
+                  !};
+                  {? _wzcz.first()
+                  || {!
+                     |? {? _wzcz.G='T'
+                        || exec('modKalendarz','kal_dane_akt',R_WZCZ.P,_wzcz.OD,_wzcz.DO,_tab.N,_przerwy)
+                        || exec('dni_godziny','kal_dane_akt',_tab,R_WZCZ.P().OSOBA,R_WZCZ.P,_wzcz.OD,_wzcz.DO,_czy_lt)
+                        ?};
+                        _wzcz.next()
+                     !}
+                  ?};
+                  _rwz.next()
+               !}
+            ?};
+            exec('dni_godziny_listy','kal_dane_akt',_tab.N,_tab.OD,_tab.DO)
+         ?};
+         PROGRESS.next();
+         _tab.next()
+      !};
+      PROGRESS.close()
+   ?};
+:: usuwanie zbędnych zapisów
+   exec('czysc','kal_dane_akt',_tab);
+   KAL_AKTN.clear();
+   _loop:=(KAL_AKTN.first()*_max)
+!};
+Cntx.pop(KAL_AKTN,KAL_AKTD,R_WZCZ,N,P,O,NWU,OS_N,OSOBA,PPSFN,PPSFP);
+:: raport z nieprzeprowadzonych zmian, celowo nie pokazujemy pozytywnych komunikatów, są zbędne
+exec('weryfikuj','kal_dane_akt');
+USERS.cntx_psh();
+USERS.index('USR_AKOD');
+USERS.prefix('T',);
+{? USERS.first()
+|| {!
+   |? {? USERS.EMAIL<>'' & exec('chk_role','#b__box',USERS.ref(),_mp.buf_act.UID)
+      || _out.RCV+=USERS.EMAIL+';'
+      ?};
+      USERS.next()
+   !}
+?};
+USERS.cntx_pop();
+{? _out.RCV+1=';'
+|| _out.RCV:=_out.RCV-1
+?};
+{? var_pres('STATUS',_ret)=type_of('') & var_press('OK',_ret)=type_of(0) & ~_ret.OK
+|| _result:=_ret.STATUS
+|? var_pres('STATUS',_ret)=type_of('') & var_press('OK',_ret)=type_of(0) & _ret.OK
+|| _out.RESULT:='OK'
+|| _out.RESULT:='OK'
+?};
+_ret
+
+
+\trig_kal_def_aktd_aa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Wyzwalacze po "add" dla KAL_DEF
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('isKalAkt','kal_dane_akt') || return(~~) ?};
+Cntx.psh(KAL_ROK,KAL_NAZW);
+{? KAL_DEF.ROK().NAZWA().GRAFIK='N'
+|| KAL_AKTN.index('UNIQ');
+   KAL_AKTN.prefix(exec('firma','ustawienia'),KAL_DEF.DATA,KAL_DEF.ROK().ROK,KAL_DEF.ROK().NAZWA().NAZWA,);
+   _put:=KAL_AKTN.first();
+   {? ~_put
+   || KAL_AKTN.blank(1);
+      KAL_AKTN.FIRMA:=exec('firma','ustawienia');
+      KAL_AKTN.DT:=KAL_DEF.DATA;
+      KAL_AKTN.KAL_ROK:=KAL_DEF.ROK().ROK;
+      KAL_AKTN.KAL_NAZW:=KAL_DEF.ROK().NAZWA().NAZWA;
+      KAL_AKTN.CP:=KAL_DEF.CZAS;
+      KAL_AKTN.T:='X';
+      KAL_AKTN.B_DOMAIN:=exec('domain_ref','#b_domain',@.__PARSES.B_DOMAIN.SYMBOL);
+      KAL_AKTN.USERS:=OPERATOR.USER;
+      KAL_AKTN.DATA:=date();
+      KAL_AKTN.CZAS:=time();
+      KAL_AKTN.add()
+   |? _put &
+      (KAL_AKTN.CP<>KAL_DEF.CZAS | (KAL_AKTN.T='R' & 'WS'*KAL_DEF.TYP) | ('WS'*KAL_AKTN.T & KAL_DEF.TYP='R'))
+   || KAL_AKTN.CP:=KAL_DEF.CZAS;
+      KAL_AKTN.T:='X';
+      KAL_AKTN.B_DOMAIN:=exec('domain_ref','#b_domain',@.__PARSES.B_DOMAIN.SYMBOL);
+      KAL_AKTN.USERS:=OPERATOR.USER;
+      KAL_AKTN.DATA:=date();
+      KAL_AKTN.CZAS:=time();
+      KAL_AKTN.put()
+   ?}
+?};
+Cntx.pop(KAL_ROK,KAL_NAZW);
+~~
+
+
+\trig_kal_def_aktd_ap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Wyzwalacze po "put" dla KAL_DEF
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('isKalAkt','kal_dane_akt') || return(~~) ?};
+Cntx.psh(KAL_ROK,KAL_NAZW);
+{? KAL_DEF.ROK().NAZWA().GRAFIK='N'
+|| KAL_AKTN.index('UNIQ');
+   KAL_AKTN.prefix(exec('firma','ustawienia'),KAL_DEF.DATA,KAL_DEF.ROK().ROK,KAL_DEF.ROK().NAZWA().NAZWA,);
+   _put:=KAL_AKTN.first();
+   {? ~_put &
+      (bfld('CZAS')<>KAL_DEF.CZAS
+      | (bfld('TYP')='R' & 'WS'*KAL_DEF.TYP)
+      | ('WS'*bfld('TYP') & KAL_DEF.TYP='R')
+      | (bfld('TYPWS')<>KAL_DEF.TYPWS)
+      | bfld('P_CZAS')<>KAL_DEF.P_CZAS
+      )
+   || KAL_AKTN.blank(1);
+      KAL_AKTN.FIRMA:=exec('firma','ustawienia');
+      KAL_AKTN.DT:=KAL_DEF.DATA;
+      KAL_AKTN.KAL_ROK:=KAL_DEF.ROK().ROK;
+      KAL_AKTN.KAL_NAZW:=KAL_DEF.ROK().NAZWA().NAZWA;
+      KAL_AKTN.CP:=bfld('CZAS');
+      KAL_AKTN.T:=bfld('TYP');
+      KAL_AKTN.B_DOMAIN:=exec('domain_ref','#b_domain',@.__PARSES.B_DOMAIN.SYMBOL);
+      KAL_AKTN.USERS:=OPERATOR.USER;
+      KAL_AKTN.DATA:=date();
+      KAL_AKTN.CZAS:=time();
+      KAL_AKTN.add()
+   |? _put &
+      (KAL_AKTN.CP<>KAL_DEF.CZAS | (KAL_AKTN.T='R' & 'WS'*KAL_DEF.TYP) | ('WS'*KAL_AKTN.T & KAL_DEF.TYP='R'))
+   || KAL_AKTN.B_DOMAIN:=exec('domain_ref','#b_domain',@.__PARSES.B_DOMAIN.SYMBOL);
+      KAL_AKTN.USERS:=OPERATOR.USER;
+      KAL_AKTN.DATA:=date();
+      KAL_AKTN.CZAS:=time();
+      KAL_AKTN.put()
+   |? _put & ~KAL_AKTN.count() & KAL_AKTN.CP=KAL_DEF.CZAS & KAL_AKTN.T=KAL_DEF.TYP
+   || KAL_AKTN.del()
+   ?}
+?};
+Cntx.pop(KAL_ROK,KAL_NAZW);
+~~
+
+
+\trig_kal_def_aktd_ad
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Wyzwalacze po "del" dla KAL_DEF
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('isKalAkt','kal_dane_akt') || return(~~) ?};
+Cntx.psh(KAL_ROK,KAL_NAZW);
+{? KAL_DEF.ROK().NAZWA().GRAFIK='N'
+|| KAL_AKTN.index('UNIQ');
+   KAL_ROK.clear();
+   {? KAL_ROK.seek(bfld('ROK'))
+   || KAL_AKTN.prefix(exec('firma','ustawienia'),bfld('DATA'),KAL_ROK.ROK,KAL_ROK.NAZWA().NAZWA,);
+      _put:=KAL_AKTN.first();
+      {? ~_put
+      || KAL_AKTN.blank(1);
+         KAL_AKTN.FIRMA:=exec('firma','ustawienia');
+         KAL_AKTN.DT:=bfld('DATA');
+         KAL_AKTN.KAL_ROK:=KAL_ROK.ROK;
+         KAL_AKTN.KAL_NAZW:=KAL_ROK.NAZWA().NAZWA;
+         KAL_AKTN.CP:=bfld('CZAS');
+         KAL_AKTN.T:=bfld('TYP');
+         KAL_AKTN.B_DOMAIN:=exec('domain_ref','#b_domain',@.__PARSES.B_DOMAIN.SYMBOL);
+         KAL_AKTN.USERS:=OPERATOR.USER;
+         KAL_AKTN.DATA:=date();
+         KAL_AKTN.CZAS:=time();
+         KAL_AKTN.add()
+      |? _put &
+         (KAL_AKTN.CP<>bfld('CZAS') | (KAL_AKTN.T='R' & 'WS'*bfld('TYP')) | ('WS'*KAL_AKTN.T & bfld('TYP')='R'))
+      || KAL_AKTN.CP:=bfld('CZAS');
+         KAL_AKTN.T:=bfld('TYP');
+         KAL_AKTN.B_DOMAIN:=exec('domain_ref','#b_domain',@.__PARSES.B_DOMAIN.SYMBOL);
+         KAL_AKTN.USERS:=OPERATOR.USER;
+         KAL_AKTN.DATA:=date();
+         KAL_AKTN.CZAS:=time();
+         KAL_AKTN.put()
+      |? _put & ~KAL_AKTN.count() & KAL_AKTN.CP=bfld('CZAS') & KAL_AKTN.T=bfld('TYP')
+      || KAL_AKTN.del()
+      ?}
+   ?}
+?};
+Cntx.pop(KAL_ROK,KAL_NAZW);
+~~
+
+
+\trig_r_wzcz_aktdane
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Wyzwalacze po dla R_WZCZ
+::   WE: _a [STRING] - miejsce uruchomienia wyzwalacza 'add', 'put' lub 'del'
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('isKalAkt','kal_dane_akt') || return(~~) ?};
+_do:=date(,12,0);
+{? _a='add'
+|| _cur:=R_WZCZ.ref();
+   _od:=R_WZCZ.OD
+|? _a='put'
+|| {? bfld('KAL')=R_WZCZ.KAL
+      & bfld('OD')=R_WZCZ.OD
+      & bfld('KIN')=R_WZCZ.KIN
+      & bfld('GRAFIK')=R_WZCZ.GRAFIK
+      & bfld('CZESC')=R_WZCZ.CZESC
+   || return(~~)
+   ?};
+   _cur:=R_WZCZ.ref();
+   _od:={? bfld('OD')<R_WZCZ.OD || bfld('OD') || R_WZCZ.OD ?};
+   _do:={? bfld('OD')>R_WZCZ.OD || bfld('OD') || R_WZCZ.OD-1 ?}
+|| _cur:=null();
+   _od:=bfld('OD')
+?};
+KAL_AKTN.index('ROK');
+{? _a='add' | _a='put'
+|| {? _a='add' & R_WZCZ.GRAFIK='T' || return(~~) ?};
+   R_WZCZ.cntx_psh();
+   R_WZCZ.index('R_WZWND');
+   R_WZCZ.prefix(R_WZCZ.MASKA,R_WZCZ.REKORD,'N','N');
+   {? _a='add' & R_WZCZ.seek(_cur) & R_WZCZ.next()
+   || _do:=R_WZCZ.OD-1
+   ?};
+   _do:={? _do>date(,12,0) || date(,12,0) || _do ?};
+   {? _od<=_do
+   || KAL_AKTN.blank(1);
+      KAL_AKTN.FIRMA:=exec('firma','ustawienia');
+      KAL_NAZW.cntx_psh();
+      KAL_AKTN.KAL_NAZW:=R_WZCZ.CZESC().NAZWA;
+      KAL_NAZW.cntx_pop();
+      KAL_AKTN.CP:=*0;
+      KAL_AKTN.T:='X';
+      KAL_AKTN.B_DOMAIN:=exec('domain_ref','#b_domain',@.__PARSES.B_DOMAIN.SYMBOL);
+      KAL_AKTN.USERS:=OPERATOR.USER;
+      KAL_AKTN.DATA:=date();
+      KAL_AKTN.CZAS:=time();
+      KAL_AKTN.prefix(KAL_AKTN.FIRMA);
+      {! _dt:=#_od..#_do |!
+         {? ~KAL_AKTN.find_key(KAL_AKTN.KAL_ROK,KAL_AKTN.KAL_NAZW,#_dt)
+         || KAL_AKTN.KAL_ROK:=(#_dt)~1;
+            KAL_AKTN.DT:=#_dt;
+            KAL_AKTN.add(1)
+         ?}
+      !}
+   ?};
+   R_WZCZ.cntx_pop()
+
+|? _a='del'
+|| R_WZCZ.cntx_psh();
+   R_WZCZ.index('R_WZWND');
+   R_WZCZ.prefix(bfld('MASKA'),bfld('REKORD'),'N','N');
+   {? R_WZCZ.find_ge(bfld('OD'))
+   || _do:=R_WZCZ.OD-1
+   ?};
+   _do:={? _do>date(,12,0) || date(,12,0) || _do ?};
+   {? _od<=_do
+   || KAL_AKTN.blank(1);
+      KAL_AKTN.FIRMA:=exec('firma','ustawienia');
+      KAL_NAZW.cntx_psh();
+      KAL_AKTN.KAL_NAZW:=R_WZCZ.CZESC().NAZWA;
+      KAL_NAZW.cntx_pop();
+      KAL_AKTN.CP:=*0;
+      KAL_AKTN.T:='X';
+      KAL_AKTN.B_DOMAIN:=exec('domain_ref','#b_domain',@.__PARSES.B_DOMAIN.SYMBOL);
+      KAL_AKTN.USERS:=OPERATOR.USER;
+      KAL_AKTN.DATA:=date();
+      KAL_AKTN.CZAS:=time();
+      KAL_AKTN.prefix(KAL_AKTN.FIRMA);
+      {! _dt:=#_od..#_do |!
+         {? ~KAL_AKTN.find_key(KAL_AKTN.KAL_ROK,KAL_AKTN.KAL_NAZW,#_dt)
+         || KAL_AKTN.KAL_ROK:=(#_dt)~1;
+            KAL_AKTN.DT:=#_dt;
+            KAL_AKTN.add(1)
+         ?}
+      !}
+   ?};
+   R_WZCZ.cntx_pop()
+
+?};
+~~
+
+
+\czy_lista
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Czy można aktualizować dane związane z listą
+::   WE: _a [INTEGER] - sprawdzać czy przybito symbol listy
+::       _b [STRING] - symbol listy
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+{? +|_b
+|| _a & O.find_key(exec('firma','ustawienia'),-_b,) & O.Z<>'T'
+|| 1
+?}
+
+
+\aktualizuj_NWU
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Aktualizacja wniosków urlopowych
+::   WE: _a [REFERENCE] - wskazanie na nieobecność pracownika lub osoby
+::   WY: 0/1 [INTEGER] - ilość zmian
+::----------------------------------------------------------------------------------------------------------------------
+NWU.cntx_psh();
+{? ref_tab(_a)=N || NWU.index('STATUS') || NWU.index('STATZLE') ?};
+NWU.prefix(_a);
+{? NWU.first()
+|| NWU.NR:=__KAL.w_days(NWU.OD,NWU.DO);
+   NWU.NG:=exec('nominal','godziny',NWU.OD,NWU.DO);
+   NWU.put()
+?};
+NWU.cntx_pop()
+
+
+\czysc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Usuwa dane z KAL_AKTN
+::   WE: _a [TABLE] - zakres danych do usunięcia
+::   WY: ilość usunięć
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+{? ~(var_pres('_par')>0 & var_pres('mp',_par)>100)
+|| _par:=exec('liar','kal_dane_akt');
+   params_set('mp',_par.mp,'in',_par.in,'out',_par.out)
+?};
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+_ret:=0;
+{? var_pres('_a')<>type_of(SYSLOG) & ~_a.first() || return(_ret) ?};
+Cntx.psh(KAL_AKTD,KAL_AKTN);
+KAL_AKTN.index('ROK');
+KAL_AKTN.prefix();
+{? _a.first()
+|| {!
+   |? KAL_AKTN.prefix(exec('firma','ustawienia'),_a.R,_a.N);
+      {? KAL_AKTN.first()
+      || {!
+         |? {? KAL_AKTN.DT>=_a.OD & KAL_AKTN.DT<=_a.DO & ~KAL_AKTN.count()
+            || _ret+=(KAL_AKTN.del(1,1)<>0)
+            || KAL_AKTN.next()
+            ?}
+         !}
+      ?};
+      _a.next()
+   !}
+?};
+KAL_AKTN.index('DATACZAS');
+KAL_AKTN.prefix(exec('firma','ustawienia'));
+KAL_AKTD.index('UNIQ');
+_dt:=date()-_in.DEL_DNI;
+{? KAL_AKTN.first()
+|| {!
+   |? {? KAL_AKTN.DATA<=_dt
+      || KAL_AKTD.prefix(KAL_AKTN.ref());
+         {? KAL_AKTD.first()
+         || {! |? KAL_AKTD.del() !}
+         ?};
+         KAL_AKTN.del()
+      || 0
+      ?}
+   !}
+?};
+Cntx.pop(KAL_AKTD,KAL_AKTN);
+_ret
+
+
+\dni_godziny
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Aktualizacja danych o nieobecnościach, wnioskach urlopowych oraz karty urlopowe
+::       po zmianie definicji kalendarza
+::   WE: _a [TABELA] - tablica ze zoptymalizowanymi zapisami zmienionych kalendarzy
+::       _b [REFERENCE] - ref OSOBA
+::       _c [REFERENCE] - ref P
+::       _d [DATE] - data od
+::       _e [DATE] - data do
+::       _f [INTEGER] - _czy_lt
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=_a;
+_osoba:=_b;
+_prac:=_c;
+_od:=_d;
+_do:=_e;
+_czy_lt:=_f;
+_zm:=0;
+:: wyszukiwanie nieobecności pracownika
+N.index('NIEOPRAC');
+N.prefix(_prac);
+NWU.index('STATUS');
+KAL_AKTN.index('ROK');
+{? N.find_le(_od) | N.find_le(_do)
+|| N.P();
+   {!
+   |? {? N.OD<=_do & N.DO>=_od & N.PARTDAY<>'T'
+      || {? exec('czy_lista','kal_dane_akt',_czy_lt,N.LT)
+         || {? P.KAL || __KAL.set_cal(P.KAL,_tab.R) || __KAL.set_cal('standard',_tab.R) ?};
+            {? exec('n_czas','nieobecnosc',1) || _zm+=N.put() ?};
+            exec('aktualizuj_NWU','kal_dane_akt',N.ref())
+         || KAL_AKTD.blank(1);
+            KAL_AKTD.T:='N';
+            KAL_AKTD.R:=N.uidref();
+            KAL_AKTN.prefix(exec('firma','ustawienia'),_tab.R,_tab.N);
+            {? KAL_AKTN.find_ge(N.OD) & KAL_AKTN.DT<=N.DO
+            || {!
+               |? KAL_AKTD.KAL_AKTN:=KAL_AKTN.ref();
+                  KAL_AKTD.prefix(KAL_AKTN.ref(),KAL_AKTD.R);
+                  {? ~KAL_AKTD.first() || KAL_AKTD.add() ?};
+                  KAL_AKTN.DT<=N.DO & KAL_AKTN.next()
+               !}
+            ?}
+         ?}
+      ?};
+      N.OD<=_do & N.next()
+   !};
+   {? _zm || exec('aktualizuj_rok','kart_url',_tab.R) ?}
+?};
+:: wyszukiwanie nieobecności nie-pracownika
+OS_N.index('OND');
+OS_N.prefix(exec('firma','ustawienia'),_osoba);
+NWU.index('STATZLE');
+{? OS_N.find_le(_od) | OS_N.find_le(_do)
+||
+   {!
+   |? {? OS_N.OD<=_do & OS_N.DO>=_od
+      || {? ~exec('blokada','zlec_rh',1)
+         || __KAL.set_cal('standard',_tab.R);
+            {? exec('n_czas','nieobecnosc',1,OS_N) || OS_N.put() ?};
+            exec('aktualizuj_NWU','kal_dane_akt',OS_N.ref())
+         || KAL_AKTD.blank(1);
+            KAL_AKTD.T:='OS_N';
+            KAL_AKTD.R:=OS_N.uidref();
+            KAL_AKTN.prefix(exec('firma','ustawienia'),_tab.R,_tab.N);
+            {? KAL_AKTN.find_ge(OS_N.OD) & KAL_AKTN.DT<=N.DO
+            || {!
+               |? KAL_AKTD.KAL_AKTN:=KAL_AKTN.ref();
+                  KAL_AKTD.prefix(KAL_AKTN.ref(),KAL_AKTD.R);
+                  {? ~KAL_AKTD.first() || KAL_AKTD.add() ?};
+                  KAL_AKTN.DT<=OS_N.DO & KAL_AKTN.next()
+               !}
+            ?}
+         ?}
+      ?};
+      OS_N.OD<=_do & OS_N.next()
+   !}
+?};
+:: wyszukiwanie pracy poza siedzibą firmy
+PPSFN.index('PRAC');
+PPSFN.prefix(exec('firma','ustawienia'),_prac);
+PPSFP.index('NAG');
+{? PPSFN.find_le(_do)
+|| PPSFN.P();
+   {!
+   |? {? PPSFN.OD<=_do & PPSFN.DO>=_od
+      || _dnirob:=0;
+         PPSFP.prefix(PPSFN.ref());
+         {? PPSFP.first()
+         || {!
+            |? {? PPSFP.OD<=_do & PPSFP.DO>=_od
+               || {? exec('czy_lista','kal_dane_akt',_czy_lt,PPSFP.LT)
+                  || {? P.KAL || __KAL.set_cal(P.KAL,_tab.R) || __KAL.set_cal('standard',_tab.R) ?};
+                     PPSFP.DR:=__KAL.w_days(PPSFP.OD,PPSFP.DO);
+                     PPSFP.G:={? PPSFN.G<>time(0,0,0) & PPSFP.PARTDAY='T'
+                              || *(*PPSFN.G*PPSFP.DR)
+                              || *(__KAL.w_hours(PPSFP.OD,PPSFP.DO)*60)
+                              ?};
+                     PPSFP.put()
+                  || KAL_AKTD.blank(1);
+                     KAL_AKTD.T:='PPSFP';
+                     KAL_AKTD.R:=PPSFP.uidref();
+                     KAL_AKTN.prefix(exec('firma','ustawienia'),_tab.R,_tab.N);
+                     {? KAL_AKTN.find_ge(PPSFP.OD) & KAL_AKTN.DT<=PPSFP.DO
+                     || {!
+                        |? KAL_AKTD.KAL_AKTN:=KAL_AKTN.ref();
+                           KAL_AKTD.prefix(KAL_AKTN.ref(),KAL_AKTD.R);
+                           {? ~KAL_AKTD.first() || KAL_AKTD.add() ?};
+                           KAL_AKTN.DT<=PPSFP.DO & KAL_AKTN.next()
+                        !}
+                     ?}
+                  ?}
+               ?};
+               _dnirob+=PPSFP.DR;
+               PPSFP.next()
+            !}
+         ?};
+         {? _dnirob<>0 & PPSFN.DR<>_dnirob
+         || PPSFN.DR:=_dnirob;
+            PPSFN.put()
+         ?}
+      ?};
+      PPSFN.DO>=_od & PPSFN.prev()
+   !}
+?}
+
+
+\weryfikuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Sprawdzenie i prezentacja, czy są nieobecności do przeliczenia
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+{? ~(var_pres('_par')>0 & var_pres('mp',_par)>100)
+|| _par:=exec('liar','kal_dane_akt');
+   params_set('mp',_par.mp,'in',_par.in,'out',_par.out)
+?};
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+_ver:=_mp.isService();
+exec('__F_ZATR','object');
+Cntx.psh(KAL_AKTD,KAL_AKTN,P,OSOBA,N,OS_N,O,USERS,B_DOMAIN);
+Cntx.clr(KAL_AKTD,KAL_AKTN,P,OSOBA,N,OS_N,O);
+KAL_AKTD.index('DATA');
+{? _ver
+|| _KOMM:=tab_tmp(5,
+      'TYP','STRING[60]','Typ informacji',
+      'NAZWISKO','STRING['+$MS.fld_len(OSOBA,'NAZWISKO')+']',MS.name(OSOBA,'NAZWISKO'),
+      'PIERWSZE','STRING['+$MS.fld_len(OSOBA,'PIERWSZE')+']',MS.name(OSOBA,'PIERWSZE'),
+      'T','STRING['+$MS.fld_len(P,'T')+']',MS.name(P,'T'),
+      'F_ZATR','STRING['+$MS.fld_len(F_ZATR,'OPIS')+']',MS.name(P,'F_ZATR'),
+      'RT','STRING['+$MS.fld_len(R,'RT')+']',MS.name(N,'NB'),
+      'OD','DATE',MS.name(N,'OD'),
+      'DO','DATE',MS.name(N,'DO'),
+      'B_DOMAIN','STRING['+$MS.fld_len(B_DOMAIN,'SYMBOL')+']',MS.name(B_DOMAIN,'SYMBOL'),
+      'USERS','STRING['+$MS.fld_len(USERS,'DANE')+']',MS.name(USERS,'DANE'),
+      'ZMIANA','STRING[20]','Data zmiany'
+   );
+   _KOMM2:=tab_tmp(5,
+      'TYP','STRING[60]','Typ informacji',
+      'R','INTEGER',MS.name(O,'R'),
+      'M','INTEGER',MS.name(O,'M'),
+      'T','STRING['+$MS.fld_len(KT,'T')+']',MS.name(O,'T'),
+      'D','DATE',MS.name(O,'D'),
+      'O','STRING['+$MS.fld_len(O,'O')+']',MS.name(O,'O'),
+      'B_DOMAIN','STRING['+$MS.fld_len(B_DOMAIN,'SYMBOL')+']',MS.name(B_DOMAIN,'SYMBOL'),
+      'USERS','STRING['+$MS.fld_len(USERS,'DANE')+']',MS.name(USERS,'DANE'),
+      'ZMIANA','STRING[20]','Data zmiany'
+   );
+   _add:="
+      {? ~_a.find_key(_b,_c,_d,_e,_f)
+      || _a.blank(1);
+         _a[1]:=_[2];
+         _a[2]:=_[3];
+         _a[3]:=_[4];
+         _a[4]:=_[5];
+         _a[5]:=_[6];
+         _a[6]:=_[7];
+         _a[7]:=_[8];
+         _a[8]:=_[9];
+         _a[9]:=_[10];
+         {? _>10
+         || _a[10]:=_[11];
+            _a[11]:=_[12]
+         ?};
+         _a.add()
+      ?}
+   "
+|| _var:=VAR_DEL.new(,"obj_new(@.CLASS.JCQ)");
+   _KOMM:=($_var)();
+   _KOMM.init(255);
+   _add:="
+      {? _a.find_msg(_b) || _a.set_root(_b) || _a.sect_beg(_b) ?};
+      {? ~_a.find_msg(_c)
+      || _a.add(_c,'xwin16.png:81',,,'exec(''kasuj'',''kal_dane_akt'','''+_d+''','''+_e+''')')
+      ?};
+      _a.sect_end()
+      "
+?};
+_typy:=obj_new('N','OS_N','O');
+_typy.N:=N;
+_typy.OS_N:=OS_N;
+_typy.O:=O;
+_sec:=obj_new('N','OS_N','O');
+_sec.N:='Nieobecności pracowników wymagające przeliczenia.';
+_sec.OS_N:='Nieobecności zleceniobiorców wymagające przeliczenia.';
+_sec.O:='Nagłówki list płac wymagające aktualizacji.';
+_f_zatrZ:={? __F_ZATR.find('Z') || form(spli_str(F_ZATR.OPIS,'-')[1]) || '' ?};
+{! _licz:=1..obj_len(_typy) |!
+   KAL_AKTD.prefix(2-!_typy[_licz],);
+   {? KAL_AKTD.first()
+   || {! |?
+         KAL_AKTD.KAL_AKTN();
+         {? _typy[_licz].seek(KAL_AKTD.R)
+         || {? _typy[_licz]=O
+            || {? _ver
+               || _add(_KOMM2,_sec[_licz],
+                     O.R,
+                     O.M,
+                     O.T().T,
+                     O.D,
+                     O.O,
+                     KAL_AKTN.B_DOMAIN().SYMBOL,
+                     KAL_AKTN.USERS().DANE,
+                     $KAL_AKTN.DATA+' '+KAL_AKTN.CZAS$3
+                  )
+               || _add(_KOMM,_sec[_licz],'Lista płac %1 za %2'@
+                     [O.T().T,O.D$8],KAL_AKTD.T,KAL_AKTD.R)
+               ?}
+            |? _typy[_licz]=N
+            || N.P().OSOBA();
+               {? _ver
+               || _add(_KOMM,_sec[_licz],
+                     P.OSOBA().NAZWISKO,
+                     OSOBA.PIERWSZE,
+                     P.T,
+                     form(spli_str(P.F_ZATR().OPIS,'-')[1]),
+                     N.NB().RT,
+                     N.OD,
+                     N.DO,
+                     KAL_AKTN.B_DOMAIN().SYMBOL,
+                     KAL_AKTN.USERS().DANE,
+                     $KAL_AKTN.DATA+' '+KAL_AKTN.CZAS$3
+                  )
+               || _add(_KOMM,_sec[_licz],'Pracownik %1 %2, nr. teczki %3. Nieobecność %4 od %5 do %6'@
+                     [P.OSOBA().NAZWISKO,OSOBA.PIERWSZE,P.T,N.NB().RT,$N.OD,$N.DO],KAL_AKTD.T,KAL_AKTD.R)
+               ?}
+            |? _typy[_licz]=OS_N
+            || OS_N.OSOBA();
+               {? _ver
+               || _add(_KOMM,_sec[_licz],
+                     OSOBA.NAZWISKO,
+                     OSOBA.PIERWSZE,
+                     OSOBA.PESEL,
+                     _f_zatrZ,
+                     OS_N.R().RT,
+                     N.OD,
+                     N.DO,
+                     KAL_AKTN.B_DOMAIN().SYMBOL,
+                     KAL_AKTN.USERS().DANE,
+                     $KAL_AKTN.DATA+' '+KAL_AKTN.CZAS$3
+                  )
+               || _add(_KOMM,_sec[_licz],'Zleceniobiorca %1 %2, nr. PESEL %3. Nieobecność %4 od %5 do %6'@
+                     [OSOBA.NAZWISKO,OSOBA.PIERWSZE,OSOBA.PESEL,OS_N.R().RT,$N.OD,$N.DO],KAL_AKTD.T,KAL_AKTD.R)
+               ?}
+            ?}
+         ?};
+         KAL_AKTD.next()
+      !}
+   ?}
+!};
+Cntx.pop(KAL_AKTD,KAL_AKTN,P,OSOBA,N,OS_N,O,USERS,B_DOMAIN);
+{? _ver
+|| _jp:=_KOMM.first();
+   _jo:=_KOMM2.first();
+   {? _jo | _jp
+   || _th:="'<th [[STYLE_TABLE_TH]]>'+_a+'</th>'";
+      _td:="'<td [[STYLE_TABLE_TD]]>'+_a+'</td>'";
+      _out.BODYH:=
+         '<h3>'
+         'Nieaktualne dni i godziny robocze'
+         '</h3>\n';
+
+      {? _jp
+      || _out.BODYH+=
+            '<h3>'+
+            'Nieobecności wymagające przeliczenia'
+            '</h3>\n';
+         _out.BODYH+=
+            '<table [[STYLE_TABLE]]>\n'
+            '<tr [[STYLE_TABLE_TR]]>'+
+            _th('Lp.'@)+
+            _th('Nazwisko'@)+
+            _th('Imię'@)+
+            _th('Nr teczki'@)+
+            _th('Forma współpracy'@)+
+            _th('Nieobecność'@)+
+            _th('Data rozpoczęcia'@)+
+            _th('Data zakończenia'@)+
+            _th('Data zmiany'@)+
+            _th('Użytkownik'@)+
+            _th('Obszar'@)+
+            '</tr>\n';
+         _lp:=0;
+         {!
+         |? _lp+=1;
+            _out.BODYH+=
+               '<tr [[STYLE_TABLE_TR]]>'+
+                  _td($_lp)+
+                  _td(_KOMM.NAZWISKO)+
+                  _td(_KOMM.PIERWSZE)+
+                  _td(_KOMM.T)+
+                  _td(_KOMM.F_ZATR)+
+                  _td(_KOMM.RT)+
+                  _td(_KOMM.OD$1)+
+                  _td(_KOMM.DO$1)+
+                  _td(_KOMM.ZMIANA)+
+                  _td(_KOMM.USERS)+
+                  _td(_KOMM.B_DOMAIN)+
+               '</tr>\n';
+            _KOMM.next()
+         !};
+         _out.BODYH+='</table>\n'
+      ?};
+      {? _jo
+      || _out.BODYH+=
+            '<h3>'+_KOMM2.TYP+'</h3>\n';
+         _out.BODYH+=
+            '<table [[STYLE_TABLE]]>\n'
+            '<tr [[STYLE_TABLE_TR]]>'+
+            _th('Lp.'@)+
+            _th('Rok'@)+
+            _th('Miesiąc'@)+
+            _th('Typ listy'@)+
+            _th('Data wypłaty'@)+
+            _th('Opis'@)+
+            _th('Data zmiany'@)+
+            _th('Użytkownik'@)+
+            _th('Obszar'@)+
+            '</tr>\n';
+         _lp:=0;
+         {!
+         |? _lp+=1;
+            _out.BODYH+=
+               '<tr [[STYLE_TABLE_TR]]>'+
+                  _td($_lp)+
+                  _td($_KOMM2.R)+
+                  _td($_KOMM2.M)+
+                  _td(_KOMM2.T)+
+                  _td(_KOMM2.D$1)+
+                  _td(_KOMM2.O)+
+                  _td(_KOMM.ZMIANA)+
+                  _td(_KOMM.USERS)+
+                  _td(_KOMM.B_DOMAIN)+
+               '</tr>\n';
+            _KOMM2.next()
+         !};
+         _out.BODYH+='</table>\n'
+      ?};
+      _out.BODYH+='<p>'+'Ta wiadomość została wygenerowana automatycznie - prosimy na nią nie odpowiadać.'@+'</p>'
+   ?}
+|| _KOMM.select(,
+      'Nieaktualne dni i godziny robocze'@,,0,,1,,,"
+         _TAB.win_act(
+            _WER,
+            0,
+            'Formuła',
+            'Usuń'@,,
+            'Usuwa informacje o niezaktualizowanych danych'@,
+            $'($(cur_tab(1,1).FORML))()',,,1
+         )
+      ")
+?};
+1
+
+
+\dni_godziny_listy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Aktualizacja danych na nagłówkach list płac
+::   WE: _a [STRING] - nazwa kalendarza
+::       _b [DATE] - data od
+::       _c [DATE] - data do
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+KAL_AKTN.index('ROK');
+O.cntx_psh();
+_kt:=sql('select KT.T T from KT join KAL_NAZW using(KT.KA, KAL_NAZW.REFERENCE) where KAL_NAZW.NAZWA=\':_a\'',_a);
+O.index('LISTYZAM');
+_r_od:=_b~1;
+_m_od:=_b~2;
+_r_do:=_c~1;
+_m_do:=_c~2;
+_loop:=_kt.first();
+{! |? _loop |!
+   {? _kt.first()
+   || {!
+      |? O.prefix(exec('firma','ustawienia'),'N',_r_od,_m_od,_kt.T);
+         {? O.first()
+         || __KAL.set_cal(O.T().KA().NAZWA);
+            _od:=date(O.R,O.M,1);
+            _do:=date(O.R,O.M,0);
+            O.DR:=__KAL.w_days(_od,_do);
+            O.GR:=__KAL.w_hours(_od,_do);
+            {? O.put()
+            || exec('put_stat','lista_plac',O.ref(),'KAL_AKT',1,'Zaktualizowano dni i godziny robocze.')
+            ?}
+         ?};
+         O.prefix(exec('firma','ustawienia'),'T',_r_od,_m_od,_kt.T);
+         {? O.first()
+         || exec('put_stat','lista_plac',
+               O.ref(),
+               'KAL_AKT',
+               0,
+               'Nie zaktualizowano dni i godzin roboczych z powodu zamkniętej listy płac.'
+            );
+            KAL_AKTD.blank(1);
+            KAL_AKTD.T:='O';
+            KAL_AKTD.R:=O.uidref();
+            KAL_AKTN.prefix(exec('firma','ustawienia'),_r_od,_a);
+            {? KAL_AKTN.find_ge(date(O.R,O.M,1)) & KAL_AKTN.DT<=date(O.R,O.M,0)
+            || KAL_AKTD.KAL_AKTN:=KAL_AKTN.ref();
+               KAL_AKTD.prefix(KAL_AKTN.ref(),KAL_AKTD.R);
+               {? ~KAL_AKTD.first() || KAL_AKTD.add() ?}
+            ?}
+         ?};
+         _kt.next()
+      !}
+   ?};
+   _m_od+=1;
+   {? _m_od>12 || _r_od+=1; _m_od:=1 ?};
+   _loop:=(_r_od<_r_do | (_r_od=_r_do & _m_od<=_m_do))
+!};
+O.cntx_pop();
+1
+
+
+\kasuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Usuwa wskazane informacje
+::   WE: _a [STRING] - akronim tabeli
+::       _b [STRING] - uidref wskazanych danych
+::----------------------------------------------------------------------------------------------------------------------
+_del:=0;
+Cntx.psh(KAL_AKTD,KAL_AKTN);
+Cntx.clr(KAL_AKTN);
+KAL_AKTD.index('REKORD');
+KAL_AKTD.prefix(_a,_b);
+_del:=~KAL_AKTD.first();
+{! |? KAL_AKTD.first() |!
+   _ref:=KAL_AKTD.KAL_AKTN().ref();
+   KAL_AKTD.del();
+   {? KAL_AKTN.seek(_ref) & ~KAL_AKTN.count() || _del:=(KAL_AKTN.del(1,1)<>0) ?}
+!};
+Cntx.pop(KAL_AKTD,KAL_AKTN);
+{? _del || cur_tab(1,1).del() ?}
+
+
+\modKalendarz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Modyfikuje zapisy w kalendarzu indywidualnym
+::       Warunki w zakresie dat: pracownik należy do otwartego okresu do planowania
+::       lub nie ma jeszcze założonego okresu
+::       W tym przebiegu wykonywany jest odpowiedni PUT na KAL_DEF, w następnym przebiegu wykona się aktualizacja
+::   WE: _a [REFERENCE] - wskazanie na pracownika
+::       _b [DATE] - data od
+::       _c [DATE] - data do
+::       _d [STRING] - nazwa zmodyfikowanego kalendarza
+::       _e [INTEGER] - czy włączone przerwy niepłatne
+::   WY: 0/1 czy zaktualizowano kalendarz
+::----------------------------------------------------------------------------------------------------------------------
+_prac:={? var_pres('_a')=type_of(null()) || _a || return(0) ?};
+_od:={? var_pres('_b')=type_of(date()) & #_b<>0 || _b || return(0) ?};
+_do:={? var_pres('_c')=type_of(date()) & #_c<>0 & _b<=_c || _c || return(0) ?};
+_naz:={? var_pres('_d')=type_of('') & (1+_d)<>%255 || _d || return(0) ?};
+_przerwy:={? var_pres('_e')=type_of(0) & _e || _e || 0 ?};
+Cntx.psh(A_OKRP,KAL_DEF,KAL_NAZW,KAL_ROK,KAL_AKTN,H);
+A_OKRP.use('x_okrpi');
+Cntx.clr(A_OKRP);
+KAL_NAZW.index('KAL_NAZW');
+KAL_NAZW.prefix(exec('firma','ustawienia'),%255+$_prac);
+{? KAL_NAZW.first()
+|| _kal_nazw_ref:=KAL_NAZW.ref();
+   _kal_nazw_nazwa:=KAL_NAZW.NAZWA
+|| Cntx.pop(A_OKRP,KAL_DEF,KAL_NAZW,KAL_ROK,KAL_AKTN,H);
+   return(0)
+?};
+H.index('_HISTKOD');
+H.prefix(_prac,'Z');
+KAL_ROK.index('KAL_ROK');
+KAL_DEF.index('KAL_DEF');
+KAL_AKTN.index('UNIQ');
+__KAL.set_cal(_naz);
+_akt:=0;
+{! _licz:=#_od..#_do |!
+   _dt:=#_licz;
+   {? var_pres('_K')>100 || obj_del(_K) ?};
+   {? var_pres('_K')>0 || &_K ?};
+   {? __KAL.get_day(_dt)
+   || _K:=exec('obj_new','#buf','KAL_DEF',);
+      _K.get();
+      _jest:=0;
+      _okrp:=exec('find_okr','grafik',_prac,_dt,'okrp');
+      {? A_OKRP.seek(_okrp) & A_OKRP.S_PLAN='O'
+:: jeśli pracownik jest podłączony do okresu, ale ten jest otwarty do planowania
+      || _jest:=1
+      |? _okrp=null()
+:: jeśli pracownik nie jest podłączony do planowania
+      || _jest:=1
+      ?};
+      {? _jest
+      || KAL_ROK.index('KAL_ROK');
+         KAL_DEF.index('KAL_DEF');
+         Cntx.clr(KAL_ROK,KAL_DEF);
+         {? KAL_ROK.find_key(_kal_nazw_ref,_dt~1) & KAL_DEF.find_key(KAL_ROK.ref(),_dt)
+         || KAL_AKTN.prefix(exec('firma','ustawienia'),_dt,_dt~1,_kal_nazw_nazwa,);
+            _put:=KAL_AKTN.first();
+            {? ~_put &
+               (_K.CZAS<>KAL_DEF.CZAS
+               | (_K.TYP='R' & 'WS'*KAL_DEF.TYP)
+               | ('WS'*_K.TYP & KAL_DEF.TYP='R')
+               | (_K.TYPWS<>KAL_DEF.TYPWS)
+::               | (_przerwy & _K.P_CZAS<>KAL_DEF.P_CZAS & exec('Nalezy','grupprac','PRZERWY',_prac,_dt,1))
+               | (_przerwy & _K.P_CZAS<>KAL_DEF.P_CZAS)
+               )
+            || {? H.find_le(KAL_DEF.DATA) & H.WY<>1 & __KAL.p_kin(KAL_DEF.DATA)<>'T'
+::             Uwzględnienie wymiaru zatrudnienia
+               || {? H.WYM<>0
+                  || KAL_DEF.CZAS:=(*((*_K.CZAS)*H.WYL/H.WYM));
+                     KAL_DEF.KONIEC:=_K.POCZATEK+KAL_DEF.CZAS
+                  ?}
+               || KAL_DEF.CZAS:=_K.CZAS;
+                  KAL_DEF.KONIEC:=_K.KONIEC
+               ?};
+               KAL_DEF.TYP:=_K.TYP;
+               KAL_DEF.TYPWS:=_K.TYPWS;
+               KAL_DEF.POCZATEK:=_K.POCZATEK;
+               KAL_DEF.DATA:=_K.DATA;
+               KAL_DEF.DATAW:=_K.DATAW;
+               {? KAL_DEF.KONIEC>time(24,0,0)
+               || KAL_DEF.DATAW:=KAL_DEF.DATA+1;
+                  KAL_DEF.KONIEC-=time(24,0,0)
+               ?};
+               {? _przerwy
+               || KAL_DEF.P_DATA:=_K.P_DATA;
+                  KAL_DEF.P_START:=_K.P_START;
+                  KAL_DEF.P_CZAS:=_K.P_CZAS
+               || KAL_DEF.P_DATA:=#0;
+                  KAL_DEF.P_START:=*0;
+                  KAL_DEF.P_CZAS:=*0
+               ?};
+               {? KAL_DEF.put(1)
+               || _akt:=1;
+                  _akt_nazwa:=KAL_DEF.ROK().NAZWA;
+                  exec('kal_def_akt_czas_licz','kaledit');
+                  exec('trigKalUpd','grafik',_prac,KAL_DEF.ref())
+               ?};
+               1
+            ?}
+         ?}
+      ?}
+   ?}
+!};
+{? _akt || exec('akt_rok','kaledit',_akt_nazwa,_od~1,_od) ?};
+Cntx.pop(A_OKRP,KAL_DEF,KAL_NAZW,KAL_ROK,KAL_AKTN,H);
+_akt
+
+
+\isKalAkt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Czy jest możliwe zastosowanie
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+var_pres('KAL_AKTN')=type_of(SYSLOG) & var_pres('KAL_AKTD')=type_of(SYSLOG)
+
+
+\ustaw_dni
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Okno redakcji parametru czynności DEL_DNI - Liczba dni pozostawienia komunikatu
+::   WE: _a [NUMBER] - poprzednia wartość
+::   WY:    [NUMBER] - nowa wartość parametru
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=tab_tmp(,'DNI','INTEGER','Ilość dni do usunięcia komunikatu'@);
+
+_wnd:=_TAB.mk_edit('Czynność %1'@['ZWS_KAL_AKTD'],0,'#zws_kal_aktd');
+_TAB.win_esep(_wnd,'Parametr %1'@['DEL_DNI']);
+_TAB.win_efld(_wnd,,'DNI',,,,,,,,'Ilość dni od powstania zmiany, po których komunikat zostanie usunięty'@);
+exec('ok_esc','#window',_TAB,_wnd,,,,,,,exec('text_red_ok','#window'));
+_TAB.win_edit(_wnd);
+
+_TAB.DNI:=14;
+_ini:=~~;
+{? var_pres('_a')=type_of(0) & _a>0
+|| _TAB.DNI:=_ini:=_a
+?};
+
+params_set('err','Wartość nie może być ujemna.'@);
+{? _TAB.edit("{? cur_tab(1,1).DNI<0 || FUN.emsg(params_get().err); 'DNI' || '' ?}")
+|| _TAB.DNI
+|| _ini
+?}
+
+
+\liar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.14]
+:: OPIS: Oszukiwanie procesu
+::   WY: obiekt _par
+::----------------------------------------------------------------------------------------------------------------------
+_in:=obj_new('CZY_LT','CZY_INFO','DEL_DNI');
+_ch:=FUN.choice('Czy aktualizować obliczone nieobecności?',,'Tak','Nie');
+_in.CZY_LT:=
+   {? _ch=1 || 'T'
+   |? _ch=2 || 'N'
+   || 'X'
+   ?};
+_in.CZY_INFO:='T';
+_in.DEL_DNI:=14;
+_out:=obj_new('RESULT','RCV','BODYH','SUB');
+_out.RESULT:=_out.RCV:=_out.BODYH:=_out.SUB:='';
+_mp:=obj_new('buf_act','isService');
+_mp.buf_act:=obj_new('UID');
+_mp.buf_act.UID:='ZWS_KAL_AKTD';
+_mp.isService:="0";
+_par:=obj_new('mp','in','out');
+_par.mp:=_mp;
+_par.in:=_in;
+_par.out:=_out;
+&_par
+
+
+\R_WZCZ_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Wyzwalacze po dla R_WZCZ (natychmiastowa aktualizacja, pomija proces)
+::   WE: _a [STRING] - miejsce uruchomienia wyzwalacza 'add', 'put' lub 'del'
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_naz:=R_WZCZ.KAL().NAZWA;
+_naz_p:='';
+_od_p:=date(0,0,0);
+_do:=date(,12,0);
+
+:: Ustalenie wartości zmiennych, weryfikacja zmian
+{? _a='add'
+|| _cur:=R_WZCZ.ref();
+   _od:=R_WZCZ.OD
+|? _a='put'
+|| {? bfld('KAL')=R_WZCZ.KAL
+      & bfld('OD')=R_WZCZ.OD
+      & bfld('KIN')=R_WZCZ.KIN
+      & bfld('GRAFIK')=R_WZCZ.GRAFIK
+      & bfld('CZESC')=R_WZCZ.CZESC
+   || return(~~)
+   ?};
+   _cur:=R_WZCZ.ref();
+:: Rozdzielamy obsługę na część dla której ustawiamy nowy kalendarz, i część gdzie ustawiamy poprzedzający kalendarz
+:   _od:={? bfld('OD')<R_WZCZ.OD || bfld('OD') || R_WZCZ.OD ?}
+   _od:=R_WZCZ.OD;
+   {? bfld('OD')<R_WZCZ.OD || _od_p:=bfld('OD') ?}
+:   _do:={? bfld('OD')>R_WZCZ.OD || bfld('OD') || R_WZCZ.OD-1 ?}
+|| _cur:=null();
+   _od:=bfld('OD')
+?};
+
+{? _a='add' | _a='put'
+|| R_WZCZ.cntx_psh();
+   R_WZCZ.index('R_WZWND');
+   R_WZCZ.prefix(R_WZCZ.MASKA,R_WZCZ.REKORD,'N','N');
+:   {? _a='add' & R_WZCZ.seek(_cur) & R_WZCZ.next()
+:: Odczytujemy datę obowiązywania kolejnego wzorca, która ustali zakres bieżącej aktualizacji
+   {? R_WZCZ.seek(_cur) & R_WZCZ.next()
+   || _do:=R_WZCZ.OD-1
+:: jeśli nie ma to pobieramy na tyle, ile mamy kalendarzy
+   || KAL_ROK.cntx_psh();
+      KAL_ROK.index('KAL_ROK');
+      KAL_ROK.prefix(P.KAL);
+      {? KAL_ROK.last() || _do:=date(KAL_ROK.ROK,12,31) ?};
+      KAL_ROK.cntx_pop()
+   ?};
+:: Jeśli poprzedni wzorzec miał wcześniejszą datę, to ustawiamy dla tego okresu kalendarz obowiązujący przed tą datą
+:: Dotyczy tylko aktualizacji wzorca, gdy zmieniamy datę obowiązywania
+   {? _a='put' & _od_p<>date(0,0,0) & R_WZCZ.seek(_cur) & R_WZCZ.prev()
+   || _naz_p:=R_WZCZ.KAL().NAZWA
+   ?};
+
+:   _do:={? _do>date(,12,0) || date(,12,0) || _do ?};
+   {? _od>_do
+   || _do:=_od
+   ?};
+   R_WZCZ.cntx_pop()
+
+|? _a='del'
+|| R_WZCZ.cntx_psh();
+   R_WZCZ.index('R_WZWND');
+   R_WZCZ.prefix(bfld('MASKA'),bfld('REKORD'),'N','N');
+   {? R_WZCZ.find_ge(bfld('OD'))
+   || _do:=R_WZCZ.OD-1
+:: jeśli nie ma następnika, to pobiermy na tyle, ile mamy kalendarzy
+   || KAL_ROK.cntx_psh();
+      KAL_ROK.index('KAL_ROK');
+      KAL_ROK.prefix(P.KAL);
+      {? KAL_ROK.last() || _do:=date(KAL_ROK.ROK,12,31) ?};
+      KAL_ROK.cntx_pop()
+   ?};
+:: Jeśli usuwamy, to ustawiamy się na poprzednim kalendarzu
+   {? R_WZCZ.find_le(bfld('OD'))
+   || _naz:=R_WZCZ.KAL().NAZWA
+   ?};
+:   _do:={? _do>date(,12,0) || date(,12,0) || _do ?};
+   {? _od>_do
+   || _do:=_od
+   ?};
+   R_WZCZ.cntx_pop()
+?};
+
+{? var_pres('__KAL')<100
+|| exec('declare','kalendarz');
+   __KAL:=obj_new(@.CLASS.KALEND)
+?};
+
+:: Jeśli parametr jest ustawiony, to uruchamiamy aktualizację
+{? exec('get_par','#parametr',282)='T'
+|| exec('update_KAL_DEF','kal_dane_akt',R_WZCZ.P,_od,_do,_naz);
+:|| exec('update_KAL_DEF','kal_dane_akt',R_WZCZ.P,_od,_do,R_WZCZ.KAL().NAZWA);
+:: Wykonanie dodatkowej aktualizacji w sytuacji, gdy zmieniana data od jest późniejsza od modyfikowanej (ustawiamy
+:: wtedy poprzedni kalendarz
+   {? _a='put' & _od_p<>date(0,0,0) & _naz_p<>''
+   || exec('update_KAL_DEF','kal_dane_akt',R_WZCZ.P,_od_p,_od-1,_naz_p)
+   ?}
+?};
+
+~~
+
+
+\update_KAL_DEF
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Modyfikuje zapisy w kalendarzu indywidualnym
+::       Warunki w zakresie dat: pracownik należy do otwartego okresu do planowania
+::       lub nie ma jeszcze założonego okresu
+::       W tym przebiegu wykonywany jest odpowiedni PUT na KAL_DEF, w następnym przebiegu wykona się aktualizacja
+::   WE: _a [REFERENCE] - wskazanie na pracownika
+::       _b [DATE] - data od
+::       _c [DATE] - data do
+::       _d [STRING] - nazwa zmodyfikowanego kalendarza
+::   WY: 0/1 czy zaktualizowano kalendarz
+::----------------------------------------------------------------------------------------------------------------------
+_prac:={? var_pres('_a')=type_of(null())                   || _a || return(0) ?};
+_od:=  {? var_pres('_b')=type_of(date()) & #_b<>0          || _b || return(0) ?};
+_do:=  {? var_pres('_c')=type_of(date()) & #_c<>0 & _b<=_c || _c || return(0) ?};
+_naz:= {? var_pres('_d')=type_of('') & (2+_d)<>%255        || _d || return(0) ?};
+
+Cntx.psh(A_OKRP,KAL_DEF,KAL_NAZW,KAL_ROK,H,KAL_BUFF);
+A_OKRP.use('x_okrpi');
+Cntx.clr(A_OKRP);
+
+KAL_NAZW.index('KAL_NAZW');
+KAL_NAZW.prefix(exec('firma','ustawienia'),%255+$_prac);
+{? KAL_NAZW.first()
+|| _kal_nazw_ref:=KAL_NAZW.ref();
+   _kal_nazw_nazwa:=KAL_NAZW.NAZWA
+|| Cntx.pop(A_OKRP,KAL_DEF,KAL_NAZW,KAL_ROK,H,KAL_BUFF);
+   return(0)
+?};
+H.index('_HISTKOD');
+H.prefix(_prac,'Z');
+KAL_ROK.index('KAL_ROK');
+KAL_DEF.index('KAL_DEF');
+KAL_BUFF.index('PRZNODT');
+KAL_BUFF.prefix();
+__KAL.set_cal(_naz);
+_akt:=0;
+_kwal:=0;
+_przerwy:=exec('isEnabled','prc_przerwy');
+
+:: Wyszukanie informacji o ruchomym czasie pracy
+{? var_pres('_tabRuch')>100 || obj_del(_tabRuch) ?};
+_tabRuch:=exec('ruchomy_find','grafik',_prac,_od,_do);
+
+{! _licz:=#_od..#_do |!
+   _dt:=#_licz;
+   {? var_pres('_K')>100 || obj_del(_K) ?};
+   {? var_pres('_K')>0 || &_K ?};
+   {? __KAL.get_day(_dt)
+   || _K:=exec('obj_new','#buf','KAL_DEF',);
+      _K.get();
+      _jest:=0;
+      _okrp:=exec('find_okr','grafik',_prac,_dt,'okrp');
+::    Jeśli pracownik jest podłączony do okresu, ale ten jest otwarty do planowania
+::      {? A_OKRP.seek(_okrp) & A_OKRP.S_PLAN='O'
+      {? A_OKRP.seek(_okrp)
+      || _jest:=1
+::    Jeśli pracownik nie jest podłączony do planowania
+      |? _okrp=null()
+      || _jest:=1
+      ?};
+      {? _jest
+      || KAL_ROK.index('KAL_ROK');
+         KAL_DEF.index('KAL_DEF');
+         Cntx.clr(KAL_ROK,KAL_DEF);
+         {? KAL_ROK.find_key(_kal_nazw_ref,_dt~1) & KAL_DEF.find_key(KAL_ROK.ref(),_dt)
+         || {? (_K.CZAS<>KAL_DEF.CZAS
+               | (_K.TYP='R' & 'WS'*KAL_DEF.TYP)
+               | ('WS'*_K.TYP & KAL_DEF.TYP='R')
+               | (_K.TYPWS<>KAL_DEF.TYPWS)
+               | _K.POCZATEK<>KAL_DEF.POCZATEK)
+            || {? H.find_le(KAL_DEF.DATA) & H.WY<>1 & __KAL.p_kin(KAL_DEF.DATA)<>'T'
+::             Uwzględnienie wymiaru zatrudnienia
+               || {? H.WYM<>0
+                  || KAL_DEF.CZAS:=(*((*_K.CZAS)*H.WYL/H.WYM));
+                     KAL_DEF.KONIEC:=_K.POCZATEK+KAL_DEF.CZAS
+                  ?}
+               || KAL_DEF.CZAS:=_K.CZAS;
+                  KAL_DEF.KONIEC:=_K.KONIEC
+               ?};
+               KAL_DEF.TYP:=_K.TYP;
+               KAL_DEF.TYPWS:=_K.TYPWS;
+               KAL_DEF.POCZATEK:=_K.POCZATEK;
+               KAL_DEF.DATA:=_K.DATA;
+               KAL_DEF.DATAW:=_K.DATAW;
+               {? KAL_DEF.KONIEC>time(24,0,0)
+               || KAL_DEF.DATAW:=KAL_DEF.DATA+1;
+                  KAL_DEF.KONIEC-=time(24,0,0)
+               ?};
+               {? _przerwy
+               || KAL_DEF.P_DATA:=_K.P_DATA;
+                  KAL_DEF.P_START:=_K.P_START;
+                  KAL_DEF.P_CZAS:=_K.P_CZAS
+               ?};
+
+::             Nadpisanie rozpoczęcia dnia i zakończenia zgodnie z ruchomym czasem pracy
+               {? _tabRuch.find_key(_dt)
+               || {? _tabRuch.DET='T' & KAL_DEF.TYP='R'
+                  || KAL_DEF.POCZATEK:=_tabRuch.GOD;
+                     _czas_do:=_tabRuch.GOD+KAL_DEF.CZAS;
+                     {? _czas_do>=time(24,0,0)
+                     || _czas_do-=time(24,0,0);
+                        KAL_DEF.DATAW:=(KAL_DEF.DATA+1)
+                     ?};
+                     KAL_DEF.KONIEC:=(_czas_do)
+                  ?}
+               ?};
+
+               {? KAL_DEF.put(1)
+               || _akt:=1;
+                  _akt_nazwa:=KAL_DEF.ROK().NAZWA;
+                  exec('kal_def_akt_czas_licz','kaledit');
+                  exec('trigKalUpd','grafik',_prac,KAL_DEF.ref(),1);
+                  {? KAL_BUFF.find_key(_prac,'W','',_dt) | KAL_BUFF.find_key(_prac,'Z','',_dt) || _kwal+=1 ?}
+               ?};
+               1
+            ?}
+         || _plan:=exec('update_KAL_BUFF','kal_dane_akt',_prac,'P',_K,_dt,'TN');
+            _graf:=exec('update_KAL_BUFF','kal_dane_akt',_prac,'G',_K,_dt,'TN');
+            {? _plan | _graf
+            || {? KAL_BUFF.find_key(_prac,'W','',_dt) | KAL_BUFF.find_key(_prac,'Z','',_dt) || _kwal+=1 ?}
+            ?}
+         ?}
+      ?}
+   ?}
+!};
+{? _akt || exec('akt_rok','kaledit',_akt_nazwa,_od~1,_od) ?};
+::{? _kwal
+::|| FUN.info('W zmienianym okresie istnieje co najmniej jedno wykonanie. Należy wykonać ponowną kwalifikację.'@)
+::?};
+{? _kwal & var_pres('__czy_kwalifikacja')>0
+|| __czy_kwalifikacja:='T'
+?};
+Cntx.pop(A_OKRP,KAL_DEF,KAL_NAZW,KAL_ROK,H,KAL_BUFF);
+_akt
+
+
+\update_KAL_BUFF
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Aktualizacja KAL_BUFFa po zmianach we wzorcach czasu pracy (brak indywidualnego KAL_DEFF).
+::   WE: _a - Wskazanie pracownika (P.ref()).
+::       _b - Znacznik (P - planowanie, G - grafik)
+::       _c - Wskazanie na obiekt z dniem z kalendarza.
+::       _d - Data do aktualizacji.
+::       _e - Należy do okresu ('T','N','TN')
+::   WY: 0/1 - Czy dokonano zmian w buforze
+::----------------------------------------------------------------------------------------------------------------------
+_p_ref:={? var_pres('_a')=type_of(null())       || _a || null()    ?};
+_gpw:=  {? var_pres('_b')=type_of('')           || _b || 'P'       ?};
+_KAL:=  {? var_pres('_c')>=100                  || _c || return(0) ?};
+_date:= {? var_pres('_d')=type_of(date())       || _d || date()    ?};
+_okr:=  {? var_pres('_e')=type_of('') & 'TN'*_e || _e || 'T'       ?};
+
+_okr:=spli_str(_okr,'');
+_akt:=0;
+
+KAL_BUFF.cntx_psh();
+KAL_BUFF.index('PRZNODT');
+:KAL_BUFF.prefix(_p_ref,_gpw,'T',_date);
+H.cntx_psh();
+H.index('_HISTKOD');
+H.prefix(_p_ref,'Z');
+P.cntx_psh();
+OSOBA.cntx_psh();
+_przerwy:=exec('isEnabled','prc_przerwy');
+
+{! _ind:= 1 .. obj_len(_okr) |!
+   KAL_BUFF.prefix(_p_ref,_gpw,_okr[_ind],_date);
+
+   {? KAL_BUFF.first()
+   || _status:=exec('getPlanStat4Pr','grafik',_p_ref,_date);
+      {? _status<>'Z'
+      || {!
+         |? {? _KAL.CZAS<>KAL_BUFF.CZAS
+            | _KAL.POCZATEK<>KAL_BUFF.POCZATEK
+            | _KAL.TYPWS<>KAL_BUFF.TYPWS
+            | (_KAL.TYP='R' & 'WS'*KAL_BUFF.TYP)
+            | ('WS'*_KAL.TYP & KAL_BUFF.TYP='R')
+            || {? H.find_le(_KAL.DATA) & H.WY<>1 & __KAL.p_kin(_KAL.DATA)<>'T'
+::          Uwzględnienie wymiaru zatrudnienia
+               || {? H.WYM<>0
+                  || KAL_BUFF.CZAS:=(*((*_KAL.CZAS)*H.WYL/H.WYM));
+                     KAL_BUFF.KONIEC:=_KAL.POCZATEK+KAL_BUFF.CZAS
+                  ?}
+               || KAL_BUFF.CZAS:=_KAL.CZAS;
+                  KAL_BUFF.KONIEC:=_KAL.KONIEC
+               ?};
+               KAL_BUFF.TYP:=_KAL.TYP;
+               KAL_BUFF.TYPWS:=_KAL.TYPWS;
+               KAL_BUFF.POCZATEK:=_KAL.POCZATEK;
+               KAL_BUFF.DATAW:=_KAL.DATAW;
+               KAL_BUFF.RODZAJ:=_KAL.RODZAJ;
+               KAL_BUFF.OPIS:=_KAL.OPIS;
+               {? KAL_BUFF.KONIEC>time(24,0,0)
+               || KAL_BUFF.DATAW:=KAL_BUFF.DATA+1;
+                  KAL_BUFF.KONIEC-=time(24,0,0)
+               ?};
+               {? _przerwy
+               || KAL_DEF.P_DATA:=_KAL.P_DATA;
+                  KAL_DEF.P_START:=_KAL.P_START;
+                  KAL_DEF.P_CZAS:=_KAL.P_CZAS
+               ?};
+
+::             wnioski o pracę w nadgodzinach
+               {? KAL_BUFF.GPW='G'
+               || _godz:=exec('ile_nadg','prc_nadg',_p_ref,KAL_BUFF.DATA,KAL_BUFF.CZAS);
+                  {? _godz.ALL>*0 & ((_godz.TYPE='G' & KAL_BUFF.TYP<>'R') | (_godz.TYPE<>'G' & KAL_BUFF.TYP='R'))
+                  || {? KAL_BUFF.TYP<>'R' | KAL_BUFF.CZAS=*0
+                     || KAL_BUFF.POCZATEK:=_godz.GSTART;
+                        KAL_BUFF.KONIEC:=KAL_BUFF.POCZATEK+_godz.ALL
+                     || KAL_BUFF.POCZATEK-=_godz.POCZATEK;
+                        KAL_BUFF.KONIEC+=_godz.KONIEC
+                     ?};
+                     {? KAL_BUFF.KONIEC>=time(24,0,0)
+                     || KAL_BUFF.DATAW+=1;
+                        KAL_BUFF.KONIEC-=time(24,0,0)
+                     ?};
+                     KAL_BUFF.CZAS+=_godz.ALL
+
+::                   Jeśli wniosek nie może zostać uwzględniony w grafiku to dajemy o tym informację
+                  |? _godz.ALL>*0 & ((_godz.TYPE='G' & KAL_BUFF.TYP='R') | (_godz.TYPE<>'G' & KAL_BUFF.TYP<>'R'))
+                  || _sect:=' %1 %2 %3:'[KAL_BUFF.P().OSOBA().NAZWISKO,OSOBA.PIERWSZE,'[nr teczki - %1]'@[form(P.T)]];
+                     {? KOMM.find_msg(_sect) || KOMM.set_root(_sect) || KOMM.sect_beg(_sect,'xwin16.png:100') ?};
+                     _msg:='Wniosek o nadgodziny na dzień %1 nie został uwzględniony w grafiku.'@[$KAL_BUFF.DATA];
+                     {? ~KOMM.find_msg(_msg) || KOMM.add(_msg,4) ?};
+::                     KOMM.add('Wniosek o nadgodziny na dzień %1 nie został uwzględniony w grafiku.'@[$KAL_BUFF.DATA],4);
+                     KOMM.sect_end()
+
+                  ?};
+                  obj_del(_godz); &_godz
+               ?};
+
+               {? KAL_BUFF.put(1)
+               || _akt:=1
+               ?}
+            ?};
+            KAL_BUFF.next()
+         !}
+      ?}
+   ?}
+
+!};
+
+OSOBA.cntx_pop();
+P.cntx_pop();
+H.cntx_pop();
+KAL_BUFF.cntx_pop();
+
+_akt
+
+:Sign Version 2.0 jowisz:1045 2023/08/31 12:30:29 41b8290cc18df7f0c40e32b2c5edf6df9248dedd22363b40366e0081d3ca15514d8696562684a2bf9a035e417a385f8538d0f16e98c4a006daeaa9452d68200cb806b9eef3f716ae2e67424a3e68ee4a86ae54ba6f8ba9940d9e4136c7e5c1ad2f38582b93a39165c26d7e7a3026ac3e4fd86fd83629ec1a52460c0c976963a3

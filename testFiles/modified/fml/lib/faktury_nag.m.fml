@@ -1,0 +1,510 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: faktury_nag.fml
+:: Utworzony: 26.03.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Obsługa dokumentów sprzedaży i zakupu - nagłówki dokumentów
+::            !!! Nowe funkcje dopisywać w faktury_nag1.fml !!!
+::======================================================================================================================
+
+\chk_f
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: awi [2008]
+:: OPIS: sprawdzenie poprawnosci wypelnienia pol dotyczacych INTRASTAT w tabeli FAKS
+::   WE: _a - 0 - dokument manualny (domyślnie), 1 - import z komunikatu EDI
+::       _b - status akceptacji dokumentu
+::   WY: akronim niepoprawnie wypelnionego pola, ''-wpp
+::  OLD: \chk_f/ist01.fml
+::----------------------------------------------------------------------------------------------------------------------
+_edi:=_a;
+_akc:=_b;
+
+_wyn:='';
+
+{? _akc='N' & exec('get','#params',100202,2)<>'T' | FAKS.WHERE='L'
+||
+:: NUCO - zablokowanie kasowania pól - możliwa nbadmiarowa kontrola w STD
+::   FAKS.IST_OKR:=FAKS.IST_TYP:='';
+   return('')
+?};
+
+{? exec('faks_ist_typ','faktury_nag',0)
+||
+   _msg:='Niepoprawnie wypełnione pole: Typ deklaracji.'@;
+   {? _edi
+   || exec('add_kom','#message',_msg,4,{? FAKS.ID='' || FAKS.SYM || FAKS.ID ?})
+   || FUN.info(_msg)
+   ?};
+   _wyn:='IST_TYP'
+||
+   {? FAKS.IST_TYP='' | FAKS.IST_OKR=''
+   ||
+      FAKS.IST_OKR:=FAKS.IST_TYP:=''
+   ||
+      _ist_typ:=FAKS.IST_TYP;
+      _progp:=exec('prog','intrastat',date(#(4+FAKS.IST_OKR),#(FAKS.IST_OKR+2),1),'P');
+      _progw:=exec('prog','intrastat',date(#(4+FAKS.IST_OKR),#(FAKS.IST_OKR+2),1),'W');
+      _wyn:=exec('check','intrastat',FAKS,_ist_typ,_progw,_progp,_akc,_edi);
+      {? _wyn=''
+      ||
+         {? exec('chk_istokr','faktury_nag',FAKS.IST_OKR)=0 || _wyn:='IST_OKR' ?}
+      ?}
+   ?}
+?};
+_wyn
+
+
+\fak_pop_po
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Obsługa popraw po zakończeniu edycji (FAKS.edit)
+::   WE: _a - wynik funkcji edit
+::       _b - 0-nie pytaj czy usunąć fakturę, 1-pytaj czy usunąć fakturę
+::       params_get()   - ustawiany w exec('wystinne','faktury_nag')
+::   WY: 0-usunięto dokument, 1-zachowano dokument
+::----------------------------------------------------------------------------------------------------------------------
+_esc:=_a;
+_ask:=_b;
+
+_wyn:=1;
+
+_var_fakpop:=params_get().var_fakpop;
+_kh:=_var_fakpop.KH;
+_odb:=_var_fakpop.ODB;
+_wal:=_var_fakpop.WAL;
+_pl:=_var_fakpop.PL;
+_rab:=_var_fakpop.RAB;
+_krs:=_var_fakpop.KRS;
+_nkrs:=_var_fakpop.NKRS;
+_ist_typ:=_var_fakpop.IST_TYP;
+_rtransak:=_var_fakpop.RTRANSAK;
+_r_lock:=_var_fakpop.R_LOCK;
+_po_first:=_var_fakpop.PO_FIRST;
+_fakz:=_var_fakpop.FAKZ;
+_fakz_rlock:=_var_fakpop.FAKZ_RLOCK;
+
+{? _po_first=1
+:: Dotyczy wywołania dla Dołącz - wtedy jako wartości przd ustawia zmienne z nagłówka
+|| _kh:=FAKS.KH;
+   _odb:=FAKS.KH_ODB;
+   _wal:=FAKS.WAL;
+   _pl:=FAKS.PL;
+   _rab:=FAKS.RAB;
+   {? _krs=0 & exec('FindInSet','#table','FAP','FAP',FAKS.ref(),,"FAP.OPAK_GEN",,,'')<>'X'  || _krs:=FAKS.KRS ?};
+   {? _nkrs=0 & exec('FindInSet','#table','FAP','FAP',FAKS.ref(),,"FAP.OPAK_GEN",,,'')<>'X' || _nkrs:=FAKS.NKRS ?};
+   _ist_typ:=FAKS.IST_TYP;
+   _rtransak:=FAKS.RTRANSAK
+?};
+
+{? _esc<=0
+|| {? _esc=0
+   || exec('pop_exit','faktury_plat',1,FAKS.ref())
+   |? _esc=-1
+   ||
+::    put w celu zapisania biezacej numeracji dla FAKS
+      FAKS.put();
+      _usun_fak:=
+         {? _ask=0
+         || 1
+         |? _ask=1
+         || {? exec('FindInSet','#table','FAP','FAP',FAKS.ref())
+            || {? FUN.ask('Dokument ma pozycje.\nCzy na pewno usunąć dokument?'@)
+               || 1
+               || {? FAKS.NR=0 || exec('fak_numer','numery',''); exec('znak','numery','FAKS') ?};
+                  0
+               ?}
+            || 1
+            ?}
+         ?};
+      {? _usun_fak
+      || _ref:=FAKS.ref();
+         {? exec('usun_fak','faktury_nag',0)
+         || BEER.WYSTFAKS:=null;
+            exec('r_unlock_one','#table',FAKS,_ref,_r_lock);
+            _wyn:=0
+         ?}
+      || exec('r_unlock_one','#table',FAKS,FAKS.ref(),_r_lock)
+      ?}
+   ?};
+   {? _fakz
+   ||
+::    Zwolnienie zlecenia fakturowania
+      FAKZ.cntx_psh();
+      FAKZ.use(ref_name(_fakz));
+      FAKZ.prefix();
+      {? FAKZ.seek(_fakz)
+      ||
+         exec('r_unlock_one','#table',FAKZ,FAKZ.ref(),_r_lock)
+      ?};
+      FAKZ.cntx_pop()
+   ?}
+|? FAKS.WHERE='K'
+:: korekta zbiorcza
+|| exec('faks_kzn_pop_po','faktury_nag1',_po_first<>2)
+|? FAKS.WHERE='N'
+:: Korekta danych nagłówkowych
+|| {? FAKS.put() || FAKS.memo_put(,'UWAGI'); exec('polafaks_update','jpk_log'); exec('koryguj_nag','faktury_nag') ?}
+||
+:: aktualizacja cen
+   _ok:=1;
+   _ctrlCN:=exec('get','#params',800850,2);
+
+   FAP.index('FAP');
+   FAP.prefix(FAKS.ref);
+::Usunięcie powiązanego cennika jeśli nie jest już aktualny
+   {? _po_first<>3 & FAP.first() & FAKS.SZ='S' &  FAKS.T().KOR='N'
+      & (FAKS.SYMF='' | exec('get','#params',300805,2)='T')
+      & (_kh<>FAKS.KH | _wal<>FAKS.WAL
+        | (exec('ctdt','ceny')='T' & (_pl<>FAKS.PL | exec('khodb_tar_zm_czy','ceny_dok',_odb,FAKS.KH_ODB))))
+   ||
+      {!|?
+         {? FAP.TAR_H<>null()
+         ||
+            FAP.cntx_psh();
+            FAKS.cntx_psh();
+            _tar_h_tap:=$FAP.TAR_H().TAP;
+            FAP.CPR:=0;
+            FAP.CWAL:=0;
+            VAR_DEL.delete('__TAP_LIST');
+            exec('be_fapcp','faktury_poz',,'FAKS',2);
+            {? var_pres('__TAP_LIST')=type_of('')
+            & ( __TAP_LIST*_tar_h_tap)=0
+            || FAP.cntx_pop();
+               FAP.TAR_H:=null();
+               FAP.TAR_TMS:=0;
+               FAP.put()
+            || FAP.cntx_pop()
+            ?};
+            VAR_DEL.delete('__TAP_LIST');
+            FAKS.cntx_pop( )
+         ?};
+         FAP.next()
+      !}
+   ?};
+
+   {? _po_first<>3 & FAP.first() & FAKS.SZ='S' &  FAKS.T().KOR='N'
+      & (FAKS.SYMF='' | exec('get','#params',300805,2)='T')
+      & (_kh<>FAKS.KH | _wal<>FAKS.WAL
+        | (exec('ctdt','ceny')='T' & (_pl<>FAKS.PL | exec('khodb_tar_zm_czy','ceny_dok',_odb,FAKS.KH_ODB))))
+      & _ctrlCN<>'B' & (_ctrlCN='T' | (FAKS.cntx_psh(); _ceny_mat_dok:=exec('ceny_mat_dok','ceny_dok',2,,FAKS,1);
+      FAKS.cntx_pop(); _ceny_mat_dok))
+   ||
+      _result:=spli_str(exec('fap_czy_cennik','faktury_wspolne',_kh,_odb,_pl,_wal),' ');
+      _ma_cennik:=_result[1];
+      _choice:=#_result[2];
+
+      {? _ma_cennik='N' & _choice=2 | _ma_cennik='T' & _choice=0
+      ||
+         {? _ma_cennik='T' & _choice=0
+         ||  _msg:='Zmieniły się kryteria cenników.\nNależy wyznaczyć ponownie ceny.'@;
+            {? FAKS.SYMF<>''
+            || _msg:=_msg+'\n'+'Uwaga! Jest to dokument do paragonu.'@
+            ?};
+            _choice:=FUN.choice(_msg,,'Wg &cenników'@,'Wg &dokumentu'@)
+         || _msg:='Zmieniły się kryteria cenników.\nBrak cennika zgodnego z aktualnymi kryteriami.'@;
+            FUN.info(_msg)
+         ?};
+         _ok:={? _choice || exec('ceny_mat_dok','ceny_dok',1,,FAKS,1,,_choice=2) || 0 ?}
+      ?}
+   ?};
+   {? _ok
+   || exec('pop_exit','faktury_plat',2,FAKS.ref());
+      FAKS.AR:={? FAKS.SZ='Z' || ST.AR || FAKS.DW~1 ?};
+      FAKS.AM:={? FAKS.SZ='Z' || ST.AM || FAKS.DW~2 ?};
+:WW:NUCO ustawienie roku i miesiaca wedlug parametrow pracy
+      {? FAKS.TZP<>''
+      || FAKS.AR:=ST.AR; FAKS.AM:=ST.AM
+      ?};
+::koniec
+      exec('putfakid','faktury_nag');
+      {? FAKS.SYMF<>'' & FAKS.WHERE='L' & FAKS.T().PAR='N'
+      ||
+::       aktualizacja symbolu faktury do paragonu na rozliczonym paragonie zaliczkowym
+         FAPOW.cntx_psh();
+         FAPOW.index('FAKS');
+         FAPOW.prefix(FAKS.SYMF);
+         _loop:=FAPOW.first();
+         {!
+         |? _loop
+         |!
+            FAPOW.END_SYM:=FAKS.SYM;
+            FAPOW.ROZ:='T';
+            _loop:=FAPOW.put() & FAPOW.next()
+         !};
+::       aktualizacja powiązań kolejnych zaliczek na fakturze do paragonu
+         _ref_fak:=$FAKS.ref();
+         _ref_kh:=FAKS.KH;
+         FAPOW.index('FAKS');
+         FAPOW.prefix(_ref_fak);
+         _loop:=FAPOW.first();
+         {!
+         |? _loop
+         |!
+            _ref_fapow:=FAPOW.ref();
+
+            FAPOW.cntx_psh();
+            FAPOW.index('POZ');
+            FAPOW.prefix(FAPOW.POZ);
+            _loop:=FAPOW.first();
+            {!
+            |? _loop
+            |!
+               {? FAPOW.ref()<>_ref_fapow
+               ||
+                  _ref_fak:=
+                     {? FAPOW.F=FAPOW.FAKS
+                     || _ref_fak
+                     || exec('FindAndGet','#table',FAKS,FAPOW.F,,"
+                           {? FAKS.SYMF<>'' & exec('FindAndGet','#table',FAKS,FAKS.SYMF,,\"FAKS.KH\",null())=_b
+                           || FAKS.SYMF
+                           || $FAKS.ref()
+                           ?}",_ref_fak,_ref_kh)
+                     ?}
+               ?};
+               _loop:=FAPOW.next()
+            !};
+            FAPOW.cntx_pop();
+            FAPOW.F:=_ref_fak;
+            _loop:=FAPOW.put() & FAPOW.next()
+         !};
+         FAPOW.cntx_pop()
+      ?}
+   ?};
+   {? _ok=0
+   || exec('pop_exit','faktury_plat',1,FAKS.ref())
+   |? ~FAKS.put(1)
+   || FUN.info('Zapisanie poprawianego dokumentu nie powiodło się.'@)
+   ||
+:WW:NUCO próba odwołania się do nieistniejącego rekordu:FAKSPOLA
+:      exec('polafaks_update','jpk_log',1);
+      FAKS.memo_put(,'UWAGI');
+::    aktualizacja rabatu na fakturze historycznej
+      exec('akt_kor','faktury_nag');
+      {? FAKS.T().HIS='T'
+      || exec('korh_rab','faktury_nag',FAKS.LKSQL,1)
+      ?};
+      FAP.index('FAP');
+      FAP.prefix(FAKS.ref);
+      {? FAP.first()
+      ||
+         {!
+         |?
+            _zmiana:=_rab<>FAKS.RAB | _krs<>FAKS.KRS | _nkrs<>FAKS.NKRS | _rtransak<>FAKS.RTRANSAK;
+            exec('istatr_faks2fap','faktury_nag');
+            {? FAKS.T().HIS='T' & _zmiana
+            || exec('wysw_kor','faktury_poz');
+               exec('korh_lic','faktury_wspolne',0);
+               FKOR.M:=FAP.M;
+               exec('korh_put','faktury_poz',0)
+            ?};
+            {? _zmiana
+            ||
+               {? FAP.POZP
+               ||
+                  exec('wysw_kor','faktury_poz');
+                  FAP.CWAL:=FAP.CWAL+FKOR.CWAL;
+                  FAP.CPR:=FAP.CPR+FKOR.CPR;
+                  FAP.CN:=FAP.CN+FKOR.CN;
+                  FAP.CB:=FAP.CB+FKOR.CB;
+                  exec('liczfak','faktury_wspolne');
+                  FAP.CWAL:=FAP.CWAL-FKOR.CWAL;
+                  FAP.CPR:=FAP.CPR-FKOR.CPR;
+                  FAP.CN:=FAP.CN-FKOR.CN;
+                  FAP.CB:=FAP.CB-FKOR.CB
+               ||
+                  exec('liczfak','faktury_wspolne',0)
+               ?};
+::             intrastat
+               exec('liczfak_ist','faktury_wspolne',1,0)
+            ?};
+::          intrastat
+            {? _ist_typ<>FAKS.IST_TYP
+            ||
+               {? FAKS.IST_TYP=''
+               || _mat:=FAP.M;
+                  FAP.M:=null();
+                  exec('ist_wart_fap','faktury_wspolne',0,0);
+                  FAP.M:=_mat
+               || exec('liczfak_ist','faktury_wspolne',1,1)
+               ?}
+            ?};
+::          projekty
+            {? FAKS.PROJEKTY
+            || FAP.PROJEKTY:=FAKS.PROJEKTY;
+               exec('projdel','projekty',FAP.ref());
+               exec('projwgfap','projekty',FAP.ref())
+            |? FAP.PROJEKTY
+            || exec('projdel','projekty',FAP.ref());
+               exec('projwgfap','projekty',FAP.ref())
+            ?};
+            {? FAKS.KH<>FAP.KH | FAKS.KH_ODB<>FAP.KH_ODB | FAKS.HAN<>FAP.HAN
+            || FAP.KH:=FAKS.KH;
+               FAP.KH_ODB:=FAKS.KH_ODB;
+               FAP.HAN:=FAKS.HAN
+            ?};
+            FAP.put();
+::          aktualizacja kontrahentow dla rezerwacji = faktura typu G
+            ZK_P.cntx_psh();
+            ZK_P.index('FAP');
+            ZK_P.prefix(FAP.ref());
+            {? ZK_P.first() || {! |? ZK_P.KH:=FAP.FAKS().KH; ZK_P.put(1); ZK_P.next() !} ?};
+            ZK_P.cntx_pop();
+::          naliczenie opłat dodatkowych
+            exec('actTAXS','oplaty_dod',FAP.FAKS().uidref(),FAP.uidref(),FAP.M,FAP.M);
+            FAP.next()
+         !}
+      ?};
+::    projekty
+      {? FAKS.PROJEKTY
+      || exec('projdel','projekty',FAKS.ref())
+      ?};
+::    zlecenia fakturowania
+      {? _fakz
+      || exec('fakz2fap_del','faktury_wspolne',FAKS.ref());
+         _fakz_uidref:=exec('FindAndGet','#table',FAKZ,_fakz,,"FAKZ.uidref()",'');
+         {? _fakz_uidref<>''
+         || exec('fakz2fap_add','faktury_wspolne',_fakz_uidref,FAKS.ref(),null())
+         ?};
+         FAKZ.cntx_psh();
+         FAKZ.use(ref_name(_fakz));
+         FAKZ.prefix();
+         {? FAKZ.seek(_fakz)
+         ||
+            exec('r_unlock_one','#table',FAKZ,FAKZ.ref(),_r_lock)
+         ?};
+         FAKZ.cntx_pop()
+      |? FAKS.T().KOR<>'T'
+      || FAKZ2FAP.cntx_psh();
+         FAKZ2FAP.index('FAKS');
+         FAKZ2FAP.prefix(FAKS.ref(),null());
+         {? FAKZ2FAP.first()
+         || _da_zal:=exec('FindAndGet','#table',FAKZ,FAKZ2FAP.FAKZ,,"FAKZ.DA_ZAL",date(0,0,0));
+            _kw_zal:=exec('FindAndGet','#table',FAKZ,FAKZ2FAP.FAKZ,,"FAKZ.WB",0);
+            {? _da_zal<>date(0,0,0) & _da_zal<>{? FAKS.WHERE='L' || FAKS.D || FAKS.DA_ZAL ?} | _kw_zal<>FAKS.KW_ZAL
+            || exec('fakz2fap_del','faktury_wspolne',FAKS.ref())
+            ?}
+         ?};
+         FAKZ2FAP.cntx_pop()
+      ?};
+::    aktualizacja zamowien
+      exec('aktu_zkn','zamsiw_rea',FAKS.ref());
+::    aktualizacja informacji dodatkowych
+      exec('inf_dod','fakso',0,'faktu','P');
+      {? FAKS.WHERE='L' || exec('fzal_pop','faktury_zalicz') ?};
+      {? (FAKS.WHERE='P' | (FAKS.WHERE='G' & (FAKS.MAG=null | FAKS.MAG().MG_OPAK<>'')))
+      ||
+::       aktualizacja dokumentów opakowań
+         exec('dok_pop','opakow',$FAKS.ref(),FAKS.KH,FAKS.D)
+      ?};
+      exec('sumfak','faktury_wspolne');
+      exec('plat_przel','faktury_plat',FAKS.ref);
+::    wycena
+      {? FAKS.SZ='Z' & (_nkrs<>FAKS.NKRS | _rab<>FAKS.RAB)
+      || exec('wycenND','faktury_wspolne',FAKS.ref(),,_rab<>FAKS.RAB)
+      ?};
+
+::    Aktualizacja wartości przed redakcją po aktualizacji dokumentu
+      _var_fakpop.RAB:=FAKS.RAB;
+      _var_fakpop.KRS:=FAKS.KRS;
+      _var_fakpop.NKRS:=FAKS.NKRS;
+      _var_fakpop.KH:=FAKS.KH;
+      _var_fakpop.ODB:=FAKS.KH_ODB;
+      _var_fakpop.WAL:=FAKS.WAL;
+      _var_fakpop.PL:=FAKS.PL;
+      _var_fakpop.IST_TYP:=FAKS.IST_TYP;
+      _var_fakpop.RTRANSAK:=FAKS.RTRANSAK;
+      _var_fakpop.FAKZ:=exec('FindAndGet','#table',FAKZ,
+         exec('FindInSet','#table','FAKZ2FAP','FAKS',FAKS.ref(),null(),"FAKZ2FAP.FAKZ",,,''),,,null());
+      _var_fakpop.FAKZ_RLOCK:=0;
+
+      TAZ.RAB_N_BE:=FAKS.RAB
+   ?}
+?};
+_wyn
+
+
+\ctrl_warEDOKUM
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.42]
+:: OPIS: kontroluje czy podany dokument sprzedaży/zakupu jest zgodny co do wartości z dokumentem w obiegu
+::       Uwaga. Kontekst wywołania na tabeli FAKS
+::   WE: _a - parametr dla KOMM-a
+::       _b - parametr dla KOMM-a
+::   WY: 1-OK 0-nie jest dobrze
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+{? FAKS.EDOKUM<>''
+|| _komroot:="{? _b | __kom.find_msg(_a) || __kom.set_root(_a) || __kom.sect_beg(_a) ?}";
+   _netto:=0;
+   _brutto:=0;
+   _wg_brt:=FAKS.T().FIS='T';
+   _wg_zak:=FAKS.SZ='Z';
+   exec('edok_psh','open_tab');
+   exec('open_edok','open_tab',form(8+FAKS.EDOKUM)+2);
+   EDOKUM.prefix();
+   {? EDOKUM.seek(FAKS.EDOKUM)
+   || _netto:=EDOKUM.NETTO;
+      _brutto:=EDOKUM.WART
+   ?};
+   exec('edok_pop','open_tab');
+   {? FAKS.WAL<>INFO.NAROD
+   || {? _wg_zak
+      || {? FAKS.NETW<>_netto
+         || _komroot(_a,_b);
+            __kom.add('Niezgodność wartości netto w walucie dokumentu %1 '
+                      'z wartością na dokumencie w obiegu %2.'@[$FAKS.NETW,$_netto],4);
+            _res:=0
+:: jp 20220207 zmiana warunku sprawdzającego wartości - dla WNT nie kontrolujemy wartości brutto
+         |? FAKS.BRTW<>_brutto & FAKS.T().UE<>'T'
+         || _komroot(_a,_b);
+            __kom.add('Niezgodność wartości brutto w walucie dokumentu %1 '
+                      'z wartością na dokumencie w obiegu %2.'@[$FAKS.BRTW,$_brutto],4);
+            _res:=0
+         ?}
+      |? ~_wg_brt
+      || {? FAKS.NETW<>_netto
+         || _komroot(_a,_b);
+            __kom.add('Niezgodność wartości netto w walucie dokumentu %1 '
+                      'z wartością na dokumencie w obiegu %2.'@[$FAKS.NETW,$_netto],4);
+            _res:=0
+         ?}
+      || {? FAKS.BRTW<>_brutto
+         || _komroot(_a,_b);
+            __kom.add('Niezgodność wartości brutto w walucie dokumentu %1 '
+                      'z wartością na dokumencie w obiegu %2.'@[$FAKS.BRTW,$_brutto],4);
+            _res:=0
+         ?}
+      ?}
+   || {? _wg_zak
+      || {? FAKS.NETTO<>_netto
+         || _komroot(_a,_b);
+            __kom.add('Niezgodność wartości netto dokumentu %1 '
+                      'z wartością na dokumencie w obiegu %2.'@[$FAKS.NETTO,$_netto],4);
+            _res:=0
+         |? FAKS.BRUTTO<>_brutto
+         || _komroot(_a,_b);
+            __kom.add('Niezgodność wartości brutto dokumentu %1 '
+                      'z wartością na dokumencie w obiegu %2.'@[$FAKS.BRUTTO,$_brutto],4);
+            _res:=0
+         ?}
+      |? ~_wg_brt
+      || {? FAKS.NETTO<>_netto
+         || _komroot(_a,_b);
+            __kom.add('Niezgodność wartości netto dokumentu %1 '
+                      'z wartością na dokumencie w obiegu %2.'@[$FAKS.NETTO,$_netto],4);
+            _res:=0
+         ?}
+      || {? FAKS.BRUTTO<>_brutto
+         || _komroot(_a,_b);
+            __kom.add('Niezgodność wartości brutto dokumentu %1 '
+                      'z wartością na dokumencie w obiegu %2.'@[$FAKS.BRUTTO,$_brutto],4);
+            _res:=0
+         ?}
+      ?}
+   ?}
+?};
+_res
+
+

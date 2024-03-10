@@ -1,0 +1,352 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lsp_int_dain.fml
+:: Utworzony: 12.01.2016
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Utworzenie deklaracji INTRASTAT wywóz
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ
+::# parses=exec('parses','!lsp_int_dain')
+::# kind=WE,   symbol=RODZAJ,    type=STRING,   name=Rodzaj deklaracji,    required=N, fml_val="exec('rodzaj','intrastat')"
+::# kind=WE,   symbol=ROK,       type=NUMBER,   name=Rok,                  required=N, fml_val="exec('rok','intrastat')"
+::# kind=WE,   symbol=MIESIAC,   type=NUMBER,   name=Miesiąc,              required=N, fml_val="exec('miesiac','intrastat')"
+::# kind=WE,   symbol=ODDZ,      type=STRING,   name=Oddział,              required=N, fml_val="exec('oddz','intrastat')"
+::# kind=WY,   symbol=IST,       type=_IST,     name=Deklaracja INTRASTAT, required=N
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+exec('init_fak','lsp');
+_area:='LSP_INT';
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+
+:: Uruchomiona automatycznie
+_auto:=_akcja<>'Akceptuj' & _mp.isAutoRun();
+
+{? _mp.pathTodo()
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('IST',_out)=type_of(null()) & _out.IST
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego INT.')
+   ?}
+?};
+
+:: Wyzwalacz, który po dodaniu nagłówka deklaracji:
+:: - add: dodaje rekord kluczowy nagłówka deklaracji
+::   del: usuwa rekord kluczowy nagłówka deklaracji
+:: - add: zapisuje parametr wyjściowy IST = wskazanie na nagłówek deklaracji
+::   del: zapisuje parametr wyjściowy IST = null
+_mp.trigRef('IST',,1,,exec('kind_out','#b_port'),'IST');
+
+{? _akcja='Generuj'
+   | _mp.pathProc()
+   | _akcja='START_TODO'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+||  _kom_off:=0;
+    _rodzaj:=
+      {? var_press('RODZAJ',_in)=type_of('') & exec('find_sl','intrastat','061',_in.RODZAJ)
+::    Jeśli podano pobierany z parametru wejściowego RODZAJ
+      || _in.RODZAJ
+::    Jeśli nie podano parametru wejściowego RODZAJ
+      || {? _auto
+::       Przetwarzanie automatyczne wtedy domyślnie zgłoszenie
+         || 'D'
+::       Przetwarzanie nieautomatyczne wtedy pytanie
+         || _kom_off:=1;
+            _choice:=FUN.choice('Wybierz rodzaj deklaracji Intrastat'@,,'Zgłoszenie'@,'Wymiana'@,'Korekta'@);
+            {? _choice=1 || 'D' |? _choice=2 || 'K' |? _choice=3 || 'P' || '' ?}
+         ?}
+      ?};
+
+   _continue:=
+      {? _rodzaj='D'
+::    dla nowej zawsze można kontynuować
+      || {? _mp.pathArea(_area)=0 || IST.prefix() ?};
+         1
+      |? _mp.pathProc() | _akcja='START_TODO'
+::    odnalezienie ostatniej deklaracji w danym okresie, która będzie wymieniana lub korygowana
+::    jeśli było kilka cząstkowych to ustawimy się zawsze na ostatniej być może powinien być wybór
+:: DRO_TODO_AWI_PROP____: Czy robić wybór która deklaracja cząstkowa ma być korygowana?
+:: DRO_TODO_AWI_PROP____: Może powinna to być czynność loop, która przeiteruje po wszystkich cząstkowych w danym okresie
+:: DRO_TODO_AWI_PROP____: i wygeneruje wymiany i korekty.
+      || _rok:={? var_press('ROK',_in)=type_of(0) & _in.ROK || _in.ROK || ST.AR ?};
+         _miesiac:={? var_press('MIESIAC',_in)=type_of(0) & _in.MIESIAC || _in.MIESIAC || ST.AM ?};
+         IST.index('NR_VER');
+         IST.prefix('W',_rok,_miesiac);
+         {? IST.last()
+         || {? _mp.pathArea(_area)=0 || IST.prefix() ?};
+            1
+         || _txt:=
+               {? _rodzaj='K'
+               || 'W okresie %1 nie znaleziono deklaracji do zmiany.'@[form(_miesiac,,,'99')+'/'+form(_rok,,,'99')]
+               || 'W okresie %1 nie znaleziono deklaracji do korekty.'@[form(_miesiac,,,'99')+'/'+form(_rok,,,'99')]
+               ?};
+            FUN.info(_txt);
+            0
+         ?}
+      |? _mp.pathArea(_area) & (_rodzaj='K' | _rodzaj='P') & {? IST.f_active() || ~IST.f_get() || ~IST.get() ?}
+::    obszar deklaracja zmiana lub korekta i brak deklaracji
+      || _txt:=
+            {? _rodzaj='K'
+            || 'Nie wskazano deklaracji do zmiany.'@
+            || 'Nie wskazano deklaracji do korekty.'@
+            ?};
+         FUN.info(_txt);
+         0
+      |? IST.AKC='N' & (_rodzaj='K' | _rodzaj='P')
+      || _ist_info:=IST.TYP+' '+$IST.ROK+' '+$IST.MIESIAC+' '+$IST.NUMER+' '+$IST.WERSJA;
+         FUN.info('Brak akceptacji deklaracji: %1.\nFunkcja niedostępna.'@[_ist_info]);
+         0
+::    pozostałe przypadki
+      || 1
+      ?};
+
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   _cntx:=obj_new('auto','isttyp');
+   _cntx.auto:=_auto+_kom_off;
+   _cntx.isttyp:='W';
+   params_set('out',_out,'mp',_mp,'akcja',_akcja,'cntx',_cntx);
+   {? _rodzaj='D' || exec('zgloszenie','intrastat')
+   |? _rodzaj='K' & _continue || exec('zmiana','intrastat')
+   |? _rodzaj='P' & _continue || exec('korekta','intrastat')
+   ?};
+
+:: Podczytanie parametrów wyjściowych
+   _outa:=_mp.load(exec('kind_out','#b_port'));
+   {? var_pres('IST',_outa)<>type_of(~~) & _outa.IST
+:: Dodano deklarację
+   ||
+::    Ustawienie się na dodanej deklaracji w widoku obszaru
+      {? _mp.pathArea(_area) || IST.seek(_outa.IST) ?};
+      {? _auto || {? exec('zakoncz','intrastat',_auto) || _mp.done() ?} ?}
+:: Nie dodano deklaracji
+   ||
+      _stat:=exec('getStatus','#bi_prel',_mp.bi_prel);
+      {? _stat<>exec('FL_ERROR','#bi_stat')
+      ||
+::       Wycofanie czynności jeśli nie zgłoszono błędu
+         _mp.cancel()
+      ?}
+   ?}
+
+|? _akcja='Popraw'
+   | _mp.pathTodo()
+|| {? var_pres('IST',_out)=type_of(null())
+:: Uruchomione w procesie
+   || IST.cntx_psh();
+      IST.prefix();
+      {? IST.seek(_out.IST)
+      ||
+         params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('popraw','intrastat',_mp.pathArea(_area));
+
+         _mp.descTodo()
+      ?};
+      IST.cntx_pop()
+   |? _mp.pathTodo()
+:: Uruchomione zadanie z listy todo i brak _out.FAKS wtedy zadanie wycofujemy
+   || _mp.cancel()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      exec('popraw','intrastat',_mp.pathArea(_area))
+
+   ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('IST',_out)=type_of(null())
+:: Uruchomione w procesie
+   || _ist:=null();
+      IST.cntx_psh();
+      {? _mp.pathArea(_area)=0 || IST.prefix() ?};
+      {? IST.seek(_out.IST)
+      ||
+         exec('usun','intrastat');
+
+         {? ~IST.seek(_out.IST)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _ist:=IST.ref()
+      ?};
+      IST.cntx_pop();
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+      {? _mp.pathArea(_area) || {? _ist || IST.seek(_ist) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('usun','intrastat');
+
+      _mp.done()
+   ?}
+
+|? _akcja='Zakończ_wer' & _mp.pathArea(_area)
+|| {? exec('zakoncz','intrastat') || _mp.done() ?}
+
+|| _mp.error('Nieobsługiwana ścieżka.')
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? var_pres('IST',_out)=type_of(null()) & _out.IST
+|| 'Zakończ rejestrację deklaracji Intrastat wywóz: %1'@@[exec('record','#to_string',_out.IST)]
+|| 'Zarejestruj deklarację Intrastat wywóz'@@
+?}
+
+
+\generuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: awi [2008]
+:: OPIS: Deklaracja INTRASTAT - Generuj
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LSP_INT_DAIN';
+_params.AKCJA:='Generuj';
+_params.PROC_START:='T';
+
+exec('mp_run','#b__box',_params)
+
+
+\generuj0
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: awi [2008]
+:: OPIS: Deklaracja INTRASTAT - Generuj pusta dziedzina
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LSP_INT_DAIN';
+_params.AKCJA:='Generuj';
+_params.PROC_START:='T';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZAJ','D');
+
+exec('mp_run','#b__box',_params)
+
+
+\rodzaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła parametru - RODZAJ
+::   WE:
+::   WY: rodzaj deklaracji
+::----------------------------------------------------------------------------------------------------------------------
+exec('slownik','intrastat','061','D')
+
+
+\rok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła parametru - ROK
+::   WE:
+::   WY: rok lub ~~ jeśl nie wybrano roku
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=~~;
+OKR.cntx_psh();
+OKR.index('MC');
+OKR.prefix(REF.FIRMA,1);
+OKR.last();
+_wer:=OKR.mk_sel('Wybór roku'@,,0,,,,OKR.size());
+OKR.win_fld(_wer,,'ROK',,,20,,,'Rok'@);
+OKR.win_act(_wer,,'Formuła','&Wybierz'@@,,,"sel_exit()",,1,,,,'W');
+OKR.win_sel(_wer);
+{? OKR.select(,1,OKR.size()) || _wyn:=OKR.ROK ?};
+OKR.cntx_pop();
+_wyn
+
+
+\miesiac
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła parametru - OKRES
+::   WE:
+::   WY: miesiąc lub ~~ jeśl nie wybrano roku
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=~~;
+_Tab:=tab_tmp(1
+   ,'MC'    ,'INTEGER'     ,'Nr miesiąca'
+   ,'NAZ'   ,'STRING[20]'  ,'Nazwa miesiąca');
+{! _ii:=1..12 |! _Tab.MC:=_ii; _Tab.NAZ:=(date(,_ii)$8)-5; _Tab.add() !};
+_Tab.find_key(date()~2);
+_wer:=_Tab.mk_sel('Wybór miesiąca'@,,0,,,,12);
+_Tab.win_fld(_wer,,'NAZ',,,,,,'Miesiąc'@);
+_Tab.win_act(_wer,,'Formuła','&Wybierz'@@,,,"sel_exit()",,1,,,,'W');
+_Tab.win_sel(_wer);
+{? _Tab.select(,1,12) || _wyn:=_Tab.MC ?};
+_wyn
+
+
+\oddz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła parametru - ODDZ
+::   WE:
+::   WY: ODDZ.KOD
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=~~;
+ODDZ.cntx_psh();
+ODDZ.index('KOD');
+ODDZ.prefix();
+ODDZ.win_sel('SEL');
+{? ODDZ.select() || _wyn:=ODDZ.KOD ?};
+ODDZ.cntx_pop();
+_wyn
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+_result:=1;
+
+{? var_pres('RODZAJ',_in)=type_of('') & _in.RODZAJ<>''
+   & var_pres('MIESIAC',_in)=type_of(0) & _in.MIESIAC
+   & var_pres('ROK',_in)=type_of(0) & _in.ROK
+   & var_pres('ODDZ',_in)=type_of('') & _in.ODDZ<>''
+|| __PARSES.setVal('OddzialLogProd',_in.ODDZ);
+   _args:=__PARSES.args('OkresRok');
+   _args.OBSZAR:='LSP';
+   _args.AR:=_in.AR;
+   _args.AM:=_in.AM;
+   __PARSES.setVal('OkresRok',_args);
+   _result:=1
+?};
+
+_result
+
+:Sign Version 2.0 jowisz:1048 2020/10/16 15:19:14 a9931182fa8da96fc9177d85851ccdec721ed16476e898ea822dc403c4eb942f49f3d39f21c0c8017475137bfee760b1017ef1fc11342f07dc526a51dfd13a7609eb3ddd268a200bab7a50a6312e26e79478b789aaf5e1e2a508cdc6dfcd12790eb9498e51f3fa26f0ff98985ec3e524890c480eb428256868191ae7415fa6f7

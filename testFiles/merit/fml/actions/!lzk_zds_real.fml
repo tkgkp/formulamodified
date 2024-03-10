@@ -1,0 +1,669 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lzk_zds_real.fml
+:: Utworzony: 02.10.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Realizacja zamówień dostaw
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LZK,LMG
+::# properties=LOOP
+::# parses=exec('parses','!lzk_zds_real')
+::# kind=WE,   symbol=ZD_NAG,       type=_ZD_NAG,     name=Zamówienie dostaw,          required=T,    keyref=T
+::# kind=WE,   symbol=ZD_REA,       type=STRING,      name=Realizacja zamówienia,      required=N
+::# kind=WE,   symbol=ZDP_NAG,      type=_ZDP_NAG,    name=Potwierdzenie zamówień,     required=N,    keyref=T
+::# kind=WE,   symbol=TR_NZL,       type=_TR_NZL,     name=Dyspozycja w magazynie,     required=N,    keyref=T
+::# kind=WEW,  symbol=ZD_RN,        type=_ZD_RN,      name=Realizacja zamówienia,      required=N
+::# kind=WY,   symbol=ZD_REA,       type=STRING,      name=Realizacja zamówienia,      required=N
+::# kind=WY,   symbol=ND,           type=_ND,         name=Dokument przychodowy,       required=N
+::# condition=Rejestracja dokumentu przyjęcia,  act_uid=LMG_MAG_DAPZ,   auto=T,  formula=_a.ND<>~~ & _a.ND<>null()
+_mp:=params_get().mp;
+_in:=params_get().in;
+_out:=params_get().out;
+_context:=params_get().context;
+
+exec('init_zds','lzk');
+
+:: WSTĘPNE WALIDACJE
+_clean_result:=params_exec('clean','!lzk_zds_real',_mp,_in);
+_can_continue:=_clean_result.RESULT;
+{? _can_continue=0
+|| return()
+?};
+
+_cntxzam:=0;
+_akcja:=_mp.akcja();
+{? _akcja='RealizujZ' || _cntxzam:=1; _akcja:='Realizuj' ?};
+_auto:=_akcja<>'Realizuj' & _mp.isAutoRun();
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy nagłówka dokumentu
+::   del: usuwa rekord kluczowy nagłówka dokumentu
+:: - add: zapisuje parametr wyjściowy ZD_NAG = wskazanie na nagłówek zamówienia dostawy
+::   del: zapisuje parametr wyjściowy ZD_NAG = null
+_mp.trigRef('ZD_RN',,1,,exec('kind_internal','#b_port'),'ZD_RN');
+
+_zd_nag:={? type_of(_context)<>type_of(~~) & var_press('ZD_NAG',_context)=type_of(null()) & _context.ZD_NAG
+         || _context.ZD_NAG
+         |? var_pres('ZD_NAG',_in)=type_of(null()) & _in.ZD_NAG
+         || _in.ZD_NAG
+         || null()
+         ?};
+_tr_nzl:={? var_pres('TR_NZL',_in)=type_of(null()) & _in.TR_NZL
+         || _in.TR_NZL
+         |? POMOC.TR_NZL<>null()
+         || POMOC.TR_NZL
+         || null()
+         ?};
+
+{? ~(var_pres('ZD_NAG',_in)=type_of(null()) & _in.ZD_NAG)
+||
+   _mp.error('Brak wymaganego parametru ZD_NAG.')
+
+|? ~(exec('FindAndGet','#table',ZD_NAG,_in.ZD_NAG,,"name()",'')*'__')
+||
+   _mp.error('Zamówienie %1 przesłane do archiwum. '
+             'Realizacja niemożliwa.'[exec('FindAndGet','#table',ZD_NAG,_in.ZD_NAG,,"SYM",'')])
+
+|? exec('FindAndGet','#table',ZD_NAG,_in.ZD_NAG,,"STAT_REJ='A'",0)
+||
+   FUN.info('Anulowano zamówienie %1.\nRealizacja niemożliwa.'@[exec('record','#to_string',_in.ZD_NAG)]);
+   _mp.error('Anulowano zamówienie %1. Realizacja niemożliwa.'[exec('record','#to_string',_in.ZD_NAG)])
+
+|? var_pres('ZDP_NAG',_in)=type_of(null()) & _in.ZDP_NAG
+ & ~(exec('FindAndGet','#table',ZDP_NAG,_in.ZDP_NAG,,"name()",'')*'__')
+||
+   _mp.error('Potwierdzenie zamówień dostaw %1 przesłane do archiwum. '
+             'Realizacja niemożliwa.'[exec('FindAndGet','#table',ZDP_NAG,_in.ZDP_NAG,,"SYM",'')])
+
+||
+   _continue:=0;
+   _zd_rea:='';
+   _dok_rea:='';
+   _zdp_nag:={? ~_cntxzam & var_pres('ZDP_NAG',_in)=type_of(null()) & _in.ZDP_NAG || _in.ZDP_NAG || null() ?};
+
+   {? _mp.loop()=0
+:: pierwsze wywołanie
+   || ZD_NAG.cntx_psh();
+      ZD_NAG.prefix();
+      {? ~ZD_NAG.seek(_in.ZD_NAG)
+      || _mp.error('Nie znaleziono zamówienia.')
+      ||
+         {? _akcja='Realizuj'
+            | _auto
+            | _mp.pathTodo()
+         ||
+            {? type_of(_context)<>type_of(~~)
+             & var_press('ZAM_REA',_context)<>type_of(~~) & _context.ZAM_REA<>''
+            || _zd_rea:=_context.ZAM_REA;
+               _mp.save(exec('kind_in','#b_port'),'ZD_REA',_context.ZAM_REA);
+               _continue:=4
+            |? ZD_NAG.STAN='Z'
+            ||
+               FUN.info('Zamówienie jest zrealizowane %1.'@[exec('record','#to_string',_in.ZD_NAG)]);
+               _continue:=2
+            || ZD_Z.CZY_ZD:='T';
+               {? _mp.pathTodo() & (ND.name()+2)='__' & ST.AR>0
+               || exec('mag_open','open_tab',1+(ND.name()+3),form(ST.AR-2000,-2,0,'99'))
+               ?};
+               exec('zdre_dol','zamdst_rea',_auto,_zdp_nag,_tr_nzl);
+
+               _internal:=_mp.load(exec('kind_internal','#b_port'));
+               _continue:={? var_pres('ZD_RN',_internal)=type_of(null()) & _internal.ZD_RN || 1 || -1 ?};
+               {? _continue=1
+               || _zd_rea:=exec('FindAndGet','#table',ZD_RN,_internal.ZD_RN,,"GRP_KEY",'');
+                  {? _tr_nzl<>null()
+                  || _dok_rea:=exec('FindAndGet','#table',ZD_RN,_internal.ZD_RN,,"ND",'');
+                     {? _dok_rea<>'' || _dok_rea:=exec('FindAndGet','#table',ND,_dok_rea,,"uidref()",_dok_rea) ?}
+                  ?}
+               ?}
+            ?}
+         ||
+            _mp.error('Nieobsługiwana ścieżka.')
+         ?}
+      ?};
+      ZD_NAG.cntx_pop()
+:: wywołanie w pętli
+   || _continue:=var_pres('ZD_REA',_in)=type_of('') & _in.ZD_REA<>'';
+      {? _continue || _zd_rea:=_in.ZD_REA ?}
+   ?};
+
+   {? _continue=4
+   ||
+:: Potwierdzenia dostaw
+      _msk:=_zd_rea+3;
+      _zd_rea:=_zd_rea-3;
+      _grp_key:=_zd_rea-1;
+      _oprf:={? var_press('ORD',_context)<>type_of(~~) & _context.ORD>0 || _context.ORD || 2 ?};
+      _nprf:=_oprf-1;
+      {? _grp_key<>''
+      || ND.cntx_psh();
+         DK.cntx_psh();
+         ND.use('nagdo'+_msk);
+         DK.use('dokma'+_msk);
+         DK.index('GRP_SEL');
+         DK.prefix($_oprf,_zd_rea,);
+         {? DK.first()
+         || _oki:=0;
+            {!
+            |? {? DK.ZAM_RP<>'' & (5+DK.ZAM_RP)='zdhip'
+                & exec('FindAndGet','#table','ZD_RP',DK.ZAM_RP,,"ZD_RN().ZD_NAG",null())=_zd_nag
+               || _nd:=DK.N;
+                  DK.cntx_psh();
+                  DK.prefix();
+                  DK.GRP:=$_nprf;
+                  do();
+                  DK.put();
+                  _mp.save(exec('kind_out','#b_port'),'ND',DK.N);
+                  _mp.save(exec('kind_out','#b_port'),'ZD_REA',_zd_rea);
+                  _oki:=1;
+::                Wykluczenie pozostałych realizacji dotyczących tego samego dokumentu przychodowego
+::                ze zgodnym zamówieniem dostaw
+                  DK.index('DOKMAG');
+                  DK.prefix(_nd);
+                  {? DK.first()
+                  || {!
+                     |? _refdk:=DK.ref(); _next:=DK.next();
+                        DK.cntx_psh();
+                        {? (DK.prefix(); DK.seek(_refdk)) & DK.ZAM_RP<>'' & (5+DK.ZAM_RP)='zdhip'
+                         & exec('FindAndGet','#table','ZD_RP',DK.ZAM_RP,,"ZD_RN().ZD_NAG",null())=_zd_nag & DK.GRP<>'0'
+                        || DK.GRP:=$_nprf;
+                           DK.put(1)
+                        ?};
+                        DK.cntx_pop();
+                        _next
+                     !}
+                  ?};
+                  end();
+                  DK.cntx_pop();
+                  {? DK.first()
+::                kontynuacja pętli
+                  || _mp.loop_continue()
+                  ?}
+               ?};
+               ~_oki & DK.next()
+            !}
+         ?};
+         ND.cntx_pop();
+         DK.cntx_pop()
+      ?};
+      _mp.done()
+   |? _continue=2
+:: Zamówienie jest już zrealizowane
+   || _mp.done()
+   |? _continue=-1
+:: Wycofano się z wystawiania realizacji
+   || 1
+   |? _continue=1 & _zd_rea<>''
+:: Zapisanie parametru wyjściowego ND, wykluczenie kolejnej realizacji z pętli, zakończenie czynności
+   || ZD_RN.cntx_psh();
+      ZD_RN.use('zdhin'+(ref_name(_in.ZD_NAG)+3));
+      ZD_RN.prefix();
+      _grp_key:=_zd_rea-1;
+      _grp_key_on:=_grp_key+'1';
+      _grp_key_off:=_grp_key+'0';
+      {? _grp_key<>''
+      || ZD_RN.index('GRP_KEY');
+         ZD_RN.prefix(_grp_key_on);
+         {? ZD_RN.first()
+         || ZD_RN.cntx_psh();
+            ZD_RN.prefix();
+            ZD_RN.GRP_KEY:=_grp_key_off;
+            do();
+            ZD_RN.put();
+            _mp.save(exec('kind_out','#b_port'),'ND',exec('FindAndGet','#table',ND,ZD_RN.ND,,,null()));
+            _mp.save(exec('kind_out','#b_port'),'ZD_REA',_zd_rea);
+            {? _dok_rea<>'' & _tr_nzl<>null()
+            || POMOC.DOK_REA:=_dok_rea;
+               {? ~exec('FindAndGet','#table',TR_NZL,_tr_nzl,,"MGDSP:='D'; DOK_REA:=POMOC.DOK_REA; put(1)",0)
+               || undo()
+               ?}
+            ?};
+            end();
+            ZD_RN.cntx_pop();
+            {? ZD_RN.first()
+::          kontynuacja pętli
+            || _mp.loop_continue()
+            ?}
+         ?}
+      ?};
+      ZD_RN.cntx_pop();
+      _mp.done()
+   || _mp.error('Brak oczekiwanego parametru ZD_REA.')
+   ?}
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+{? var_pres('ZDP_NAG',_in)<>type_of(~~) & _in.ZDP_NAG
+|| 'Zrealizuj potwierdzenie zamówień: %1'@@[exec('record','#to_string',_in.ZDP_NAG)]
+|? var_pres('ZD_NAG',_in)<>type_of(~~) & _in.ZD_NAG
+|| 'Zrealizuj zamówienie: %1'@@[exec('record','#to_string',_in.ZD_NAG)]
+|| ''
+?}
+
+
+\zdnag_realizuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Realizacja zamówienia dostaw
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('realWGdysp','transport_wspolne',ZD_NAG.uidref())>0
+|| _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LZK_ZDS_REAL';
+   _params.UIDREF:=ZD_NAG.uidref();
+   _params.AKCJA:='RealizujZ';
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZD_NAG',ZD_NAG.ref());
+
+   exec('mp_run','#b__box',_params)
+?};
+~~
+
+
+\zdre_usu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2008]
+:: OPIS: usuwanie realizacji zamowienia
+::  OLD: \zdre_usu/zd.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ZD_RN.SPZ='- USŁUGI -'
+|| exec('usun_rea','zamdst_rea',$ZD_RN.ref(),3)
+|? exec('spr_upr2','users','MG',ZD_RN.MG,'Brak uprawnień do magazynu:\n'+ZD_RN.MG().SYM+' - '+ZD_RN.MG().NAZ+'.')
+||
+   {? ZD_RN.FAKS<>''
+   ||
+::    usuniecie dok.zakupu
+      _ref:=BB.sqlint(ZD_RN.FAKS);
+      _name:=8+ZD_RN.FAKS;
+      FAKS.cntx_psh();
+      _mask:=0;
+      {? FAKS.name()<>_name || _mask:=1; exec('open','open_tab',5-_name-2,6-_name) ?};
+
+      FAKS.use(_name);
+      FAKS.prefix();
+      {? FAKS.seek(_ref,_name)
+      || {? exec('usun_fak','faktury_nag',1,ZD_RN.MG)
+         || win_disp()
+         ?}
+      ?};
+      {? _mask || exec('open','open_tab',ST.ODDZ,2-$(ST.AR)) ?};
+      FAKS.cntx_pop()
+   |? ZD_RN.ZD_NAG().STAN='M'
+   || FUN.info('Zamówienie jest zamknięte.\n'@+
+               'Usunięcie realizacji niemożliwe.'@)
+   ||
+      _czy_akc:=exec('spr_akcw','magdok_wspolne',BB.sqlint(ZD_RN.ND),8+ZD_RN.ND);
+      _opc:=2;
+      {? ZD_RN.ND<>''
+      ||
+::       sprawdzenie czy nie ma kilku odwolan
+         _zdrnnd:=ZD_RN.ND;
+         ZD_RN.cntx_psh();
+         ZD_RN.index('ND');
+         ZD_RN.prefix(_zdrnnd);
+         {? ZD_RN.size()>1
+         || FUN.info('Dokument magazynowy utworzony na podstawie realizacji kilku zamówień.\n'
+                     'W przypadku jego usunięcia zostaną usunięte wszystkie realizacje z nim związane.'@)
+         ?};
+         ZD_RN.cntx_pop();
+         _opc:={? _czy_akc
+               || {? FUN.ask('Czy usunąć realizację zamówienia\n(bez usuwania dokumentów magazynowych)?'@)
+                  || _opc:=2
+                  || _opc:=0
+                  ?}
+               || FUN.choice('Wybierz zakres usuwanych danych'@,,'Dokument magazyn. i realizacja'@,'Tylko realizacja'@)
+               ?}
+      ?};
+      {? _opc
+      ||
+         {? _opc=1 & exec('czy_z_ok','okresy',1,0,ND.D~1,ND.D~2,ND.MAG)=0
+         || FUN.info('Okres jest zamknięty.\n'@+
+                     'Usunięcie realizacji niemożliwe.'@)
+         || exec('usun_rea','zamdst_rea',ZD_RN.ND,_opc)
+         ?}
+      ?}
+   ?}
+?};
+''
+
+
+\zdre_poz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2008]
+:: OPIS: wyswietlenie pozycji realizacji zamowienia
+::  OLD: \zdre_poz/zd.fml
+::----------------------------------------------------------------------------------------------------------------------
+_lock:=0;
+_sym:='';
+ND.cntx_psh();
+{? ZD_RN.ND<>''
+||
+   ND.use(8+ZD_RN.ND);
+   ND.prefix();
+   {? ND.r_lock(1,1,1,BB.sqlint(ZD_RN.ND),8+ZD_RN.ND)
+   ||
+      {? ND.seek(ZD_RN.ND,8+ZD_RN.ND)
+      ||
+         {? ND.r_lock(1,1,1)
+         ||
+            ZD_RP.index('POZ');
+            ZD_RP.prefix(ZD_RN.ref());
+            ZD_RP.win_sel('WER');
+            ZD_RP.select();
+            ND.r_unlock()
+         ||
+            _lock:=1;
+            _sym:=ND.SYM+' '
+         ?}
+      ||
+         FUN.info('Niemożliwy dostęp do nagłówka dokumentu.'@)
+      ?}
+   ||
+::    rekord zablokowany lub rekord nie zostal odnaleziony (zakladam ze zablokowany)
+      _lock:=1
+   ?}
+|? ZD_RN.SPZ='- USŁUGI -'
+|| ZD_RP.index('POZ');
+   ZD_RP.prefix(ZD_RN.ref());
+   ZD_RP.win_sel('WER');
+   ZD_RP.select()
+?};
+{? _lock=1
+||
+   {? FUN.ask('Dokument %1 obsługuje inny użytkownik.\nCzy chcesz zobaczyć kto?'@[_sym])
+   ||
+      ND.r_lock(1,,1);
+      ND.r_unlock()
+   ?}
+?};
+ND.cntx_pop();
+''
+
+
+\zdre_dpz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2008]
+:: OPIS: wyswietla informacje o dokumencie magazynowym
+::  OLD: \zdre_dpz/zd.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ZD_RN.SPZ='- USŁUGI -'
+|| FUN.info('Realizacja dotyczyła usług.\nNie wystawiono dokumentu magazynowego.'@);
+   return(0)
+?};
+ATR.MJS:='DK';
+BEER.MENU_PTH+='M';
+ZD_NAG.cntx_psh();
+ZD_POZ.cntx_psh();
+ZD_RN.cntx_psh();
+ZD_RP.cntx_psh();
+
+{? ZD_RN.ZD_NAG().STAN='M' | {? ZD_RN.ZDP_NAG<>'' || (8+ZD_RN.ZDP_NAG)+2 || (8+$ZD_RN.ZD_NAG)+2 ?}<>'__'
+|| _akc:=1
+|| _akc:=0
+?};
+
+{? exec('spr_upr2','users','MG',ZD_RN.MG,'-')
+|| exec('ustawprz','magdok_poz');
+   {? ZD_RN.ND<>''
+   || exec('disp_dk','magdok_wspolne',_akc,ZD_RN.ND,'T',,{? ZD_RN.FAKS<>'' || 0 || 1 ?})
+   || exec('usun_rea','zamdst_rea',ZD_RN.ND,2,,,1)
+   ?};
+:: usuwa filtr programowy dla jednostek dodatkowych
+   JM.f_clear;
+   JM.win_dict('WER')
+?};
+
+ZD_RP.cntx_pop();
+ZD_RN.cntx_pop();
+ZD_POZ.cntx_pop();
+ZD_NAG.cntx_pop();
+BEER.MENU_PTH-=1;
+ATR.MJS:='ZD_POZ';
+
+exec('zdrn_actions','zamdst_rea');
+''
+
+
+\zdre_rek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2008]
+:: OPIS: rekord dla realizacji
+::  OLD: \zdre_rek/zd.fml
+::----------------------------------------------------------------------------------------------------------------------
+POMOC.STRING:='';
+POMOC.DATAS:='';
+ZD_RN.ZD_NAG().SYM;
+exec('zd_pst','zamdst_nag');
+{? ZD_RN.size()>0
+||
+   exec('pozdnagf','zamdst_poz');
+   {? ZD_RN.ZDP_NAG<>''
+   ||
+      ZDP_NAG.cntx_psh();
+      ZDP_NAG.use(8+ZD_RN.ZDP_NAG);
+      ZDP_NAG.clear();
+      {? ZDP_NAG.seek(ZD_RN.ZDP_NAG)
+      ||
+         POMOC.STRING:=ZDP_NAG.SYM;
+         POMOC.DATAS:=$ZDP_NAG.DR
+      ?};
+      ZDP_NAG.cntx_pop()
+   ?};
+
+   BEER.KH:=ZD_RN.ZD_NAG().KH;
+   {? ZD_RN.SPZ=''
+   || BEER.IWZ:='';
+      BEER.IFK:=''
+   || _wyn:=0;
+      ND.cntx_psh();
+      DK.cntx_psh();
+      _msk:=form(8+ZD_RN.ND);
+      {? _msk<>'' || ND.use(_msk) ?};
+      ND.clear();
+      _wyn:={? ND.seek(ZD_RN.ND)
+            || _fak:=ND.FZAK; ND.Z<>'T'
+            || _fak:=''; 0
+            ?};
+      ND.cntx_pop();
+      DK.cntx_pop();
+      BEER.IPZ:={? _wyn || 'N' || 'T' ?};
+      FAKS.cntx_psh;
+      _msk:=form(8+ZD_RN.FAKS);
+      {? _msk<>'' || FAKS.use(_msk) ?};
+      FAKS.clear;
+      _fak:={? ZD_RN.FAKS<>''
+            || {? FAKS.seek(ZD_RN.FAKS,8+ZD_RN.FAKS) & FAKS.AKC='T'
+               || 'T'
+               |? FAKS.seek(ZD_RN.FAKS,8+ZD_RN.FAKS)
+               || 'N'
+               || ''
+               ?}
+            || ''
+            ?};
+      FAKS.cntx_pop;
+      BEER.IWZ:=BEER.IPZ;
+      BEER.IFK:=_fak
+   ?};
+   exec('zdrn_actions','zamdst_rea')
+?};
+''
+
+
+\zdr_rek
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2006]
+:: OPIS: rekord przed dla pozycji realizacji zamowienia
+::  OLD: \zdr_rek/zd.fml
+::----------------------------------------------------------------------------------------------------------------------
+POM.SUM:=ZD_RP.ZD_POZ().IL_POZ-ZD_RP.IL_ZRE;
+{? POM.SUM<0 || POM.SUM:=0 ?};
+POM.MAT:=ZD_RP.ZD_POZ().M;
+POM.SUM=0
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.14]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+{? var_pres('ZD_NAG',_in)=type_of(null()) & _in.ZD_NAG
+|| __PARSES.setVal('OddzialLogProd',1+(ref_name(_in.ZD_NAG)+3))
+?};
+
+1
+
+
+\zdptw_realizuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [RR.zz]
+:: OPIS: Realizacja dla potwierdzenia
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('realWGdysp','transport_wspolne',ZDP_NAG.uidref())>0
+|| VAR_DEL.delete('__reaptzd');
+   __reaptzd:=tab_tmp(2,'ZD_NAG','STRING[16]','','ZAM_REA','STRING[35]','');
+   _zd_n:=exec('firstZD_NAG','!lzk_zds_real',ZDP_NAG.ref());
+
+   {? _zd_n<>null()
+   || _params:=exec('mp_run_a','#b__box');
+      _params.ACT_UID:='LZK_ZDS_REAL';
+      _params.UIDREF:=ZDP_NAG.uidref();
+      _params.AKCJA:='Realizuj';
+      _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+      exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZDP_NAG',ZDP_NAG.ref());
+      exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZD_NAG',_zd_n);
+
+      exec('mp_run','#b__box',_params);
+      obj_del(_params);
+
+      ZD_NAG.cntx_psh();
+      ND.cntx_psh();
+      __reaptzd.clear();
+      {? __reaptzd.first()
+      || {!
+         |? _zd_nag:=exec('FindAndGet','#table',ZD_NAG,__reaptzd.ZD_NAG,,,null());
+            _uidref:={? _zd_nag<>null() || exec('FindAndGet','#table',ZD_NAG,_zd_nag,,"uidref()",'') || '' ?};
+            {? _uidref<>'' & _zd_nag<>null() & exec('record_keyrefed','#b__box',_uidref,'LZK_ZDS_REAL')<>0
+            ||
+               _params:=exec('mp_run_a','#b__box');
+               _params.ACT_UID:='LZK_ZDS_REAL';
+               _params.UIDREF:=_uidref;
+               _params.AKCJA:='Realizuj';
+               _params.CONTEXT:=obj_new('ZAM_REA','ZD_NAG','ORD');
+               _params.CONTEXT.ZAM_REA:=__reaptzd.ZAM_REA;
+               _params.CONTEXT.ZD_NAG:=_zd_nag;
+               _params.CONTEXT.ORD:=2;
+               _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+               exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZD_NAG',_zd_nag);
+
+               exec('mp_run','#b__box',_params);
+               obj_del(_params)
+            ?};
+            __reaptzd.next()
+         !}
+      ?};
+
+      ZD_NAG.cntx_pop();
+      ND.cntx_pop()
+   || FUN.info('Pozycje potwierdzenia zostały zrealizowane lub zamówienia, które potwierdzono przeniesiono do archiwum.\n'
+               'Aktualnie brak możliwości realizacji potwierdzenia zamówień dostaw %1.'@[ZDP_NAG.SYM])
+   ?};
+   VAR_DEL.delete('__reaptzd')
+?};
+~~
+
+
+\firstZD_NAG
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [RR.zz]
+:: OPIS: Poszukuje zamówienia dostaw dla pierwszej niezrealizowanej pozycji potwierdzenia
+::   WE: _a - ref ZDP_NAG
+::   WY: ZD_NAG.ref() lub null()
+::----------------------------------------------------------------------------------------------------------------------
+_res:=null();
+_opm:=0;
+ZDP_NAG.cntx_psh();
+ZDP_POZ.cntx_psh();
+{? (ref_name(_a)+3)<>(ZDP_NAG.name()+3)
+|| _opm:=1;
+   exec('openzd_psh','open_tab');
+   exec('openzd','open_tab',(ref_name(_a)+3));
+   ST.ODDZ:=1+(ref_name(_a)+3)
+?};
+ZDP_NAG.prefix();
+{? (ref_name(_a)+2)='__' & ZDP_NAG.seek(_a)
+|| {? ZDP_NAG.STAT_REJ='T'
+   || ZDP_POZ.index('ZDP_NAG');
+      ZDP_POZ.prefix(ZDP_NAG.ref());
+      {? ZDP_POZ.first()
+      || _byl:=0;
+         {!
+         |? exec('obl_ptw','zamdst_ptw',ZDP_POZ.ZD_POZ,1);
+            {? __zdp_sum.IL_PTW-__zdp_sum.IL_REA>0
+            || _res:=exec('FindAndGet','#table',ZD_POZ,ZDP_POZ.ZD_POZ,,
+                          "{? (ref_name(ZD_NAG)+2)='__' || ZD_NAG || null() ?}",null());
+               _byl:=1
+            ?};
+            ~_byl & ZDP_POZ.next()
+         !}
+      ?}
+   ?}
+?};
+{? _opm || exec('openzd_pop','open_tab') ?};
+ZDP_NAG.cntx_pop();
+ZDP_POZ.cntx_pop();
+_res
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [21.14]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::   WE: [_a] - _mp - obiekt Menadżera procesów
+::       [_b] - tablica z parametrami wejściowymi
+::   WY: obj_new() - obiekt wynikowy
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _mp:=_a
+|| _mp:=params_get().mp
+?};
+{? var_pres('_b')>100
+|| _in:=_b
+|| _in:=params_get().in
+?};
+params_exec('zd_clean','zamdst_nag',_mp,_in)
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 c8a3f46f5e04a89d430e945dae89f9d505b2f59bd0cc6f345acf5b0bef5e32824e4a413dca692210a4d5bc522110418c5fc22f1d4f05741210becfa1c566928cc982f7133c5978132fbd3a2bf0ae46740a0d1270c3121fe135f7cb009d2326a5f0fb33a9f713d79706521e9e9cf6d2866bcf7ff6b551eb1f50384a43f48743b8

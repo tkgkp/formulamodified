@@ -1,0 +1,334 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: mwa_faks.fml
+:: Utworzony: 22.02.2019
+:: Autor: Markus
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi faktur przez MacroWebAPI
+::======================================================================================================================
+
+
+\serialize_faks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Formuła pomocnicza do serializacji rekordów z tabeli FAKS.
+::       Kontekst wywołania: ustawiona dziedzina tabeli FAKS
+::   WE: _a - FILE - obiekt plikowy przeznaczony do zapisu wynikowego JSONa
+::   WY: 0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_resp:=fopen(null,'Uw',,1,1);
+
+_data:="
+   FAKS.xml_records(params_get().resp,,'data','p',,'noheader=1,norecord=0,nodata=1,indentation=1'
+      ,'ODDZ',,'KH',,'REFERENCE',,'NR',,'SYM',,'DW',,'D',,'NETTO',,'VAT',,'BRUTTO',,'NRUNIKAT',,'HAN',
+   );
+   ''
+";
+_tab:=tab_tmp(,'STATUS','STRING[20]','');
+_tab.STATUS:='OK'; _tab.add();
+params_set('resp',_resp);
+_tab.xml_records(_resp,_a.METHOD+'Response',,'p',_a.OUTNSPC,'norecord=1'
+   ,'STATUS:status',
+   ,'',_data
+);
+
+_resp
+
+
+\read_faks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje wszystkie rekordy tabeli FAKS.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+:: #PARAM oddzial Oddział (jednoliterowy kod oddziału), [domyślnie - c (centrala)]
+_oddzial:=exec('get_option','mwapi',_par,'Oddzial').value;
+{? _oddzial='' || _oddzial:='c' ?};
+{? +_oddzial=1
+||
+   {? ~exec('FindInSet','#table','ODDZ','KOD',_oddzial,,"ODDZ.KOD",1,,'')=''
+   ||
+      _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2]. Nie znaleziono oddziału'@ ['<oddzial>',_oddzial]);
+      _result:=_wsenv.to_json();
+      _oddzial:=''
+   ?}
+|| _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2]. Długość parametru musi mieć 1 znak'@ ['<oddzial>',_oddzial])
+?};
+
+:: #PARAM rok Rok. <font color="FF0000">(wymagany)</font>
+_rok:=exec('get_option','mwapi',_par,'Rok').value;
+_rok:=#_rok;
+_rok_min:=2000; _rok_max:=2099;
+{? _rok=0
+|| _wsenv.add_error('Rok musi być podany.'@)
+|? _rok<_rok_min | _rok>_rok_max
+|| _wsenv.add_error('Wartość parametru \'%1\' musi być z przedziału %2 - %3.'@['Rok',$_rok_min,$_rok_max])
+|| _rok:=($_rok)+2
+?};
+
+:: #PARAM KH Symbol kontrahenta
+_kh_sym:=exec('get_option','mwapi',_par,'KH').value;
+{? _kh_sym='' || _kh:=null || _kh:=exec('FindInSet','#table','KH','SKR',_kh_sym,2,"KH.ref()",1,,null) ?};
+{? _kh=null
+   ||
+   _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2]. Nie znaleziono kontrahenta'@ ['<KH>',_kh])
+?};
+
+:: Sprawdza uprawnienia do odglądania dokumentów
+exec('authorized','mwa_faks');
+
+{? _wsenv.has_errors()
+|| _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+|| FAKS.cntx_psh();
+   FAKS.use('faktu'+_oddzial+_rok);
+   FAKS.index('S1');
+   FAKS.prefix(_kh);
+   {? FAKS.first()
+   ||
+      _result:=exec('serialize_faks','mwa_faks',_par)
+   ||
+      _wsenv.add_error('Nie znaleziono faktur dla kontrahenta %1'@ [_kh_sym]);
+      _resp:=_wsenv.to_json();
+      _result:=exec('serialize_res','mwapi',_par,_resp)
+   ?};
+   FAKS.cntx_pop()
+?};
+_result
+
+
+\read_faks_sym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje daną fakturę
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_sym:=exec('get_option','mwapi',_par,'Sym').value;
+_pdf:=exec('get_option','mwapi',_par,'Pdf').value;
+
+_pdf:={? _pdf='' || 0 || {? _pdf='1' || 2 || 0 ?} ?};
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+:: Sprawdza uprawnienia do odglądania dokumentów
+exec('authorized','mwa_faks');
+
+{? _wsenv.has_errors()
+|| _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+|| _result:=exec('read_faks_sym_row','mwa_faks',_par,_sym,_pdf)
+?};
+_result
+
+
+\read_faks_sym_row
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje dane zlecenie fakturowania.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::       _c [INT] - domyślnie 0 - serialize_faks, 1 - serialize_dokum, 2 - serialize_faks_pdf
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=_a;
+_sym:=_b;
+{? var_pres('_c')=type_of(0) || _ser:=_c || _ser:=0 ?};
+_can_continue:=1;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+FAKS.cntx_psh();
+_names:=FAKS.names();
+{? _names.first()
+|| {!
+   |? FAKS.use(_names.NAME);
+      FAKS.index('FAK_SYM1');
+      FAKS.prefix();
+      {? FAKS.find_key(_sym,)
+      || FAKS.prefix(_sym);
+         {? FAKS.first()
+         ||
+            {? _ser=0
+            || _result:=exec('serialize_faks','mwa_faks',_par)
+
+            |? _ser=1
+            || _found:=0;
+               DOKUM.cntx_psh();
+               DOKUM.index('DOKUM');
+               DOKUM.prefix(REF.FIRMA,$FAKS.ref());
+               {? DOKUM.last()
+               || {!
+                  |? {? DOKUM.CMS='T'
+                     || _found:=1;
+                        _result:=exec('serialize_dokum','mwa_faks',_par)
+                     ?};
+                     ~_found & DOKUM.prev()
+                  !}
+               ?};
+               DOKUM.cntx_pop();
+               {? ~_found
+               || _wsenv.add_error('Nie znaleziono pdf dla faktury o symbolu %1.'@[_sym])
+               ?}
+
+            |? _ser=2
+            || _result:=exec('serialize_faks_pdf','mwa_faks',_par)
+            ?};
+            _can_continue:=0
+         ?}
+      ?};
+      _can_continue>0 & _names.next()
+   !};
+   {? _can_continue>0
+   ||
+      _wsenv.add_error('Nie znaleziono faktury o symbolu %1'@ [_sym])
+   ?}
+?};
+FAKS.cntx_pop();
+
+{? _wsenv.has_errors()
+||
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+_result
+
+
+\read_faks_pdf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje daną fakturę
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_sym:=exec('get_option','mwapi',_par,'Sym').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+:: Sprawdza uprawnienia do odglądania dokumentów
+exec('authorized','mwa_faks');
+
+{? _wsenv.has_errors()
+|| _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+|| _result:=exec('read_faks_sym_row','mwa_faks',_par,_sym, 1)
+?};
+
+_result
+
+
+\serialize_dokum
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Formuła pomocnicza do serializacji rekordów z tabeli DOKUM.
+::       Kontekst wywołania: ustawiona dziedzina tabeli DOKUM
+::   WE: _a - FILE - obiekt plikowy przeznaczony do zapisu wynikowego JSONa
+::   WY: 0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_resp:=fopen(null,'Uw',,1,1);
+
+_data:="
+   DOKUM.xml_buf(params_get().resp,,'data','p',,'noheader=1,norecord=0,nodata=1,indentation=1'
+      ,'SYM',,'DOKUM',
+   );
+   ''
+";
+_tab:=tab_tmp(,'STATUS','STRING[20]','');
+_tab.STATUS:='OK'; _tab.add();
+params_set('resp',_resp);
+_tab.xml_records(_resp,_a.METHOD+'Response',,'p',_a.OUTNSPC,'norecord=1'
+   ,'STATUS:status',
+   ,'',_data
+);
+
+_resp
+
+
+\serialize_faks_pdf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Formuła pomocnicza do serializacji rekordów z tabeli FAKS.
+::       Kontekst wywołania: ustawiona dziedzina tabeli FAKS
+::   WE: _a - FILE - obiekt plikowy przeznaczony do zapisu wynikowego JSONa
+::   WY: 0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_resp:=fopen(null,'Uw',,1,1);
+
+_data:="
+   params_set(params_get());
+   _pdf:=\"
+      DOKUM.index('DOKUM');
+      DOKUM.prefix(REF.FIRMA,$FAKS.ref());
+      DOKUM.last();
+      DOKUM.xml_records(params_get().resp,,'PDF','p',,'noheader=1,norecord=0,nodata=1,indentation=1'
+         ,'SYM',,'DOKUM',
+      );
+      ''
+   \";
+   FAKS.xml_records(params_get().resp,,'data','p',,'noheader=1,norecord=0,nodata=1,indentation=1'
+      ,'ODDZ',,'KH',,'REFERENCE',,'NR',,'SYM',,'DW',,'D',,'NETTO',,'VAT',,'BRUTTO',,'NRUNIKAT',,'HAN',
+      ,'PDF',_pdf
+   );
+   ''
+";
+_tab:=tab_tmp(,'STATUS','STRING[20]','');
+_tab.STATUS:='OK'; _tab.add();
+params_set('resp',_resp);
+_tab.xml_records(_resp,_a.METHOD+'Response',,'p',_a.OUTNSPC,'norecord=1'
+   ,'STATUS:status',
+   ,'',_data
+);
+
+_resp
+
+
+\prolog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Formuła startowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+exec('prolog','mwapi',_par);
+~~
+
+
+\epilog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Fomuła końcowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+exec('epilog','mwapi');
+~~
+
+
+\authorized
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Sprawdza uprawnienia do odglądania dokumentów
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('authorized','#b__box','LSP_FAK','LSP')
+|| _wsenv:=exec('wsenv','#mwapi');
+   _wsenv.add_error('Brak uprawnień do przeglądania dokumentów sprzedaży.'@)
+?};
+~~
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:19 b7a03dd85a3a4580b33117e28c7360612a86d7ae7fba07d69170dbc652243975f1221e84396722c48f76ffe5b1a0fccb1219da4712fad9ec0b43044270786ca4bfd3caed3694020a63bd52a2d3c46c1d8274fba57b8060dc3d165891ec8e9594cba8408124b506d96429af3658ed941f06d97d4e6e21a05b74c2934a46c8d52a

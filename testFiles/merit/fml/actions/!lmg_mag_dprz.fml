@@ -1,0 +1,283 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lmg_mag_dprz.fml
+:: Utworzony: 08.12.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Rejestracja przecen
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LMG
+::# parses=exec('parses','!lmg_mag_dprz')
+::# kind=WEW,  symbol=INN,       type=_INN,     name=Przecena,          required=N
+::# kind=WY,   symbol=PRZR,      type=_ND,      name=Przecena rozchód,  required=N
+::# kind=WY,   symbol=PRZP,      type=_ND,      name=Przecena przychód, required=N
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+_area:='LMG_MAG';
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+:: Nagłówek przeceny
+_inn:=null();
+
+:: Ustawienie masek tabel przeceny
+exec('prz_psh','open_tab');
+exec('prz_open','open_tab');
+
+{? _mp.pathTodo()
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('INN',_int)=type_of(null()) & _int.INN
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wewnętrznego INN.')
+   ?}
+?};
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy:
+::       - inwentaryzacji
+::       - nagłówka rozchodu z przeceny
+::       - nagłówka przychodu z przeceny
+::   del: usuwa rekord kluczowy:
+::       - inwentaryzacji
+::       - nagłówka rozchodu z przeceny
+::       - nagłówka przychodu z przeceny
+:: - add: zapisuje parametr:
+::       - wewnętrzny: INN = wskazanie na nagłówek przeceny
+::       - wyjściowy: PRZR = wskazanie na nagłówek dokumentu magazynowego (przecena rozchód)
+::       - wyjściowy: PRZP = wskazanie na nagłówek dokumentu magazynowego (przecena przychód)
+::   del: zapisuje parametr: wewnętrzny:
+::       - wewnętrzny: INN = null
+::       - wyjściowy: PRZR = null
+::       - wyjściowy: PRZP = null
+{? _akcja<>'Wycofaj'
+||
+   _mp.trigRef('INN',,1,,exec('kind_internal','#b_port'),'INN');
+   _mp.trigRef('ND',,1,,exec('kind_out','#b_port'),'PRZR',,"ND.TYP().P='N'");
+   _mp.trigRef('ND',,1,,exec('kind_out','#b_port'),'PRZP',,"ND.TYP().P='T'")
+?};
+
+{? _mp.pathProc() & ~(ST.MAG().TYP*'EWI')
+|| FUN.info('Przecena dostępna tylko w magazynie typu \'EWIDEN\' lub \'DOSTEWI\'.\nNależy zmienić parametry pracy.'@);
+   _mp.cancel()
+|? _akcja='Dołącz'
+   | _mp.pathProc()
+   | _akcja='START_TODO'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+|| {? ~_mp.pathArea(_area) || INN.prefix() ?};
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   params_set('out',_out,'mp',_mp,'akcja',_akcja);
+   exec('innw_add','magazyn_przec');
+
+:: Podczytanie parametrów wyjściowych
+   _inta:=_mp.load(exec('kind_internal','#b_port'));
+   {? var_pres('INN',_inta)<>type_of(~~) & _inta.INN
+:: Dodano dokument
+   || _inn:=_inta.INN
+:: Wycofanie czynności bo nie dodano dokumentu
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Popraw'
+   | _mp.pathTodo()
+|| {? var_pres('INN',_int)=type_of(null())
+:: Uruchomione w procesie
+   || INN.cntx_psh();
+      INN.prefix();
+      {? INN.seek(_int.INN)
+      ||
+         params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('innw_pop','magazyn_przec');
+
+         _mp.descTodo()
+      ?};
+      INN.cntx_pop()
+   |? _mp.pathTodo()
+:: Uruchomione zadanie z listy todo i brak _int.INN wtedy zadanie wycofujemy
+   || _mp.cancel()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      exec('innw_pop','magazyn_przec')
+
+   ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('INN',_int)=type_of(null())
+:: Uruchomione w procesie
+   || INN.cntx_psh();
+      {? _mp.pathArea(_area)=0 || INN.prefix() ?};
+      {? INN.seek(_int.INN)
+      ||
+         exec('delprzec','magazyn_przec');
+
+         {? ~INN.seek(_int.INN)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _inn:=INN.ref()
+      ?};
+      INN.cntx_pop()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('delprzec','magazyn_przec');
+
+      _mp.done()
+   ?}
+
+|? _akcja='Zakończ_wer' & _mp.pathArea(_area)
+|| _autoakc:=exec('chk_role','#b__box',OPERATOR.USER,'LMG_MAG_DWYD')
+           & exec('chk_role','#b__box',OPERATOR.USER,'LMG_MAG_DAPZ')
+           & exec('autoAkc','#b__box',_mp,600580,'LMG_MAG_EAMG');
+   {? exec('inn_zakoncz','magazyn_przec',_autoakc) || _mp.done() ?}
+
+|? _akcja='Wycofaj'
+|| exec('wyc_i_ce','magazyn_przec')
+
+|| _mp.error('Nieobsługiwana ścieżka.')
+?};
+
+:: Ustawienie masek tabel przeceny
+exec('prz_pop','open_tab');
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+{? _inn & _mp.pathArea(_area) || INN.seek(_inn) ?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_int:=_mp.load(exec('kind_internal','#b_port'));
+
+{? var_pres('INN',_int)=type_of(null()) & _int.INN
+|| 'Zakończ rejestrację przeceny: %1'@@[exec('record','#to_string',_int.INN)]
+|| 'Zarejestruj przecenę'@@
+?}
+
+
+\inn_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Przecena - Dołącz
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LMG_MAG_DPRZ';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+
+exec('mp_run','#b__box',_params);
+:: Ustawienie masek tabel przeceny
+exec('prz_open','open_tab')
+
+
+\inn_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Przecena - Popraw
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LMG_MAG_DPRZ';
+_params.UIDREF:=INN.uidref();
+_params.AKCJA:='Popraw';
+
+exec('mp_run','#b__box',_params);
+:: Ustawienie masek tabel przeceny
+exec('prz_open','open_tab')
+
+
+\inn_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Przecena - Usuń
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LMG_MAG_DPRZ';
+_params.UIDREF:=INN.uidref();
+_params.AKCJA:='Usuń';
+
+exec('mp_run','#b__box',_params);
+:: Ustawienie masek tabel przeceny
+exec('prz_open','open_tab')
+
+
+\inn_wycofaj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Przecena - Wycofaj
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LMG_MAG_DPRZ';
+_params.AKCJA:='Wycofaj';
+
+exec('mp_run','#b__box',_params);
+:: Ustawienie masek tabel przeceny
+exec('prz_open','open_tab')
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_int:=params_get().int;
+
+_result:=0;
+
+_inn:=
+   {? var_pres('INN',_int)=type_of(null()) & _int.INN || _int.INN
+   |? _mp.isMicro() & _mp.akcja()<>'Dołącz' || INN.ref()
+   || null()
+   ?};
+
+{? _inn
+|| INN.cntx_psh();
+   INN.use(ref_name(_inn));
+   INN.prefix();
+   {? INN.seek(_inn)
+   || __PARSES.setVal('OddzialLogProd',INN.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LMG';
+      _args.AR:=INN.DI~1;
+      _args.AM:=INN.DI~2;
+      __PARSES.setVal('OkresRok',_args);
+      _result:=1
+   ?};
+   INN.cntx_pop()
+|| _result:=1
+?};
+
+_result
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:37 bc04d033fb5930dfda16c773a1e8f71dc233c5968abdc7e4866e4e12be745d36a8b66017dc48a3589b34c62940037fd69d54de4dac2d80256c8d6a10c10e35cb35b2d6e038cada93575250f325c307217515ad776a4ba89f926763e30b0039484386921101838a977e48cf870007ac920f316a837f3a99b2a71e06971f67166d

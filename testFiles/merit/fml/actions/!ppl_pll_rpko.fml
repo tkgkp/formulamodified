@@ -1,0 +1,498 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ppl_pll_rpko.fml
+:: Utworzony: 01.02.2016
+:: Autor: TMR
+::======================================================================================================================
+:: Zawartość: Obsługa czynności ppl_pll_rpko - Rejestracja podziału kosztów
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Rejestracja podziału kosztów - główna formuła czynności.
+::       Jeżeli w trybie serwisowym czynność nie będzie miała wskazanego pracownika, to będzie pobierała dane
+::       o godzinach akordowych dla wszystkich pracowników ze wszystkich oddziałów w ramach wskazanego roku i miesiąca
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+::# access=exec('run_cond_p','pkd')
+::# parses=exec('parses','!ppl_pll_rpko')
+::
+::# kind=WE, symbol=P, type=_P, name=Wskazanie pracownika, required=T, keyref=T
+::# kind=WE, symbol=RODZ, type=STRING, name=Rodzaj podziału, required=T, fml_val="exec('rodz_port','!ppl_pll_rpko',{? _a=~~ || 'M' || _a ?})"
+::# kind=WE, symbol=O, type=_O, name=Wskazanie na listę płac, required=N
+::# kind=WE, symbol=R, type=NUMBER, name=Rok, required=N
+::# kind=WE, symbol=M, type=NUMBER, name=Miesiąc, required=N
+::
+::# kind=WEW, symbol=O, type=_O, name=Wskazanie na listę płac, required=N
+::# kind=WEW, symbol=R, type=NUMBER, name=Rok, required=N
+::# kind=WEW, symbol=M, type=NUMBER, name=Miesiąc, required=N
+::
+::# kind=WY, symbol=P, type=_P, name=Wskazanie pracownika, required=N
+::# kind=WY, symbol=R, type=NUMBER, name=Rok, required=N
+::# kind=WY, symbol=M, type=NUMBER, name=Miesiąc, required=N
+::
+exec('fl_decl','dekret_aut');
+
+_par:=params_get();
+params_set(_par);
+_mp:=_par.mp;
+_in:=_par.in;
+_int:=_par.int;
+_out:=_par.out;
+_akcja:=_mp.akcja();
+
+:: podczytanie wartości z parametrów wejściowych, jeżeli czynność nie zachowała parametrów wewnętrznych
+_p_ref:={? var_pres('P',_in)=type_of(null()) || _in.P    || null() ?};
+ _rodz:={? var_pres('RODZ',_in)=type_of('')  || _in.RODZ || ''     ?};
+
+{? _rodz='M'
+||
+   exec('CON','object');
+:: podczytanie wartości z parametrów wewnętrznych
+   _o_ref:={? var_pres('O',_int)=type_of(null()) || _int.O || null() ?};
+     _rok:={? var_pres('R',_int)=type_of(0)      || _int.R || 0      ?};
+     _msc:={? var_pres('M',_int)=type_of(0)      || _int.M || 0      ?};
+
+   {? _o_ref=null()
+   || _o_ref:={? var_pres('O',_in)=type_of(null())
+              || _in.O
+              || __PARSES.getVal('ListaPłac').REF
+              ?}
+   ?};
+   {? _rok=0
+   || _rok:={? var_pres('R',_in)=type_of(0) || _in.R || 0 ?}
+   ?};
+   {? _msc=0
+   || _msc:={? var_pres('M',_in)=type_of(0) || _in.M || 0 ?}
+   ?};
+
+:: jeżeli jest wybrana lista płac to ustaw odpowiednio rok i miesiąc
+   {? _o_ref<>null()
+   || exec('wybierz','lista_plac',_o_ref);
+      _rok:=O.R;
+      _msc:=O.M
+   ?};
+
+:: jeśli nadal nie mamy roku i miesiąca to zapytaj
+   {? _rok=0 | _msc=0
+   || _rok_msc:=exec('wybierz_rok_miesiac','daty');
+      _rok:=_rok_msc.R;
+      _msc:=_rok_msc.M
+   ?};
+
+:: zapisanie parametrów wewnętrznych
+   {? _rok<>0 & _msc<>0
+   || _int.O:=_o_ref;
+      _int.R:=_rok;
+      _int.M:=_msc;
+      _mp.save(_int)
+   ?}
+?};
+
+exec('ustaw_okno','godziny','PPL_PLL_RPKO');
+
+_result:='';
+
+_uidref:=exec('ref2uid','#table',_in.P);
+
+{? _uidref=''
+|| _result:=exec('error','!ppl_pll_rpko')
+
+|? _mp.isMicro()
+|| {? _akcja='START'
+::    Wejście do okienka w ramach obszaru roboczego - uruchomienie procesu i pozostawienie go na liście zadań.
+   ||
+      _mp.keyRef(_uidref);
+      _int.O:=VAR.O;
+      _int.R:=VAR.O().R;
+      _int.M:=VAR.O().M;
+      _mp.save(_int);
+      _mp.keep();
+
+      {? _rodz='S'
+      || G.use('godzstal')
+      || exec('ustaw_maski','godziny',_int.R,_int.M)
+      ?}
+
+   |? _akcja='STOP'
+::    Wyjście z okienka w ramach obszaru roboczego - anulowanie procesu.
+   || _mp.delRef(_uidref);
+      _mp.cancel()
+
+   |? _akcja<>''
+   || _result:='Czynność %1 nie obsługuje akcji %2.'@ [_mp.buf_act.UID,_akcja]
+
+   ?}
+
+|| {? _akcja='ZAKOŃCZ'
+   || params_exec('done','!ppl_pll_rpko',_in.P,_int.R,_int.M)
+
+   |? _mp.pathTodo()
+   || _value:=exec('select','!ppl_pll_rpko',_in.P,_int.R,_int.M,_rodz);
+      {? type_of(_value)=type_of('')
+      || _result:=_value
+      |? _value
+      || params_exec('done','!ppl_pll_rpko',_in.P,_int.R,_int.M)
+      || _mp.keep()
+      ?}
+   ?}
+?};
+
+:  Obsługa błędów
+{? _result<>''
+|| _mp.error(_result);
+   FUN.emsg(_result)
+?};
+~~
+
+
+\done
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Zapisuje parametry wyjściowe i kończy czynność (zakłąda się uruchomienie params_exec-iem)
+::   WE: _a [OBJECT] - wskazanie na menedżera procesu
+::       _b [OBJECT] - wskazanie na obiekt parametrów wyjściowych
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_p_ref:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+  _rok:={? var_pres('_b')=type_of(0)      || _b || 0      ?};
+  _msc:={? var_pres('_c')=type_of(0)      || _c || 0      ?};
+
+_par:=params_get();
+_mp:=_par.mp;
+_out:=_par.out;
+_out.P:=_p_ref;
+_out.R:=_rok;
+_out.M:=_msc;
+_mp.save(,_out);
+_mp.done()
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Formuła ustalająca wartości parametrów sesji.
+::   WE:
+::   WY: 1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_mp:=params_get().mp;
+
+{? ~_mp.isService() & var_pres('O',_in)=type_of(null()) & _in.O<>null()
+|| _args:=__PARSES.args('ListaPłac');
+   _args.REF:=_in.O;
+   __PARSES.setVal('ListaPłac',_args)
+?};
+
+1
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Formuła opisu zadania.
+::   WE:
+::   WY: opis czynności na liście zadań
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_int:=_mp.load(exec('kind_internal','#b_port'));
+_rok:={? var_pres('R',_int)=type_of(0) || _int.R || 0 ?};
+_msc:={? var_pres('M',_int)=type_of(0) || _int.M || 0 ?};
+_rodz:={? var_pres('RODZ',_in)=type_of('') || _in.RODZ || '' ?};
+_addInfo:=0;
+
+{? _rok<>0 & _msc<>0
+|| _addInfo:=1;
+   {? _rodz='M'
+   || _key2:='_M'+$_rok+form(_msc,-2);
+      _mp.keyRef(_key2,0,0)
+   ?}
+?};
+{? _rodz='S'
+|| _key2:='_S';
+   _mp.keyRef(_key2,0,0)
+?};
+
+_tab:=exec('desc','pracownik',_mp);
+{? _tab.ZAW_DANE='T'
+|| {? _rodz='S'
+   || {? _addInfo
+      ||
+         {? _tab.OBCY='T'
+         || 'Zarejestruj stały podział kosztów (miesiąc %1/%2): %3 %4: Paszport - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+         |? +_tab.PESEL
+         || 'Zarejestruj stały podział kosztów (miesiąc %1/%2): %3 %4: PESEL - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+         || 'Zarejestruj stały podział kosztów (miesiąc %1/%2): %3 %4: Data urodzenia - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+         ?}
+      ||
+         {? _tab.OBCY='T'
+         || 'Zarejestruj stały podział kosztów: %1 %2: Paszport - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+         |? +_tab.PESEL
+         || 'Zarejestruj stały podział kosztów: %1 %2: PESEL - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+         || 'Zarejestruj stały podział kosztów: %1 %2: Data urodzenia - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+         ?}
+      ?}
+   |? _rodz='M'
+   || {? _addInfo
+      ||
+         {? _tab.OBCY='T'
+         || 'Zarejestruj miesięczny podział kosztów (miesiąc %1/%2): %3 %4: Paszport - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+         |? +_tab.PESEL
+         || 'Zarejestruj miesięczny podział kosztów (miesiąc %1/%2): %3 %4: PESEL - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+         || 'Zarejestruj miesięczny podział kosztów (miesiąc %1/%2): %3 %4: Data urodzenia - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+         ?}
+      ||
+         {? _tab.OBCY='T'
+         || 'Zarejestruj miesięczny podział kosztów: %1 %2: Paszport - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+         |? +_tab.PESEL
+         || 'Zarejestruj miesięczny podział kosztów: %1 %2: PESEL - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+         || 'Zarejestruj miesięczny podział kosztów: %1 %2: Data urodzenia - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+         ?}
+      ?}
+   || {? _addInfo
+      ||
+         {? _tab.OBCY='T'
+         || 'Zarejestruj podział kosztów (miesiąc %1/%2): %3 %4: Paszport - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+         |? +_tab.PESEL
+         || 'Zarejestruj podział kosztów (miesiąc %1/%2): %3 %4: PESEL - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+         || 'Zarejestruj podział kosztów (miesiąc %1/%2): %3 %4: Data urodzenia - %5, Numer teczki - %6, Identyfikator - %7'@@
+               [$_rok,(('0'+($_msc))+2),_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+         ?}
+      ||
+         {? _tab.OBCY='T'
+         || 'Zarejestruj podział kosztów: %1 %2: Paszport - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+         |? +_tab.PESEL
+         || 'Zarejestruj podział kosztów: %1 %2: PESEL - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+         || 'Zarejestruj podział kosztów: %1 %2: Data urodzenia - %3, Numer teczki - %4, Identyfikator - %5'@@
+               [_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+         ?}
+      ?}
+   ?}
+|| 'Zarejestruj podział kosztów'@@
+?}
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Zwraca treść komunikatu błędu
+::   WE: [_a] [STRING] - dodatkowy tekst błędu
+::   WY: treść komunikatu
+::----------------------------------------------------------------------------------------------------------------------
+_result:='Zarejestrowanie podziału kosztów nie jest możliwe.'@;
+_text:={? var_pres('_a')=type_of('') || _a || '' ?};
+_result+='\n'+_text;
+_result
+
+
+\select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Obsługa czynności wywołanej z listy zadań.
+::   WE:
+::   WY: Komunikat o błędzie lub informacja o wyjściu z okna poprzez wywołanie sel_exit() - czyli "Zakończ".
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+_p_ref:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+  _rok:={? var_pres('_b')=type_of(0)      || _b || 0      ?};
+  _msc:={? var_pres('_c')=type_of(0)      || _c || 0      ?};
+ _rodz:={? var_pres('_d')=type_of('')     || _d || ''     ?};
+
+_typ:='K';
+
+P.cntx_psh();
+P.prefix();
+{? _p_ref<>null() & P.seek(_p_ref)
+|| OSOBA.cntx_psh();
+   P.OSOBA();
+   G.cntx_psh();
+   CON_KG.cntx_psh();
+   ZMIENNE.RODZAJ:=_rodz;
+   EDIT_VAR.KOD_DOK:=_typ;
+   UD_POM.SKID_MB:=KST_PAR.SKID_MB;
+
+   {? _rodz='M'
+   || {? _rok<>0 & _msc<>0
+      || exec('ustaw_maski','godziny',_rok,_msc);
+         G.index('PODZ_ML');
+         {? PAR_SKID.get(396)='L'
+         || G.prefix(P.ref(),_msc,_typ,VAR.NAZWALIS,)
+         || G.prefix(P.ref(),_msc,_typ,'',)
+         ?};
+         G.win_sel('WERK_P');
+         G.hdr_sel('Miesięczny podział kosztów %1'@[(('00'+$_msc)+2)+'/'+$_rok]);
+         params_set(params_get());
+         _result:=G.select()
+
+      || _result:=exec('error','!ppl_pll_rpko','Brak wskazanego roku lub miesiąca.'@)
+      ?}
+
+   |? _rodz='S'
+   || G.use('godzstal');
+      G.index('PODZ_SL');
+      {? PAR_SKID.get(395)='L'
+      || G.prefix(P.ref(),_typ,VAR.NAZWALIS+3,)
+      || G.prefix(P.ref(),_typ,'< ---- >',)
+      ?};
+      G.win_sel('WERK_P');
+      G.hdr_sel('Stały podział kosztów'@);
+      params_set(params_get());
+      _result:=G.select()
+
+   || _result:=exec('error','!ppl_pll_rpko','Błędna wartość parametru "Rodzaj" dla trybu serwisowego.'@)
+   ?};
+   CON_KG.cntx_pop();
+   G.cntx_pop();
+   OSOBA.cntx_pop()
+
+|| _result:=exec('error','!ppl_pll_rpko','Nie znaleziono pracownika.'@)
+?};
+P.cntx_pop();
+_result
+
+
+\setPorts
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Ustawia wymagane parametry wejściowe dla czynności jeśli czynność była uruchomiona z obszaru roboczego
+::   WE: _a [OBJECT] - obiekt z parametrami zgodny z exec('mp_run_a','#b__box')
+::   WY
+::----------------------------------------------------------------------------------------------------------------------
+_params:={? var_pres('_a')=117 || _a || return(~~) ?};
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ',ZMIENNE.RODZAJ);
+~~
+
+
+\gk_zakoncz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Obsługa akcji "Zakończ". Formuła wykonywana w dwóch środowiskach:
+::       - po wywołaniu z listy zadań (okno wertowania tabeli G);
+::       - w ramach obszaru roboczego (okno wertowania tabeli G jako składowa okna grupowego tabeli P).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('spr_pr','godziny','Stały podział kosztów'@)
+|| return(0)
+?};
+
+{? cur_tab(0,0)=G
+|| sel_exit()
+
+|| params_set(params_get());
+   exec('pkd_run','pkd','ZAKOŃCZ')
+?}
+
+
+\gk_ar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Obsługa akcji "Po odświeżeniu" okna WERK tabeli G w grupie. Ustawia akcje i przyciski.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ag:='';
+_par:=params_get();
+{? var_pres('_par')>100 &
+   var_pres('cfg',_par)>100 &
+   var_pres('done',_par.cfg)>100 &
+   var_pres('noempty',_par.cfg.done)=type_of('') & var_pres('empty',_par.cfg.done)=type_of('')
+|| _ag+=_par.cfg.done.noempty+':'+_par.cfg.done.empty
+?};
+G.actions_grayed('WERK',_ag);
+~~
+
+
+\rodz_port
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [17.00]
+:: OPIS: Formuła pozwala wybrać rodzaj podziału.
+::       Formuła może być wykorzystywana jako argument atrybutu 'fml_val' parametru czynności.
+::   WE: [_a] [STRING] -  Wartość początkowa w oknie, wartość na której będzie ustawiony kursor.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=tab_tmp(1,
+   'WART','STRING[1]','Kod',
+   'OPIS','SYS_MEMO','Opis'
+);
+_add:="
+   _a.blank();
+   _a.WART:=_b;
+   _a.memo_set(_c,'OPIS');
+   _a.add() & _a.memo_put(,'OPIS')
+";
+_add(_TAB,'S','Stały podział kosztów.'@);
+_add(_TAB,'M','Miesięczny podział kosztów.'@);
+
+_jest:=var_pres('_a')=type_of('') & _TAB.find_key(_a,);
+{? _jest
+|| _ret:=_TAB.WART
+?};
+
+_ws:=_TAB.mk_sel('Rodzaj podziału kosztów'@,,,,,,6,,'U');
+_TAB.win_fld(_ws,,'WART',,,,,,,,'Kod rodzaju podziału kosztów'@);
+_TAB.win_fld(_ws,,'OPIS',,,80,,,,,'Opis rodzaju podziału kosztów'@);
+_TAB.win_act(_ws,,'Formuła','Wybierz'@@,,,"sel_exit()",,1);
+_TAB.win_act(_ws,,'Szukaj');
+_TAB.win_act(_ws,,'Kolejność');
+_TAB.win_sel(_ws);
+_we:=_TAB.mk_edit('Rodzaj podziału kosztów'@);
+_TAB.win_esep(_we,'Dane podstawowe'@);
+_TAB.win_efld(_we,,'WART',,,80);
+_TAB.win_efld(_we,,'OPIS',,,80,-4);
+_TAB.win_edit(_we);
+{? _TAB.select(,1,-1)
+|| _ret:=_TAB.WART
+|? ~_jest
+|| _ret:=''
+?};
+_ret
+
+
+\PW_WSLUk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2010]
+:: OPIS:
+::  OLD: \PW_WSLUk/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('pwys_slu','slo_slu','SKID_WYR.SLU','ZMIENNE.SLU_DEK')
+
+
+\PO_WSLUk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2010]
+:: OPIS:
+::  OLD: \PO_WSLUk/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('pwys_slu','slo_slu','SKID_WYR.SLU','ZMIENNE.SLU_DEK','exec(''spr_kod'',''skid_wyr'')')
+
+
+\F3_WSLUk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2010]
+:: OPIS:
+::  OLD: \F3_WSLUk/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('f3_slu','slo_slu','SKIS_WYR.SLU','ZMIENNE.SLU_DEK')
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:22:53 e3f1ce31347f9a06c001a0558113ccaa2cba9b4ac0eca4f608059c7052b3eb35f721b55f010197dbbbe3db232b820b9d664a38acf46440017f074520c306d87cfc85b887860c3f25db9fb514913583165a23ed96fed90afd5a52ae20c900646bcd1a65bd9fd6d0ac9c27091b47ed7ee801e63d041ba11fff9b86d99814cb93d8

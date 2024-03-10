@@ -1,0 +1,1991 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #funpar_wid.fml [17.00]
+:: Utworzony: 2014/12/03
+:: Autor: jaws
+::======================================================================================================================
+:: Zawartość: Funkcje parametryzacji
+::======================================================================================================================
+
+
+\sync
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła synchronizująca zawartość tabeli FP_WID z tabelami FP_STR i FP_DEF.
+::       Dla wskazanego użytkownika i firmy wypełnia drzewo elementów parametryzacyjnych z uwzględnieniem uprawnień.
+::       Z drzewa znikną elementy, do których użytkownik stracił uprawnienia, a pojawią się te, do których posiada
+::       uprawnienia a nie było ich wcześniej w drzewie.
+::       Widok jest drzewem jednopoziomowym.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_user:=exec('operatorUser','#users');
+_ok:=1;
+
+_uuid:=obj_new('TAB','WER','NDX');
+exec('usractTab','#b_desktop',_uuid,'');
+exec('proenv','#b_proman');
+_lic:=__proenv.DOM_LIC;
+_lic.prefix();
+_tab:=_uuid.TAB;
+_tab.prefix('N');
+
+_lista:=
+   'PASSWD,MFA,ZWS_PAR_U_WYDR,ZWS_PAR_COLOR,ZWS_PAR_COLOR_USE,ZWS_HIER_PAR,ZWS_PAR_U_URZ,ZWS_ZOR_PZZ,ZWS_PAR_PROXY_U,'
+   'ZWS_PAR_SIGN,ZWS_PAR_KSEF';
+: Linia powyżej zawiera identyfikatory funkcji parametryzacyjnych (oddzielone przecinkami), które mają być udostępnione
+: w ramach ustawień osobistych. Funkcje definiowane są w funpar.fml\dane_u.
+
+FP_WID.cntx_psh();
+FP_WID.index('NUMER');
+
+: Synchronizacja "Ustawień osobistych" (zmiana hasła, kolory, drukarki, ...).
+: Dla tej gałęzi zarezerwowany jest NUMER=0 i prezentowane są wyłącznie formuły systemowe.
+FP_WID.prefix(_user,0,0);
+{? FP_WID.first()
+|| _parent:=#FP_WID.ref()
+|? _lista<>''
+|| FP_WID.blank();
+   FP_WID.USERS:=_user;
+   FP_WID.NUMER:=0;
+   FP_WID.NAZWA:='Ustawienia osobiste'@;
+   _parent:={? FP_WID.add() || #FP_WID.ref() || 0 ?}
+|| _parent:=0
+?};
+{? _parent
+|| _lfn:=spli_str(_lista,',');
+   FP_WID.prefix(_user,_parent);
+:  Z drzewa usuwamy funkcje "zbędne". Wyzwalacz zapewnia przenumerowanie następnych pozycji.
+   {? FP_WID.first()
+   || {!
+      |? {? (','+_lista+',')*(','+FP_WID.FP_DEF().ID+',')
+         || FP_WID.next()
+         || FP_WID.del()
+         ?}
+      !}
+   ?};
+:  Dodajemy nowe.
+   FP_DEF.cntx_psh();
+   FP_DEF.index('DOSTEP');
+   FP_DEF.prefix('F','T','T',);
+   {! _lp:=1 .. obj_len(_lfn)
+   |! {? FP_DEF.find_key(_lfn[_lp],)
+      || FP_WID.cntx_psh();
+         FP_WID.index('FP_DEF');
+         FP_WID.prefix(FP_DEF.ref(),_user,_parent);
+         _add:=~FP_WID.first();
+         FP_WID.cntx_pop();
+         {? _add
+         || _nr:={? FP_WID.last() || FP_WID.NUMER ?}+1;
+            FP_WID.blank();
+            FP_WID.USERS:=_user;
+            FP_WID.FP_WID:=_parent;
+            FP_WID.NUMER:=_nr;
+            FP_WID.NAZWA:=FP_DEF.NAZWA;
+            FP_WID.FP_DEF:=FP_DEF.ref();
+            FP_WID.add()
+         ?}
+      ?}
+   !};
+   FP_DEF.cntx_pop()
+|| _ok:=0
+?};
+
+: Z drzewa usuwamy gałęzie (obszary), do których użytkownik nie ma prawa dostępu.
+FP_WID.prefix(_user,0);
+_next_wid:=FP_WID.first();
+{!
+|? _ok & _next_wid
+|! {? FP_WID.B_DOMAIN=null() | (_lic.find_key(FP_WID.B_DOMAIN().SYMBOL) & _tab.find_key(FP_WID.B_DOMAIN().SYMBOL))
+   || _next_wid:=FP_WID.next()
+   || do();
+      _nr:=FP_WID.NUMER;
+      FP_WID.cntx_psh();
+      FP_WID.prefix(_user,FP_WID.ref());
+      {? FP_WID.first() || {! |? FP_WID.del() !} ?};
+      FP_WID.cntx_pop();
+:     Usunięcie ostatniego listka powoduje (wyzwalacz) usunięcie gałęzi i przenumerowanie następnych. Tak więc
+:     następnym przetwarzanym rekordem (gałęzią) powinien być ten o numerze, na którym staliśmy.
+      _next_wid:=FP_WID.find_key(_nr);
+      _ok:=end()
+   ?}
+!};
+&_next_wid;
+FP_WID.cntx_pop();
+{? ~_ok || return(0) ?};
+
+: Do drzewa dodawane są elementy "nowe".
+FP_WID.cntx_psh();
+FP_WID.index('FUNKCJA');
+FP_WID.prefix();
+FP_STR.cntx_psh();
+FP_STR.index('FP_DEF');
+FP_STR.prefix();
+FP_DEF.cntx_psh();
+FP_DEF.index('DOSTEP');
+FP_DEF.prefix('F','T',);
+: Interesują nas funkcje parametryzacyjne typu Formuła (a nie akcja) przeznaczone (dostępne) dla użytkownika ...
+_next_str:=0;
+_next_def:=FP_DEF.first();
+{!
+|? _next_def
+|! FP_STR.prefix(FP_DEF.ref());
+   _next_str:=FP_STR.first();
+   {!
+   |? _next_str
+   |! {? _lic.find_key(FP_STR.B_DOMAIN().SYMBOL) &
+         _tab.find_key(FP_STR.B_DOMAIN().SYMBOL) &
+:        ... jeżeli użytkownik ma dostęp (poprzez role) do choć jednej czynności z obszaru, do którego przypięta jest
+::       funkcja parametryzacyjna.
+         ~FP_WID.find_key(_user,FP_STR.B_DOMAIN,FP_DEF.ref())
+:        Funkcji nie ma jeszcze w drzewie (w gałęzi obszaru FP_STR.B_DOMAIN).
+      || {? ~FP_WID.find_key(_user,FP_STR.B_DOMAIN,null(),0)
+:           Obszaru jeszcze nie ma.
+         || FP_WID.cntx_psh();
+            FP_WID.index('NUMER');
+            FP_WID.prefix(_user,0);
+            _nr:={? FP_WID.last() || FP_WID.NUMER ?}+1;
+            FP_WID.blank();
+            FP_WID.USERS:=_user;
+            FP_WID.NUMER:=_nr;
+            FP_WID.NAZWA:=FP_STR.B_DOMAIN().NAME;
+            FP_WID.B_DOMAIN:=FP_STR.B_DOMAIN;
+            _parent:={? FP_WID.add() || #FP_WID.ref() || 0 ?};
+            FP_WID.cntx_pop()
+:           Obszar już jest
+         || _parent:=#FP_WID.ref()
+         ?};
+         {? _parent
+         || FP_WID.cntx_psh();
+            FP_WID.index('NUMER');
+            FP_WID.prefix(_user,_parent);
+:           W ramach obszaru nowe funkcje dopisywane są na końcu.
+            _nr:={? FP_WID.last() || FP_WID.NUMER ?}+1;
+            FP_WID.blank();
+            FP_WID.USERS:=_user;
+            FP_WID.FP_WID:=_parent;
+            FP_WID.NUMER:=_nr;
+            FP_WID.NAZWA:=FP_DEF.NAZWA;
+            FP_WID.B_DOMAIN:=FP_STR.B_DOMAIN;
+            FP_WID.FP_DEF:=FP_DEF.ref();
+            FP_WID.FP_STR:=FP_STR.ref();
+            FP_WID.add();
+            FP_WID.cntx_pop()
+         || _ok:=0
+         ?}
+      ?};
+      _next_str:=FP_STR.next()
+   !};
+   _next_def:=FP_DEF.next()
+!};
+&_next_def;
+&_next_str;
+FP_DEF.cntx_pop();
+FP_STR.cntx_pop();
+FP_WID.cntx_pop();
+
+_ok
+
+
+\akcja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Obsługa akcji menu zdefiniowanych w generatorze aplikacji
+::   WE: _a - 1 - przed / 0 - po
+::       _b - [opcjonalny] nazwa akcji
+::----------------------------------------------------------------------------------------------------------------------
+_akcja:=-{? var_pres('_b')=type_of('') & _b<>'' || _b || menu_txt ?};
+exec('menu','#funpar_wid',cur_tab(1,1),_akcja,_a)
+
+
+\menu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Obsługa akcji menu konsoli ustawień
+::   WE: _a - alias tabeli
+::       _b - nazwa akcji
+::       _c - 1 - przed / 0 - po
+::----------------------------------------------------------------------------------------------------------------------
+_sprawdz:=$('exec(\''+(2--!_a)+'_spr\',\'#funpar_wid\','+$(-menu_txt='popraw')+')');
+
+{? _b='usuń'
+|| {? _c
+   || exec('del_conf','#table',_a)
+   || _a.del
+   ?}
+
+|? _b='historia'
+|| {? _c
+   || exec('historia','#funpar_wid',_a)
+   ?}
+
+|? _a=FP_DEF
+|| {? _b='dołącz'
+   || {? _c
+      || FP_DEF.blank(1);
+         FP_DEF.SYSTEM:='N';
+         FP_DEF.ID:=exec('fp_gen_id','#funpar_wid');
+         FP_DEF.memo_set('','FORMULA');
+         FP_DEF.memo_set('','ZESTAW');
+         FP_DEF.win_edit('DOD');
+         {? FP_DEF.edit
+         || FP_DEF.win_edit('RED_'+FP_DEF.RODZAJ);
+            FP_DEF.edit(_sprawdz)
+         ?}
+      || {? FP_DEF.add
+         || FP_DEF.memo_put(,'FORMULA');
+            FP_DEF.memo_put(,'ZESTAW');
+            exec('wer_fun_akt','#funpar_wid',FP_DEF.ref)
+         ?}
+      ?}
+   |? _b='popraw'
+   || {? _c
+      || FP_DEF.win_edit('RED_'+FP_DEF.RODZAJ);
+         FP_DEF.memo_get(,'FORMULA');
+         FP_DEF.memo_get(,'ZESTAW');
+         FP_DEF.get & FP_DEF.edit(_sprawdz)
+      || {? FP_DEF.put
+         || FP_DEF.memo_put(,'FORMULA');
+            FP_DEF.memo_put(,'ZESTAW')
+         ?}
+      ?}
+   |? _b='wyświetl'
+   || {? _c
+      || {? FP_DEF.get
+         || FP_DEF.memo_get(,'FORMULA');
+            FP_DEF.memo_get(,'ZESTAW');
+            FP_DEF.win_edit('RED_'+FP_DEF.RODZAJ);
+            1
+         ?}
+      || FP_DEF.display
+      ?}
+   ?}
+
+|? _a=FP_STR
+|| {? _b='dołącz'
+   || {? _c
+      || FP_STR.blank(1);
+         FP_STR.SYSTEM:='N';
+         FP_STR.ID:=exec('fp_gen_id','#funpar_wid');
+         FP_STR.memo_set('','NOTA');
+         FP_STR.win_edit('TYP');
+         {? FP_STR.edit
+         || FP_STR.win_edit('RED_'+FP_STR.RODZAJ);
+            FP_STR.FP_STR:={? FP_ZM.STR='N' || #FP_STR.ref ?};
+            FP_STR.edit(_sprawdz)
+         ?}
+      || {? FP_STR.add
+         || FP_STR.memo_put(,'NOTA');
+            {? FP_STR.FP_DEF<>null
+            || exec('wer_fun_akt','#funpar_wid',FP_STR.FP_DEF)
+            ?}
+         ?}
+      ?}
+   |? _b='popraw'
+   || {? _c
+      || FP_STR.win_edit('RED_'+FP_STR.RODZAJ);
+         {? FP_STR.get
+         || FP_STR.memo_get(,'NOTA');
+            FP_STR.edit(_sprawdz)
+         ?}
+      || FP_STR.put
+      ?}
+   |? _b='do góry'
+   || {? _c
+      || FP_STR.cntx_psh;
+         FP_STR.index('FP_STR');
+         FP_STR.prefix(FP_STR.FP_STR);
+         _valid:=FP_STR.prev;
+         FP_STR.cntx_pop;
+         _valid
+      || _ref:=FP_STR.ref;
+         _nr:=FP_STR.NUMER;
+         {? FP_STR.prev
+         || FP_STR.NUMER==_nr;
+            FP_STR.put;
+            FP_STR.seek(_ref);
+            FP_STR.NUMER==_nr;
+            FP_STR.put
+         ?}
+      ?}
+   |? _b='w dół'
+   || {? _c
+      || FP_STR.cntx_psh;
+         FP_STR.index('FP_STR');
+         FP_STR.prefix(FP_STR.FP_STR);
+         _valid:=FP_STR.next;
+         FP_STR.cntx_pop;
+         _valid
+      || _ref:=FP_STR.ref;
+         _nr:=FP_STR.NUMER;
+         {? FP_STR.next
+         || FP_STR.NUMER==_nr;
+            FP_STR.put;
+            FP_STR.seek(_ref);
+            FP_STR.NUMER==_nr;
+            FP_STR.put
+         ?}
+      ?}
+   |? _b='odtwórz'
+   || {? _c
+      || FUN.ask('Utracone zostaną wszystkie modyfikacje wprowadzone w widoku.\n'
+            'Czy na pewno odtworzyć domyślny widok struktury parametryzacji?'@)
+      || FP_STR.cntx_psh;
+         FP_STR.clear;
+         {! |? FP_STR.del !};
+         _pom:=obj_new(@.CLASS.FP_POM);
+         exec('dane','funpar',_pom);
+         FP_STR.cntx_pop;
+         FUN.info('Przywrócono ustawienia domyślne.'@)
+      ?}
+   |? _b='pomiń'
+   || {? _c
+      || FP_STR.win_edit('POM');
+         {? FP_STR.get
+         || FP_STR.memo_get(,'NOTA');
+            FP_STR.KTO:=userdata;
+            FP_STR.DATA:=date;
+            FP_STR.CZAS:=time;
+            FP_STR.edit
+         ?}
+      || {? FP_STR.put
+         || FP_STR.memo_put(,'NOTA');
+            exec('fp_his_add','#funpar_str',FP_STR)
+         ?}
+      ?}
+   |? _b='wyświetl'
+   || {? _c
+      || {? FP_STR.get
+         || FP_STR.memo_get(,'NOTA');
+            FP_STR.win_edit('RED_'+FP_STR.RODZAJ)
+         ?}
+      || FP_STR.display
+      ?}
+   ?}
+
+|? _a=FP_WER
+|| {? _b='dołącz'
+   || {? _c
+      || FP_WER.win_edit('RED');
+         FP_WER.blank(1);
+         FP_WER.SYSTEM:='N';
+         FP_WER.edit(_sprawdz)
+      || FP_WER.add
+      ?}
+   |? _b='popraw'
+   || {? _c
+      || FP_WER.win_edit('RED');
+         FP_WER.get;
+         FP_WER.edit(_sprawdz)
+      || FP_WER.put
+      ?}
+   ?}
+
+|? _a=FP_AKT
+|| {? _b='dołącz'
+   || {? _c
+      || FP_AKT.win_edit('RED');
+         FP_AKT.blank(1);
+         FP_AKT.FP_DEF:=FP_STR.FP_DEF;
+         FP_AKT.edit(_sprawdz)
+      || FP_AKT.add
+      ?}
+   |? _b='popraw'
+   || {? _c
+      || FP_AKT.win_edit('RED');
+         FP_AKT.get & FP_AKT.edit(_sprawdz)
+      || FP_AKT.put
+      ?}
+   ?}
+
+|? _a=FP_FIR
+|| {? _b='dołącz'
+   || {? _c
+      || FP_FIR.win_edit('RED');
+         FP_FIR.blank(1);
+         FP_FIR.FP_DEF:=FP_STR.FP_DEF;
+         FP_FIR.STATUS:='N';
+         FP_FIR.POMIN:='N';
+         FP_FIR.memo_set('','NOTA');
+         FP_FIR.edit(_sprawdz)
+      || FP_FIR.add
+      ?}
+   |? _b='popraw'
+   || {? _c
+      || FP_FIR.win_edit('RED');
+         FP_FIR.get & FP_FIR.edit(_sprawdz)
+      || FP_FIR.put
+      ?}
+   |? _b='pomiń'
+   || {? _c
+      || FP_FIR.win_edit('POM');
+         {? FP_FIR.get
+         || FP_FIR.memo_get(,'NOTA');
+            FP_FIR.KTO:=userdata;
+            FP_FIR.DATA:=date;
+            FP_FIR.CZAS:=time;
+            FP_FIR.edit
+         ?}
+      || {? FP_FIR.put
+         || FP_FIR.memo_put(,'NOTA');
+            exec('fp_his_add','#funpar_str',FP_FIR)
+         ?}
+      ?}
+   |? _b='wyświetl'
+   || {? _c
+      || FP_FIR.win_edit('POM')
+      || FP_FIR.display;
+         FP_FIR.win_edit('RED')
+      ?}
+   ?}
+
+|? _a=FP_WID
+|| {? _b='wybierz'
+   || {? _c
+      || {? FP_WID.FP_DEF().DOSTEP='T'
+         || _path:=exec('set_help','#help',FP_DEF.ID);
+            _jTerm:=app_info('web_sesid')='';
+            {? _jTerm || set_help(_path) || web_set_help(_path) ?};
+            ($FP_DEF.memo_txt(,1,'FORMULA'))()
+         ?}
+      ?}
+   ?}
+
+|? _b='rekord' & _c=0
+|| _sprawdz()
+
+?}
+
+
+\fp_akt_spr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Sprawdzenie poprawności danych tabeli FP_AKT. Akcja rekord po lub formuła po edycji okienka.
+::   WE: _a - rodzaj modyfikacji: 0 - dodawanie, 1 - poprawianie
+::   WY: akronim wymaganego pola lub zero jeśli dojdzie do powielenia unikalnego klucza, 1 jeśli rekord jest poprawny
+::----------------------------------------------------------------------------------------------------------------------
+__CHK.table(FP_AKT,_a)
+
+
+\fp_def_spr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Sprawdzenie poprawności danych tabeli FP_DEF. Akcja rekord po lub formuła po edycji okienka.
+::   WE: _a - rodzaj modyfikacji: 0 - dodawanie, 1 - poprawianie
+::   WY: akronim wymaganego pola lub zero jeśli dojdzie do powielenia unikalnego klucza, 1 jeśli rekord jest poprawny
+::----------------------------------------------------------------------------------------------------------------------
+{? FP_DEF.RODZAJ='C' || __CHK.table(FP_DEF,_a,,'ID','B_ACTION')
+|? FP_DEF.RODZAJ='F' || __CHK.table(FP_DEF,_a,,'ID','NAZWA')
+?}
+
+
+\fp_fir_spr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Sprawdzenie poprawności danych tabeli FP_FIR. Akcja rekord po lub formuła po edycji okienka.
+::   WE: _a - rodzaj modyfikacji: 0 - dodawanie, 1 - poprawianie
+::   WY: akronim wymaganego pola lub zero jeśli dojdzie do powielenia unikalnego klucza, 1 jeśli rekord jest poprawny
+::----------------------------------------------------------------------------------------------------------------------
+__CHK.table(FP_FIR,_a,,'FIRMA')
+
+
+\fp_str_spr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Sprawdzenie poprawności danych tabeli FP_STR. Akcja rekord po lub formuła po edycji okienka.
+::   WE: _a - rodzaj modyfikacji: 0 - dodawanie, 1 - poprawianie
+::   WY: akronim wymaganego pola lub zero jeśli dojdzie do powielenia unikalnego klucza, 1 jeśli rekord jest poprawny
+::----------------------------------------------------------------------------------------------------------------------
+{? __CHK.record(FP_STR,,'ID')<>''
+|| return('ID')
+?};
+
+_spr:=
+   {? FP_STR.RODZAJ='O' || __CHK.record(FP_STR,,'B_DOMAIN')
+   |? FP_STR.RODZAJ='F' || __CHK.record(FP_STR,,'FP_DEF')
+   |? FP_STR.RODZAJ='G' || __CHK.record(FP_STR,,'NAZWA')
+   || ''
+   ?};
+
+{? _spr=''
+|| exec('fp_str_bw','#funpar_str');
+   __CHK.index(FP_STR,_a)
+|| _spr
+?}
+
+
+\fp_wer_spr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Sprawdzenie poprawności danych tabeli FP_WER. Akcja rekord po lub formuła po edycji okienka.
+::   WE: _a - rodzaj modyfikacji: 0 - dodawanie, 1 - poprawianie
+::   WY: akronim wymaganego pola lub zero jeśli dojdzie do powielenia unikalnego klucza, 1 jeśli rekord jest poprawny
+::----------------------------------------------------------------------------------------------------------------------
+__CHK.table(FP_WER,_a)
+
+
+\fp_def_dostep_po
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Po redakcji pola DOSTEP tabeli FP_DEF
+::----------------------------------------------------------------------------------------------------------------------
+{? FP_DEF.DOSTEP='T'
+|| FP_DEF.STATS:='N';
+   FP_DEF.GRUPA:='N';
+   FP_DEF.WIELE:='N'
+?};
+1
+
+
+\fp_def_ndostep
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Sprawdza, czy funkcja nie jest funkcja użytkownika. Wykorzystywana do blokowania pól jako "przed redakcją".
+::----------------------------------------------------------------------------------------------------------------------
+FP_DEF.DOSTEP='N'
+
+
+\fp_def_wiele
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Sprawdza, czy funkcja jest wielokrotnie parametryzowalna.
+::----------------------------------------------------------------------------------------------------------------------
+FP_DEF.WIELE='T'
+
+
+\fp_def_gen_id
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Generuje identyfikator funkcji.
+::----------------------------------------------------------------------------------------------------------------------
+FP_DEF.ID:=exec('fp_gen_id','#funpar_wid')
+
+
+\fp_str_gen_id
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Generuje identyfikator elementu.
+::----------------------------------------------------------------------------------------------------------------------
+FP_STR.ID:=exec('fp_gen_id','#funpar_wid')
+
+
+\fp_gen_id
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Generuje identyfikator.
+::----------------------------------------------------------------------------------------------------------------------
+_id:=exec('gen_id','#id',18);
+(6+_id)+'-'+(12+_id+6)+'-'+(_id+6)
+
+
+\wer_fun_akt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Sprawdza i ewentualnie uzupełnia wersje parametryzacji.
+::   WE: _a - wskazanie na definicję funkcji
+::UWAGA: Poprawność argumentów wywołania nie jest weryfikowana.
+::----------------------------------------------------------------------------------------------------------------------
+FP_DEF.cntx_psh;
+FP_DEF.prefix;
+{? ~FP_DEF.seek(_a) | FP_DEF.DOSTEP='T'
+|| FP_DEF.cntx_pop;
+   return
+?};
+FP_DEF.cntx_pop;
+
+FP_AKT.cntx_psh;
+FP_AKT.index('FP_AKT');
+FP_AKT.prefix(_a);
+{? FP_AKT.first |
+   ~FUN.ask('Dla funkcji parametryzacji nie określono wersji.\n'
+      'Czy uzupełnić brakujące informacje?'@)
+|| FP_AKT.cntx_pop;
+   return
+?};
+
+FP_WER.cntx_psh;
+FP_WER.win_sel('WYB');
+FP_WER.index('DATA');
+FP_WER.prefix;
+{!
+|? {? FP_WER.select
+   || FP_AKT.blank(1);
+      FP_AKT.FP_DEF:=_a;
+      FP_AKT.FP_WER:=FP_WER.ref;
+      FP_AKT.add(1);
+      0
+   || ~FUN.ask('Czy porzucić uzupełnienie informacji o wersji?'@)
+   ?}
+!};
+FP_WER.cntx_pop;
+FP_AKT.cntx_pop;
+~~
+
+
+\dekl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wywołanie deklaracji niezbędnych klas
+::----------------------------------------------------------------------------------------------------------------------
+exec('dekl_fp_pom','#funpar_str');
+exec('dekl_fp_kon','#funpar_wid');
+~~
+
+
+\dekl_fp_kon
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Deklaruje klasę konsoli ustawień i parametryzacji
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('FP_KON',@.CLASS)>0
+|| return
+?};
+
+obj_decl('FP_KON',
+
+   obj_fld('VAR',''),
+   obj_fld('POM',~~),
+   obj_fld('TREE',~~),
+   obj_fld('TODO',~~),
+
+:  inicjalizacja obiektu
+:  WE:
+:     _a - nazwa zmiennej globalnej przechowującej referencję do obiektu
+:     _b - referencja do obiektu pomocniczego zarządzania konfiguracją
+   obj_meth('__init',"
+      ($(_b+':=_a'))(_a);
+      .VAR:=_b;
+      .POM:=_c;
+      exec('ustaw_wid','#funpar_wid',.)
+   "),
+
+:  wyświetla konsolę
+   obj_meth('show',"
+      params_set('SELECTED',tab_tmp(1,
+         'NUMER','INTEGER','Lp.'@,
+         'REF','INTEGER','Rekord'@,
+         'FP_STR','INTEGER','Rekord FP_STR'@,
+         'FP_SID','STRING[20]','Id rekordu FP_STR'@,
+         'FP_DEF','INTEGER','Rekord FP_DEF'@,
+         'FP_DID','STRING[20]','Id rekordu FP_DEF'@
+      ));
+      exec('czytaj_str','#funpar_wid',.,0,0);
+      exec('odswiez','#funpar_wid',.);
+      AreaTitle.setTabWin(FP_WID);
+      AreaTitle.setTitle();
+      FP_WID.select();
+      .release()
+   "),
+
+:  usuwa zmienną globalną wykorzystywaną jako "uchwyt"
+   obj_meth('release',"($('&'+.VAR))()",-1)
+)
+
+
+\ustaw_wid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Definiuje struktury pomocnicze i interfejs konsoli
+::   WE: _a - referencja do obiektu obsługującego konsolę
+::----------------------------------------------------------------------------------------------------------------------
+_native:=(lang_language(1)='' | lang_language(1)='pl');
+
+_a.TREE:=obj_new('TAB','WND','NAW');
+_tab:=tab_tmp(2,
+   'WEZEL','TREE_REF','Nadrzędny'@,
+   'NUMER','INTEGER','Lp.'@,
+   'NAZWA','STRING[200]','Nazwa'@,
+   'FP_STR','INTEGER','Rekord FP_STR'@,
+   'FP_SID','STRING[20]','Id rekordu FP_STR'@,
+   'FP_DEF','INTEGER','Rekord FP_DEF'@,
+   'FP_DID','STRING[20]','Id rekordu FP_DEF'@,
+   'FP_INS','INTEGER','Rekord FP_INS'@,
+   'STATUS','STRING[1]','Status'@,
+   'RODZAJ','STRING[1]','Rodzaj'@,
+   'LISC','STRING[1]','Liść'@
+);
+
+FP_WID.win_fml('WER',,'NAZWA',,'ICON_BEFORE',"exec('ikona_str','#funpar_wid',cur_tab(1,1))");
+
+_uruchom:=$("exec('uruchom','#funpar_wid',"+_a.VAR+")");
+_obsluz:=$("exec('obsluz','#funpar_wid',"+_a.VAR+")");
+_czytaj:=$("exec('odswiez_wid','#funpar_wid',"+_a.VAR+")");
+_zmiany:="exec('historia','#funpar_wid',cur_tab(1,1))";
+_eksportuj0:="params_exec('eksportuj','#funpar_wid',cur_tab(1,1),0)";
+_eksportuj1:="params_exec('eksportuj','#funpar_wid',cur_tab(1,1),1)";
+_importuj:="params_exec('importuj','#funpar_wid',cur_tab(1,1))";
+: Akcja "Importuj wszystkie" dodana na zlecenie 1537793773000000
+_importuj_wsz:="params_exec('import_init','#excel_imex')";
+
+_wnd:=_tab.mk_sel('Parametryzacja'@,'P',0,'param',,,,1,'N','N',,);
+_tab.win_fld(_wnd,,'NAZWA',,,107);
+_tab.win_fld(_wnd,,'STATUS',,,-3,,,,,,2,,"'T'","'N'","'?'");
+_tab.fld_attr(,2);
+_tab.fld_attr('FP_DID',1);
+{? _native
+|| _tab.win_act(_wnd,1,'Formuła','Konfiguracja'@@,,,$("exec('ustawienia','#funpar_wid',"+_a.VAR+")"),,,,,,'K')
+?};
+_tab.win_act(_wnd,0,'Formuła','Wybierz'@@,,,_uruchom,,1,,,,'W');
+_tab.win_act(_wnd,0,'Formuła','Odśwież'@@,,,_czytaj,,,,,,'O');
+_tab.win_act(_wnd,0,'Formuła','Zmień status'@@,,,_obsluz,,,,,,'Z');
+_tab.win_act(_wnd,0,'Formuła','Historia'@@,,,"exec('historia','#funpar_wid',FP_WYK)",,,,,,'H');
+{? _native
+|| _tab.win_act(_wnd,0,'Formuła','Konfiguracja'@@,,,$("exec('ustawienia','#funpar_wid',"+_a.VAR+")"),,,,,,'K')
+?};
+_tab.win_act(_wnd,0,'Formuła','Eksportuj'@@,,,_eksportuj0,,,1,"sel_nchk()",,'E');
+_tab.win_act(_wnd,0,'Formuła','Eksportuj z w&yborem'@@,,,_eksportuj1,,,1,"sel_nchk()",,'Y');
+_tab.win_act(_wnd,0,'Formuła','Importuj'@@,,,_importuj,,,1,"sel_nchk()",,'I');
+{? sec_superuser()
+|| _tab.win_act(_wnd,0,'Formuła','Importuj w&szystkie'@@,,,_importuj_wsz,,,,,,'S')
+?};
+_tab.win_act(_wnd,0,'Formuła','Zwiń/&rozwiń'@@,,'Zwijanie / rozwijanie drzewa'@,"exec('zwin_rozwin','#tree')",,,,,,
+   'R',,'target=window'
+);
+_tab.win_act(_wnd,0,'Rekord',,,,$("exec('status','#funpar_wid',"+_a.VAR+")"));
+_tab.win_fml(_wnd,,'NAZWA',,'ICON_BEFORE',"exec('ikona_str','#funpar_wid',cur_tab(1,1))");
+_btn:=_tab.win_btn(_wnd,'text=%1,panel=right,align=begin'['&Wybierz'@],'menu:W',,,,,,'noempty');
+_tab.btn_sopt(_wnd,_btn,'tooltip=%1'['Wybór bieżącego zapisu'@]);
+_btn:=_tab.win_btn(_wnd,'text=%1,panel=right,align=begin'['&Eksportuj'@],'menu:E',,,,,,'noempty');
+_tab.btn_sopt(_wnd,_btn,'tooltip=%1'['Eksport wybranych elementów parametryzacji'@]);
+_btn:=_tab.win_btn(_wnd,'text=%1,panel=right,align=begin'['Eksportuj z w&yborem'@],'menu:Y',,,,,,'noempty');
+_tab.btn_sopt(_wnd,_btn,'tooltip=%1'['Eksport wybranych elementów parametryzacji'@]);
+_btn:=_tab.win_btn(_wnd,'text=%1,panel=right,align=begin'['Importuj'@],'menu:I',,,,,,'noempty');
+_tab.btn_sopt(_wnd,_btn,'tooltip=%1'['Import elementów parametryzacji'@]);
+{? sec_superuser()
+|| _btn:=_tab.win_btn(_wnd,'text=%1,panel=bottom,align=end'['Importuj w&szystkie'@],'menu:S',,,,,,'noempty');
+   _tab.btn_sopt(_wnd,_btn,'tooltip=%1'['Import wszystkich elementów parametryzacji'@])
+?};
+_a.TREE.NAW:=_wnd;
+
+_acr:='STR';
+{? (_str:=__WND.SEL.get(FP_WYK,_acr))=''
+|| _str:=FP_WYK.mk_sel('Wykonanie'@,'P',0,'#fp_wyk_str',,,,,'P');
+   FP_WYK.win_fld(_str,,'STATUS',,,-3,,,'Status'@,,,2,,"'T'","'N'","'?'");
+   FP_WYK.win_fld(_str,,'KTO',,,30,,,'Użytkownik'@);
+   FP_WYK.win_fld(_str,,'DATA',,,10,,,'Data'@);
+   FP_WYK.win_fld(_str,,'CZAS',,,8,,,'Godzina'@);
+   FP_WYK.win_fld(_str,,'NOTA',,,56,,,'Komentarz'@);
+   FP_WYK.win_act(_str,0,'Formuła','Wybierz'@@,,,_uruchom,,1,,,,'W');
+   FP_WYK.win_act(_str,0,'Formuła','Zmień status'@@,,,_obsluz,,,,,,'Z');
+   FP_WYK.win_act(_str,0,'Formuła','Historia'@@,,,_zmiany,,,,,,'H');
+:  _btn:=FP_WYK.win_btn(_str,'text=&Wybierz,panel=right,align=begin','menu:W',,,,,,'noempty');
+:  FP_WYK.btn_sopt(_str,_btn,'tooltip=Wybór bieżącego zapisu');
+   __WND.SEL.put(FP_WYK,_acr,_str)
+?};
+
+_acr:='WYK';
+{? (_wyk:=__WND.SEL.get(FP_WYK,_acr))=''
+|| _wyk:=FP_WYK.mk_sel('Wykonanie'@,'P',0,'#fp_wyk_wyk',,,,,'U');
+   FP_WYK.win_fld(_wyk,,'STATUS',,,-3,,,'Status'@,,,2,,"'T'","'N'","'?'");
+   FP_WYK.win_fld(_wyk,,'B_DOMAIN','SYMBOL',,-5,,,'Obszar'@);
+   {? _native
+   || FP_WYK.win_fld(_wyk,,'FP_DEF','NAZWA',,31,,,'Funkcja'@)
+   || FP_WYK.win_fld(_wyk,POLA_GRP,'TXT_1',,,31,,,'Funkcja'@)
+   ?};
+   FP_WYK.win_fld(_wyk,,'FIRMA','OPIS',,15,,,'Firma'@);
+   FP_WYK.win_fld(_wyk,,'FP_INS','NAZWA',,15,,,'Dane'@);
+   FP_WYK.win_fld(_wyk,,'KTO',,,18,,,'Użytkownik'@);
+   FP_WYK.win_fld(_wyk,,'DATA',,,10,,,'Data'@);
+   FP_WYK.win_fld(_wyk,,'CZAS',,,8,,,'Godzina'@);
+   FP_WYK.win_act(_wyk,0,'Formuła','Wybierz'@@,,,_uruchom,,1,,,,'W');
+   FP_WYK.win_act(_wyk,0,'Formuła','Zmień status'@@,,,_obsluz,,,,,,'Z');
+   FP_WYK.win_act(_wyk,0,'Formuła','Historia'@@,,,_zmiany,,,,,,'H');
+   {? _native
+   || FP_WYK.win_act(_wyk,0,'Kolejność')
+   ?};
+   __WND.SEL.put(FP_WYK,_acr,_wyk)
+?};
+
+_acr:='WER';
+{? (_fun:=__WND.SEL.get(FP_WID,_acr))=''
+|| _fun:=FP_WID.mk_sel('Ustawienia użytkownika'@,'P',0,'#fp_wid_wer',,,,1,'N','N',,);
+   FP_WID.win_fld(_fun,POLA_GRP,'TXT_2',,,110,,,'Nazwa'@,,'Krótki opis'@);
+   FP_WID.win_act(_fun,0,'Formuła','Wybierz'@@,,,
+      "exec('akcja','#funpar_wid',1,menu_txt())",
+      "exec('akcja','#funpar_wid',0,menu_txt())",
+      1,,,,'W'
+   );
+   FP_WID.win_act(_fun,0,'Formuła','Zwiń/&rozwiń'@@,,'Zwijanie / rozwijanie drzewa'@,
+      "exec('zwin_rozwin','#tree')",,,,,,'R',,'target=window'
+   );
+   {? _native
+   || FP_WID.win_act(_fun,0,'Szukaj');
+      FP_WID.win_act(_fun,0,'Kolejność')
+   ?};
+   _btn:=FP_WID.win_btn(_fun,'text=%1,panel=right,align=begin'['&Wybierz'@],'menu:W',,,,,,'noempty');
+   FP_WID.btn_sopt(_fun,_btn,'tooltip=%1'['Wybór bieżącego zapisu'@]);
+   __WND.SEL.put(FP_WID,_acr,_fun)
+?};
+
+_acr:='GRP';
+{? (_grp:=__WND.SEL.get(FP_WID,_acr))=''
+:  konsola funkcji ustawień i parametryzacji
+|| _grp:=FP_WID.grp_make(,
+:     po wyświetleniu
+      $("exec('lang_obj','#funpar_wid');
+         POLA_GRP.fld_fml('TXT_1','BEFORE_DISPLAY',\"
+            POLA_GRP.TXT_1:=exec('lang_obj','#funpar_wid').translate(FP_WYK.FP_DEF().NAZWA);
+            1
+         \");
+         POLA_GRP.fld_fml('TXT_2','BEFORE_DISPLAY',\"
+            POLA_GRP.TXT_2:=exec('lang_obj','#funpar_wid').translate(FP_WID.NAZWA);
+            1
+         \");
+         FP_WYK.clear();
+         grp_disp(FP_WYK,__WND.SEL.get(FP_WYK,'STR'),1);
+      "+
+:     Ukrywanie zakładki 'Wykonanie' dla użytkowników bez dostępu do parametryzacji
+:     poprawka dla zgłoszenia SPIS ER/WRT/XP/18.02/1805/0010
+      "  FP_STR.cntx_psh();
+         FP_STR.index('ID');
+         FP_STR.prefix();
+         _loop:=FP_STR.first();
+         _show:=0;
+         {!
+         |? _loop & ~_show
+         |! {? FP_STR.FP_DEF().DOSTEP='N' & FP_STR.FP_DEF().B_ACTION<>null
+            || _show+=exec('chk_role','#b__box',OPERATOR.USER,FP_DEF.B_ACTION().UID)
+            ?};
+            _loop:=FP_STR.next()
+         !};
+         FP_STR.cntx_pop();
+         {? ~_show
+         || tab_hide(1);
+            tab_hide(2)
+         ?};
+         1
+      "),
+:     identyfikator
+      'zws_zpr_fpar',
+:     położenie
+      0,0,
+:     zamknięcie
+      "  _val:=exec('exit','zws');
+         {? _val
+         || {? ~FP_WYK.sel_size() || FP_WYK.f_clear() ?};
+            POLA_GRP.fld_fml('TXT_1','BEFORE_DISPLAY',\"*\");
+            POLA_GRP.fld_fml('TXT_2','BEFORE_DISPLAY',\"*\");
+            obj_del(__PAR_LANG);
+            &__PAR_LANG;
+            1
+         ?}
+      "
+   );
+
+:  struktura obsługiwanej parametryzacji
+   FP_WID.grp_sel(_grp,_tab,_wnd,'Parametryzacja'@,
+:     po odświeżeniu
+      $("grp_disp(FP_WYK,__WND.SEL.get(FP_WYK,'STR'),1);
+         _TAB:=cur_tab(1,1);
+         _hide:='';
+         {? FP_WYK.f_active & FP_WYK.f_size=0
+         || _hide:='HZ';
+            {? _TAB.RODZAJ<>'C' & _TAB.RODZAJ<>'F'
+            || _hide+='W'
+            ?}
+         ?};
+         {? sec_superuser()=0
+         || _hide:=_hide+'K:K'
+         ?};
+         _TAB.actions('"+_wnd+"',_hide,,1)
+      "),
+:     położenie i wysokość
+      ,,20,
+:     przed obsługą
+      "",
+:     po obsłudze
+      "",
+:     utrwalenie, aktywacja, wypełnienie
+      0,0,'maximized'
+   );
+:  podziel okno w poziomie
+   FP_WID.tab_splt(_grp,,'horizontal','bottom',',75%');
+:  informacje o wykonaniu funkcji
+   FP_WID.grp_sel(_grp,FP_WYK,_str,,
+:     po odświeżeniu
+      "",
+:     położenie i wysokość
+      ,,2,
+:     przed obsługą
+      $("_ref:=null;
+         FP_INS.cntx_psh;
+         FP_INS.prefix;
+         {? FP_INS.seek("+_a.VAR+".TREE.TAB.FP_INS,)
+         || _ref:=FP_INS.ref
+         ?};
+         FP_INS.cntx_pop;
+         FP_WYK.sel_adel;
+         FP_WYK.f_set(,,'FP_WYK.FP_INS=:_a and FP_WYK.STATUS in (\\\'T\\\',\\\'N\\\',\\\'?\\\')',_ref)
+      "),
+:     po obsłudze
+      "",
+:     utrwalenie, aktywacja, wypełnienie
+      0,0,'maximized'
+   );
+
+:  informacje o wykonaniu funkcji
+   FP_WID.grp_sel(_grp,FP_WYK,_wyk,'Wykonanie'@,
+:     po odświeżeniu
+      "",
+:     położenie i wysokość
+      ,,,
+:     przed obsługą
+      "  FP_WYK.sel_adel;
+         FP_WYK.f_set(
+            'STATUS',
+            'join FP_INS using (FP_WYK.FP_INS,FP_INS.REFERENCE) '+
+            'join FP_FIR using (FP_INS.FP_FIR,FP_FIR.REFERENCE) ',
+            '(FP_FIR.FIRMA is null or FP_FIR.FIRMA=:_a) and '+
+            'FP_WYK.FP_DEF in (select FP_STR.FP_DEF from FP_STR order by FP_STR.FP_DEF) and '+
+            'FP_WYK.STATUS in (\\\'T\\\',\\\'N\\\',\\\'?\\\')',
+            REF.FIRMA
+         )
+      ",
+:     po obsłudze
+      "{? _a<>0 & ~FP_WYK.sel_size() || FP_WYK.f_clear() ?}",
+:     utrwalenie, aktywacja, wypełnienie
+      0,0,'maximized'
+   );
+
+:  struktura obsługiwanych ustawień
+   FP_WID.grp_sel(_grp,FP_WID,_fun,'Ustawienia'@,
+:     po odświeżeniu
+      "  _hide:={? FP_WID.FP_DEF=null || 'W' || '' ?};
+         FP_WID.actions(__WND.SEL.get(FP_WID,'WER'),_hide,,1)
+      ",
+:     położenie i wysokość
+      ,,,
+:     przed obsługą
+      "  exec('sync','#funpar_wid');
+         FP_WID.index('NUMER');
+         FP_WID.prefix(exec('operatorUser','#users'))
+      ",
+:     po obsłudze
+      "",
+:     utrwalenie, aktywacja, wypełnienie
+      0,0,'maximized'
+   )
+?};
+
+_a.TREE.TAB:=_tab;
+
+FP_WYK.win_edit('RED');
+
+FP_WID.win_sel(_grp)
+
+
+\ikona_str
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Zwraca nazwę ikony właściwą dla zapisu.
+::       Ostrożnie z wykorzystaniem ze względu na użycie tr_state.
+::   WY: nazwa ikony
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=cur_tab(1,1);
+FP_STR.prefix;
+{? _TAB<>FP_STR & _TAB<>FP_WID
+|| {? ~FP_STR.seek(_TAB.FP_STR,)
+   || return('xwin16.png:76')
+   ?}
+?};
+
+{? {? _TAB=FP_WID || FP_WID.FP_WID || FP_STR.FP_DEF<>null ?}
+|| {? _TAB<>FP_STR & _TAB<>FP_WID & _TAB.RODZAJ='I'
+   || 'xwin16.png:76'
+   |? {? _TAB=FP_WID || FP_WID.FP_WID || FP_STR.FP_DEF().B_ACTION=null ?}
+   || 'xwin16.png:72'
+   || 'xwin16.png:187'
+   ?}
+|| {? _TAB.tr_state()=1
+:     Teczka otwarta - na pewno?
+   || _TAB.cntx_psh();
+      _prfx:=_TAB.cur_prfx();
+      _prfx+={? _prfx='' || '' || ',' ?}+$#_TAB.ref();
+      ($('_a.prefix('+_prfx+')'))(_TAB);
+      _st:=_TAB.size()>0;
+      _TAB.cntx_pop()
+   || _st:=0
+   ?};
+   'xwin16.png:'+{? _st || '75' || '74' ?}
+
+?}
+
+
+\czytaj_str
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wypełnia bufor struktury na podstawie konfiguracji
+::   WE: _a - referencja obiektu konsoli
+::       _b - numer rekordu nadrzędnego
+::       _c - wskazanie rekordu struktury konfiguracji
+::----------------------------------------------------------------------------------------------------------------------
+_lang:=exec('lang_obj','#funpar_wid');
+_lic:=app_info('domain_lic');
+_TAB:=_a.TREE.TAB;
+
+_TAB.cntx_psh;
+FP_STR.cntx_psh;
+FP_STR.index('FP_STR');
+FP_STR.prefix(_c);
+
+_superuser:=sec_superuser();
+
+_loop:=FP_STR.first;
+{!
+|? _loop
+|! {? {? FP_STR.RODZAJ='O'
+      || _lic.find_key(FP_STR.ID)
+      || 1
+      ?}
+      & FP_STR.POMIN='N'
+      & FP_STR.DOSTEP='T'
+      & FP_STR.FP_STR=_c
+      & FP_STR.FP_DEF().DOSTEP<>'T'
+      &
+      {? FP_STR.FP_DEF().RODZAJ='F'
+      || _superuser
+      |? FP_STR.FP_DEF().RODZAJ='C' & ~_superuser
+      || exec('chk_role','#b__box',OPERATOR.USER,FP_DEF.B_ACTION().UID)
+      || 1
+      ?}
+   || _TAB.blank;
+      _TAB.WEZEL:=_b;
+      _TAB.STATUS:='N';
+      _TAB.NUMER:=FP_STR.NUMER;
+      _TAB.NAZWA:=_lang.translate(FP_STR.NAZWA);
+      _TAB.FP_STR:=FP_STR.ref;
+      _TAB.FP_SID:=FP_STR.ID;
+      _TAB.FP_DEF:=FP_STR.FP_DEF;
+      _TAB.FP_DID:=FP_STR.FP_DEF().ID;
+      _TAB.RODZAJ:=FP_STR.FP_DEF().RODZAJ;
+      {? _TAB.add
+      || {? FP_STR.FP_DEF<>null
+         || exec('czytaj_ins','#funpar_wid',_a,#_TAB.ref,FP_STR.FP_DEF,#FP_STR.ref,FP_STR.ID)
+         ?};
+         exec('czytaj_str','#funpar_wid',_a,#_TAB.ref,#FP_STR.ref);
+         {? FP_STR.RODZAJ='G' | FP_STR.RODZAJ='O'
+         || _ref:=_TAB.ref();
+            _jest:=_TAB.find_key(#_TAB.ref());
+            {? _TAB.seek(_ref) & _jest=0
+            || _TAB.del()
+            ?}
+         ?}
+      ?}
+   ?};
+   _loop:=FP_STR.next
+!};
+
+FP_STR.cntx_pop;
+_TAB.cntx_pop;
+
+~~
+
+
+\czytaj_ins
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wypełnia bufor struktury na podstawie konfiguracji dla firm
+::   WE: _a - referencja obiektu konsoli
+::       _b - numer rekordu nadrzędnego
+::       _c - wskazanie funkcji parametryzacji
+::       _d - wskazanie rekordu struktury konfiguracji
+::       _e - identyfikator rekordu struktury konfiguracji
+::----------------------------------------------------------------------------------------------------------------------
+{? _c=null
+|| return
+?};
+
+_TAB:=_a.TREE.TAB;
+_TAB.cntx_psh;
+FP_INS.cntx_psh;
+FP_INS.index('FP_DEF');
+FP_INS.prefix(_c);
+
+_loop:=FP_INS.first;
+
+{? ~_loop
+|| FP_INS.cntx_pop;
+   _TAB.cntx_pop;
+   return()
+?};
+
+{? FP_INS.FP_FIR().FP_DEF().WIELE='N'
+|| _TAB.STATUS:=FP_INS.STATUS;
+   _TAB.FP_INS:=FP_INS.ref;
+   _TAB.LISC:='T';
+   _TAB.put
+|| {!
+   |? _loop
+   |! FP_INS.FP_FIR();
+      {? FP_FIR.POMIN='N' & (FP_FIR.FIRMA=null | FP_FIR.FIRMA=REF.FIRMA)
+      || _TAB.blank;
+         _TAB.WEZEL:=_b;
+         _TAB.NUMER:=FP_INS.NUMER;
+         _TAB.FP_STR:=_d;
+         _TAB.FP_SID:=_e;
+         _TAB.FP_INS:=FP_INS.ref;
+         _TAB.NAZWA:=FP_INS.NAZWA;
+         _TAB.STATUS:=FP_INS.STATUS;
+         _TAB.RODZAJ:='I';
+         _TAB.LISC:='T';
+         {? ~_TAB.find_rec
+         || _TAB.add
+         ?}
+      ?};
+      _loop:=FP_INS.next
+   !}
+?};
+
+FP_INS.cntx_pop;
+_TAB.cntx_pop;
+
+~~
+
+
+\odswiez_wid
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Ponowne wypełnienie drzewka widoku
+::   WE: _a - referencja obiektu konsoli
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=_a.TREE.TAB;
+_sid:=_TAB.FP_SID;
+_TAB.erase;
+
+exec('czytaj_str','#funpar_wid',_a,0,0);
+exec('odswiez','#funpar_wid',_a);
+
+_TAB.blank;
+_TAB.FP_SID:=_sid;
+_TAB.find_rec
+
+
+\odswiez
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Weryfikacja stanu widoku
+::   WE: _a - referencja obiektu konsoli
+::----------------------------------------------------------------------------------------------------------------------
+FP_INS.cntx_psh;
+FP_INS.clear;
+_TAB:=_a.TREE.TAB;
+_TAB.cntx_psh;
+_TAB.clear;
+
+_loop:=_TAB.first;
+{!
+|? _loop
+|! {? _TAB.LISC='T'
+   || {? FP_INS.seek(_TAB.FP_INS,)
+      || {? _TAB.STATUS<>FP_INS.STATUS
+         || _TAB.STATUS:=FP_INS.STATUS;
+            {? _TAB.put
+            || exec('wezel','#funpar_wid',_a)
+            ?}
+         ?}
+      ?};
+      _loop:=_TAB.next
+   || _TAB.cntx_psh;
+      _TAB.prefix(#_TAB.ref);
+      _size:=_TAB.size;
+      _TAB.cntx_pop;
+      _loop:={? _size || _TAB.next || _TAB.del ?}
+   ?}
+!};
+
+_TAB.cntx_pop;
+FP_INS.cntx_pop
+
+
+\wezel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Weryfikacja stanu widoku
+::   WE: _a - referencja obiektu konsoli
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=_a.TREE.TAB;
+_ref:=_TAB.ref;
+
+{? _TAB.WEZEL<>0 & _TAB.seek(_TAB.WEZEL,)
+|| exec('status','#funpar_wid',_a);
+   exec('wezel','#funpar_wid',_a);
+   _TAB.seek(_ref)
+?}
+
+
+\status
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Weryfikacja statusu zapisu nadrzędnego
+::   WE: _a - referencja obiektu konsoli
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=_a.TREE.TAB;
+
+_ref:=_TAB.ref;
+_TAB.prefix(#_ref);
+
+_status:='';
+{? _TAB.first
+|| _status:=_TAB.STATUS;
+   {!
+   |? {? _TAB.next
+      || {? _TAB.STATUS<>'' & _TAB.STATUS<>_status
+         || _status:='?';
+            0
+         || 1
+         ?}
+      ?}
+   !}
+|| {? FP_WYK.FP_INS=_TAB.FP_INS
+   || _status:=FP_WYK.STATUS
+   ?}
+?};
+
+_TAB.prefix;
+_TAB.seek(_ref);
+
+{? _TAB.STATUS=''
+|| _TAB.STATUS:='N';
+   _TAB.put
+|? _status<>'' & _TAB.STATUS<>_status
+|| _TAB.STATUS:=_status;
+   _TAB.put
+?};
+
+0
+
+
+\ustawienia
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji
+::   WE: _a - referencja obiektu konsoli
+::----------------------------------------------------------------------------------------------------------------------
+FP_STR.win_fml('WER',,'NAZWA',,'ICON_BEFORE',"exec('ikona_str','#funpar_wid',cur_tab(1,1))");
+
+FP_DEF.win_sel('WER');
+FP_WER.win_sel('WER');
+FP_STR.win_sel('GRP');
+
+FP_STR.index('FP_STR');
+FP_AKT.index('DATA');
+FP_FIR.index('FIRMA');
+
+FP_STR.select;
+
+_a.TREE.TAB.erase;
+
+exec('czytaj_str','#funpar_wid',_a,0,0);
+exec('odswiez','#funpar_wid',_a)
+
+
+\kon_grp_wyp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji - wypełnienie
+::----------------------------------------------------------------------------------------------------------------------
+grp_disp(FP_FIR,'WER',1,1);
+1
+
+
+\kon_str_ods
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji - po odświeżeniu struktury parametryzacji
+::----------------------------------------------------------------------------------------------------------------------
+grp_disp(FP_FIR,'WER',1,1);
+grp_disp(FP_AKT,'WER',1,1);
+
+_hide:='';
+{? FP_STR.SYSTEM='T'
+|| _hide:='UP'
+?};
+{? FP_STR.RODZAJ='F'
+|| _hide+='D'
+?};
+FP_STR.actions('WER',_hide,,1)
+
+
+\kon_fir_ods
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji - po odświeżeniu parametryzacji w firmach
+::----------------------------------------------------------------------------------------------------------------------
+grp_disp(FP_WYK,'WERSJA',1,1)
+
+
+\kon_fir_pro
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji - przed obsługą parametryzacji w firmach
+::----------------------------------------------------------------------------------------------------------------------
+FP_FIR.prefix(FP_STR.FP_DEF);
+
+_hide:='';
+{? FP_STR.FP_DEF=null
+|| _hide:='D:D'
+|? FP_STR.FP_DEF().DOSTEP='T'
+|| _hide:='D:D'
+?};
+FP_FIR.actions('WER',_hide,,1)
+
+
+\kon_wfi_pro
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji - przed obsługą wykonania parametryzacji w firmie
+::----------------------------------------------------------------------------------------------------------------------
+FP_WYK.sel_adel;
+FP_WYK.f_set(
+   'STATUS,DATA,CZAS',
+   'join FP_INS using (FP_WYK.FP_INS,FP_INS.REFERENCE)',
+   'FP_INS.FP_FIR=:_a and FP_WYK.STATUS in (\'?\',\'N\',\'T\')',
+   {? FP_FIR.size || FP_FIR.ref || null ?}
+)
+
+
+\kon_akt_ods
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji - po odświeżeniu wersji parametryzacji
+::----------------------------------------------------------------------------------------------------------------------
+grp_disp(FP_WYK,'FIRMA',,1)
+
+
+\kon_akt_pro
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji - przed obsługą wersji parametryzacji
+::----------------------------------------------------------------------------------------------------------------------
+FP_AKT.prefix(FP_STR.FP_DEF);
+
+_hide:='';
+{? FP_STR.FP_DEF=null
+|| _hide:='D:D'
+|? FP_STR.FP_DEF().DOSTEP='T'
+|| _hide:='D:D'
+?};
+FP_AKT.actions('WER',_hide,,1)
+
+
+\kon_wak_pro
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Konsola ustawien parametryzacji - przed obsługą wykonania parametryzacji w wersji
+::----------------------------------------------------------------------------------------------------------------------
+FP_WYK.sel_adel;
+FP_WYK.f_set(
+   'STATUS,DATA,CZAS',,
+   'FP_WYK.FP_AKT=:_a and FP_WYK.STATUS in (\'?\',\'N\',\'T\')',
+   {? FP_AKT.size || FP_AKT.ref || null ?}
+)
+
+
+\uruchom
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Uruchomienie funkcji parametryzacji
+::   WE: _a - referencja obiektu konsoli
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=_a.TREE.TAB;
+_TAB.cntx_psh();
+
+_ins:=0;
+: wywołano z listy
+{? cur_tab(1,1)=FP_WYK
+|| {? FP_WYK.FP_DEF().B_ACTION<>null
+   || _uid:=FP_DEF.B_ACTION().UID;
+      {? exec('chk_role','#b__box',OPERATOR.USER,_uid)=0
+      || FUN.info('Brak uprawnień do czynności: %1 (%2).'@[
+            exec('name','#b_action',_uid),_uid
+         ]);
+         _TAB.cntx_pop();
+         return()
+      ?}
+   ?};
+   FP_WYK.FP_INS();
+   _ins:=#FP_WYK.FP_INS
+
+|| {? _TAB.FP_INS<>0
+   || FP_INS.prefix();
+      {? ~FP_INS.seek(_TAB.FP_INS,)
+      || _TAB.cntx_pop();
+         return()
+      ?};
+      FP_INS.FP_FIR().FP_DEF();
+      _ins:=_TAB.FP_INS
+
+   |? _TAB.FP_DEF<>0
+   || FP_DEF.prefix();
+      {? ~FP_DEF.seek(_TAB.FP_DEF,)
+      || _TAB.cntx_pop();
+         return()
+      ?}
+
+   || _TAB.cntx_pop();
+      return()
+   ?}
+?};
+
+: utwórz tablicę parametrów wywołania
+_arg:=exec('uruchom_arg','#funpar_wid');
+exec('uruchom_def','#funpar_wid',_arg,_TAB);
+
+{? _ins<>0
+:  ustal wartości, dla standardowych przypadków
+|| exec('uruchom_wyk','#funpar_wid',_arg)
+?};
+
+: zapamiętaj parametry
+params_set('in',_arg);
+
+: uruchom funkcję
+_ok:=1;
+_f1:=POLA_GRP.fld_fml('TXT_1','BEFORE_DISPLAY',"*");
+_f2:=POLA_GRP.fld_fml('TXT_2','BEFORE_DISPLAY',"*");
+{? FP_DEF.B_ACTION=null
+|| _path:=exec('set_help','#help',FP_DEF.ID);
+   set_help(_path);
+   ($('params_set(params_get);'+FP_DEF.memo_txt(,1,'FORMULA')))()
+|| FP_DEF.B_ACTION();
+   {? REF.GRUPA<>null & REF.FIRMA=REF.GRUPA
+   || {? B_ACTION.GRP_FIRM<>'T'
+      || FUN.emsg('Czynność nie może być uruchomiona w kontekście grupy kapitałowej.'@);
+         _ok:=0
+      ?}
+   ?};
+   {? _ok
+   || {? B_ACTION.PROC='T'
+      || _params:=exec('mp_run_a','#b__box');
+         _params.ACT_UID:=B_ACTION.UID;
+         exec('mp_run','#b__box',_params)
+      || exec('np_run','#b__box',B_ACTION.UID)
+      ?}
+   ?}
+?};
+POLA_GRP.fld_fml('TXT_2','BEFORE_DISPLAY',_f2);
+POLA_GRP.fld_fml('TXT_1','BEFORE_DISPLAY',_f1);
+{? ~_ok
+|| _TAB.cntx_pop();
+   return()
+?};
+
+: aktualizuj listki
+{? FP_DEF.WIELE='T'
+|| exec('fp_def_fir','#funpar_str');
+   exec('batch','#funpar_str');
+:  pobierz listę wszystkich dostępnych miejsc funkcji parametryzacji
+   _LST:=sql('select :_a.REFERENCE as REF from :_a where :_a.FP_DEF=:_b',_TAB,#FP_DEF.ref);
+   _loop:=_LST.first();
+   {!
+   |? _loop
+   |! {? _TAB.seek(_LST.REF)
+      || FP_STR.prefix();
+         {? FP_STR.seek(_TAB.FP_STR,)
+         || _ref:={? _TAB.FP_INS || _TAB.WEZEL || #_TAB.ref() ?};
+            _TAB.cntx_psh();
+            _TAB.prefix(_ref);
+            {? _TAB.first()
+            || {! |? _TAB.del() !}
+            ?};
+            _TAB.cntx_pop();
+            exec('czytaj_ins','#funpar_wid',_a,_ref,FP_DEF.ref(),#FP_STR.ref(),FP_STR.ID)
+         ?}
+      ?};
+      _loop:=_LST.next()
+   !}
+?};
+
+_TAB.cntx_pop()
+
+
+\uruchom_arg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Zwraca wskazanie na tablicę zawierającą argumenty wywołania z funkcji parametryzacji.
+::       Wskazanie na tablicę będzie przekazane przez mechanizm params_set - params_get
+::       Struktura informacji:
+::          FP_WYK_REF - wskazanie na rekord w tabeli FP_WYK
+::          FP_INS_REF - wskazanie na rekord w tabeli FP_INS
+::          FP_INS_TAB - akronim tabeli lub tekst 'none' dla parametryzacji wielokrotnej, '' dla pozostałych przypadków
+::          FP_INS_MDB - nazwa zbioru lub tekst 'none' dla parametryzacji wielokrotnej, '' dla pozostałych przypadków
+::          FP_INS_NUM - numer rekordu lub liczba dla parametryzacji wielokrotnej, 0 dla pozostałych przypadków
+::          FP_INS_STR - tekstowa reprezentacja zapisu dla parametryzacji wielokrotnej, '' w pozostałych przypadkach
+::          FP_TREE - wskazanie na tablicę zawierająca informacje z widoku parametryzatora
+::             TABLE - alias do tabeli widoku
+::             NODE_REF - wskazanie elementu, dla którego wywołano funkcję
+::             NODE_ID - identyfikator elementu, dla którego wywołano funkcję
+::             ROOT_REF - wskazanie elementu początkowego gałęzi, dla której wywołano funkcję
+::             ROOT_ID - identyfikator elementu początkowego gałęzi, dla której wywołano funkcję
+::   WY: wskazanie na tablicę
+::----------------------------------------------------------------------------------------------------------------------
+_arg:=obj_new(
+   'FP_WYK_REF',
+   'FP_INS_REF',
+   'FP_INS_TAB',
+   'FP_INS_MDB',
+   'FP_INS_NUM',
+   'FP_INS_STR',
+   'FP_TREE_ID',
+   'FP_TREE'
+);
+
+_arg.FP_TREE:=obj_new(
+   'TABLE',
+   'NODE_REF',
+   'NODE_ID',
+   'ROOT_REF',
+   'ROOT_ID'
+);
+
+_arg
+
+
+\uruchom_def
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wypełnia tablicę FP_TREE w tablicy argumentów wywołania funkcji.
+::   WE: _a - wskazanie na tablicę
+::       _b - alias do tabeli widoku
+::   WY: wskazanie na tablicę
+::----------------------------------------------------------------------------------------------------------------------
+_buf:=_a.FP_TREE;
+_buf.TABLE:=_b;
+_buf.NODE_REF:=_b.ref;
+_buf.NODE_ID:=_b.FP_SID;
+_b.cntx_psh;
+_b.prefix;
+{!
+|? {? ~_b.WEZEL
+   || _buf.ROOT_REF:=_b.ref;
+      _buf.ROOT_ID:=_b.FP_SID;
+      0
+   || _b.seek(_b.WEZEL,)
+   ?}
+!};
+_b.cntx_pop;
+~~
+
+
+\uruchom_wyk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wypełnia tablicę argumentów wywołania funkcji.
+::   WE: _a - wskazanie na tablicę
+::   WY: wskazanie na tablicę
+::----------------------------------------------------------------------------------------------------------------------
+FP_WYK.FP_INS();
+
+_a.FP_WYK_REF:=FP_WYK.ref;
+_a.FP_INS_REF:=FP_INS.ref;
+_a.FP_INS_TAB:=FP_INS.TABELA;
+_a.FP_INS_MDB:=FP_INS.MASKA;
+_a.FP_INS_NUM:=FP_INS.REKORD;
+_a.FP_INS_STR:=FP_INS.NAZWA;
+
+_a
+
+
+\obsluz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Zmiana obsłużenia funkcji parametryzacji
+::   WE: _a - referencja obiektu konsoli
+::----------------------------------------------------------------------------------------------------------------------
+{? FP_WYK.FP_DEF().B_ACTION
+|| _uid:=FP_WYK.FP_DEF().B_ACTION().UID;
+   {? ~exec('chk_role','#b__box',OPERATOR.USER,_uid)
+   || FUN.info('Brak uprawnień do zmiany statusu wykonania czynności: %1 (%2).'@[B_ACTION.NAME,_uid]);
+      return()
+   ?}
+|? ~sec_superuser()
+|| FUN.info('Brak uprawnień do zmiany statusu wykonania funkcji użytkownika uprzywilejowanego.'@);
+   return()
+?};
+
+_status:=FP_WYK.STATUS;
+FP_WYK.STATUS:={? FP_WYK.STATUS='T' || '?' || 'T' ?};
+FP_WYK.KTO:=userdata;
+FP_WYK.DATA:=date;
+FP_WYK.CZAS:=time;
+{? FP_WYK.edit & FP_WYK.put
+|| FP_WYK.memo_put(,'NOTA');
+   exec('fp_his_add','#funpar_str',FP_WYK);
+   {? FP_WYK.f_active & FP_WYK.f_size
+   || FP_WYK.f_rfresh
+   ?}
+?};
+
+exec('odswiez','#funpar_wid',_a);
+
+{? cur_tab(1,1)=FP_WYK
+|| grp_disp(_a.TREE.TAB,_a.TREE.NAW)
+?}
+
+
+\historia
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wyświetla informacje o zmianach statusu / znacznika pominięcia wprowadzanych przez użytkownika
+::   WE: _a - alias do tabeli, dla której mają być pokazane dane
+::----------------------------------------------------------------------------------------------------------------------
+FP_HIS.index('FP_HIS');
+FP_HIS.prefix(!_a,_a.name,_a.ref);
+
+{? _a=FP_WYK
+|| FP_HIS.win_edit('RED_WYK')
+
+|? _a=FP_STR | _a=FP_FIR
+|| FP_HIS.win_edit('RED_POM')
+
+|| return
+?};
+
+FP_HIS.win_sel('WER');
+FP_HIS.select
+
+
+\get_selected
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Zwaraca listę wybranych rekordów.
+::   WE: _a [TABLE] - alias drzewka parametryzacji
+::   WY: alias tabeli zawierającej informacje o wybranych rekordach
+::----------------------------------------------------------------------------------------------------------------------
+: mapa argumentów
+_TAB:=_a;
+
+_SEL:=params_get().SELECTED;
+
+_add:="
+   _b.cntx_psh();
+   {? _b.FP_DID<>'' | (_b.LISC='T' & _b.seek(_b.WEZEL,) & _b.FP_DID<>'')
+   || FP_DEF.cntx_psh();
+      FP_DEF.prefix();
+      {? FP_DEF.seek(_b.FP_DEF,) &
+         {? FP_DEF.RODZAJ='C'
+         || (FP_DEF.B_ACTION<>null() & exec('chk_role','#b__box',OPERATOR.USER,FP_DEF.B_ACTION().UID))
+            | exec('chk_role','#b__box',OPERATOR.USER,_b.FP_DID)
+         |? FP_DEF.RODZAJ='F'
+         || sec_superuser()
+         ?}
+      || {? ~_a.find_tab(,'REF',,'=',#_b.ref())
+         || _a.NUMER:=_a.size()+1;
+            _a.REF:=_b.ref();
+            _a.FP_STR:=_b.FP_STR;
+            _a.FP_SID:=_b.FP_SID;
+            _a.FP_DEF:=_b.FP_DEF;
+            _a.FP_DID:=_b.FP_DID;
+            _a.add()
+         ?}
+      ?};
+      FP_DEF.cntx_pop()
+
+   || _b.prefix(#_b.ref());
+      _loop:=_b.first();
+      {!
+      |? _loop
+      |! _c(_a,_b,_c);
+         _loop:=_b.next()
+      !}
+   ?};
+   _b.cntx_pop()
+";
+
+: dodaj funkcję do listy
+_add(_SEL,_TAB,_add);
+
+_SEL
+
+
+\get_sel_array
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Zwaraca tablicę wybranych wartości.
+::   WE: _a [TABLE] - alias tabeli zawierającej informacje o wybranych rekordach
+::       _b [STRING] - akronim pola listy wybranych wartości
+::       _c [INTEGER] - czy dopisać domenę do ZWS_FO_APLL 0 (nie, domyślnie) / 1 (tak)
+::   WY: tablica zawierająca wybrane wartości z listy lub wartość typu pustego
+::----------------------------------------------------------------------------------------------------------------------
+: mapa argumentów
+_SEL:=_a;
+_acr:=_b;
+_dom_czy:=0;
+{? var_pres('_c')=type_of(0) & _acr='FP_DID'
+|| _dom_czy:=_c
+?};
+
+VAR_DEL.delete('__ZWS_FO_APPL_DOM');
+VAR_DEL.delete('__ZWS_FO_USER_DOM');
+{? _dom_czy
+|| __ZWS_FO_APPL_DOM:='';
+   __ZWS_FO_USER_DOM:=''
+?};
+
+{? _SEL.first()
+|| _fun:=obj_new(_SEL.size());
+   {! _ii:=1
+   |? _funpar:=($('_a.%1'[_acr]))(_SEL);
+      {? _dom_czy
+      || {? _funpar='ZWS_FO_APPL'
+         || _sid:=($('_a.FP_SID'))(_SEL);
+            {? 8+_sid='FO_APPL_'
+            || _dom:=8-_sid;
+               {? _dom<>''
+               || {? (','+__ZWS_FO_APPL_DOM+',')*(','+_dom+',')=0
+                  || __ZWS_FO_APPL_DOM:=__ZWS_FO_APPL_DOM+{? __ZWS_FO_APPL_DOM<>'' || ',' || '' ?}+_dom
+                  ?}
+               ?}
+            ?}
+         |? _funpar='ZWS_FO_USER'
+         || _sid:=($('_a.FP_SID'))(_SEL);
+            {? 8+_sid='FO_USER_'
+            || _dom:=8-_sid;
+               {? _dom<>''
+               || {? (','+__ZWS_FO_USER_DOM+',')*(','+_dom+',')=0
+                  || __ZWS_FO_USER_DOM:=__ZWS_FO_USER_DOM+{? __ZWS_FO_USER_DOM<>'' || ',' || '' ?}+_dom
+                  ?}
+               ?}
+            ?}
+         ?}
+      ?};
+      _fun[_ii]:=_funpar;
+      _SEL.next()
+   !};
+   _fun
+|| ~~
+?}
+
+
+\eksportuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Rozpoczyna eksport danych związanych z wybranymi funkcjami parametryzacji.
+::   WE: _a [TABLE] - alias drzewka parametryzacji
+::       _b [INTEGER] - tryb pracy eksportu 0/1 - bez wyboru/z wyborem
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+: mapa argumentów
+_TAB:=_a;
+_mod:=_b;
+_SEL:=params_exec('get_selected','#funpar_wid',_TAB);
+
+{? _TAB.sel_size()<=1 & _SEL.first()
+|| _fun:=exec('get_sel_array','#funpar_wid',_SEL,'FP_DID');
+   {? type_of(_fun)>100
+:     wyświetl funkcje exportu parametryzacji
+   || exec('export_init','#excel_imex',_fun,_mod);
+      _SEL.erase()
+   ?}
+?};
+~~
+
+
+\importuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Rozpoczyna import danych związanych z wybranymi funkcjami parametryzacji.
+::   WE: _a [TABLE] - alias drzewka parametryzacji
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+: mapa argumentów
+_TAB:=_a;
+_SEL:=params_exec('get_selected','#funpar_wid',_TAB);
+
+{? _TAB.sel_size()<=1 & _SEL.first()
+|| _fun:=exec('get_sel_array','#funpar_wid',_SEL,'FP_DID',1);
+   {? type_of(_fun)>100
+:     wyświetl funkcje importu parametryzacji
+   || exec('import_init','#excel_imex',_fun);
+      _SEL.erase()
+   ?}
+?};
+~~
+
+
+\lang_obj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.14]
+:: OPIS: Tworzy obiekt odpowiedzialny za tłumaczenie nazw funkcji parametryzacji.
+::   WE:
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__PAR_LANG')<100
+|| __PAR_LANG:=exec(,'__fmlang','param.lang',,,lang_language(1))
+?};
+__PAR_LANG
+
+
+\get_list
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [23.25]
+:: OPIS: Pobiera funkcje parametryzacji w postaci listy w kolejności odpowiadającej ich wystąpieniu w aktualnym widoku
+::       drzewka. Uwzględniane są uprawnienia użytkownika. Funkcja nie będzie uwzględniana jeśli użytkownik nie może jej
+::       uruchomić.
+::   WE: [_a] [_USERS] - wskazanie użytkownika (domyślnie bieżący)
+::       [_b] [_FIRMA] - wskazanie firmy (domyślnie bieżąca)
+::       [_c] [INTEGER] - uwzględniaj funkcje specjalne (<>0 - tak/wpp - nie, domyślnie nie)
+::       [_d] [INTERGE] - dla wywołań testowych (1 - prezentacja wyniku/wpp - bez znaczenia)
+::   WY: alias tabeli tymczasowej zawierającej dane funkcji parametryzacji
+::----------------------------------------------------------------------------------------------------------------------
+:: Kolumny w tabeli wyniku:
+:: NUM - liczba porządkująca
+:: TYPE - rodzaj zapisu: C - czyność, F - formuła, B - błąd
+:: AUID - UID czynności lub '' dla formuły
+:: GRPF - funkcja dla grupy kapitałowej: T/N
+:: TEXT - nazwa funkcji
+:: HELP - ''
+:: WIKI - ''
+:: ICON - ikona z definicji czynności
+:: COLOR - kolor właściwy dla dziedziny
+:: EXEC - formuła uruchamiająca funkcję
+::----------------------------------------------------------------------------------------------------------------------
+:: mapa argumentów
+_user:={? var_pres('_a')=type_of(null) || _a || OPERATOR.USER ?};
+_firm:={? var_pres('_b')=type_of(null) || _b || exec('ref_firma','ustawienia') ?};
+_spec:=(var_pres('_c')=type_of(0) & _c<>0);
+_show:=(var_pres('_d')=type_of(0) & _d<>0);
+
+_BUFF:=tab_tmp(1,
+   'NUM','INTEGER','Numer'@,
+   'BASE','STRING[%1]'[$MS.fld_len(FP_DEF,'ID')],MS.name(FP_DEF,'ID'),
+   'TYPE','STRING[%1]'[$MS.fld_len(FP_DEF,'RODZAJ')],MS.name(FP_DEF,'RODZAJ'),
+   'AUID','STRING[%1]'[$MS.fld_len(B_ACTION,'UID')],MS.name(B_ACTION,'UID'),
+   'GRPF','STRING[%1]'[$MS.fld_len(FP_DEF,'GRUPA')],MS.name(FP_DEF,'GRUPA'),
+   'TEXT','STRING[%1]'[$MS.fld_len(FP_DEF,'NAZWA')],MS.name(FP_DEF,'NAZWA'),
+   'HELP','STRING[%1]'[$255],'Podpowiedź'@,
+   'WIKI','STRING[%1]'[$255],'Dokument Wiki'@,
+   'ICON','STRING[%1]'[$MS.fld_len(B_ACTION,'ICON')],MS.name(B_ACTION,'ICON'),
+   'COLOR','STRING[%1]'[$MS.fld_len(B_DOMAIN,'COLOR')],MS.name(B_DOMAIN,'COLOR'),
+   'EXEC','STRING[%1]'[$255],'Treść formuły'@
+);
+
+:: pseudoobiekt usprawniający i upraszczający kodowanie
+_obj:=obj_new('BUFF','user','spec','firm','init','error','insert','trace');
+:: ustaw i weryfikuj właściwości
+_obj.init:="
+   .BUFF:=_a;
+   .user:=null;
+   .spec:=0;
+   .firm:=null;
+   USERS.cntx_psh();
+   {? var_pres('_b')<>type_of(null) | _b=null | ref_tab(_b)<>USERS
+   || .error('Brak lub błędne wskazanie użytkownika.')
+   |? ~USERS.seek(_b,,1)
+   || .error('Użykownik niedostępny.')
+   || .spec:=(USERS.SUPER='T');
+      .user:=_b
+   ?};
+   USERS.cntx_pop();
+   FIRMA.cntx_psh();
+   {? var_pres('_c')<>type_of(null) | _c=null | ref_tab(_c)<>FIRMA
+   || .error('Brak lub błędne wskazanie firmy.')
+   |? ~FIRMA.seek(_c,,1)
+   || .error('Firma niedostępna.')
+   || .firm:=_c
+   ?};
+   FIRMA.cntx_pop();
+   {? .BUFF.first()
+   || return(0)
+   ?};
+   1
+";
+:: zgłoszenie błędu
+_obj.error:="
+   .BUFF.blank(1);
+   .BUFF.NUM:=.BUFF.size()+1;
+   .BUFF.TYPE:='B';
+   .BUFF.TEXT:=_a;
+   .BUFF.add()
+";
+:: dołączenie funkcji
+_obj.insert:="
+   {? FP_STR.FP_DEF=null
+   || return()
+   ?};
+   {? ~.BUFF.find_tab(,'BASE',,'=',FP_STR.FP_DEF().ID)
+      &
+      {? FP_DEF.RODZAJ='C'
+      || {? exec('chk_role','#b__box',.user,FP_DEF.B_ACTION().UID,.firm)
+         || {? REF.GRUPA<>null & REF.GRUPA=.firm
+            || B_ACTION.GRP_FIRM='T'
+            || 1
+            ?}
+         ?}
+      || _a & .spec
+      ?}
+   || .BUFF.blank(1);
+      .BUFF.NUM:=.BUFF.size()+1;
+      .BUFF.BASE:=FP_DEF.ID;
+      .BUFF.TYPE:=FP_DEF.RODZAJ;
+      .BUFF.AUID:=FP_DEF.B_ACTION().UID;
+      .BUFF.GRPF:=FP_DEF.GRUPA;
+      .BUFF.TEXT:=FP_DEF.NAZWA;
+      .BUFF.HELP:='';
+      .BUFF.WIKI:='';
+      .BUFF.ICON:=FP_DEF.B_ACTION().ICON;
+      {? FP_STR.B_DOMAIN<>null()
+      || .BUFF.COLOR:=FP_STR.B_DOMAIN().COLOR
+      ||
+::       Jeśli nie ma przypiętej dziedziny, to kolor z dziedziny ZWS
+         .BUFF.COLOR:=exec('mega_colors','#b_domain').ZWS
+      ?};
+      .BUFF.EXEC:=
+         {? .BUFF.TYPE='C'
+         || {? B_ACTION.PROC='T'
+            || '_params:=exec(\\'mp_run_a\\',\\'#b__box\\'); '
+               '_params.ACT_UID:=\\'%1\\'; '
+               'exec(\\'mp_run\\',\\'#b__box\\',_params)'
+               [B_ACTION.UID]
+            || 'exec(\\'np_run\\',\\'#b__box\\',\\'%1\\')'
+               [B_ACTION.UID]
+            ?}
+         || 'params_set(params_get()); %1'
+            [FP_DEF.memo_txt(,1,'FORMULA')]
+         ?};
+      .BUFF.add()
+   ?}
+";
+:: prezentacja wyniku
+_obj.trace:=
+   {? _show
+   || _acr:=_BUFF.mk_sel(,'P',0,'#get_list_fp',,,,,'U');
+      _BUFF.win_fld(_acr,,'NUM',,,-5);
+      _BUFF.win_fld(_acr,,'TYPE',,,-3);
+      _BUFF.win_fld(_acr,,'AUID',,,-15);
+      _BUFF.win_fld(_acr,,'GRPF',,,-3);
+      _BUFF.win_fld(_acr,,'TEXT',,,30);
+      _BUFF.win_fld(_acr,,'ICON',,,10);
+      _BUFF.win_fld(_acr,,'COLOR',,,10);
+      _BUFF.win_fld(_acr,,'EXEC',,,50);
+      _BUFF.win_fld(_acr,,'HELP',,,30);
+      _BUFF.win_fld(_acr,,'WIKI',,,30);
+      _BUFF.win_act(_acr,,'Szukaj');
+      _BUFF.win_act(_acr,,'Kolejność');
+      _BUFF.win_sel(_acr);
+      ".BUFF.select()"
+   || ""
+   ?};
+
+{? ~_obj.init(_BUFF,_user,_firm)
+:: błędne wykorzystanie
+|| _obj.trace();
+   return(_BUFF)
+?};
+
+:: przeglądaj funkcje
+FP_STR.cntx_psh();
+FP_STR.clear();
+FP_STR.index('FP_STR');
+_loop:=FP_STR.first();
+{!
+|? _loop
+|! _obj.insert(_spec);
+   _loop:=FP_STR.next()
+!};
+FP_STR.cntx_pop();
+_obj.trace();
+
+_BUFF
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:13:35 e19b6355698fc875d71de2fc108373e8a643002d17b63e826bcda697edde4139d211ec6d091cbba4e8207b8de761df330f7889065b2077ca0e908dad5ebbc03258f4ea2333af5ee74ca633db80152f2bdbd39801d718c73b80ca6ee1ac992894cc912349f9e28b7ab410474d78a02343e451fed65a4b184bc6d1a660c0d5a6e0

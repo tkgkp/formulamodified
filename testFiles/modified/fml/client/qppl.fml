@@ -1,0 +1,286 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: qppl.fml
+:: Utworzony: 26.01.2024
+:: Autor: areKc
+:: Systemy: PPL
+::======================================================================================================================
+:: Zawartość: Formuły dedykowane do wywołania w obszarze PPL
+::======================================================================================================================
+
+
+\zmiana_kwalifikacji_godzin
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc
+:: OPIS: Funkcja generująca rozliczenie godzin na podstawie KAL_BUFF
+::     : WE _a [REFERENCE] - Wskazanie na pracownika
+::          _b [INTEGER] - Rok
+::          _c [INTEGER] - Miesiąc
+::     : WY
+::----------------------------------------------------------------------------------------------------------------------
+:: Deklaracja zmiennych
+_prac:={? var_pres('_a')=type_of(null()) || _a || G.P ?}; 'pracownik';
+_rok:={? var_pres('_b')=type_of(0) || _b || O.R ?};       'rok';
+_msc:={? var_pres('_c')=type_of(0) || _c || O.M ?};       'miesiąc';
+_date:=date(_rok,_msc,1);                                 'pierwszy dzień miesiąca';
+_sngt:=0;                                                 'suma nadgodzin godzin w tygodniu pracy pracownika 100%';
+_sgnp:=0;                                                 'suma godzin nominalnych z planu';
+_czy_gt:=0;                                               'czy przekroczono dopuszczalną liczbę nadgodzin w tygodniu pracy';
+_start:=time(0,0,0);                                      'godzina rozpoczęcia doby zegarowej';
+_koniec:=time(24,0,0);                                    'godzina zakończenia doby zegarowej';
+_dtp:=date(0,0,0);                                        'data poprzedni dzień';
+_noc_od:=KST.R_PNOD;                                      'godzina rozpoczęcia pory nocnej';
+_noc_do:=KST.R_PNDO;                                      'godzina zakończenia pory nocnej';
+
+_g50:=55;                 'kod rubryki nadgodzin 50%';
+_g100:=56;                'kod rubryki nadgodzin 100%';
+_nominal:=8;              'norma dzienna godzin pracy';
+_nt:=40;                  'norma tygodniowa';
+_ntng:=48;                'norma tygodniowa z nadgodzinami';
+
+_licz:="*_a/60"; 'funkcja do obliczania liczby godzin na podstawie podanej godziny w formacie [TIME]';
+
+:: Usunięcie przepracowanych godzin.
+G.cntx_psh();
+G.use('%1%2'[4+G.name(),$_rok]);
+G.index('MSCDKW');
+G.prefix(_prac,_msc,'G');
+{? G.first()
+|| {! |? G.del() !}
+?};
+
+:: Kwalifikacja godzin na podstawie bufora wykonań.
+{? G.size()
+|| FUN.emsg('%1\n%2'['Nie można usunąć zapisów dotyczących przepracowanych godzin.','Proszę usunąć je ręcznie i wykonać funkcję ponownie.'])
+|| KAL_BUFF.cntx_psh();
+   _ndx:=KAL_BUFF.ndx_tmp(,,'P',,,'GPW',,,'DATA',,);
+   KAL_BUFF.index(_ndx);
+   KAL_BUFF.prefix(_prac,'Z');
+debug();
+   {? KAL_BUFF.find_ge(_date)
+   || {!
+      |?
+:: Godziny pracy
+         _data_we:=KAL_BUFF.DATA;   'data wejścia';
+         _gd_we:=KAL_BUFF.POCZATEK; 'godzina wejścia';
+         _data_wy:=KAL_BUFF.DATAW;  'data wyjścia';
+         _gd_wy:=KAL_BUFF.KONIEC;   'godzina wjścia';
+         _lg:=_licz(KAL_BUFF.CZAS); 'liczba godzin pracy w danym dniu';
+         _ng:=0;                    'liczba nadgodzin';
+
+         exec('kal_prac','personel',_data_we);
+         _wolne:=__KAL.f_days(_data_we,_data_we); 'sprawdzenie czy praca w sobotę';
+
+:: sprawdzenie czy kwalifikować nadgodziny z tytułu przekroczenia dopuszczalnej liczby godzin w tygodniu
+
+:: !!! sprawdzić czy praca nie rozpoczyna się w dobie niedzielnej.
+:: !!! sprawdzić czy praca z nadgodzinami w nocy jest od poniedziałku.
+:: !!! sprawdzić w tygodniu z nadgodzinami jest nieobecność.
+:: !!! sprawdzić tydzień z nadgodzinami kończy się w następnym miesiącu
+:: !!! sprawdzić tydzień z nadgodzinami zaczął się w poprzednim miesiącu
+:: !!! wnioski o odbiór i o czas wolny
+
+:: obliczanie czasu pracy i nadgodzin narastająco od początku tygodnia do dnia bieżącego
+         {? ~_wolne
+         || KAL_BUFF.cntx_psh();
+            KAL_BUFF.index(_ndx);
+            KAL_BUFF.prefix(_prac,'P');
+            {? KAL_BUFF.find_key(_data_we) & __KAL.w_days(_data_we,_data_we)
+            || _sgnp:=_sngt:=0;
+               {!
+               |? _sgnp+=_licz(KAL_BUFF.CZAS);
+                  _dbp:=KAL_BUFF.DATA;
+                  KAL_BUFF.cntx_psh();
+                  KAL_BUFF.index(_ndx);
+                  KAL_BUFF.prefix(_prac,'Z',_dbp);
+                  {? KAL_BUFF.first()
+                  || _sngt+=_licz(KAL_BUFF.CZAS)-_nominal
+                  ?};
+                  KAL_BUFF.cntx_pop();
+                  KAL_BUFF.prev() & __KAL.w_days(KAL_BUFF.DATA,KAL_BUFF.DATA)
+               !}
+            ?};
+            KAL_BUFF.cntx_pop();
+            _czy_gt:=_sngt>_ntng-_nt;
+            {? _sngt<0 || _sngt:=0 ?}
+         ?};
+
+:: godziny 54
+         {? _wolne
+         || _ng:=_lg;
+            _lg:=0
+         |?_lg>_nominal
+         || _ng:=_lg-_nominal;
+            _lg:=_nominal
+         ?};
+         {? _lg>0
+         || exec('dodaj_godziny','qppl',_prac,_data_we,54,_lg)
+         ?};
+
+:: godziny 57
+         {? _lg>0
+         || _lg:=0;
+            {? _data_we=_data_wy
+            || {?  _gd_we<_noc_do & _gd_wy<_noc_do
+               || _lg:=_licz(_gd_wy-_gd_we)
+               |? _gd_we<_noc_do & _gd_wy>=_noc_do
+               || _lg:=_licz(_noc_do-_gd_we)
+               |? _gd_we>_noc_od & _gd_wy>_noc_od
+               || _lg:=_licz(_gd_wy-_gd_we)
+               |? _gd_we<=_noc_od & _gd_wy>_noc_od
+               || _lg:=_licz(_gd_wy-_noc_od)
+               ?}
+            || {? _gd_we<=_noc_od
+               || _lg:=_licz(_koniec-_noc_od)
+               || _lg:=_licz(_koniec-_gd_we)
+               ?};
+               {? _gd_wy<_noc_do
+               || _lg+=_licz(_gd_wy-_start)
+               || _lg+=_licz(_noc_do-_start)
+               ?}
+            ?};
+            {? _lg>0
+            || exec('dodaj_godziny','qppl',_prac,_data_we,57,_lg)
+            ?}
+         ?};
+
+:: godziny 55 i 56
+         {? _ng>0
+         || _lg50:=_lg100:=0;
+            {? _wolne
+            || _lg100:=_ng
+            |? _czy_gt
+            || {? _sngt-_ntng-_nt>=_ng
+               || _lg100:=_ng
+               || _lg100:=_sngt-_ntng-_nt;
+                  _lg50:=_ng-_lg100
+               ?}
+            |? _data_we=_data_wy
+            || {? _gd_wy<=_noc_od
+               || _lg50:=_ng
+               || _lg100:=_licz(_gd_wy-_noc_od);
+                  _lg50:=_ng-_lg100
+               ?}
+            || {? _gd_wy<=_noc_do
+               || _gd:=_licz(_koniec-_noc_od);
+                  _gd+=_licz(_gd_wy-_start);
+                  {? _gd<_ng
+                  || _lg100:=_gd;
+                     _lg50:=_ng-_lg100
+                  || _lg100:=_ng
+                  ?}
+               || _gd:=_licz(_gd_wy-_noc_do);
+                  {? _gd<_ng
+                  || _lg50:=_gd;
+                     _lg100:=_ng-_lg50
+                  || _lg50:=_ng
+                  ?}
+               ?}
+            ?};
+            {? _lg50>0
+            || exec('dodaj_godziny','qppl',_prac,_data_we,_g50,_lg50)
+            ?};
+            {? _lg100>0
+            || exec('dodaj_godziny','qppl',_prac,_data_we,_g100,_lg100)
+            ?}
+         ?};
+         KAL_BUFF.next() & KAL_BUFF.DATA~2<=_msc
+      !}
+   ?};
+   KAL_BUFF.ndx_drop();
+   KAL_BUFF.cntx_pop()
+?};
+G.cntx_pop();
+__KAL.set_cal('standard',date());
+~~
+
+
+\dodaj_godziny
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc
+:: OPIS: Funkcja generująca rozliczenie godzin na podstawie zapisów z KAL_BUFF
+::     : WE _a - [REFERENCE] - pracownik
+::          _b - [DATE] - data
+::          _c - [INTEGER] - składnik płacowy definiujący rodzaj godzin
+::          _d - [REAL] - liczba godzin
+::     : WY
+::----------------------------------------------------------------------------------------------------------------------
+G.blank();
+G.P:=_a;
+G.M:=_b~2;
+G.D:=_b;
+G.K:=exec('FindInSet','#table','R','RUBKOD',_c);
+G.G:=_d;
+G.BL:='T';
+G.R:='G';
+G.FIRMA:=REF.FIRMA;
+G.cntx_psh();
+G.prefix();
+G.add(0);
+G.cntx_pop();
+~~
+
+
+\kwalifikacja_dodatek_A_B
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc
+:: OPIS: Funkcja generująca liczbę godzin pracy dla dodatków A i B
+::     : WE _a - [REFERENCE] - Pracownik
+::          _b - [DATE] - Rok
+::          _c - [INTEGER] - Miesiąc
+::     : WY
+::----------------------------------------------------------------------------------------------------------------------
+:: Deklaracja zmiennych
+_prac:={? var_pres('_a')=type_of(null()) || _a || P.ref() ?}; 'pracownik';
+_rok:={? var_pres('_b')=type_of(0) || _b || O.R ?};           'rok';
+_msc:={? var_pres('_c')=type_of(0) || _c || O.M ?};           'miesiąc';
+exec('kal_list','personel');
+_norma:=exec('norma_zmiana','godziny',date(_rok,_msc,1),date(_rok,_msc,0));
+{? _norma
+|| _nominal:=exec('nominal','godziny',date(_rok,_msc,1),date(_rok,_msc,0),1,1,,1)
+|| _nominal:=exec('nominal','godziny',date(_rok,_msc,1),date(_rok,_msc,0),1,,,1)
+?};
+
+:: Zestawienie pracy z dodatkowym wynagrodzeniem za pracę z urządzeniami.
+_tab:=sql('
+  select
+     KK.SYM as KK, sum(CAST(PLOB_P.GR AS REAL_TYPE)/60) as GODZ
+  from
+     PLOB_P left join P using (PLOB_P.P,P.reference) left join KK using (PLOB_P.KK,KK.reference)
+  where
+     PLOB_P.P=:_a and PLOB_P.GPW=\'W\' and KK.SYM in (\'A\',\'B\')
+     and
+     (PLOB_P.DATA_OD>=to_date(:_b) and PLOB_P.DATA_OD<=to_date(:_c))
+  group by
+     P.T, KK.SYM',
+  _prac,date(_rok,_msc,1),date(_rok,_msc,0)
+);
+
+:: Generowanie zapisów na liście płac.
+::{? FUNKCJE.L(4050)=0 || FUNKCJE.LK(4050,,,1) ?};
+::{? FUNKCJE.L(4051)=0 || FUNKCJE.LK(4051,,,1) ?};
+:: 5050 to blokada naliczenia składnika liczba godzin automaty.
+{? FUNKCJE.L(5050)=0 || FUNKCJE.LK(4050,,,1) ?};
+FUNKCJE.LK(4051,,,1);
+FUNKCJE.LK(1148,,,1);
+
+{? _tab.first()
+|| _dodatek:=0;
+   {!
+   |? {? _tab.KK='A'
+      || {? FUNKCJE.L(4050)=0 || FUNKCJE.LK(4050,,_tab.GODZ) ?};
+         {? _nominal>0
+         || _dodatek+=FUNKCJE.L(4050)*(KST.WS1/_nominal)$2
+         ?}
+      |? _tab.KK='B'
+      || {? FUNKCJE.L(4051)=0 || FUNKCJE.LK(4051,,_tab.GODZ) ?};
+         {? _nominal>0
+         || _dodatek+=FUNKCJE.L(4051)*(KST.WS2/_nominal)$2
+         ?}
+      ?};
+      _tab.next()
+   !};
+   FUNKCJE.LK(1148,,_dodatek)
+?};
+~~

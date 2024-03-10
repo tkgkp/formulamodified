@@ -1,0 +1,1427 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku:  po_event.fml [20.14]
+:: Utworzony: 10-12-2019
+:: Autor: WH
+::======================================================================================================================
+:: Zawartość: Formuły do planowania zdarzeń w planie operacyjnym
+::======================================================================================================================
+
+
+\update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Aktualizuje rekordy tabeli PL_EVENT
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+
+_result:=0;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+
+PL_EVENT.cntx_psh();
+PL_EVENT.index('SYMBOL');
+PL_EVENT.prefix();
+
+::1. Najpierw usuwam co się da
+{? PL_EVENT.first()
+|| {!
+   |?
+      exec('planned_update','po_event');
+      _next:=0;
+      _ref_nxt:=null();
+      PL_EVENT.cntx_psh();
+      {? PL_EVENT.next()
+      || _ref_nxt:=PL_EVENT.ref()
+      ?};
+      PL_EVENT.cntx_pop();
+
+      _can_del:=exec('can_delete','po_event');
+      {? _can_del>0
+      || _can_continue:=exec('delete','po_event',PL_EVENT.ref())
+      ?};
+
+      {? _ref_nxt<>null()
+      || _next:=PL_EVENT.seek(_ref_nxt)
+      ?};
+      _next>0 & _can_continue>0
+   !}
+?};
+
+:: 2. Obsługa zgłoszeń remontowych
+{? _can_continue>0
+||
+   REM_ZGL.cntx_psh();
+   REM_ZGL.index('STAT_REJ');
+   _list:=exec('status_planned','remonty_plan');
+   _split:=spli_str(_list,',');
+   {? obj_len(_split)>0
+   || {! _it:=1..obj_len(_split)
+      |! _status:=_split[_it];
+         {? _status<>''
+         || REM_ZGL.prefix(_status);
+            {? REM_ZGL.first()
+            || {!
+               |?
+                  {? REM_ZGL.WERYFIK='T'
+                  || _can_continue:=exec('REM_ZGL_add','po_event')
+                  ?};
+                  REM_ZGL.next() & _can_continue>0
+               !}
+            ?}
+         ?}
+      !}
+   ?};
+   REM_ZGL.cntx_pop()
+?};
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end() ?};
+
+PL_EVENT.cntx_pop();
+_result
+
+
+\can_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Sprawdza czy można usunąć zdarzenie
+::   WE: [_a] - PL_EVENT.ref lub bieżący rekord
+::   WY: 0 - nie można usunąć
+::       1 - można usunąć
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_EVENT.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_EVENT.cntx_psh();
+{? _ref<>null()
+|| PL_EVENT.prefix();
+   {? PL_EVENT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+:: Sprawdzam czy rekord źródłowy jeszcze jest w bazie
+   _record:=exec('FindAndGet','#table',PL_EVENT.TAB,PL_EVENT.UID_REF,,,null());
+
+   {? _record=null()
+   ||
+::    Rekordu źródłowego nie ma w bazie
+      _result:=1;
+      _can_continue:=0
+   ?};
+
+   {? _can_continue>0
+   ||
+      {? _record<>null()
+      || _result:=exec(PL_EVENT.TAB+'_can_del','po_event',_record)
+      ?}
+   ?}
+?};
+PL_EVENT.cntx_pop();
+_result
+
+
+\buffer
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Zwraca bufor tabeli PL_EVENT
+::   WY: obj_new
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+exec('PL_EVENT','buffer1')
+
+
+\add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Dodaje do tabeli PL_EVENT jeden rekord lub aktualizuje istniejacy
+::   WE: _a - obj_new - tablica nazwana będąca buforem tabeli exec('buffer','po_event')
+::       [_b] - INTEGER - [0]/1 - czy wykonywać blanka bez formuł?
+::   WY: PL_EVENT.ref() lub null
+::----------------------------------------------------------------------------------------------------------------------
+_buffer:={? var_pres('_a')>100
+         || _a
+         || exec('buffer','po_event')
+         ?};
+_result:=null();
+
+_blank:=0;
+{? var_pres('_b')=type_of(0)
+|| _blank:=_b
+?};
+
+PL_EVENT.cntx_psh(); PL_EVENT.clear();
+{? _blank>0
+|| PL_EVENT.blank(1)
+|| PL_EVENT.blank()
+?};
+_buffer.set();
+
+PL_EVENT.index('UID_REF');
+PL_EVENT.prefix(_buffer.UID_REF,);
+{? PL_EVENT.first()=0
+|| {? PL_EVENT.add()>0
+   || _result:=PL_EVENT.ref()
+   ?}
+|| _buffer.Ref:=PL_EVENT.ref();
+   {? exec('put','po_event',_buffer)>0
+   || _result:=_buffer.Ref
+   ?}
+?};
+PL_EVENT.cntx_pop();
+_result
+
+
+\put
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Aktualizuje w tabeli PL_EVENT jeden rekord
+::   WE: _a - obj_new - tablica nazwana bedaca buforem tabeli exec('buffer','po_event')
+::       _b - PL_EVENT.ref - rekord ktory zmodyfikowac
+::   WY: 0 - porazka
+::       1 - sukces
+::----------------------------------------------------------------------------------------------------------------------
+_buffer:={? var_pres('_a')>100
+         || _a
+         || exec('buffer','po_event')
+         ?};
+
+PL_EVENT.cntx_psh(); PL_EVENT.clear();
+{? PL_EVENT.seek(_buffer.Ref)
+|| _buffer.set();
+   _result:=PL_EVENT.put()
+?};
+PL_EVENT.cntx_pop();
+PL_EVENT.get();
+_result
+
+
+\delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Kasuje podany rekord tabeli PL_EVENT (wykonywane w transakcji!!!)
+::   WE: _a - PL_EVENT.ref()
+::       [_b] - INTEGER - czy usuwać siłowo bez sprawdzenia formułą can_delete
+::   WY: >0 -wyczyszczone,
+::       <=0 -niewyczyszczone
+::  TAG: <PUBLICZNA><DEL>
+::UWAGA: Parametry bez [] są wymagane, formula może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+:: jeżeli transakcja została zerwana, to nie ma sensu przetwarzać formuły
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+_force:=0;
+{? var_pres('_b')=type_of(0)
+|| _force:=_b
+?};
+
+_result:=0;
+_can_continue:=1;
+
+:: sprawdzam, czy to w tej formule będę zakładał transakcję, czy już jest założona
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+PL_EVENT.cntx_psh(); PL_EVENT.clear();
+{? PL_EVENT.seek(_ref)
+||
+   {? _force>0 | exec('can_delete','po_event',_ref)>0
+   ||
+      {? exec('clean','po_event',_ref)>0
+      || {? PL_EVENT.del(,1)>0
+         || _result:=1
+         || undo();
+            _result:=-3
+         ?}
+      || _result:=-2
+      ?}
+   || _result:=-4
+   ?}
+|| _result:=0
+?};
+
+{? _result<0
+|| undo()
+?};
+
+PL_EVENT.cntx_pop();
+{? _mydo || end() ?};
+_result
+
+
+\find_and_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Odszukuje powiązane z danym rekordem zdarzenie i je usuwa razem z jego planem
+::   WE: _a - TAB.uidref - uidref jakiegoś rekordu
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_uidref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+{? _uidref<>''
+||
+   PL_EVENT.cntx_psh();
+   PL_EVENT.index('UID_REF');
+   PL_EVENT.prefix(_uidref,);
+   {? PL_EVENT.first()
+   || _can_continue:=exec('delete','po_event',PL_EVENT.ref(),1)
+   ?};
+   PL_EVENT.cntx_pop()
+?};
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Czyści powiązania do rekordu tabeli PL_EVENT
+::   WE: _a - PL_EVENT.ref()
+::   WY: >0  -wyczyszczone,
+::       <=0 -niewyczyszczone
+::  TAG: <PRYWATNA><CLEAN>
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+:: --- powiązania do ---
+PL_OPER.cntx_psh();
+PL_OPER.index('PL_EVE1');
+PL_EVENR.cntx_psh();
+PL_EVENR.index('PL_EVENT');
+PL_EVENR.prefix(_ref);
+{? PL_EVENR.first()
+|| {!
+   |?
+      PL_OPER.prefix(PL_EVENR.ref());
+      {? PL_OPER.first()
+      || {!
+         |? _next:=0;
+            _ref_nxt:=null();
+            PL_OPER.cntx_psh();
+            {? PL_OPER.next()
+            || _ref_nxt:=PL_OPER.ref()
+            ?};
+            PL_OPER.cntx_pop();
+
+            _can_continue:=exec('del_ploper','po_plan',$PL_OPER.ref(),0,0,1,0);
+
+            {? _ref_nxt<>null()
+            || _next:=PL_OPER.seek(_ref_nxt)
+            ?};
+            _next>0 & _can_continue>0
+         !}
+      ?};
+      PL_EVENR.next() & _can_continue>0
+   !}
+?};
+{? _can_continue>0
+||
+   PL_EVENR.cntx_psh();
+   PL_EVENR.index('PL_EVENT');
+   PL_EVENR.prefix(_ref);
+   {? PL_EVENR.first()
+   || {!
+      |? _next:=0;
+         _ref_nxt:=null();
+         PL_EVENR.cntx_psh();
+         {? PL_EVENR.next()
+         || _ref_nxt:=PL_EVENR.ref()
+         ?};
+         PL_EVENR.cntx_pop();
+
+         {? PL_EVENR.count()=0
+         || _can_continue:=exec('pl_evenr_delete','po_event',PL_EVENR.ref())
+         || _can_continue:=0
+         ?};
+
+         {? _ref_nxt<>null()
+         || _next:=PL_EVENR.seek(_ref_nxt)
+         ?};
+         _next>0 & _can_continue>0
+      !}
+   ?};
+   PL_EVENR.cntx_pop()
+?};
+PL_OPER.cntx_pop();
+PL_EVENR.cntx_pop();
+
+:: --- wszystkie powiazania usuniete? ---
+
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end() ?};
+
+_result
+
+
+\pl_evenr_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Dodaje zasób na którym może być zaplanowane zdarzenie
+::   WE: _a - PL_EVENT.ref - zdarzenie
+::       _b - PL_RES.ref - zasób
+::       _c - REAL - tm_stamp aktualizacji
+::       [_d] - REAL - dostępność zasobu
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_pl_event:=_a;
+_pl_res:=_b;
+_mod:=_c;
+_usable:=0;
+{? var_pres('_d')=type_of(0)
+|| _usable:=_d
+?};
+
+_result:=0;
+
+PL_EVENR.cntx_psh();
+PL_EVENR.index('PL_EVENT');
+PL_EVENR.prefix(_pl_event,_pl_res);
+{? PL_EVENR.first()=0
+|| PL_EVENR.blank();
+   PL_EVENR.PL_EVENT:=_pl_event;
+   PL_EVENR.PL_RES:=_pl_res;
+   PL_EVENR.TM_MOD:=_mod;
+   PL_EVENR.USABLE:=_usable;
+   _result:=PL_EVENR.add()
+|| PL_EVENR.TM_MOD:=_mod;
+   PL_EVENR.USABLE:=_usable;
+   _result:=PL_EVENR.put()
+?};
+PL_EVENR.cntx_pop();
+_result
+
+
+\pl_evenr_useless
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Usuwa wszystkie zbędne zasoby na których może być zaplanowane zdarzenie
+::   WE: _a - PL_EVENT.ref
+::       _b - REAL - tm_stamp aktualizacji
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_pl_event:=_a;
+_mod:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+PL_EVENR.cntx_psh();
+PL_EVENR.index('PL_EVENT');
+PL_EVENR.prefix(_pl_event);
+{? PL_EVENR.first()
+|| {!
+   |? _next:=0;
+      _ref_nxt:=null();
+      PL_EVENR.cntx_psh();
+      {? PL_EVENR.next()
+      || _ref_nxt:=PL_EVENR.ref()
+      ?};
+      PL_EVENR.cntx_pop();
+
+      {? PL_EVENR.TM_MOD<>_mod
+      || _can_continue:=exec('pl_evenr_delete','po_event',PL_EVENR.ref())
+      ?};
+      {? _ref_nxt<>null()
+      || _next:=PL_EVENR.seek(_ref_nxt)
+      ?};
+      _next>0 & _can_continue>0
+   !}
+?};
+PL_EVENR.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\pl_evenr_delete
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Kasuje podany rekord tabeli PL_EVENR (wykonywane w transakcji!!!)
+::   WE: _a - PL_EVENR.ref()
+::   WY: >0 -wyczyszczone,
+::       <=0 -niewyczyszczone
+::  TAG: <PUBLICZNA><DEL>
+::UWAGA: Parametry bez [] są wymagane, formula może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+:: jeżeli transakcja została zerwana, to nie ma sensu przetwarzać formuły
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+:: sprawdzam, czy to w tej formule będę zakładał transakcję, czy już jest założona
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+PL_EVENR.cntx_psh(); PL_EVENR.clear();
+{? PL_EVENR.seek(_ref)
+|| {? exec('pl_evenr_clean','po_event',_ref)>0
+   || {? PL_EVENR.del(,1)>0
+      || _result:=1
+      || undo();
+         _result:=-3
+      ?}
+   || _result:=-2
+   ?}
+|| _result:=0
+?};
+
+{? _result<0
+|| undo()
+?};
+
+PL_EVENR.cntx_pop();
+{? _mydo || end() ?};
+_result
+
+
+\pl_evenr_clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Czyści powiązania do rekordu tabeli PL_EVENR
+::   WE: _a - PL_EVENR.ref()
+::   WY: >0  -wyczyszczone,
+::       <=0 -niewyczyszczone
+::  TAG: <PRYWATNA><CLEAN>
+::UWAGA: Parametry bez [] są wymagane, formuła może nie sprawdzać czy zostały podane i może wystąpić błąd.
+::----------------------------------------------------------------------------------------------------------------------
+{? do_state()=2 || return(-100) ?};
+
+_ref:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+_mydo:=do_state()=0;
+{? _mydo || do() ?};
+:: --- powiązania do ---
+PL_OPER.cntx_psh();
+PL_OPER.index('PL_EVE1');
+PL_OPER.prefix(_ref);
+{? PL_OPER.first()
+|| {!
+   |? _can_continue:=exec('del_ploper','po_plan',$PL_OPER.ref(),,,,0);
+      PL_OPER.first() & _can_continue>0
+   !}
+?};
+PL_OPER.cntx_pop();
+
+:: --- wszystkie powiazania usuniete? ---
+
+{? _can_continue>0
+|| _result:=1
+|| undo()
+?};
+
+{? _mydo || end() ?};
+_result
+
+
+\event_tree2rs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Dodaje rekord do RSa
+::   WE: _a - RS - czyli tabela tymczasowa
+::       _b - STRING - filtr
+::       _c - STRING - czy pobierac zlecenia zaplanowane czy nie: A - wszystkie, P - zaplanowane, N - niezaplanowane
+::   WY:
+::  TAG: <PRYWATNA>
+::----------------------------------------------------------------------------------------------------------------------
+_rs:=_a;
+_filter:=_b;
+_plan_mode:=_c;
+
+_can_continue:=exec('event_filter','po_event',_filter);
+
+{? _can_continue>0
+||
+   _start:=0;
+   _end:=0;
+
+   _rs.cntx_psh();
+   _rs.clear();
+   _id:=_rs.size()+1;
+   _rs.cntx_pop();
+
+   _rs.blank();
+   _rs.SYM:=PL_EVENT.SYMBOL;
+   _rs.NAZWA:=PL_EVENT.OPIS;
+   _rs.ID:=_id;
+   _rs.REF:=$PL_EVENT.ref();
+   _rs.TYP:='PL_EVENT';
+   _rs.MPSSTART:=exec('to_string','#tm_stamp',PL_EVENT.TM_MIN);
+   _rs.MPSEND:=exec('to_string','#tm_stamp',PL_EVENT.TM_MAX);
+   _rs.TAB:=PL_EVENT.TAB;
+   {? PL_EVENT.TAB='REM_ZGL'
+   || _rs.KIND:='Zgłoszenie remontowe'@
+   ?};
+   _rs.UID_REF:=PL_EVENT.UID_REF;
+   _rs.DURATION:=PL_EVENT.DURATION;
+   {? PL_EVENT.PL_TRYB='R'
+   || _rs.PL_TRYB:='Ręczny'@
+   |? PL_EVENT.PL_TRYB='A'
+   || _rs.PL_TRYB:='Automatyczny'@
+   ?};
+   _rs.PLANED:=PL_EVENT.PLANNED;
+   _rs.WYK:=PL_EVENT.WYK;
+   _rs.MLT:=PL_EVENT.MULTI;
+
+   _rs.add();
+   _top:=_rs.ref();
+   _parent:=_id;
+
+   PL_RES.cntx_psh();
+   PL_EVENR.cntx_psh();
+   PL_EVENR.index('PL_EVENT');
+   PL_EVENR.prefix(PL_EVENT.ref());
+   {? PL_EVENR.first()
+   ||
+::    DRUGI POZIOM - HEADER DLA ZASOBOW
+      _id+=1;
+      _rs.blank();
+      _rs.TYP:='HEADER';
+      _rs.SYM:='Zasoby';
+      _rs.NAZWA:='Zasoby na których można zaplanować zdarzenie'@;
+      _rs.PAR:=_parent;
+      _rs.ID:=_id;
+      _rs.LEVEL:=1;
+      _rs.add();
+
+::    TRZECI POZIOM - ZASOBY NA KTORYCH MOZNA ZAPLANOWAC GRUPY
+      _parent:=_id;
+      {!
+      |? _id+=1;
+         _rs.blank();
+         _rs.SYM:=PL_EVENR.PL_RES().SYM;
+         _rs.TYP:='RES';
+         _rs.NAZWA:=PL_RES.NAZ;
+         _rs.KOLOR_B:='255:255:255';
+         _rs.LEVEL:=2;
+         _rs.ID:=_id;
+         _rs.PAR:=_parent;
+         _rs.BLK:='N';
+         _rs.REF:=$PL_RES.ref();
+         _rs.PLANED:=PL_EVENR.PLANNED;
+
+         PL_OPER.cntx_psh();
+         PL_OPER.index('PL_EVE1');
+         PL_OPER.prefix(PL_EVENR.ref());
+         {? PL_OPER.first()
+         || {? _start=0 | _start>PL_OPER.TM_START
+            || _start:=PL_OPER.TM_START
+            ?};
+            _rs.PL_START:=exec('to_string','#tm_stamp',PL_OPER.TM_START)
+         ?};
+         PL_OPER.index('PL_EVE2');
+         PL_OPER.prefix(PL_EVENR.ref());
+         {? PL_OPER.last()
+         || {? _end=0 | _end<PL_OPER.TM_END
+            || _end:=PL_OPER.TM_END
+            ?};
+            _rs.PL_END:=exec('to_string','#tm_stamp',PL_OPER.TM_END)
+         ?};
+         PL_OPER.cntx_pop();
+
+         _rs.add();
+
+         PL_EVENR.next()
+      !}
+   ?};
+   PL_EVENR.cntx_pop();
+   PL_RES.cntx_pop();
+
+   {? _start>0 & _end>0
+   || _rs.cntx_psh(); _rs.prefix();
+      {? _rs.seek(_top)
+      || _rs.PL_START:=exec('to_string','#tm_stamp',_start);
+         _rs.PL_END:=exec('to_string','#tm_stamp',_end);
+         _rs.put()
+      ?};
+      _rs.cntx_pop()
+   ?};
+   ~~
+?};
+~~
+
+
+\event_auto2rs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Dodaje aktualne zdarzenie do RS'a przekazanego w argumencie
+::   WE: _a - :RS
+::   WY: 0 / 1
+::----------------------------------------------------------------------------------------------------------------------
+{? _>0
+|| _tab:=_a
+|| return()
+?};
+
+_tab.blank();
+_tab.PL_EVENT:=$PL_EVENT.ref();
+{? PL_EVENT.TM_MIN>0 & PL_EVENT.TM_MAX>0
+|| _tab.DURATION:=(PL_EVENT.TM_MAX-PL_EVENT.TM_MIN)/exec('minute','#tm_stamp')
+?};
+_tab.STARTD:=exec('tm_stamp2date','#tm_stamp',PL_EVENT.TM_MIN);
+_tab.ENDD:=exec('tm_stamp2date','#tm_stamp',PL_EVENT.TM_MAX);
+_tab.STARTT:=exec('tm_stamp2time','#tm_stamp',PL_EVENT.TM_MIN);
+_tab.ENDT:=exec('tm_stamp2time','#tm_stamp',PL_EVENT.TM_MAX);
+_tab.SYMBOL:=PL_EVENT.SYMBOL;
+_tab.OPIS:=PL_EVENT.OPIS;
+_tab.KOLOR:='105:69:100';
+_tab.PLANNED:=PL_EVENT.PLANNED;
+_tab.EAT_CAL:=exec('get','#params',500330,type_of(''));
+_tab.PL_DOST:=PL_EVENT.PL_DOST;
+~~
+
+
+\event_filter
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Sprawdza czy zdarzenie moze wejsc do RSa - czy pasuje do przekazanego filtra
+::       Kontekst pracy - zdarzenie ktore sprawdzac
+::   WE: _a - STRING - filtrujacy ciag znakow
+::   WY: 0 - zdarzenie nie pasuje do filtra
+::       1 - zdarzenie pasuje do filtra
+::----------------------------------------------------------------------------------------------------------------------
+_filter:=_a;
+
+_result:=0;
+
+{? _filter='%' | _filter=''
+|| _result:=1
+||
+
+   {? _result=0
+   || {? PL_EVENT.SYMBOL*_filter>0
+      || _result:=1
+      ?}
+   ?};
+
+   {? _result=0
+   || {? PL_EVENT.OPIS*_filter>0
+      || _result:=1
+      ?}
+   ?};
+
+   {? _result=0
+   || {? PL_EVENT.TAB*_filter>0
+      || _result:=1
+      ?}
+   ?};
+   ~~
+?};
+_result
+
+
+\plan_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Po dodaniu pozycji do planu operacyjnego stempluje zgloszenie remontowe
+::   WE: _a - PL_EVENR.ref - zdarzenie na zasobie lub bieżący rekord
+::       _b - PL_OZ.ref - pozycja planu operacyjnego
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_ploz:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+PL_OZ.cntx_psh(); PL_OZ.prefix();
+PL_EVENR.cntx_psh();
+PL_EVENT.cntx_psh();
+PL_EVENT.prefix();
+{? _ref<>null()
+|| PL_EVENR.prefix();
+   {? PL_EVENR.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| _can_continue:=PL_OZ.seek(_ploz)
+?};
+
+{? _can_continue>0
+||
+   PL_EVENR.PL_EVENT();
+   _record:=exec('FindAndGet','#table',PL_EVENT.TAB,PL_EVENT.UID_REF,,,null());
+   {? _record<>null()
+   || exec(PL_EVENT.TAB+'_plan_add','po_event',_record,PL_OZ.PL_OPER,PL_OZ.PL_RES,PL_EVENR.ref())
+   ?};
+
+   PL_EVENR.PLANNED:='T';
+   _can_continue:=PL_EVENR.put();
+
+   {? _can_continue>0
+   || PL_EVENT.PLANNED:='T';
+      _can_continue:=PL_EVENT.put()
+   ?}
+?};
+PL_EVENR.cntx_pop();
+PL_EVENT.cntx_pop();
+PL_OZ.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\plan_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Po usunięciu pozycji w planie operacyjnym
+::   WE: _a - PL_EVENR.ref - zdarzenie na zasobie lub bieżący rekord
+::       _b - PL_OPER.ref - pozycja planu operacyjnego
+::       _c - PL_RES.ref - zasób w planie operacyjnym
+::   WY:
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_pl_evenr:=_a;
+_pl_oper:=_b;
+_pl_res:=_c;
+
+_result:=0;
+_can_continue:=1;
+
+PL_EVENR.cntx_psh(); PL_EVENR.prefix();
+{? PL_EVENR.seek(_pl_evenr)
+|| PL_EVENR.PL_EVENT();
+
+   _can_continue:=exec('planned_update','po_event');
+
+   {? _can_continue>0
+   || _record:=exec('FindAndGet','#table',PL_EVENT.TAB,PL_EVENT.UID_REF,,,null());
+      {? _record<>null()
+      || exec(PL_EVENT.TAB+'_plan_del','po_event',_record,_pl_oper,_pl_res,PL_EVENR.ref())
+      ?}
+   ?}
+?};
+PL_EVENR.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+
+\plan_move
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Po przesunięciu pozycji w planie operacyjnym
+::   WE: _a - PL_EVENR.ref - zdarzenie na zasobie lub bieżący rekord
+::       _b - PL_OPER.ref - pozycja planu operacyjnego
+::       [_c] - PL_EVENR.ref - zasób zdarzenia poprzedni (jeżeli się zmienił)
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_pl_evenr:=_a;
+_pl_oper:=_b;
+_old_evenr:=null();
+{? var_pres('_c')=type_of(PL_EVENR.ref())
+|| _old_evenr:=_c
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_EVENR.cntx_psh(); PL_EVENR.prefix();
+{? PL_EVENR.seek(_pl_evenr)
+|| PL_EVENR.PL_EVENT();
+   _record:=exec('FindAndGet','#table',PL_EVENT.TAB,PL_EVENT.UID_REF,,,null());
+   {? _record<>null()
+   || exec(PL_EVENT.TAB+'_plan_move','po_event',_record,_pl_oper,PL_EVENR.ref(),_old_evenr)
+   ?}
+?};
+PL_EVENR.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\REM_ZGL_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Dodaje/aktualizuje zdarzenie remontowe do zdarzeń planowanych
+::       Kontekst pracy - aktualny rekord REM_ZGL
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+
+_result:=0;
+_can_continue:=1;
+
+{? REM_ZGL.PL_DOST<>'B' | REM_ZGL.PL_TRYB='R'
+||
+   REM_PLAN.cntx_psh();
+   REM_PLAN.index('REM_ZGL');
+
+   _buffer:=exec('buffer','po_event');
+   _pl_event:=null();
+   _mod:=REM_ZGL.tm_stamp();
+   _can_continue:=exec('plan_load','remonty_plan');
+   {? _can_continue>0
+   || REM_PLAN.prefix(REM_ZGL.ref());
+      {? REM_PLAN.first()
+      || {!
+         |? {? REM_PLAN.PL_OCCUR='T' & REM_PLAN.PL_RES<>null()
+            || _buffer.bl_void();
+               _buffer.SYMBOL:=REM_ZGL.SYM;
+               _buffer.OPIS:=REM_ZGL.TYTUL+' ('+REM_ZGL.REM_KATG().SYMBOL+')';
+               _buffer.TAB:='REM_ZGL';
+               _buffer.UID_REF:=REM_ZGL.uidref();
+               _buffer.PL_TRYB:=REM_ZGL.PL_TRYB;
+               {? REM_ZGL.DURATION>0
+               || _buffer.DURATION:=REM_ZGL.DURATION
+               || _buffer.DURATION:=exec('get','#params',500331,type_of(0))
+               ?};
+               _buffer.MULTI:=exec('get','#params',500332,type_of(''));
+               _buffer.STAT_REJ:=REM_ZGL.STAT_REJ;
+               _buffer.PL_DOST:=REM_ZGL.PL_DOST;
+               _buffer.TM_MIN:=REM_ZGL.TM_START;
+               _buffer.TM_MAX:=REM_ZGL.TM_END;
+               _pl_event:=exec('add','po_event',_buffer);
+
+               {? _pl_event=null()
+               || _can_continue:=0
+               ?};
+               _usable:=REM_PLAN.USABLE;
+               {? REM_ZGL.PL_DOST='C'
+               || _usable:=0
+               ?};
+
+               {? _can_continue>0
+               || _can_continue:=exec('pl_evenr_update','po_event',_pl_event
+                                                                  ,REM_PLAN.PL_RES
+                                                                  ,_mod
+                                                                  ,_usable)
+               ?}
+            ?};
+            REM_PLAN.next() & _can_continue>0
+         !}
+      ?}
+   ?};
+
+   {? _can_continue>0 & _pl_event<>null()
+   ||
+::    Usuwam niepotrzebne zasoby
+      _can_continue:=exec('pl_evenr_useless','po_event',_pl_event,_mod)
+   ?};
+
+   REM_PLAN.cntx_pop()
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\REM_ZGL_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Usuwa zdarzenie powiązane ze zgłoszeniem remontowym razem z jego planem
+::       Wywoływać tylko jeśli rekord idzie do czarnej dziury
+::   WE: _a - REM_ZGL.ref
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_rem_zgl:=_a;
+
+_result:=0;
+_can_continue:=1;
+
+REM_ZGL.cntx_psh(); REM_ZGL.prefix();
+{? REM_ZGL.seek(_rem_zgl)
+|| _can_continue:=exec('find_and_delete','po_event',REM_ZGL.uidref())
+?};
+REM_ZGL.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\REM_ZGL_can_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Sprawdza czy można usunąć REM_ZGL ze zdarzeń i z planu
+::   WE: _a - REM_ZGL.ref
+::   WY: 0 - nie można usunąć
+::       1 - można
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_record:=_a;
+_result:=0;
+
+REM_ZGL.cntx_psh(); REM_ZGL.prefix();
+{? REM_ZGL.seek(_record)
+|| _allowed:=exec('status_planned','remonty_plan');
+   _status:=REM_ZGL.STAT_REJ;
+   {? _allowed*_status=0
+   || _result:=1
+   ?};
+   {? REM_ZGL.WERYFIK<>'T'
+   || _result:=1
+   ?}
+?};
+REM_ZGL.cntx_pop();
+_result
+
+
+\REM_ZGL_plan_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Formuła wykonywana po zaplanowaniu zgłoszenia remontowego w planie operacyjnym
+::   WE: _a - REM_ZGL.ref - zgłoszenie
+::       _b - PL_OPER.ref - operacja którą zaplanowano
+::       _c - PL_RES.ref - zasób na którym zaplanowano
+::       _d - PL_EVENR.ref - zasób zdarzenia który był planowany
+::----------------------------------------------------------------------------------------------------------------------
+_rem_zgl:=_a;
+_pl_oper:=_b;
+_pl_res:=_c;
+_pl_evenr:=_d;
+
+REM_ZGL.cntx_psh(); REM_ZGL.prefix();
+{? REM_ZGL.seek(_rem_zgl)
+||
+   REM_PLAN.cntx_psh();
+   REM_PLAN.index('PL_PLAN2');
+   REM_PLAN.prefix(_pl_res,_rem_zgl);
+   {? REM_PLAN.first()
+   ||
+      REM_PLAN.REM_ZGL();
+      {? REM_PLAN.PLAN_PX='T' & REM_ZGL.TM_END>0
+      ||
+::       Usuwam remont z planu strategicznego, bo i tak zostanie zsynchronizowany z operacyjnego
+         _can_continue:=exec('rem_clear4zas','px_poz',REM_PLAN.ref());
+         {? _can_continue>0
+         || REM_ZGL.PLAN_PX:='N';
+            _can_continue:=REM_ZGL.put()
+         ?}
+      ?};
+      PL_OPER.cntx_psh(); PL_OPER.prefix();
+      {? PL_OPER.seek(_pl_oper)
+      || PL_OPER.REM_PLAN:=REM_PLAN.ref();
+         PL_OPER.put();
+
+         {? REM_ZGL.PL_TRYB='R'
+         ||
+            _tm_start:=exec('event_plan_start','po_event',_pl_evenr);
+            _tm_end:=exec('event_plan_end','po_event',_pl_evenr);
+            REM_ZGL.DT_PST:=exec('tm_stamp2date','#tm_stamp',_tm_start);
+            REM_ZGL.DT_PUA:=exec('tm_stamp2date','#tm_stamp',_tm_end);
+            REM_ZGL.TM_PST:=exec('tm_stamp2time','#tm_stamp',_tm_start);
+            REM_ZGL.TM_PUA:=exec('tm_stamp2time','#tm_stamp',_tm_end);
+            REM_ZGL.put()
+         ?}
+      ?};
+      PL_OPER.cntx_pop();
+      REM_PLAN.PLAN_PL:='T';
+      _can_continue:=REM_PLAN.put();
+
+      {? _can_continue>0
+      || REM_ZGL.PLAN_PL:='T';
+         _can_continue:=REM_ZGL.put()
+      ?}
+   ?};
+   REM_PLAN.cntx_pop()
+?};
+REM_ZGL.cntx_pop();
+~~
+
+
+\REM_ZGL_plan_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Formuła wykonywana po usunięciu pozycji zgłoszenia remontowego z planu operacyjnego
+::   WE: _a - REM_ZGL.ref - zgłoszenie
+::       _b - PL_OPER.ref - operacja którą zaplanowano
+::       _c - PL_RES.ref - zasób na którym zaplanowano
+::       _d - PL_EVENR.ref - zasób zdarzenia
+::----------------------------------------------------------------------------------------------------------------------
+_rem_zgl:=_a;
+_pl_oper:=_b;
+_pl_res:=_c;
+_pl_evenr:=_d;
+
+REM_ZGL.cntx_psh(); REM_ZGL.prefix();
+{? REM_ZGL.seek(_rem_zgl)
+||
+   REM_PLAN.cntx_psh();
+   REM_PLAN.index('PL_PLAN2');
+   REM_PLAN.prefix(_pl_res,_rem_zgl);
+   {? REM_PLAN.first()
+   ||
+      REM_PLAN.REM_ZGL();
+
+      {? REM_ZGL.PL_TRYB='R'
+      ||
+         _tm_start:=exec('event_plan_start','po_event',_pl_evenr);
+         _tm_end:=exec('event_plan_end','po_event',_pl_evenr);
+         REM_ZGL.DT_PST:=exec('tm_stamp2date','#tm_stamp',_tm_start);
+         REM_ZGL.DT_PUA:=exec('tm_stamp2date','#tm_stamp',_tm_end);
+         REM_ZGL.TM_PST:=exec('tm_stamp2time','#tm_stamp',_tm_start);
+         REM_ZGL.TM_PUA:=exec('tm_stamp2time','#tm_stamp',_tm_end);
+         REM_ZGL.put()
+      ?};
+
+      _can_continue:=exec('plan_pl_update','remonty_plan');
+      _tm_end:=REM_PLAN.REM_ZGL().TM_END;
+      {? _tm_end=0
+      ||
+::       Po usunięciu pozycji planu dla remontu bezterimnowego muszę odświeżyć plan strategiczny
+         _can_continue:=exec('replan_px','remonty_plan')
+      ?}
+   ?};
+   REM_PLAN.cntx_pop()
+?};
+REM_ZGL.cntx_pop();
+~~
+
+
+\REM_ZGL_plan_move
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Formuła wykonywana po przesunięciu pozycji zgłoszenia remontowego w planie operacyjnym
+::   WE: _a - REM_ZGL.ref - zgłoszenie
+::       _b - PL_OPER.ref - operacja którą zaplanowano
+::       _c - PL_EVENR.ref - zasób zdarzenia bieżący
+::       [_d] - PL_EVENR.ref - zasób zdarzenia poprzedni (jeżeli się zmienił)
+::----------------------------------------------------------------------------------------------------------------------
+_rem_zgl:=_a;
+_pl_oper:=_b;
+_pl_evenr:=_c;
+_old_evenr:=null();
+{? var_pres('_d')=type_of(PL_EVENR.ref())
+|| _old_evenr:=_d
+?};
+
+REM_ZGL.cntx_psh(); REM_ZGL.prefix();
+{? REM_ZGL.seek(_rem_zgl)
+||
+   {? REM_ZGL.PL_TRYB='R'
+   ||
+      _tm_start:=exec('event_plan_start','po_event',_pl_evenr);
+      _tm_end:=exec('event_plan_end','po_event',_pl_evenr);
+      REM_ZGL.DT_PST:=exec('tm_stamp2date','#tm_stamp',_tm_start);
+      REM_ZGL.DT_PUA:=exec('tm_stamp2date','#tm_stamp',_tm_end);
+      REM_ZGL.TM_PST:=exec('tm_stamp2time','#tm_stamp',_tm_start);
+      REM_ZGL.TM_PUA:=exec('tm_stamp2time','#tm_stamp',_tm_end);
+      REM_ZGL.put()
+   ?};
+
+   _tm_end:=REM_ZGL.TM_END;
+   {? _tm_end=0
+   ||
+::    Po przesunięciu pozycji planu dla remontu bezterminowego muszę odświeżyć plan strategiczny
+      _can_continue:=exec('replan_px','remonty_plan',,0)
+   ?}
+?};
+REM_ZGL.cntx_pop();
+~~
+
+
+\set_wyk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Ustawia wykonanie dla zdarzenia
+::   WE: _a - TAB.uidref - uidref rekordu powiązanego ze zdarzeniem
+::       _b - STRING - 'T'/'N' - wartość wykonania
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_uidref:=_a;
+_wyk:=_b;
+
+_result:=0;
+_can_continue:=1;
+
+PL_EVENT.cntx_psh();
+PL_EVENT.index('UID_REF');
+PL_EVENT.prefix(_uidref,);
+{? PL_EVENT.first()
+|| {!
+   |? PL_EVENT.WYK:=_wyk;
+      _can_continue:=PL_EVENT.put();
+      PL_EVENT.next() & _can_continue>0
+   !}
+?};
+PL_EVENT.cntx_pop();
+~~
+
+
+\planned_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Aktualizuje stan zaplanowania operacyjnego na podstawie istenijących PL_OPERów
+::   WE: [_a] - PL_EVENT.ref - zdarzenie
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_EVENT.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_EVENT.cntx_psh();
+PL_EVENR.cntx_psh();
+PL_EVENR.index('PL_EVENT');
+{? _ref<>null()
+|| PL_EVENT.prefix();
+   {? PL_EVENT.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+
+{? _can_continue>0
+||
+   PL_EVENT.PLANNED:='N';
+   _can_continue:=PL_EVENT.put()
+?};
+{? _can_continue>0
+||
+   PL_EVENR.prefix(PL_EVENT.ref());
+   {? PL_EVENR.first()
+   || {!
+      |? PL_EVENR.PLANNED:='N';
+         _can_continue:=PL_EVENR.put();
+         PL_EVENR.next() & _can_continue>0
+      !}
+   ?}
+?};
+
+{? _can_continue>0
+||
+   PL_OZ.cntx_psh();
+   PL_OZ.index('PL_OPER');
+   PL_OPER.cntx_psh();
+   PL_OPER.index('PL_EVE1');
+   PL_EVENR.prefix(PL_EVENT.ref());
+   {? PL_EVENR.first()
+   || {!
+      |? PL_OPER.prefix(PL_EVENR.ref());
+         {? PL_OPER.first()
+         || {!
+            |?
+               PL_OZ.prefix(PL_OPER.ref());
+               {? PL_OZ.first()
+               || PL_EVENT.PLANNED:='T';
+                  _can_continue:=PL_EVENT.put();
+                  {? _can_continue>0
+                  || PL_EVENR.PLANNED:='T';
+                     _can_continue:=PL_EVENR.put()
+                  ?}
+               ?};
+               PL_OPER.next() & _can_continue>0
+            !}
+         ?};
+         PL_EVENR.next() & _can_continue>0
+      !}
+   ?};
+   PL_OPER.cntx_pop();
+   PL_OZ.cntx_pop();
+   ~~
+?};
+PL_EVENT.cntx_pop();
+PL_EVENR.cntx_pop();
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\event_plan_start
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Zwraca TM_STAMP początku zdarzenia w planie
+::   WE: [_a] - PL_EVENR.ref() lub bieżący rekord
+::   WY: REAL
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_EVENR.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_EVENR.cntx_psh();
+{? _ref<>null()
+|| PL_EVENR.prefix();
+   {? PL_EVENR.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| PL_OPER.cntx_psh();
+   PL_OPER.index('PL_EVE1');
+   PL_OPER.prefix(PL_EVENR.ref());
+   {? PL_OPER.first()
+   || _result:=PL_OPER.TM_START
+   ?};
+   PL_OPER.cntx_pop()
+?};
+PL_EVENR.cntx_pop();
+_result
+
+
+\event_plan_end
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: Zwraca TM_STAMP końca zdarzenia w planie
+::   WE: [_a] - PL_EVENR.ref() lub bieżący rekord
+::   WY: REAL
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=null();
+{? var_pres('_a')=type_of(PL_EVENR.ref())
+|| _ref:=_a
+?};
+
+_result:=0;
+_can_continue:=1;
+
+PL_EVENR.cntx_psh();
+{? _ref<>null()
+|| PL_EVENR.prefix();
+   {? PL_EVENR.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+|| PL_OPER.cntx_psh();
+   PL_OPER.index('PL_EVE2');
+   PL_OPER.prefix(PL_EVENR.ref());
+   {? PL_OPER.last()
+   || _result:=PL_OPER.TM_END
+   ?};
+   PL_OPER.cntx_pop()
+?};
+PL_EVENR.cntx_pop();
+_result
+
+
+\get_resources
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [20.14]
+:: OPIS: zwraca zasoby do zdarzenia
+::   WE: _a - PL_EVENT.ref()
+::       _b - REAL - czas trwania operacji
+::   WY: tab_tmp
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_dur:=_b;
+
+_res:=tab_tmp(3,
+   'TYP','STRING[1]','Typ',
+   'REF_RES','STRING[16]','$PL_RES.ref()',
+   'SYM','STRING[50]','Symbol zasobu',
+   'NAZWA','STRING[100]','Nazwa zasobu',
+   'ALERT','STRING[1]','Alert, jeżeli brak zasobu',
+   'REF','STRING[16]','$ref() zasobu',
+   'DURATION','REAL','Czas trwania w minutach',
+   'OFFSET_O','REAL','Odstęp od poprzedniej operacji',
+   'TECHZAMS','STRING[16]','Wskazanie na zamiennik operacji',
+   'ZAM_WHAT','STRING[30]','Tekst mówiący czy zamiennik czy zamiennik stanowiska',
+   'DEFAULT', 'STRING[1]', 'Czy zasob domyslny (dla gniazd)'
+);
+PL_EVENT.cntx_psh(); PL_EVENT.prefix();
+PL_EVENR.cntx_psh();
+PL_EVENR.index('PL_EVENT');
+{? PL_EVENT.seek(_ref)
+||
+   PL_EVENR.prefix(PL_EVENT.ref());
+   {? PL_EVENR.first()
+   || {!
+      |?
+         _res.TYP:='S';
+         _res.SYM:=PL_EVENR.PL_RES().SYM;
+         _res.NAZWA:=PL_RES.NAZ;
+         _res.DURATION:=_dur;
+         _res.REF:=$PL_EVENR.ref();
+         _res.ZAM_WHAT:='ZAM. - ZASÓB ZDARZENIA';
+         _res.DEFAULT:='N';
+         _res.REF_RES:=$PL_RES.ref();
+         _can_add:=0;
+         _res.cntx_psh();
+         _res.prefix(_res.TYP,_res.REF_RES);
+         {? _res.size()=0
+         || _can_add:=1
+         ?};
+         _res.cntx_pop();
+         {? _can_add>0
+         || _res.add()
+         ?};
+         PL_EVENR.next()
+      !}
+   ?}
+?};
+PL_EVENR.cntx_pop();
+PL_EVENT.cntx_pop();
+_res
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:35 6ff71ef58f2206371daf363c9966093752618f656593dfd6add1f3b9b74dea3e975df0c7c27deb5c4df303a4d6af6ae31fb565e15bcbc878a87c8fc188195fa9258741eed099623d14883a9f27b6734ef738ad0ea37c682d962b5be8272d8bbe71e1a51e71333daf24922f6eca0c5b0af343b9b6944afa7eb98b195646076808

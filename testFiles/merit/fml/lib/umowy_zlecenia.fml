@@ -1,0 +1,4754 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: umowy_zglos.fml
+:: Utworzony: 09.01.2019
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi umów zlecenia / zgłoszenia
+::======================================================================================================================
+
+
+\zlp_usu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: usuwanie pozycji zlecenia
+::   WE: [_a] - parametr czy pomijac komunikat    0 nie (domyslnie), 1 tak
+::       [_b] - bez kontroli statusu realizacji   0 nie (domyslnie), 1 tak
+::       [_c] - czy usuwac ZLE   0 nie, 1 tak (domyslnie)
+::       [_d] - czy usuwac polaczenie do GPODPOZ
+::       [_e] - czy czyścić pole grupa 0-nie 1-tak (domyślnie)
+::       [_f] - 1-usuń pomimo wymiany, 0-nie (domyślnie), 2-kopia na inny miesiąc
+::  OLD: \zlp_usu/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+{? _>=2 || {? type_of(_b)<>1 || _b:=0 ?} || _b:=0 ?};
+{? _>=3 || {? type_of(_c)<>1 || _c:=0 ?} || _c:=1 ?};
+{? _>=4 || {? type_of(_d)<>1 || _d:=1 ?} || _d:=1 ?};
+{? _>=5 || {? type_of(_e)<>1 || _e:=1 ?} || _e:=1 ?};
+_wymien:={? var_pres('_f')=type_of(0) || _f || 0 ?};
+
+_wyn:=0;
+{? exec('czy_mod','umowy_zlecenia',_a,_b) & {? do_state()>0 || 1 || ZLP.r_lock(1,1,1) ?}
+||
+   _BigB:=exec('FindInSet','#table','BIGB','ZLP',ZLP.ref())<>null();
+   {? {? _a=0
+      || {? ZLP.KPO<>null()
+         || _txt:='Ze zgłoszeniem powiązana jest karta przekazania odpadów o symbolu %1.\n\n'
+                  'Czy mimo to usunąć zgłoszenie?'@[ZLP.KPO().SYM]
+         || _txt:={? _BigB & ZLP.IDBIG>0
+                  || 'Do zgłoszenia został zarejestrowany Big Bag.\nZapis o nim zostanie usunięty.\n\n'@
+                  || ''
+                  ?}+'Usunąć zgłoszenie?'@
+         ?};
+         FUN.ask(_txt)
+      || 1
+      ?}
+   ||
+::    Sprawdzam czy jakieś KPO nie miały zapisanego refa SQL do usuwanego zgłoszenia i czyszcze je
+      KPO.cntx_psh();
+      KPO.index('RZLP');
+      KPO.prefix($ZLP.ref());
+      {? KPO.first()
+      || {!
+         |?
+            KPO.clear();
+            KPO.RZLP:='';
+            KPO.put();
+            KPO.prefix($ZLP.ref());
+            KPO.first()
+         !}
+      ?};
+      KPO.cntx_pop();
+
+      BIGB.index('ZLP');
+      BIGB.prefix(ZLP.ref());
+      {? BIGB.first() || {! |? BIGB.del() !} ?};
+      {? _wymien<>2 & ZLP.WYMIANA2<>''
+       & (ZLP.cntx_psh();
+          _mskwym:=form(8+(ZLP.WYMIANA2+16));
+          {? _mskwym<>'' || ZLP.use(_mskwym) ?};
+          _rr:=exec('FindInSet','#table','ZLP','WYMIANA',ZLP.WYMIANA2,'W',"@.ZLP.SR='Z'",1,,0);
+          ZLP.cntx_pop();_rr)
+      || FUN.info('Powiązane zgłoszenie dotyczące wymiany jest zrealizowane.\nUsunięcie niemożliwe.'@)
+      |? ~_wymien & ZLP.WYMIANA<>''
+      || FUN.info('Zgłoszenie posiada powiązane zgłoszenie dotyczące wymiany.\nUsunięcie niemożliwe.'@)
+      |? ZLP.count()=0
+      ||
+         _zle_ref:=ZLP.ZLE;
+         _zlpr:=$ZLP.ref;
+         _wymiana:={? _e || ZLP.WYMIANA2 || '' ?};
+         {? _d || _gpod:=GPODPOZ.names ?};
+         {? do_state=0
+         || _tr:=1;
+            do()
+         || _tr:=0
+         ?};
+         {? do_state()<2 & ~Plugin.run('BEFORE_DELTAB_001',ZLP.ref()) & do_state() || undo() ?};
+         _wyn:=ZLP.del(1,1);
+         {? _wyn & _wymiana<>''
+         || ZLP.cntx_psh();
+            _mskwym:=form(8+(_wymiana+16));
+            {? _mskwym<>'' || ZLP.use(_mskwym) ?};
+            ZLP.index('WYMIANA');
+            ZLP.prefix('W',_wymiana,);
+            {? ZLP.first()
+            || {!
+               |? _rref:=ZLP.ref();
+                  _next:=ZLP.next();
+                  ZLP.cntx_psh();
+                  ZLP.prefix();
+                  {? ZLP.seek(_rref)
+                  || ZLP.RODZ:='P';
+                     ZLP.DW:=date(0,0,0);
+                     _grp:=ZLP.WYMIANA;
+                     ZLP.WYMIANA:='';
+                     {? ZLP.put(1)
+                     ||
+::                      usuwamy informację o grupowaniu na dyspozycji transportowej
+                        {? _grp<>''
+                        ||
+                           TR_NZL.cntx_psh();
+                           TR_NZL.index('GRP');
+                           TR_NZL.prefix(_grp);
+                           _loop:=TR_NZL.first();
+                           {!
+                           |? _loop
+                           |!
+                              TR_NZL.cntx_psh();
+                              TR_NZL.prefix();
+                              TR_NZL.GRP:='';
+                              TR_NZL.put();
+                              TR_NZL.cntx_pop();
+                              _loop:=TR_NZL.first()
+                           !};
+                           TR_NZL.cntx_pop()
+                        ?}
+                     ?}
+                  ?};
+                  ZLP.cntx_pop();
+                  _next
+               !}
+            ?};
+            ZLP.cntx_pop()
+         ?};
+         {? _d &_gpod.first()
+         ||
+            {!
+            |?
+               GPODPOZ.use(_gpod[1]);
+               GPODPOZ.index('ZLP');
+               GPODPOZ.prefix(_zlpr,_zlpr);
+               {!
+               |?
+                  _wyn1:=0;
+                  {? GPODPOZ.first()
+                  ||
+                     GPODPOZ.cntx_psh();
+                     GPODPOZ.prefix();
+                     GPODPOZ.ZLP:='';
+                     GPODPOZ.GENZLP:='N';
+                     {? GPODPOZ.put() || _wyn1:=1 || undo(); _wyn1:=0 ?};
+                     GPODPOZ.cntx_pop()
+                  ?};
+                  _wyn1
+               !};
+               _gpod.next()
+            !}
+         ?};
+         {? _tr || end() ?};
+::       usuwa ZLE gdy nie ma powiazan i nie edytujemy zgloszen z umowy
+         {? _c=1 & ZLEC.Z_UM=0
+         ||
+            ZLE.cntx_psh();
+            ZLE.clear();
+            {? ZLE.seek(_zle_ref) & ZLE.count()=0
+            ||
+               _pom_tab:=POM.TAB;
+               _pom_typdok:=POM.TYPDOK;
+               POM.TAB:='ZLE';
+               POM.TYPDOK:='ZLE';
+
+               numer:=ZLE.NR;
+               oldnumer:=1;
+               exec('nr_old','numery');
+               ZLE.del();
+
+               POM.TAB:=_pom_tab;
+               POM.TYPDOK:=_pom_typdok
+            ?};
+            ZLE.cntx_pop()
+         ?};
+         {? (POMOC.LOCK='' | POMOC.LOCK='I') & 2+menu_pth='ZR'
+         || exec('zlp_aktu','umowy_zlecenia')
+         ?}
+      ?}
+   ?}
+?};
+{? _wyn>0 || _wyn:=1 ?};
+ZLP.r_unlock();
+_wyn
+
+
+\czy_mod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: czy mozna modyfikowac zgloszenie
+::   WE: [_a] - parametr czy pomijac komunikat    0 nie (domyslnie), 1 tak
+::       [_b] - bez kontroli statusu realizacji   0 nie (domyslnie), 1 tak
+::       [_c] - kontrola poprzez procedure www    0 nie (domyslnie), 1 tak
+::   WY: 0/1 czy modyfikowalne + zmienne globalne info __cq1, __cq2, __cq3, __cq4
+::  OLD: \czy_mod/um_zlec
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+{? _>=2 || {? type_of(_b)<>1 || _b:=0 ?} || _b:=0 ?};
+{? _>=3 || {? type_of(_c)<>1 || _c:=0 ?} || _c:=0 ?};
+
+VAR_DEL.delete('__cq1','__cq2','__cq3','__cq4');
+_wyn:=1;
+_txt:=__cq1:=__cq2:=__cq3:=__cq4:='';
+_r_lock:={? do_state()>0 || 1 || ZLP.r_lock(1,1,1) ?};
+{? _r_lock
+||
+   {? ZLP.FAKS='T'
+   ||
+      _ln:='Do zgłoszenia wystawiono dokument sprzedaży.'@;
+      __cq1:=_ln;
+      _txt+=_ln+'\n';
+      _wyn:=0
+   ?};
+
+   {? _b=0 & ZLP.SR='Z'
+   ||
+      _ln:='Zgłoszenie już zrealizowane.'@;
+      __cq2:=_ln;
+      _txt+=_ln+'\n';
+      _wyn:=0
+   ?};
+
+   {? exec('zlp_czy_anulowane','umowy_zlecenia')
+   ||
+      __cq2:='Zgłoszenie jest anulowane.'@;
+      _wyn:=0
+   ?};
+
+   {? _c=0
+   ||
+      {? (ZLP.PORT='T' | ZLP.PORT='R') & exec('get','#params',7007,2,OPERATOR.USER)<>'T'
+      ||
+         _ln:='Zgłoszenie zarejestrowane przez użytkownika portalu internetowego.'@;
+         __cq3:=_ln;
+         _txt+=_ln+'\n';
+         _wyn:=0
+      ?}
+   ||
+      {? ZLP.PORT='R'
+      ||
+         __cq3:='Zgłoszenie przyjęto już do realizacji.'@;
+         _wyn:=0
+      ?}
+   ?};
+
+   {? _b=0 & ZLP.KPOZ<>''
+   ||
+      _ln:='Do zgłoszenia wystawiono kartę przekazania odpadów.'@;
+      __cq4:=_ln;
+      _txt+=_ln+'\n';
+      _wyn:=0
+   ?};
+
+:: gdy nie ma grupowych komunikatow
+   {? _a=0 & _c=0 & _wyn=0 & ZLP.sel_size()=0 || FUN.info(_txt+'Edycja niemożliwa.'@) ?};
+
+   ZLP.r_unlock()
+||
+   __cq1:='Dokument obsługuje inny użytkownik.';
+   {? _a=0 & _c=0 & ZLP.sel_size()=0
+   ||
+      {? FUN.ask(__cq1+'\nCzy chcesz zobaczyć kto?'@) & ZLP.r_lock(1,,1)
+      || ZLP.r_unlock()
+      ?}
+   ?};
+   _wyn:=0
+?};
+{? _a=0 & _wyn=0 & var_pres('__zlp_cq')>100
+||
+   __zlp_cq.sect_beg(ZLP.POS().UL().KDP+' '+ZLP.POS().MIA().NAZ+', '+ZLP.POS().UL().UL+' '+ZLP.POS().NR
+      +', zgłoszenie wykonania '@+$ZLP.DZ+'.');
+   {? __cq1<>'' || __zlp_cq.add(__cq1,2) ?};
+   {? __cq2<>'' || __zlp_cq.add(__cq2,2) ?};
+   {? __cq3<>'' || __zlp_cq.add(__cq3,2) ?};
+   {? __cq4<>'' || __zlp_cq.add(__cq4,2) ?};
+   __zlp_cq.sect_end()
+?};
+_wyn
+
+
+\zlp_aktu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: aktualizacja pol podczas wyswietlania okienka oraz kolorowanie niezrealizowanych rekordow
+::   WE: [_a] - 0/1 - ostatni odrysowany rekord w ramach odświeżenia
+::  OLD: \zlp_aktu/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_a:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+_wyn:=0;
+{? ZLP.size()>0 & ZLP.get()
+||
+   ZLEC.UM:=ZLP.ZLE().UM;
+   ZLEC.MIA:=ZLP.ZLE().POS().UL().MIA;
+   ZLEC.UL:=ZLP.ZLE().POS().UL;
+   ZLEC.POS:=ZLP.ZLE().POS;
+   ZLEC.FAKS:='';
+   {? ZLP.FAP<>null()
+   || {? FAP.name<>ref_name(ZLP.FAP)
+      ||
+        FAP.use(ref_name(ZLP.FAP));
+        FAKS.use('faktu'+(FAP.name()+3))
+      ?};
+      ZLEC.FAKS:=ZLP.FAP().FAKS().SYM+' poz. '@+$ZLP.FAP().POZ
+   ?};
+   {? ZLP.FAPU<>null()
+   || {? FAP.name<>ref_name(ZLP.FAPU)
+      ||
+        FAP.use(ref_name(ZLP.FAPU));
+        FAKS.use('faktu'+(FAP.name()+3))
+      ?};
+      ZLEC.FAKS+={? ZLEC.FAKS<>'' || ', ' || ZLP.FAPU().FAKS().SYM+' poz. '@ ?}+$ZLP.FAPU().POZ+' (dodatek)'@
+   ?};
+   ZLP.FAP().FAKS().SYM;
+   ZLEC.REJO:=ZLP.ZLE().POS().UL().REJO;
+   UMO.FAS:=ZLP.ZLE().FAS;
+   exec('zlp_umo','umowy_zlecenia');
+   ZLP.memo_get(,'OPIS')
+||
+   ZLE.blank();
+   ZLE.USL:=null;
+   ZLEC.UM:=null;
+   ZLEC.MIA:=null;
+   ZLEC.UL:=null;
+   ZLEC.POS:=null;
+   ZLEC.FAKS:='';
+   ZLEC.REJO:=null;
+   UMO.FAS:=null;
+   exec('zlp_umo','umowy_zlecenia',0)
+?};
+:: Podczytanie maski karty przekazania odpadów
+{? ZLP.KPO<>null()
+|| KPO.use(ref_name(ZLP.KPO))
+?};
+
+ZLEC.OPIS:='';
+_act:='';
+{? ZLP.win_sel('?')='UZUP'
+||
+   {? ZLP.ZLE().CZUM='T' || _act:='U'+_act ?};
+   {? ZLP.RP<>'H' || _act:='PO'+_act ?};
+   {? ZLP.UMK_P<>null || _act:='A'+_act ?};
+   ZLP.actions('UZUP',_act,,1)
+?};
+{? _a
+||
+   params_exec('zlp_actions','umowy_zlecenia')
+?};
+exec('rekprzed','color','ZLP#01')
+
+
+\zlp_umo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: ustawianie zmiennych UMO
+::   WE: [_a] - 0 - zeruje, 1 - ustawia wg UP
+::  OLD: \zlp_umo/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=1 ?} || _a:=1 ?};
+POMOC.RODZ:='U';
+{? _a=0
+||
+   UMO.JM1:=null;
+   UMO.JM2:=null;
+   UMO.JM3:=null;
+   UMO.JM4:=null;
+   UMO.JM5:=null;
+   UMO.JM6:=null;
+   UMO.C1:=0;
+   UMO.C2:=0;
+   UMO.C3:=0;
+   UMO.C4:=0;
+   UMO.C5:=0;
+   UMO.C6:=0;
+   UMO.IL2:=0
+||
+   POMOC.USL:=ZLE.USL;
+
+   UMO.JM1:=ZLP.MJ().J;
+   UMO.JM2:=exec('par_m3','jm');
+   UMO.JM3:=ZLP.M_R().J;
+   UMO.JM4:=ZLP.M_D().J;
+   UMO.JM5:=null;
+   UMO.JM6:=null;
+   _params:=exec('tar_cenm_a','ceny');
+   _params.TAR:=ZLE.TAR;
+   _params.M:=ZLP.MJ;
+   _params.WAL:=ZLP.WAL;
+   _params.JM:=UMO.JM1;
+   _params.D:=ZLP.DW;
+   _params.BRT:=ZLP.CB;
+   _c1:=exec('tar_cenm','ceny',_params);
+   _params.JM:=UMO.JM2;
+   _c2:=exec('tar_cenm','ceny',_params);
+   _params.M:=ZLP.M_R;
+   _params.JM:=UMO.JM3;
+   _c3:=exec('tar_cenm','ceny',_params);
+   _params.M:=ZLP.M_D;
+   _params.JM:=UMO.JM4;
+   _c4:=exec('tar_cenm','ceny',_params);
+   UMO.C1:=_c1[1];
+   UMO.C2:=_c2[1];
+   UMO.C3:=_c3[1];
+   UMO.C4:=_c4[1];
+   UMO.C5:=0;
+   UMO.C6:=0;
+:: wg przelicznika jednostek dla m3
+   UMO.OBJ:=exec('przel','jm',ZLP.MJ,UMO.JM2,UMO.JM1);
+   _dokl:=exec('jaka_dok_mjm','jm',ZLP.MJ,UMO.JM2,UMO.JM1);
+   roundmet(BEER.MDOKL);
+   UMO.IL2:={? UMO.OBJ>0 || (ZLP.IL/UMO.OBJ)$_dokl || 0 ?};
+   roundmet(5)
+?};
+''
+
+
+\um_gen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: funkcja generuj zlecenia dla podanej umowy
+::   WE: _a  - ref umowy
+::       _b  - od daty (dla zlecen. rycz. caly okres)
+::       _c  - do daty ... do konca aktywnych hgen
+::      [_d] - 0 - wszystkie zlecenia, 1 - tylko ryczalty, 2 -tylko harmonogramy
+::      [_e] - 0 - zaloz transakcje 1 - wywolana zewnetrznie
+::  OLD: \um_gen/um3.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=4 || {? type_of(_d)<>1 || _d:=0 ?} || _d:=0 ?};
+{? _>=5 || {? type_of(_e)<>1 || _e:=0 ?} || _e:=0 ?};
+_wyn:=0;
+{? _b=date(0,0,0) || FUN.info('Brak zdefiniowanego okresu do generacji zgłoszeń dla daty rozpoczęcia umowy.'@) ?};
+_data:=_b;
+UM.cntx_psh();
+UM.clear;
+
+{? UM.seek(_a)
+||
+   HGEN.cntx_psh();
+   HGEN.index('ODDZ');
+   HGEN.prefix(UM.ODDZ);
+   {? HGEN.first()
+   ||
+      {? _e=0 || do() ?};
+      {!
+      |?
+         {? HGEN.ST='T' & (date(HGEN.OD~1,HGEN.OD~2,1)>=date(_b~1,_b~2,1) & HGEN.DO<=_c)
+         || UM.cntx_psh();
+            {? HGEN.OD>=date(UM.DPO~1,UM.DPO~2,1)
+            ||
+               exec('zle_open','open_tab',UM.ODDZ,(2-($(HGEN.OD~1))),form(HGEN.OD~2,-2));
+               {? HGEN.OD<_b & HGEN.OD~1=_b~1 & HGEN.OD~2=_b~2 || _od:=_b || _od:=HGEN.OD ?};
+               _wyn:=exec('um_zle','umowy_zlecenia',_a,_od,HGEN.DO,HGEN.ref(),_d);
+               exec('hgen_ile','umowy_zlecenia',HGEN.ref())
+            ||
+               _wyn:=1
+            ?};
+            UM.cntx_pop()
+         ?};
+         HGEN.next()
+      !};
+      {? _e=0 || end() ?}
+   ?};
+::   exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2));
+   HGEN.cntx_pop()
+?};
+UM.cntx_pop();
+_wyn
+
+
+\um_zle
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: generowanie zgloszen na podstawie pozycji umowy dla biezacego oddzialu
+::       transakcja musi byc wywolana zewnetrznie
+::   WE: _a  - UM.ref() - umowa
+::       _b  - DATE - od daty
+::       _c  - DATE - do daty
+::       _d  - HGEN.ref() - HGEN
+::      [_e] - INTEGER - tryb generowania: 0-wszystko, 1-tylko ryczalty, 2-tylko harmonogram
+::   WY: _wyn - czy wygenerowano zlecenie
+::  OLD: \um_zle/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_um:=_a;
+_startd:=_b;
+_endd:=_c;
+_hgen:=_d;
+_lgen:={? _hgen<>null() || exec('FindAndGet','#table',HGEN,_hgen,,"DO",date(0,0,0)) || date(0,0,0) ?};
+_lgod:={? _hgen<>null() || exec('FindAndGet','#table',HGEN,_hgen,,"OD",date(0,0,0)) || date(0,0,0) ?};
+
+_mode:=0;
+{? var_pres('_e')=type_of(0)
+|| _mode:=_e
+?};
+
+_wyn:=1;
+
+UM.clear();
+{? UM.seek(_um)
+|| _modeum:={? UM.TYP_HR='H' || 'HR' |? UM.TYP_HR='R' || 'R' || 'H' ?};
+   {? var_pres('__stu_gz')<=0 || __stu_gz:=UM.STU().GZ ?};
+   {? UM.AN>0
+   ||
+::    obsluga aneksow
+::    sprawdzanie poprzednich warunkow w przypadku aneksu
+::    cześć związana z harmonogramami
+      UM.cntx_psh();
+      {? _modeum*'H'
+      || UMAN.index('POZ');
+         UMAN.prefix(UM.ref());
+         _data_umow:=UM.OD;
+         _gen_ryc:=0;
+         {? UMAN.last()
+         ||
+            {!
+            |?
+               _data_do:={? UM.DO<>date(0,0,0) & UMAN.RODZ='E'
+                         || UM.DO
+                         || UM.OD-1
+                         ?};
+               _df:=UMAN.DF;
+
+               UMAN.cntx_psh();
+::             szuka UM powiazanego z UMAN
+               UM.index('AN');
+               UM.prefix(UMAN.ref());
+               {? UM.first()
+               ||
+                  {? _mode=0 | _mode=2
+                  ||
+                     {? ((_startd<=_data_do & _endd>=UM.OD) | (_data_do=date(0,0,0) & _endd>=UM.OD)) & (__stu_gz='T')
+                     ||
+                        UP.index('POZ');
+                        UP.prefix(UM.ref());
+                        {? UP.first()
+                        ||
+                           {!
+                           |?
+                              {? UP.UP_SRC<>''
+                              ||
+                                 _df:=exec('um_sp_date_poz','umowy_aneks',UP.ref,2);
+                                 _wyn:=exec('up_zle','umowy_zlecenia',ST.ODDZ,_startd~1,UP.ref(),_startd,_endd,_hgen,UM.OD,_data_do,_df)
+                              ||
+                                 _wyn:=exec('up_zle','umowy_zlecenia',ST.ODDZ,_startd~1,UP.ref(),_startd,_endd,_hgen,UM.OD,_data_do)
+                              ?};
+                              UP.next() & _wyn>0
+                           !}
+                        ?}
+                     ?}
+                  ?}
+               ?};
+               UMAN.cntx_pop();
+               UMAN.prev()
+            !}
+         ?}
+      ?};
+      UM.cntx_pop();
+::    część związana z ryczałtami
+      {? _modeum*'R'
+      || UMAN.index('POZ');
+         UMAN.prefix(_um);
+         _data_umow:=UM.OD;
+         _gen_ryc:=0;
+         {? UMAN.first()
+         ||
+            {!
+            |? _data_do:={? UMAN.RODZ='E' || UMAN.DEND || UMAN.D-1 ?};
+               _df:=UMAN.DF;
+               UM.cntx_psh();
+               UMAN.cntx_psh();
+::             szuka UM powiazanego z UMAN
+               UM.index('AN');
+               UM.prefix(UMAN.ref());
+               {? UM.first()
+               || {? (_mode=0 | _mode=1) & (UM.DO<=_endd | (_lgen<>date(0,0,0) & UM.OD<=_lgen & UM.DO>_lgen))
+                  || _wyn:=exec('umr_zle','umowy_zlecenia',UM.ref(),_startd,_endd,_hgen,_data_do)
+                  ?}
+               ?};
+               UM.cntx_pop();
+               UMAN.cntx_pop();
+               UMAN.next()
+            !}
+         ?}
+      ?}
+   ||
+      _df:=date(0,0,0)
+   ?};
+:: generownie dla biezacej umowy
+   UM.clear();
+   UM.seek(_um);
+   {? ((_startd<=UM.DO & _endd>=UM.OD) | (UM.DO=date(0,0,0) & _endd>=UM.OD)) & (__stu_gz='T')
+   ||
+      UP.index('POZ');
+      UP.prefix(UM.ref());
+::    gdy ~UP.first - moga byc bez pozycji
+      {? ZMIENNE.STAUM_MM=0
+      ||
+         {? UP.first()
+         ||
+            {? _mode=0 | _mode=2
+            ||
+               {!
+               |?
+                  {? UP.UM().STU().KOD<>'Z'
+                  ||
+                     {? UP.UP_SRC<>''
+                     ||
+                        _df:=exec('um_sp_date_poz','umowy_aneks',UP.ref,2);
+                        _wyn:=exec('up_zle','umowy_zlecenia',ST.ODDZ,_startd~1,UP.ref(),_startd,_endd,_hgen,UM.OD,UM.DO,_df)
+                     ||
+                        _wyn:=exec('up_zle','umowy_zlecenia',ST.ODDZ,_startd~1,UP.ref(),_startd,_endd,_hgen,UM.OD,UM.DO)
+                     ?}
+                  ?};
+                  UP.next() & _wyn
+               !}
+            ?};
+            {? (_mode=0 | _mode=1) & (UM.DO<=_endd | (_lgen<>date(0,0,0) & UM.OD<=_lgen & UM.DO>_lgen))
+            || _wyn:=exec('umr_zle','umowy_zlecenia',_um,_startd,_endd,_hgen,UM.DO)
+            ?}
+         ?}
+      ||
+         {? UP.first() & _mode=0 & __stu_gz='T'
+         ||
+            {? _mode=0 | _mode=2
+            ||
+               {!
+               |?
+                  {? UP.UM().STU().KOD<>'Z'
+                  ||
+                     {? UP.UP_SRC<>''
+                     ||
+                        _df:=exec('um_sp_date_poz','umowy_aneks',UP.ref,2);
+                        _wyn:=exec('up_zle','umowy_zlecenia',ST.ODDZ,_startd~1,UP.ref(),_startd,_endd,_hgen,UM.OD,UM.DO,_df)
+                     ||
+                        _wyn:=exec('up_zle','umowy_zlecenia',ST.ODDZ,_startd~1,UP.ref(),_startd,_endd,_hgen,UM.OD,UM.DO)
+                     ?}
+                  ||
+                     _wyn:=0
+                  ?};
+                  UP.next() & _wyn
+               !}
+            ?};
+            {? (_mode=0 | _mode=1) & (UM.DO<=_endd | (_lgen<>date(0,0,0) & UM.OD<=_lgen & UM.DO>_lgen))
+            || _wyn:=exec('umr_zle','umowy_zlecenia',_um,_startd,_endd,_hgen,UM.DO)
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+:: uwzglednianie ryczaltow
+_wyn
+
+
+\up_zle
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: generowanie zgloszen na podstawie pozycji umowy
+::       transakcja musi byc wywolana zewnetrznie
+::   WE: _a  - STRING - oddzial
+::       _b  - INTEGER - rok dla ktorego generujemy (4 cyfry ---> 2001)
+::       _c  - UP.ref - ref pozycji umowy
+::       _d  - DATE - od daty
+::       _e  - DATE - do daty
+::       _f  - HGEN.ref() - HGEN
+::       _g  - DATE - data poczatkowa umowy
+::       _h  - DATE - data koncowa umowy
+::      [_i] - DATE - dodatkowo podana data przed ktora wszystkie pozycje otrzymuja status N nie fakturowac
+::                    niezaleznie od zapisow w UP
+::   WY: 0 - nie wygenerowano zgłoszenia
+::       1 - wygenerowano
+::       2 - pominięte bo to tylko ryczałt bez harmonogramu
+::  OLD: \up_zle/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_oddz:=_a;
+_ar:=_b;
+_up:=_c;
+_startd:=_d;
+_endd:=_e;
+_hgen:=_f;
+_um_start:=_g;
+_um_end:=_h;
+_border_date:=date(0,0,0);
+{? var_pres('_i')=type_of(date())
+|| _border_date:=_i
+?};
+_dayInHarm:=0;
+_wyn:=0;
+
+exec('zle_open','open_tab',_oddz,2-$_ar,form(_startd~2,-2));
+{? UP.seek(_up)
+||
+   {? UP.POS<>null & UP.UM().TYP_HR<>'R' & UP.H<>null & UP.IL<>0 & UP.TAR<>null
+   ||
+      ZLE.index('GEN');
+      ZLE.prefix(_oddz,'T',UP.UM,UP.POS,UP.USL,UP.TAR,UP.UM().FAS,UP.ref());
+      _zle:={? ~ZLE.first() || exec('zle_new','umowy_zlecenia',_oddz) || ZLE.ref() ?};
+::    echo('generowanie pozycji zgłoszenia - '+ZLE.SYM);
+      {? _zle<>null
+      ||
+         ZLP.index('ZLE');
+         ZLP.prefix(_zle);
+
+         _data_p:={? _um_start>_startd
+                  || _um_start
+                  || _startd
+                  ?};
+         _data_k:={? _um_end<_endd & _um_end<>date(0,0,0)
+                  || _um_end
+                  || _endd
+                  ?};
+
+         _p1:=_p2:=_p3:='';
+         exec('zlm_open','open_tab',_oddz,2-$(_data_p~1),form(_data_p~2,-2));
+         {!
+         |?
+            {? _p1<>_oddz | _p2<>2-$(_data_p~1) | _p3<>form(_data_p~2,-2)
+            || exec('zlm_open','open_tab',_oddz,2-$(_data_p~1),form(_data_p~2,-2));
+               _p1:=_oddz;
+               _p2:=2-$(_data_p~1);
+               _p3:=form(_data_p~2,-2)
+            ?};
+            {? FZL.UM_SP_ZAW(UP.UM().ref(),_data_p)
+            ||
+::               _sym:=FZL.H_SPR(_oddz,UP.H().KOD,_data_p);
+               _harm:=0;
+               {? UP.H<>null()
+               || {? ~_dayInHarm || _dayInHarm:=-1 ?};
+                  UP.H();
+                  _harm:=exec('pos_present','umowy_harm',_data_p)
+               ?};
+
+               {? _harm>0
+               || {? _dayInHarm=-1 || _dayInHarm:=1 ?};
+::                  _ref:=exec('spr_kodh','umowy_harm',HN.TYP,_sym);
+::                sprawdza czy nie ma juz poz zl dla daty w umowie
+                  ZLP.cntx_psh();
+                  ZLP.index('ZLE');
+                  ZLP.prefix(_zle,_data_p);
+                  _dodaj:=~ZLP.first();
+                  ZLP.cntx_pop();
+
+                  {? _dodaj
+                  || ZLP.blank();
+
+                     ZLP.DZ:=date();
+                     ZLP.C:=UP.C;
+                     ZLP.DW:=_data_p;
+                     ZLP.M:=ZLP.DW~2;
+                     ZLP.MJ:=UP.MJ;
+                     ZLP.RFAK:=UP.RFAK;
+                     ZLP.IL:=UP.IL;
+                     ZLP.JM:=UP.JM;
+                     ZLP.M_R:=UP.M_2;
+                     ZLP.ILR:=UP.IL2;
+                     ZLP.C_R:=UP.C_2;
+                     ZLP.ODP:=UP.ODP;
+                     ZLP.WYS:=UP.WYS;
+                     ZLP.HGEN:=_hgen;
+                     ZLP.F:={? UP.UM().FAS().KOD='N' | _data_p<_border_date || 'N' || UP.F ?};
+                     ZLP.T:={? UP.USL().CZY_RED=1 || 'T' || 'N' ?};
+                     ZLP.RP:='H';
+                     ZLP.KH_ODB:=UP.UM().KH_ODB;
+                     ZLP.HAN:=UP.UM().HAN;
+                     ZLP.WAL:=UP.WAL;
+                     ZLP.U:=UP.U;
+                     ZLP.KH_ODB:=UP.UM().KH_ODB;
+                     ZLP.KH:=ZLP.ZLE().KH;
+                     ZLP.UM:=ZLP.ZLE().UM;
+                     ZLP.USL:=ZLP.ZLE().USL;
+                     ZLP.POS:=ZLP.ZLE().POS;
+                     ZLP.UL:=ZLP.ZLE().POS().UL;
+                     ZLP.MIA:=ZLP.ZLE().POS().MIA;
+                     ZLP.CB:=UP.UM().CB;
+                     ZLP.KG:=exec('uz_zlp_kg','umowy_zlecenia',2,0);
+                     ZLP.POJAZD:=UP.POJAZDY;
+                     ZLP.ZLBR:=UP.ZLBR;
+                     ZLP.PROJEKTY:=UP.UM().PROJEKTY;
+
+
+::                     {? HN.TYP=1
+::                     || ZLP.SAM:=_ref
+::                     |? HN.TYP=2
+::                     || ZLP.ZLBR:=_ref
+::                     |? HN.TYP=3
+::                     || ZLP.PRACW:=_ref
+::                     |? HN.TYP=5
+::                     || ZLP.REJO:=_ref;
+::                        REJO.seek(_ref);
+::                        ZLP.SAM:=REJO.SAM;
+::                        ZLP.ZLBR:=REJO.ZLBR;
+::                        ZLP.PRACW:=REJO.PRACW
+::                     ?};
+::                   dodano obsluge dodatku do harmonogramu
+                     {? UP.DOD='T'
+                     ||
+                        ZLP.ILD:=UP.ILD;
+                        ZLP.M_D:=UP.M_D;
+                        ZLP.C_D:=UP.C_D;
+                        ZLP.PRD:=UP.PRD
+                     ?};
+
+::                   dodano testowo
+                     {? date(ZLP.DW~1,ZLP.DW~2,1)<>date(#('20'+(4-ZLP.name)-2),#((6-ZLP.name)),1)
+                     || undo();
+                        FUN.info('Zmiany anulowano.'@);
+                        _plik:=fopen('log_zlec.txt','a');
+                        _st:=username+'|'+UM.SYM+'|'+$ST.AR+'|'+$ST.AM+'|'+$ZLP.DW+'|'+ZLP.name();
+                        fwrite(_plik,_st);
+                        fclose(_plik)
+                     ?};
+                     ZLP.prefix();
+                     ZLP.KG:=exec('uz_zlp_kg','umowy_zlecenia',1,0);
+                     ZLP.KODK:=$ZLP.tm_stamp();
+                     _wyn:={? ZLP.add(1) || 1 || __dayInHarm:=-2; 0 ?}
+                  ?}
+               ?}
+            ?};
+            _data_p:=_data_p+1;
+            _data_p<=_data_k
+         !}
+      ?}
+   |? UP.M<>null() & UP.MJ=null() & UP.ILM>0
+   || _wyn:=2
+   ?}
+?};
+::exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2));
+{? ~_wyn & _dayInHarm=-1 || _wyn:=1 ?};
+_wyn
+
+
+\zle_new
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: dodanie naglowka zlecenia (wywolywane z up_zle)
+::       jesli brak parametru - domyslnie przepisany z pozycji umowy
+::   WE:  _a - oddzial
+::       [_b] - rodzaj uslugi USL.ref
+::       [_c] - znacznik czy z umowy 'T' lub 'N'
+::       [_d] - kontrahent KH.ref
+::       [_e] - posesja POS.ref
+::       [_f] - umowa UM.ref
+::       [_g] - pozycja umowy UP.ref
+::       [_h] - czy fakturowac wg realizacji 'T' lub 'N'
+::       [_i] - cennik TAR.ref
+::       [_j] - sposob fakturowania FAS.ref
+::       [_k] - handlowiec HAN.ref
+::   WY: _wyn - ref zlecenia
+::  OLD: \zle_new/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _<2  || _b:=UP.USL      || {? type_of(_b)<>7 || _b:=UP.USL().ref ?} ?};
+{? _<3  || _c:='T'         || {? type_of(_c)<>2 || _c:='T' ?} ?};
+{? _<4  || _d:=UP.UM().KH  || {? type_of(_d)<>7 || _d:=UP.UM().KH ?} ?};
+{? _<5  || _e:=UP.POS      || {? type_of(_e)<>7 || _e:=UP.POS ?} ?};
+{? _<6  || _f:=UP.UM       || {? type_of(_f)<>7 || _f:=UP.UM ?} ?};
+{? _<7  || _g:=UP.ref()    || {? type_of(_g)<>7 || _g:=UP.ref() ?} ?};
+{? _<8  || _h:=UP.TFAK     || {? type_of(_h)<>2 || _h:='N' ?} ?};
+{? _<9  || _i:=UP.TAR      || {? type_of(_i)<>7 || _i:=UP.TAR ?} ?};
+{? _<10 || _j:=UP.UM().FAS || {? type_of(_j)<>7 || _j:=UP.UM().FAS ?} ?};
+{? _<11 || _k:=UP.UM().HAN || {? type_of(_k)<>7 || _k:=UP.UM().HAN ?} ?};
+
+_wyn:=null;
+_pom_tab:=POM.TAB;
+_pom_typdok:=POM.TYPDOK;
+POM.TAB:='ZLE';
+POM.TYPDOK:='ZLE';
+
+ZLE.cntx_psh();
+ZLE.clear();
+ZLE.blank();
+ZLE.ODDZ:=_a;
+ZLE.USL:=_b;
+ZLE.CZUM:=_c;
+ZLE.KH:=_d;
+{? ZLE.KH<>null || ZLE.TYP:='Z' || ZLE.TYP:='W' ?};
+ZLE.POS:=_e;
+ZLE.UM:=_f;
+ZLE.UP:=_g;
+ZLE.TFAK:=_h;
+ZLE.TAR:=_i;
+ZLE.FAS:=_j;
+ZLP.HAN:=_k;
+_nr:=exec('numer_new','numery','PACZKA');
+{? _nr>0
+||
+   ZLE.NR:=_nr;
+   {? ZLE.add()
+   || exec('znak','numery','ZLE');
+      _wyn:=ZLE.ref()
+   ?}
+?};
+ZLE.cntx_pop();
+ZLE.seek(_wyn);
+
+POM.TAB:=_pom_tab;
+POM.TYPDOK:=_pom_typdok;
+_wyn
+
+
+\uz_zlp_kg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [2012]
+:: OPIS: uzupelnia ilosc w kg na ZLP
+::   WE: _a uzpelnic zmienna UMO 1- na podstawie ZLP, 2 na podstawie UM 0 - nie uzupelnia
+::       _b czy pytac o przeliczenie
+::   WY: ilosc kilogramow po przeliczeniu
+::  OLD: \uz_zlp_kg/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+{? _>=2 || {? type_of(_b)<>1 || _b:=1 ?} || _b:=1 ?};
+{? _a=1
+|| exec('zlp_umo','umowy_zlecenia')
+|? _a=2
+|| exec('up_umo','umowy')
+?};
+_jm_kpo:=-~exec('get','#params',100171,2);
+_kg:=0; _il:=ZLP.KG;
+{? ZLP.ODP<>null & ZLP.ODP().WM3<>0 & _jm_kpo='t'
+|| _kg:=(UMO.IL2*ZLP.ODP().WM3)/1000
+|? ZLP.ODP<>null & ZLP.ODP().WM3<>0 & _jm_kpo='kg'
+|| _kg:=UMO.IL2*ZLP.ODP().WM3
+?};
+{? UMO.IL2<>0
+ & (_kg<>_il) & (_kg>0)
+ & {? _b || FUN.ask('Masa odpadów niezgodna z masą wg przelicznika.\nCzy przeliczyć?'@) || 1 ?}
+|| _il:=_kg
+?};
+_il
+
+
+\umr_zle
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wystawianie pozycji zgloszen zwiazanych z ryczaltem na podstawie pozycji umow
+::   WE: _a  - ref umowy
+::       _b  - od daty
+::       _c  - do daty
+::       _d  - ref HGEN
+::       _e  - data do UM.DO
+::      [_f] - dodatkowo podana data przed ktora wszystkie pozycje otrzymuja status N nie fakturowac
+::             niezaleznie od zapisow w UP
+::   WY: _wyn - czy wygenerowano zgloszenie
+::  OLD: \umr_zle/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=6 || {? type_of(_f)<>4 || _f:=date(0,0,0) ?}   || _f:=date(0,0,0) ?};
+{? _e=date(0,0,0) || _e:=_c ?};
+
+_wyn:=1;
+_dat_od:=date(0,0,0);
+
+UM.clear();
+{? UM.seek(_a)
+||
+   {? (_b<=_e & _c>=UM.OD) | (_e=date(0,0,0) & _c>=UM.OD)
+   ||
+      UP.index('POZ');
+      UP.prefix(UM.ref());
+      {? UP.first()
+      ||
+         {!
+         |?
+            {? UP.ILM<>0 & UP.WSP<>0 & UP.M<>null
+            || _wyn:=exec('gen_ryc','umowy_zlecenia',_a,_b,_c,_d,_e,_f)
+            ?};
+            UP.next()
+         !};
+
+         _up_size:=UP.size();
+
+         {? UM.AN>0 & 0
+         || exec('us_ryc','umowy_zlecenia',UM.ref(),_up_size,_b)
+         ?};
+
+         exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2))
+      ?}
+   ?}
+?};
+_wyn
+
+
+\hg_sp_dni
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2011]
+:: OPIS: sprawdzenie czy dla danego dnia byly juz generowane zlecenia
+::   WE: _a - oddzial
+::       _b - dzien
+::   WY: 0 - nie wygenerowano zlecen, 1 - wygenerowano zlecenia
+::  OLD: \hg_sp_dni/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+HGEN.index('ODDZ');
+HGEN.prefix(_a,_b~1);
+{? HGEN.first
+|| {!
+   |?
+      {? HGEN.ST='T'
+      ||
+         {? HGEN.OD<=_b & _b<=HGEN.DO
+         || _wyn:=1
+         ?}
+      || _wyn:=0
+      ?};
+      HGEN.next & _wyn=0
+   !}
+?};
+_wyn
+
+
+\gen_ryc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2010]
+:: OPIS: sprawdza czy sa roznice pomiedzy pozycjami biezaca i nastepna
+::   WE: _a  - ref umowy
+::       _b  - data poczatku okresu
+::       _c  - data konca okresu
+::       _d  - ref HGEN
+::       _e  - !!! nie wykorzystywany
+::      [_f] - dodatkowo podana data przed ktora wszystkie pozycje otrzymuja status N nie fakturowac
+::             niezaleznie od zapisow w UP
+::   WY: 1-wygenerowano, 0-nie
+::  OLD: \gen_ryc/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=1;
+UP.cntx_psh();
+UM.cntx_psh();
+ZLP.cntx_psh();
+ZLE.cntx_psh();
+
+UM.clear();
+{? UM.seek(_a)
+|| _fas:=UM.FAS().KOD;
+   _okr:=exec('zwr_okr','#datetime',_fas,_b);
+   _okr_od:=exec('okr_data','umowy_wspolne',1,_fas,_okr,_b~1);
+   _okr_do:=exec('okr_data','umowy_wspolne',3,_fas,_okr,_b~1);
+
+   _pos:=UP.POS;
+   _ryc:=UP.R;
+   _c_r:=UP.C_R;
+   _ilm:=UP.ILM;
+   _wsp:=UP.WSP;
+   _mat:=UP.M;
+   _dr:=UP.DR;
+   _dm:=UP.DM;
+   _dilm:=UP.DILM;
+   _dc_r:=UP.DC_R;
+   _dpr:=UP.DPR;
+
+   _r_up:=UP.R_UP;
+   _ref:=#UP.ref();
+
+   _um_od:=UP.UM().OD;
+   _um_do:=UP.UM().DO;
+   _end:=(UP.UM().STU().RODZ='' & UP.UM().STU().A='N')
+       | UP.UM().STAT_REJ='X'
+       | (UP.UM().STU().RODZ='E' & UP.UM().STAT_REJ='Z' & _um_do<>date(0,0,0) & _um_do<=_okr_do);
+   _eno:=0;
+
+:: sprawdzenie czy nie wlaczono znacznika ryczaltu w biezacym miesiacu
+   _new_ryc:='N';
+   {? _ryc='T'
+   ||
+      UM.cntx_psh();
+      UP.cntx_psh();
+      UP.index('HISTW');
+      UP.prefix(UP.UP_SRC,UP.UP_SRC);
+      {? UP.UP_SRC<>'' & UP.size>1
+      ||
+         {? UP.seek(_ref,) & UP.prev
+         ||
+            {? UP.UM().OD~1 = _okr_od~1 & UP.UM().OD~2 = _okr_od~2 & UP.R='N'
+            || _new_ryc:='T';
+               _new_dat:=_um_od
+            |? UP.R='N'
+            || _new_ryc:='T';
+               _new_dat:=date(0,0,0)
+            ?}
+         ?}
+      ?};
+      UP.cntx_pop();
+      UM.cntx_pop()
+   ?};
+
+:: trzeba wygenerowac pierwsze ZLP dla biezacego okresu
+   {? (_um_od<=_okr_od | _r_up=0 | _new_ryc='T') & _ryc='T'
+   ||
+::    poprzednia pozycja nalezala do wczesniejszego okresu - lub dodana nowa pozycja
+      _od_daty:=date(0,0,0);
+      _od_daty:={? _r_up=0 & _um_od>_okr_od || _um_od ?};
+      {? _new_ryc='T' || _od_daty:=_new_dat ?};
+      _wyn:=exec('umr_zle2','umowy_zlecenia',_a,_b,_c,_d,_um_do,_od_daty,_f)
+   ?};
+
+:: szuka nastepnej powiazanej i sprawdza czy byla zmiana
+   _zmiana:=0;
+   UP.cntx_psh();
+   _ndx:=UP.ndx_tmp(,,'R_UP',,);
+   UP.index(_ndx);
+   UP.prefix(_ref);
+   {? UP.first()
+   ||
+      {? UP.R='T' & UP.UM().STU().KOD<>'Z'
+      || _eno:=UP.UM().DO<=_okr_do & UP.UM().DO>=_okr_od;
+         _um_do:=UP.UM().DO;
+         {? UP.UM().OD<=_okr_do
+         ||
+            {? _pos<>UP.POS | (_ryc='' & _ilm=0 & _wsp=0 & _mat=null) | _ryc<>UP.R | _ilm<>UP.ILM | _wsp<>UP.WSP
+               | _mat<>UP.M | _c_r<>UP.C_R | _dr<>UP.DR | _dm<>UP.DM | _dilm<>UP.DILM | _dc_r<>UP.DC_R | _dpr<>UP.DPR
+            ||
+::             zmiana
+               _um_od:=UP.UM().OD;
+               _um_do:=UP.UM().DO;
+               _zmiana:=_wyn:=exec('umr_zle2','umowy_zlecenia',_a,_b,_c,_d,_um_do,_um_od,_f)
+            ?}
+         ?}
+      ||
+::       aneks - nie fakturowac ryczaltu
+         _um_od:=UP.UM().OD;
+         _um_do:=UP.UM().DO;
+         _zmiana:=1
+      ?}
+   ||
+::    umowa ma kolejne aneksy - pozycja zostala usunieta w nastepnym aneksie
+      UMAN.cntx_psh();
+      {? UP.UM().UMAN<>null
+      ||
+         _um_od:=UM.UMAN().D;
+         _zmiana:=1
+      ?};
+      UMAN.cntx_pop()
+   ?};
+   UP.cntx_pop();
+
+   {? _zmiana=1 | _end | _eno
+   ||
+::    ustawienie daty_do dla poprzednich warunkow - petla tylko w biezacej masce
+      {!
+      |?
+         _next:=0;
+::       szuka ZLE dla biezacej UP.UM (istnieje jesli byla wygenerowana ZLP)
+         _zle:=exec('czy_zle','umowy_zlecenia',_b,1);
+         {? _zle
+         ||
+            ZLP.index('RP');
+            ZLP.prefix(_zle,'R');
+            {? ZLP.first()
+            || {!
+               |? {? ZLP.DOD=date(0,0,0)
+                  || _dataX:={? _eno || _um_do |? ~_end || _um_od-1 || _um_od ?};
+                     {? _dataX<_okr_do
+                     || ZLP.DOD:=_dataX;
+                        {? ZLP.DOD<>date(0,0,0) & ~(ZLP.DOD>=ZLP.HGEN().OD & ZLP.DOD<=ZLP.HGEN().DO)
+                        || exec('zlp_usu','umowy_zlecenia',1)
+                        || ZLP.put()
+                        ?}
+                     ?};
+                     0
+                  || ZLP.next()
+                  ?}
+               !}
+            ||
+::             nie ma ZLP - szuka czy wystepuje we wczesniejszych warunkach
+               _r_up:=UP.R_UP;
+               UP.prefix();
+               {? UP.seek(_r_up,)
+               || _next:=1
+               ?}
+            ?}
+         ?};
+         _next
+      !}
+   ?}
+?};
+
+UP.ndx_drop(_ndx);
+UP.cntx_pop();
+UM.cntx_pop();
+ZLP.cntx_pop();
+ZLE.cntx_pop();
+_wyn
+
+
+\umr_zle2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wystawianie pozycji zlecen zwiazanych z ryczaltem na podstawie pozycji umow
+::   WE: _a  - ref umowy
+::       _b  - od daty
+::       _c  - do daty
+::       _d  - ref HGEN
+::       _e  - data do UM.DO
+::      [_f] - ryczalt oblicz od daty
+::      [_g] - dodatkowo podana data przed ktora wszystkie pozycje otrzymuja status N nie fakturowac
+::             niezaleznie od zapisow w UP
+::   WY: _wyn - czy wygenerowano zgloszenie
+::  OLD: \umr_zle2/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=6 || {? type_of(_f)<>4 || _f:=date(0,0,0) ?}   || _f:=date(0,0,0) ?};
+{? _>=7 || {? type_of(_g)<>4 || _g:=date(0,0,0) ?}   || _g:=date(0,0,0) ?};
+_wyn:=0;
+
+:: sprawdzanie okresu fakturowania oraz czy jest juz pozycja
+_data:=_b;
+
+{!
+|?
+:: sprawdzenie ciaglosci dat umowy
+   {? exec('up_rycz_um','umowy_wspolne',UP.ref,_data)
+   ||
+::    zlecenia ryczaltowe dodawane zawsze w 1 miesiacu okresu
+      _fas:=UP.UM().FAS().KOD;
+      _wal:=UP.WAL;
+      _okr:=exec('zwr_okr','#datetime',_fas,_data);
+      _d_do:=exec('okr_data','umowy_wspolne',2,_fas,_okr,_data~1);
+      exec('zle_open','open_tab',UP.UM().ODDZ,(2-($(_d_do~1))),form(_d_do~2,-2));
+
+      ZLE.index('GEN');
+      ZLE.prefix(UP.UM().ODDZ,'T',UP.UM,UP.POS,UP.USL,UP.TAR,UP.UM().FAS,UP.ref);
+::    sprawdzanie czy nie zmieniono w umowie wg realizacji
+      _zle:=null;
+      {? ZLE.first()
+      ||
+         {!
+         |?
+            {? ZLE.TFAK=UP.TFAK || _zle:=ZLE.ref ?};
+            ZLE.next() & _zle=null
+         !}
+      ?};
+      {? _zle=null || _zle:=exec('zle_new','umowy_zlecenia',UP.UM().ODDZ) ?};
+
+      _dw:=exec('okr_data','umowy_wspolne',1,_fas,_okr,_data~1);
+
+      {? _zle & (_f>_dw | _f=date(0,0,0) | (_f~1<>0 & _f~1<>_dw~1))
+      ||
+         {? (_f~1<>0 & _f~1<>_dw~1) || _f:=date(0,0,0)?};
+         ZLP.index('RP');
+         ZLP.prefix(_zle,'R');
+         {? ~ZLP.first()
+         ||
+            ZLP.blank();
+            ZLP.ZLE:=_zle;
+            ZLP.DZ:=date();
+            ZLP.DW:=_dw;
+            ZLP.WAL:=_wal;
+
+::          od daty
+            ZLP.ODD:=_f;
+            {? _data>_dw & ZLP.ODD=date(0,0,0) || ZLP.ODD:=_data ?} ;
+
+::          dla umow z data zakonczenia przypisuje DOD jesli zawiera sie w okresie ryczaltowym
+            _fas:=ZLP.ZLE().UP().UM().FAS().KOD;
+            _okr:=exec('zwr_okr','#datetime',_fas,_c);
+            _c_2:=exec('okr_data','umowy_wspolne',3,_fas,_okr,_c~1);
+            {? _b<_e & _c_2>_e || ZLP.DOD:=_e ?};
+
+            ZLP.M:=ZLP.DW~2;
+            ZLP.ILR:=UP.ILM*UP.WSP;
+            ZLP.M_R:=UP.M;
+            {? UP.C_R>0 || ZLP.C_R:=UP.C_R ?};
+
+            _um_tfak:=UP.TFAK;
+
+::          dla pozycji ryczaltowych zerowne sa informacje dot. odpadow
+            ZLP.ODP:=null;
+            ZLP.KG:=0;
+            ZLP.WYS:=null;
+            ZLP.HGEN:=_d;
+            ZLP.F:={? UP.UM().FAS().KOD='N' | _data<_f & UP.R<>'T' || 'N' || 'T' ?};
+            ZLP.T:='N';
+            ZLP.RP:='R';
+            ZLP.U:=UP.U;
+            ZLP.HAN:=UP.UM().HAN;
+            ZLP.KH_ODB:=UP.UM().KH_ODB;
+            ZLP.KH:=ZLP.ZLE().KH;
+            ZLP.UM:=ZLP.ZLE().UM;
+            ZLP.USL:=ZLP.ZLE().USL;
+            ZLP.POS:=ZLP.ZLE().POS;
+            ZLP.UL:=ZLP.ZLE().POS().UL;
+            ZLP.MIA:=ZLP.ZLE().POS().MIA;
+            ZLP.CB:=UP.UM().CB;
+            ZLP.PROJEKTY:=UP.UM().PROJEKTY;
+::          zeby sie drukowalo na fakturze
+            {? UP.DPR>0 || ZLP.PRD:=UP.DPR ?};
+::          dodano obsluge dodatku do harmonogramu
+            {? UP.DR='T'
+            ||
+               ZLP.ILD:=UP.DILM;
+               ZLP.M_D:=UP.DM;
+               ZLP.C_D:=UP.DC_R;
+               ZLP.PRD:=UP.DPR
+            ?};
+            ZLP.KODK:=$ZLP.tm_stamp();
+            _wyn:=ZLP.add(1)
+         ?}
+      ?}
+   ?};
+   _data:=exec('add_mies','umowy_wspolne',_data);
+   _data<=_c
+!};
+_wyn
+
+
+\czy_zle
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdza czy jest zlecenie dla biezacej umowy i pozycji umowy w buforze
+::   WE: _a - data do sprawdzania
+::      [_b] - czy dodawa zlcenie gdy nie znaleziono (1) -tak
+::  OLD: \czy_zle/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=2 || {? type_of(_b)<>1 || _b:=0 ?} || _b:=0 ?};
+
+:: zlecenia ryczaltowe dodawane zawsze w 1 miesiacu okresu
+_data:=_a;
+
+_fas:=UP.UM().FAS().KOD;
+_okr:=exec('zwr_okr','#datetime',_fas,_data);
+_d_do:=exec('okr_data','umowy_wspolne',2,_fas,_okr,_data~1);
+exec('zle_open','open_tab',UP.UM().ODDZ,(2-($(_d_do~1))),form(_d_do~2,-2));
+ZLE.index('GEN');
+ZLE.prefix(UP.UM().ODDZ,'T',UP.UM,UP.POS,UP.USL,UP.TAR,UP.UM().FAS,UP.ref);
+_zle:={? ~ZLE.first
+      || {? _b=1
+         || exec('zle_new','umowy_zlecenia',UP.UM().ODDZ)
+         || null
+         ?}
+      || ZLE.ref
+      ?};
+_zle
+
+
+\us_ryc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2003]
+:: OPIS: sprawdza czy usuniete pozycje umowy i jezeli tak to przypisuje date do
+::   WE: _a - umowa - ref
+::       _b - ile pozycji w umowie
+::       _c - data od
+::  OLD: \us_ryc/um3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+
+UM.cntx_psh();
+UP.cntx_psh();
+UMAN.cntx_psh();
+
+UM.clear();
+{? UM.seek(_a)
+||
+   _poz:=0;
+   {? UM.A='N'
+   || _umo:=UM.ref;
+      UMAN.index('POZ');
+      UMAN.prefix(_umo);
+      {? UMAN.last || _poz:=UMAN.POZ ?}
+   || _umo:=UM.UMAN().BIE;
+      _poz:=UM.UMAN().POZ-1;
+      UMAN.index('POZ');
+      UMAN.prefix(_umo)
+   ?};
+
+   {? _poz>0
+   ||
+      UP.index('UM');
+      {? UMAN.find_key(_poz)
+      ||
+         UM.ndx_drop;
+         _ndx:=UM.ndx_tmp('',,'UMAN',,);
+         UM.index(_ndx);
+         UM.prefix(@.UMAN.ref);
+         _data:=UMAN.D;
+         {? UM.first
+         || UP.index('UM');
+            UP.prefix(UM.ref);
+            {? UP.size>_b
+            ||
+               {? UP.first
+               ||
+                  {!
+                  |?
+                     _ok:=0;
+                     _r_up:=#UP.ref;
+                     UP.ndx_drop();
+                     UP.cntx_psh();
+                     UP.index('R_UP');
+                     UP.prefix(_r_up);
+                     {? ~UP.first || _ok:=1 ?};
+                     UP.next;
+                     UP.cntx_pop();
+
+                     {? _ok=1
+                     ||
+                        _fas:=UP.UM().FAS().KOD;
+                        _okr:=exec('zwr_okr','#datetime',_fas,_data);
+                        _zle:=exec('czy_zle','umowy_zlecenia',exec('okr_data','umowy_wspolne',1,_fas,_okr,_c~1));
+                        {? _zle
+                        ||
+                           ZLP.index('RP');
+                           ZLP.prefix(_zle,'R');
+                           {? ZLP.first
+                           || ZLP.DOD:=_data-1;
+                              {? ZLP.put
+                              ||
+::                               to znaczy ze trafilo na date z kwartalu
+                                 {? ZLP.DW>ZLP.DOD & ZLP.DOD<>date(0,0,0)
+                                 || exec('zlp_usu','umowy_zlecenia',1)
+                                 ?}
+                              ?}
+                           ?}
+                        ?};
+                        exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2))
+                     ?};
+                     UP.next
+                  !}
+               ?}
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+UM.cntx_pop();
+UP.cntx_pop();
+UMAN.cntx_pop();
+''
+
+
+\up_zlp_sp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdzanie lub usuwanie zlecen na podstawie pozycji umowy (uwaga teraz dziala dla calej umowy)
+::       powstalych z harmonogramu
+::       UWAGA: aby funkcja dzialala poprawnie musi byc wywolana transakcja
+::       aby ew. mozna bylo cofnac usuwanie pozycji zlecen
+::   WE:  _a  - oddzial
+::        _b  - ref pozycji umowy
+::        _c  - data poczatkowa do sprawdzania
+::        _d  - s - sprawdzanie pozycji zlecen
+::              u - usuwanie pozycji zlecen
+::        _e  - uwzglednienie zlecen ryczaltowych
+::       [_f] - data od ktorej mozna zmieniac znaczniki dla zlecen ktore juz zafakturowano
+::   WY: data niezrealizowanej, niezafakturowanej pozycji zlecenie
+::  OLD: \up_zlp_sp/um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=6 || {? type_of(_f)<>4 || _f:=date(0,0,0) ?} || _f:=date(0,0,0) ?};
+
+_wyn:=date(0,0,0);
+sym_fakt:='';
+exec('zle_open','open_tab',_a,2-$(_c~1),form(_c~2,-2));
+{? UP.seek(_b)
+||
+   HGEN.index('ODDZ');HGEN.prefix(ST.ODDZ);
+   _bie_dat:=_c;
+   {? HGEN.last() || _dat_do:=HGEN.DO || _dat_do:=_bie_dat ?};
+   {!
+   |?
+      exec('zle_open','open_tab',UM.ODDZ,2-$(_bie_dat~1),form((_bie_dat~2),-2));
+      ZLE.index('USL');
+      ZLE.prefix('T',UP.UM().ref,UP.ref);
+      {? ZLE.first()
+      ||
+         {!
+         |?
+            ZLP.index('RP');
+            ZLP.prefix(ZLE.ref,'H');
+            {? ZLP.first()
+            ||
+               {!
+               |?
+                  _next:=0;
+                  {? _c<=ZLP.DW
+                  ||
+                     {? ZLP.SR='Z' | ZLP.FAP<>null | ZLP.FAPU<>null
+                     ||
+::                      maski dla faktur
+                        FAKS.cntx_psh();
+                        FAP.cntx_psh();
+                        {? ZLP.FAP<>null
+                        ||
+                           _fap_nm:=ref_name(ZLP.FAP);
+                           FAKS.use('faktu'+(_fap_nm+3));
+                           FAP.use(_fap_nm)
+                        ||
+                           {? ZLP.FAPU<>null
+                           ||
+                              _fap_nm:=ref_name(ZLP.FAPU);
+                              FAKS.use('faktu'+(_fap_nm+3));
+                              FAP.use(_fap_nm)
+                           ?}
+                        ?};
+
+                        {? ZLP.DW>=_f & _f<>date(0,0,0) & _d='u'
+                        ||
+                           {? ZLP.FAP<>null | ZLP.FAPU<>null
+                           ||
+                              ZLP.AN:='T';
+                              ZLP.put();
+                              _next:=0
+                           ||
+                              _next:=exec('zlp_usu','umowy_zlecenia',1)
+                           ?}
+                        ||
+                           {? ZLP.FAP<>null
+                           ||
+                              {? sym_fakt* ZLP.FAP().FAKS().SYM=0
+                              || sym_fakt+=ZLP.FAP().FAKS().SYM+'\n'
+                              ?}
+                           ?};
+                           {? ZLP.FAPU<>null
+                           ||
+                              {? sym_fakt* ZLP.FAPU().FAKS().SYM=0
+                              || sym_fakt+=ZLP.FAPU().FAKS().SYM+'\n'
+                              ?}
+                           ?};
+                           {? _wyn<ZLP.DW || _wyn:=ZLP.DW ?}
+                        ?};
+
+                        FAP.cntx_pop();
+                        FAKS.cntx_pop()
+                     ||
+                        {? _d='u'
+                        || _next:=exec('zlp_usu','umowy_zlecenia',1)
+                        ?}
+                     ?}
+                  ?};
+                  {? _next=0
+                  || _next:=ZLP.next()
+                  ?};
+                  _next
+               !}
+            ?};
+            ZLE.next()
+          !}
+      ?};
+      _bie_dat:=exec('add_mies','umowy_wspolne',_bie_dat);
+      _dat_do>_bie_dat
+   !};
+   {? _e
+   ||
+      _fas:=UP.UM().FAS().KOD;
+      _okr:=exec('zwr_okr','#datetime',_fas,_c);
+      _d_p:=exec('okr_data','umowy_wspolne',1,_fas,_okr,_c~1);
+
+      _d_k:=exec('d_hgen_do','umowy_wspolne',UP.UM().ODDZ);
+
+      _data:=_d_p;
+      {!
+      |?
+         exec('zle_open','open_tab',UP.UM().ODDZ,2-$(_data~1),form(_data~2,-2));
+         ZLE.index('USL');
+         ZLE.prefix('T',UP.UM,UP.ref());
+
+         _zle:={? ZLE.first() || ZLE.ref() || null ?};
+
+         {? _zle
+         ||
+            ZLP.index('RP');
+            ZLP.prefix(_zle,'R');
+            {? ZLP.first()
+            ||
+               {!
+               |?
+                  _next:=0;
+::                czy bylo fakturowanie
+                  {? ZLP.FAP<>null | ZLP.FAPU<>null
+                  ||
+::                   maski dla faktur
+                     FAKS.cntx_psh();
+                     FAP.cntx_psh();
+                     {? ZLP.FAP<>null
+                     ||
+                        _fap_nm:=ref_name(ZLP.FAP);
+                        FAKS.use('faktu'+(_fap_nm+3));
+                        FAP.use(_fap_nm)
+                     ||
+                        {? ZLP.FAPU<>null
+                        ||
+                           _fap_nm:=ref_name(ZLP.FAPU);
+                           FAKS.use('faktu'+(_fap_nm+3));
+                           FAP.use(_fap_nm)
+                        ?}
+                     ?};
+
+                     {? ZLP.DW>=_f & _f<>date(0,0,0) & _d='u'
+                     ||
+                        {? ZLP.FAP<>null | ZLP.FAPU<>null
+                        ||
+                           ZLP.AN:='T';
+                           ZLP.put();
+                           _next:=0
+                        ||
+                           _next:=exec('zlp_usu','umowy_zlecenia',1)
+                        ?}
+                     ||
+::                      oblicza koniec okresu
+                        {? ZLP.DOD=date(0,0,0)
+                        || _dat_k_ok:=exec('okr_data','umowy_wspolne',3,_fas
+                                        ,exec('zwr_okr','#datetime',_fas,ZLP.DW),ZLP.DW~1)
+                        || _dat_k_ok:=ZLP.DOD
+                        ?};
+                        {? ZLP.FAP<>null
+                        ||
+                           {? sym_fakt* ZLP.FAP().FAKS().SYM=0
+                           || sym_fakt+=ZLP.FAP().FAKS().SYM+'\n'
+                           ?}
+                        ?};
+                        {? ZLP.FAPU<>null
+                        ||
+                           {? sym_fakt* ZLP.FAPU().FAKS().SYM=0
+                           || sym_fakt+=ZLP.FAPU().FAKS().SYM+'\n'
+                           ?}
+                        ?};
+                        {? _dat_k_ok>_wyn || _wyn:=_dat_k_ok ?}
+                     ?};
+
+                     FAP.cntx_pop();
+                     FAKS.cntx_pop()
+                  ||
+                     {? _d='u'
+                     ||
+                        {? _c<=_d_k
+                        ||
+                           {? ZLP.DW>=_c & (ZLP.ODD>=_c & ZLP.ODD<>date(0,0,0))
+                           ||
+                              _next:=exec('zlp_usu','umowy_zlecenia',1)
+                           ||
+                              ZLP.DOD:=_c-1;ZLP.put();
+                              _next:=ZLP.next()
+                           ?}
+                        ||
+                           _next:=exec('zlp_usu','umowy_zlecenia',1)
+                        ?}
+                     ?}
+                  ?};
+                  {? _next=0
+                  || _next:=ZLP.next()
+                  ?};
+                  _next
+               !}
+            ?}
+         ?};
+         _data:=exec('add_mies','umowy_wspolne',_data);
+         _data<=_d_k
+      !}
+   ?}
+?};
+exec('zle_open','open_tab',ST.ODDZ,2-$(ST.AR),form(ST.AM,-2));
+_wyn
+
+
+\um_sp_us
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdzenie i usuwanie zlecen od podanej daty dla wszystkich pozycji umow wraz ze zmianami
+::   WE:  _a   - ref ostatnich warunkow
+::       [_b] - od daty
+::       [_c] - do daty ... jezeli chcemy cos zrobic od .. do
+::       [_d] - czy wyswietlac znaleznione zlecenia (0 - tak , 1 - nie)
+::       [_e] - czy zlecnia te maja byc usuwane (0 - tak, 1 - nie)
+::       [_f] - 0 - wszystkie zlecenia z umowy, 1 - tylko zlecenia ryczaltowe, 2 - tylko harmonogramy
+::       [_g] - czy transakcja wolana zewnetrznie 0 - nie , 1 -tak
+::       [_h] - jezeli podano UP.ref to dziala tylko dla jednej pozycji umowy
+::              (w takim przypadku sprawdza tylko biezace warunki)
+::  WY: 0 - sa wygenerowane zlecenia, 1 - nie ma zlecen
+:: OLD: \um_sp_us/um_aneks.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+
+n_fakt:=1;
+n_data:=date(0,0,0);
+
+{? _>=2 || {? type_of(_b)<>4 || _b:=date(0,0,0) ?} || _b:=date(0,0,0) ?};
+{? _>=3 || {? type_of(_c)<>4 || _c:=date(0,0,0) ?} || _c:=date(0,0,0) ?};
+{? _>=4 || {? type_of(_d)<>1 || _d:=0 ?} || _d:=0 ?};
+{? _>=5 || {? type_of(_e)<>1 || _e:=0 ?} || _e:=0 ?};
+{? _>=6 || {? type_of(_f)<>1 || _f:=0 ?} || _f:=0 ?};
+_g:=do_state();
+{? _>=8 || {? type_of(_h)<>7 || _h:=null ?} || _h:=null ?};
+
+oodd:=_b;
+dood:=_c;
+
+UM.seek(_a);
+_umr:=UM.ref();
+_um:=UM.SYM;
+
+exec('mmm_init','umowy_wspolne');
+
+:: ustalanie daty od do sprawdzania
+:: szukanie 1 dnia okresu bo nie usuwał zlecen dla kwartalnych
+_dat:=UM.DPO;
+_fas:=UM.FAS().KOD;
+_okr:=exec('zwr_okr','#datetime',_fas,_dat);
+_dat:=exec('okr_data','umowy_wspolne',1,_fas,_okr,_dat~1);
+
+_hgen:=exec('d_hgenod','umowy_wspolne',ST.ODDZ);
+{? _dat<_hgen || _dat:=_hgen ?};
+
+:: formulka dodajaca rekord od tabeli tymczasowej MMM
+f_add:="
+   {? ((oodd=date(0,0,0) & dood=date(0,0,0)) | (ZLP.DW>=oodd & (ZLP.DW<=dood | dood=date(0,0,0)))) & ZLP.ZLE().CZUM='T'
+   || MMM.blank();
+      MMM.ZLE:=ZLE.SYM;
+      MMM.DW:=ZLP.DW;
+      MMM.F:=ZLP.FAKS;
+      {? ZLP.FAKS='T' | ZLP.SR<>'N'
+      ||
+         n_fakt:=0;
+         {? ZLP.FAP<>null
+         ||
+            _msk:='';
+            {? FAP.name()<>ref_name(ZLP.FAP)
+            ||
+               _msk:=3+(ZLP.name()+5);
+               FAKS.cntx_psh();
+               FAP.cntx_psh();
+               FAKS.use('faktu'+_msk);
+               FAP.use('fakpo'+_msk)
+            ?};
+            MMM.FAKS:=ZLP.FAP().FAKS().SYM;
+            MMM.FPOZ:=ZLP.FAP().POZ;
+            {? _msk<>''
+            ||
+               FAP.cntx_pop();
+               FAKS.cntx_pop()
+            ?}
+         ?};
+         MMM.SR:=ZLP.SR
+      ?};
+      MMM.MASK:=ZLP.name();
+      MMM.REF:=#ZLP.ref();
+      MMM.RP:=ZLP.RP;
+      MMM.add()
+   ?}
+";
+
+:: formulka sprawdzajaca zlecenie
+{? _f=0
+||
+   _form:="
+      HGEN.index('ODDZ');
+      HGEN.prefix(ST.ODDZ);
+      {? HGEN.last() || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+      {!
+      |?
+         exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+         ZLP.index('ZLE');
+         ZLP.prefix(ZLE.ref());
+         {? ZLP.first()
+         || {! |? f_add(); ZLP.next() !}
+         ?};
+         _a:=exec('add_mies','umowy_wspolne',_a);
+         _dat_do>_a
+      !}
+   "
+|? _f=1
+||
+   _form:="
+      HGEN.index('ODDZ');
+      HGEN.prefix(ST.ODDZ);
+      {? HGEN.last() || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+      {!
+      |?
+         exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+         ZLP.index('RP');
+         ZLP.prefix(ZLE.ref,'R');
+         {? ZLP.first()
+         || {! |? f_add(); ZLP.next() !}
+         ?};
+         _a:=exec('add_mies','umowy_wspolne',_a);
+         _dat_do>_a
+      !}
+   "
+|? _f=2
+||
+   _form:="
+      HGEN.index('ODDZ');
+      HGEN.prefix(ST.ODDZ);
+      {? HGEN.last() || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+      {!
+      |?
+         exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+         ZLP.index('RP');
+         ZLP.prefix(ZLE.ref,'H');
+         {? ZLP.first()
+         || {! |? f_add(); ZLP.next() !}
+         ?};
+         _a:=exec('add_mies','umowy_wspolne',_a);
+         _dat_do>_a
+      !}
+   "
+?};
+
+:: sprawdzanie i przygotowywanie danych
+UP.index('UM');
+UP.prefix(_a);
+{? UP.first()
+||
+   {? _h=null
+   ||
+      {!
+      |?
+         ZLE.index('USL');
+         ZLE.prefix('T',_a,UP.ref());
+         {? ZLE.first()
+         ||
+            {!
+            |?
+               _form(_dat);
+               ZLE.next()
+            !}
+         ?};
+         UP.next()
+      !}
+   ||
+      ZLE.index('USL');
+      ZLE.prefix('T',_a,_h);
+      {? ZLE.first()
+      ||
+         {!
+         |?
+            _form(_dat);
+            ZLE.next()
+         !}
+      ?}
+   ?}
+?};
+
+{? UM.AN>0 & _h=null
+||
+   UMAN.index('D');
+   UMAN.prefix(_a);
+   {? UMAN.last()
+   ||
+      {!
+      |?
+         _an_ref:=UMAN.ref();
+         UMAN.cntx_psh();
+         _umow:=UMAN.BIE;
+         UM.index('AN');
+         UM.prefix(_an_ref);
+         {? UM.first() || _umow:=UM.ref() || _umow:=UMAN.BIE ?};
+         UMAN.cntx_pop();
+
+         UP.index('UM');
+         UP.prefix(_umow);
+         {? UP.first()
+         ||
+            {!
+            |?
+               ZLE.index('USL');
+               ZLE.prefix('T',_umow,UP.ref());
+               {? ZLE.first()
+               ||
+                  {!
+                  |?
+                     _form(_dat);
+                     ZLE.next()
+                  !}
+               ?};
+               UP.next()
+            !}
+         ?};
+         UMAN.prev()
+      !}
+   ?}
+?};
+
+_wyn:=exec('usu_mmm','umowy_wspolne',_a,_b,_c,_d,_e,_f);
+
+UM.seek(_umr);
+VAR_DEL.delete('f_add');
+exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2));
+_wyn
+
+
+\zl_usuw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdzenie i usuwanie pozycji zlecen
+::   WE:  _a  - ref umowy
+::        _b  - data od ktorej zaczynam usuwanie
+::        _c  - wyswietlac znalezione pozycje zlecen ? 0 - nie , 1 -tak
+::       [_d] - czy seryjnie (0) nie / tak (1)
+::       [_e] - opis dodatkowy dla wpisywania komunikatow jezeli _b=1 to _e musi byc podany
+::   WY: 0 - sa wygenerowane zlecenia, 1 - nie ma zlecen
+::  OLD: \zl_usuw/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=4 || {? type_of(_d)<>1 || _d:=0 ?} || _d:=0 ?};
+_opis:={? var_pres('_e')=type_of('') || _e || '' ?};
+_rodz:='N';
+
+_wyn:=0;
+
+:: czy jakies zlecenie bylo juz zafakturowane
+n_fakt:=1;
+
+_dat:=_b;
+exec('mmm_init','umowy_wspolne');
+
+:: formulka dodajaca rekord od tabeli tymczasowej MMM
+fm_add:="
+   MMM.blank();
+   MMM.ZLE:=ZLE.SYM;
+   MMM.DW:=ZLP.DW;
+   MMM.F:=ZLP.FAKS;
+   {? ZLP.FAKS='T' | ZLP.SR<>'N'
+   ||
+      n_fakt:=0;
+      FAKS.cntx_psh();
+      FAP.cntx_psh();
+      _fakname:=ref_name(ZLP.FAP);
+      {? +_fakname
+      ||
+         FAP.use(_fakname);
+         FAKS.use('faktu'+(5-_fakname))
+      ?};
+      MMM.FAKS:=ZLP.FAP().FAKS().SYM;
+      MMM.FPOZ:=ZLP.FAP().POZ;
+      FAP.cntx_pop();
+      FAKS.cntx_pop();
+      MMM.SR:=ZLP.SR
+   ?};
+   MMM.MASK:=ZLP.name();
+   MMM.REF:=#ZLP.ref;
+   MMM.RP:=ZLP.RP;
+   MMM.add()
+";
+
+:: formulka sprawdzajaca zlecenie
+_form:="
+   HGEN.index('ODDZ');
+   HGEN.prefix(ST.ODDZ);
+   {? HGEN.last() || _dat_do:=HGEN.DO || _dat_do:=_a ?};
+   {!
+   |?
+      exec('zle_open','open_tab',UM.ODDZ,2-$(_a~1),form((_a~2),-2));
+      ZLP.index('ZLE');
+      ZLP.prefix(ZLE.ref);
+      {? ZLP.first
+      ||
+         {!
+         |?
+            fm_add();
+            ZLP.next()
+         !}
+      ?};
+      _a:=exec('add_mies','umowy_wspolne',_a);
+      _dat_do>_a
+   !}
+";
+
+:: sprawdzanie i przygotowywanie danych
+ZLE.index('USL');
+ZLE.prefix('T',_a);
+{? ZLE.first
+||
+   {!
+   |?
+      ZLE.cntx_psh();
+      _form(_dat);
+      ZLE.cntx_pop();
+      ZLE.next()
+   !}
+?};
+
+_um:=UM.SYM;
+{? MMM.size()=0
+||
+   _wyn:=1
+||
+   PARAM_W.TAB_TMP:='MMM';
+   PARAM_W.TAB_POL:='6;7;';
+   PARAM_W.TAB_TYT:='Powiązane zgłoszenia do umowy '+_um;
+   t_sumk:='';
+   _akr:=MMM.mk_sel('Zgłoszenia'@,,0,'#zgloszeniaxxx',,,,,'U','T');
+   MMM.win_fld(_akr,,'ZLE',,,20);
+   MMM.win_fld(_akr,,'DW',,,10);
+   MMM.win_fld(_akr,,'FAKS',,,20);
+   MMM.win_fld(_akr,,'FPOZ',,,4);
+   MMM.win_fld(_akr,,'SR',,,4);
+   MMM.win_act(_akr,0,'Formuła','Drukuj'@@,,,,"rep_exec('uniwers')");
+   MMM.win_sel(_akr);
+   {? do_state=0 || MMM.select() ?};
+   {? n_fakt=1
+   ||
+      MMM.first();
+      {!
+      |?
+         exec('zle_open','open_tab',UM.ODDZ,((4-MMM.MASK)-2),(6-MMM.MASK));
+         ZLP.clear;
+         {? ZLP.seek(MMM.REF,MMM.MASK) || _wyn:=exec('zlp_usu','umowy_zlecenia',1) ?};
+         MMM.next()
+      !}
+   ||
+      {? _d=1
+      || exec('umglog_add','umowy_aneks','Wystawiono dokument sprzedaży [%1]'@[_opis],_rodz)
+      ?}
+   ?}
+?};
+
+UM.seek(_a);
+obj_del(MMM);
+&n_fakt;&fm_add;
+exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2));
+_wyn
+
+
+\zlp_um_null
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [2013]
+:: OPIS: Odpiecie zlecenia jednorazowego od umowy aby moc wycofac zmiany
+::   WE: [_a] - ZLE.ref
+::       [_b] - UM.ref
+::  OLD: \zlp_um_null/um2.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.cntx_psh();
+ZLE.cntx_psh();
+_zlp:=ZLP.names();
+{? _zlp.first()
+||
+    {!
+    |?
+    {? (1+(3-_zlp[1]))=(ref_name(_a)+1)
+    ||
+         ZLP.use(_zlp[1]);
+         ZLP.index('ZGL_RR');
+         ZLP.prefix(_a,'N',_b);
+         {? ZLP.first()
+         ||
+              {!
+              |?
+               ZLP.cntx_psh();
+               ZLP.UM:=null;
+               ZLP.prefix();
+               ZLP.put();
+               ZLP.cntx_pop();
+              ZLP.first()
+              !}
+         ?}
+    ?};
+    _zlp.next()
+    !}
+?};
+ZLE.cntx_pop();
+ZLP.cntx_pop();
+~~
+
+
+\up_zlp_an
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: aktualizacja pola AN
+::   WE: _a - oddzial
+::       _b - ref pozycji umowy
+::       _c - data poczatkowa do sprawdzania
+::  OLD: \up_zlp_an/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=6 || {? type_of(_f)<>4 || _f:=date(0,0,0) ?}   || _f:=date(0,0,0) ?};
+
+exec('zle_open','open_tab',_a,2-$(_c~1),form(_c~2,-2));
+{? UP.seek(_b)
+||
+   HGEN.index('ODDZ');HGEN.prefix(_a);
+   _bie_dat:=_c;
+   {? HGEN.last || _dat_do:=HGEN.DO || _dat_do:=_bie_dat ?};
+   {!
+   |?
+      exec('zle_open','open_tab',_a,2-$(_bie_dat~1),form((_bie_dat~2),-2));
+
+      ZLE.index('USL');
+      ZLE.prefix('T',UP.UM().ref,UP.ref);
+      {? ZLE.first
+      ||
+         {!
+         |?
+            ZLP.index('RP');
+            ZLP.prefix(ZLE.ref);
+            {? ZLP.first
+            || {!
+               |?
+                  {? ZLP.AN='T'
+                  || ZLP.AN:='N';
+                     ZLP.put()
+                  ?};
+                  ZLP.next
+               !}
+            ?};
+            ZLE.next
+          !}
+      ?};
+      _bie_dat:=exec('add_mies','umowy_wspolne',_bie_dat);_dat_do>_bie_dat
+   !}
+?};
+exec('zle_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2));
+''
+
+
+\up_zlp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wyswietlanie pozycji zlecen do pozycji umowy
+::       oraz umozliwienie dodawania, usuwania, poprawiania recznych
+::
+::       mimo ze dodajemy z zlecenia z umowy dostaja znacznik ZLE.CZUM:='N'
+::       po to aby mozna je bylo poprawiac usuwac oraz nie sprawadzac przy zmianie statusu
+::   WE:
+::   WY:
+::  OLD: \up_zlp/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('jm_kpo','jm');
+:: wlacza przepisywanie z poz umowy
+ZLEC.Z_UM:=1;
+
+_zle:=null;
+ZLE.index('GEN');
+ZLE.prefix(UP.UM().ODDZ,'N',UP.UM,UP.POS,UP.USL,UP.TAR,UP.UM().FAS,UP.ref());
+{? ~ZLE.first()
+|| _zle:=exec('zle_new','umowy_zlecenia',UP.UM().ODDZ,,'N')
+|| _zle:=ZLE.ref()
+?};
+{? _zle<>null
+||
+   ZLEC.UM:=ZLE.UM;
+   ZLEC.MIA:=ZLE.POS().UL().MIA;
+   ZLEC.UL:=ZLE.POS().UL;
+   ZLEC.POS:=ZLE.POS;
+   exec('zlp_sel','umowy_zlecenia',UP.ref())
+?};
+ZLEC.Z_UM:=0;
+''
+
+
+\zlp_sel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wyswietlenie pozycji zgloszen
+::   WE: [_a] -ref UP
+::  OLD: \zlp_sel/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_up:={? var_pres('_a')=type_of(null()) || _a || null() ?};
+POMOC.RODZ:='U';
+exec('slo_m_ok','material',POMOC.RODZ);
+exec('set_win','umowy');
+ZLEC.POS:=ZLE.POS;
+POM.TYP:='N';
+ZLP.win_sel('WER');
+exec('zlp_oknr','umowy_zlecenia');
+ZLP.index('ZLE');
+{? _up<>null()
+|| ZLP.prefix();
+   ZLP.f_clear();
+   ZLP.f_set(,'left join ZLE using (ZLP.ZLE,ZLE.REFERENCE)','ZLE.CZUM=\':_a\' and ZLE.UP=:_b','N',_up)
+|| ZLP.prefix(ZLE.ref())
+?};
+ZLP.select();
+{? _up<>null() || ZLP.f_clear() ?};
+POM.TYPDOK:='ZLE';
+POM.TAB:='ZLE';
+''
+
+
+\zlp_oknr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009+]
+:: OPIS: ustawia okna redakcji dla ZLP oraz okienko szukania
+::  OLD: \zlp_oknr/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.win_edit('RED');
+ZLP.win_patt('SZUK');
+''
+
+
+\um_odt_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: odtwarza zlecenia dla biezacej umowy
+::   WE: _a - od dnia
+::  OLD: \um_odt_b/um3.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>4 || _a:=date(0,0,0) ?} || _a:=date(0,0,0) ?};
+
+_wyn:=0;
+ZMIENNE.STAUM_MM:=1;
+_um:=UM.ref();
+UM.cntx_psh();
+_od:=date(0,0,0);
+_esc:=0;
+{? _a=date(0,0,0)
+||
+   undefine();
+   define('od',date(ST.AR,ST.AM,1),'Od daty:'@);
+   {? def_edit("chk_rec('D')",'Parametry'@)
+   || _od:=DEFINE.od
+   || _esc:=1
+   ?}
+||
+   _od:=_a
+?};
+
+:: sprawdzanie daty fakturowania
+UM.cntx_psh();
+_od_fakt:=exec('um_sp_dt','umowy_aneks',_um);
+{? _od_fakt<>date(0,0,0) || _od_fakt+=1 ?};
+UM.cntx_pop();
+
+:: ustawnianie daty dla wywolan bez dialogu z uzytkownikiem
+{? _a<>date(0,0,0) & _od<_od_fakt
+||
+   _od:=_od_fakt
+?};
+
+{? _od<>date(0,0,0) & _od>=_od_fakt
+||
+   _do:=exec('d_hgen_do','umowy_wspolne',UM.ODDZ);
+   {? _od<_do
+   ||
+      echo('Sprawdzam zgłoszenia ... proszę czekać'@);
+      {? exec('um_sp_us','umowy_aneks',_um,_od,_do,1,1,0);n_fakt=1
+      ||
+         echo('Usuwam zgłoszenia ... proszę czekać'@);
+         exec('usu_mmm','umowy_wspolne',_um,_od,_do,1,0,0);
+         echo('Odtwarzam zgłoszenia ... proszę czekać'@);
+         _wyn:=exec('um_gen','umowy_zlecenia',_um,_od,_do,0)
+      ||
+         FUN.info('Istnieją faktury lub realizacje.\nOdtworzenie niemożliwe.'@)
+      ?}
+   ||
+      FUN.info('Nie ma wygenerowanych zgłoszeń dla podanej daty.'@);
+      _wyn:=1
+   ?}
+|? ~_esc & _od_fakt<>date(0,0,0)
+|| FUN.info('Istnieją faktury lub realizacje.\nOdtworzenie możliwe od daty: %1.'@[$_od_fakt])
+?};
+undefine();
+UM.cntx_pop();
+ZMIENNE.STAUM_MM:=0;
+_wyn
+
+
+\um_odt_z
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: odtwarza zlecenia dla biezacej umowy
+::  OLD: \um_odt_z/um3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=1;
+{? UM.STU().A<>'T' & UM.STU().RODZ<>'E'
+||
+   FUN.info('Umowa nie jest aktywna.\nOdtworzenie zgłoszeń niemożliwe.'@);
+   _ok:=0
+?};
+{? _ok=1 & FUN.ask('Odtworzyć zgłoszenia dla bieżącej umowy?'@)
+|| exec('zle_psh','open_tab');
+   exec('um_odt_b','umowy_zlecenia');
+   exec('zle_pop','open_tab')
+?};
+echo();
+''
+
+
+\bl_zltar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: podpowiada taryfe na zleceniu
+::  OLD: \bl_zltar/um3.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=null;
+_fo:=exec('get','#params',100132,2);
+{? _fo<>'' || _wyn:=exec('FindInSet','#table','TAR','KOD',_fo,ST.ODDZ,,1,'S',null()) ?};
+{? _wyn=null()
+|| TAR.cntx_psh();
+   TAR.clear();
+   {? TAR.size()=1 & TAR.first()
+   || _wyn:=TAR.ref()
+   ?};
+   TAR.cntx_pop()
+?};
+_wyn
+
+
+\chk_zlp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: po redakcji ZLP
+::  OLD: \um_odt_z/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:='';
+_dpw:={? ZLP.WYMIANA2<>''
+      || (ZLP.cntx_psh();
+          _mskwym:=form(8+(ZLP.WYMIANA2+16));
+          {? _mskwym<>'' || ZLP.use(_mskwym) ?};
+          _rr:=exec('FindInSet','#table','ZLP','WYMIANA',ZLP.WYMIANA2,'W',"@.ZLP.DP",1,,date(0,0,0));
+          ZLP.cntx_pop();_rr)
+      || date(0,0,0)
+      ?};
+
+{? ZLE.KH=null()
+|| FUN.emsg('Należy uzupełnić kontrahenta.'@);
+   _wyn:='KH'
+
+::|? ZLP.HAN=null()
+::|| FUN.info('Należy uzupełnić handlowca.'@);
+::   _wyn:='HAN'
+
+|? ZLE.POS=null()
+|| FUN.emsg('Należy uzupełnić numer posesji kontrahenta '@+ZLE.KH().SKR+'.');
+   _wyn:='POS_NR'
+
+|? ZLE.TAR=null()
+|| FUN.emsg('Należy uzupełnić cennik.'@);
+   _wyn:='TAR'
+
+|? ZLE.FAS=null()
+|| FUN.emsg('Należy uzupełnić sposób fakturowania.'@);
+   _wyn:='FAS'
+
+|? ZLP.WAL=null()
+|| FUN.emsg('Należy uzupełnić walutę.'@);
+   _wyn:='WAL'
+
+|? ZLP.SP='T' & ZLP.DZP=date(0,0,0)
+|| FUN.emsg('Należy uzupełnić datę zgłoszenia.'@);
+   _wyn:='DZP'
+
+|? ZLP.SP='T' & ZLP.DZP<>date(0,0,0) & exec('jest_moc','transport_moc',ZLP.MJ().TR_RODZ,ZLP.DZP,ZLP.IL,ZLE.ODDZ)=0
+|| FUN.emsg('Przekroczono moc zleceń transportowych na dzień %1.'@[form(ZLP.DZP)]);
+   _wyn:='DZP'
+
+|? ZLP.DZ<>date(0,0,0) & ZLP.DZ<ZLP.DZP
+|| FUN.emsg('Data zgłoszenia wykonania nie może być wcześniejsza\nniż data zgłoszenia podstawienia.'@);
+   _wyn:='DZ'
+
+|? ZLP.DZ<>date(0,0,0) & exec('jest_moc','transport_moc',ZLP.MJ().TR_RODZ,ZLP.DZ,ZLP.IL,ZLE.ODDZ)=0
+|| FUN.emsg('Przekroczono moc zleceń transportowych na dzień %1.'@[form(ZLP.DZ)]);
+   _wyn:='DZ'
+
+|? ZLP.DW<>date(0,0,0) & ZLP.DW$8<>date(ST.AR,ST.AM,1)$8
+|| FUN.emsg('Data Wykonano powinna zawierać się w okresie %1.'@[date(ST.AR,ST.AM,1)$8]);
+   _wyn:='DW'
+?};
+
+{? _wyn='' & ZLP.MJ=null & ZLE.CZUM='N'
+|| FUN.emsg('Należy uzupełnić usługę podstawową.'@);
+   _wyn:='MJ'
+?};
+
+{? _wyn='' & ZLP.MJ<>null & ZLP.IL<=0
+|| {? ZLP.IL=0
+   || FUN.emsg('Należy uzupełnić ilość.'@)
+   || FUN.emsg('Ilość musi być większa od zera.'@)
+   ?};
+   _wyn:='IL'
+?};
+
+{? _wyn='' & ZLP.M_R<>null & ZLP.ILR<=0
+|| {? ZLP.ILR=0
+   || FUN.emsg('Należy uzupełnić ilość dla fakturuj jako.'@)
+   || FUN.emsg('Ilość dla fakturuj jako musi być większa od zera.'@)
+   ?};
+   _wyn:='ILR'
+?};
+
+{? _wyn='' & ZLP.M_D<>null & ((ZLP.ILD<=0 & ZLP.PRD<=0) | (ZLP.ILD>0 & ZLP.PRD>0))
+|| {? ZLP.ILD=0
+   || FUN.emsg('Należy uzupełnić ilość dla dodatku\nlub %% wartości usługi podstawowej.'@)
+   || FUN.emsg('Ilość dla dodatku nie może być mniejsza od zera.'@)
+   ?};
+   _wyn:='ILD'
+?};
+
+{? _dpw<>date(0,0,0) & ZLP.DP>_dpw
+|| FUN.emsg('Dla wymiany data podstawienia nowego zgłoszenia musi być większa lub równa od %1.'@[$_dpw]);
+   _wyn:='DP'
+?};
+
+_wyn
+
+
+\hgen_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2011]
+:: OPIS: dolaczanie miesiecznego okresu do generacji zgloszen
+::  OLD: \hgen_add/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ile:=FUN.choice('Dołączyć okresy do generacji zgłoszeń?'@,,'Miesiąc'@,'Kwartał'@,'Półrocze'@,'Rok'@);
+{? _ile>0
+||
+   {!
+   |?
+      HGEN.blank();
+      HGEN.AR:=HGEN.OD~1;
+      HGEN.AM:=HGEN.OD~2;
+      HGEN.add();
+
+      {? _ile=1
+      || 0
+      |? _ile=2 & (HGEN.AM=3 | HGEN.AM=6 | HGEN.AM=9 | HGEN.AM=12)
+      || 0
+      |? _ile=3 & (HGEN.AM=6 | HGEN.AM=12)
+      || 0
+      |? _ile=4 & HGEN.AM=12
+      || 0
+      || 1
+      ?}
+   !}
+?};
+''
+
+
+\hgen_clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Czyści zawartość powiązaną z HGEN
+::   WE: [_a] - INTEGER - 0/[1] - czy wyświetlać dialogi
+::   WY: 0 - porażka
+::       1 - sukces
+::  OLD: \hg_del/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_dialog:=1;
+{? var_pres('_a')=type_of(0)
+|| _dialog:=_a
+?};
+
+_can_continue:=1;
+_result:=0;
+
+_what:=exec('HGEN','#to_string');
+
+{? _can_continue>0
+||
+   exec('zlm_open','open_tab',HGEN.ODDZ,2-$HGEN.AR,form(HGEN.OD~2,-2));
+
+:: fakturowane
+   ZLP.index('FAKT');
+   ZLP.prefix('T','T');
+   {? ZLP.first()
+   ||
+      _msg:='Dla okresu: %1 istnieją zafakturowane pozycje zgłoszeń.\n'
+            'Usunięcie niemożliwe.'@[_what];
+      {? _dialog=1
+      || FUN.emsg(_msg)
+      ?};
+      _can_continue:=0
+   ?};
+:: zrealizowane
+   {? _can_continue>0
+   ||
+      ZLP.index('ZRE');
+      ZLP.prefix('T','Z');
+      {? ZLP.first()
+      ||
+         _msg:='Dla okresu: %1 istnieją zrealizowane pozycje zgłoszeń.\n'
+               'Usunięcie niemożliwe.'@[_what];
+         {? _dialog=1
+         || FUN.emsg(_msg)
+         ?};
+         _can_continue:=0
+      ?}
+   ?};
+
+:: usuwanie
+   ZLP.index('R');
+   ZLP.prefix('T');
+   {? _can_continue>0
+   ||
+      {? ZLP.first()
+      ||
+         {? _dialog>0
+         || _msg:='Dla okresu: %1 wygenerowano zgłoszenia.\n'
+                  'Czy usunąć wygenerowane pozycje zgłoszeń?'@[_what];
+            _can_continue:=FUN.ask(_msg)
+         ?};
+
+         {? _can_continue>0
+         ||
+            {? _dialog<>2
+            || KOMM.init(250,'Usuwanie zgłoszeń'@)
+            ?};
+
+            _mydo:=do_state()=0;
+            {? _mydo || do() ?};
+
+            {? ZLP.lock(2)
+            ||
+               _kom_zl:='';
+               _size:=ZLP.size();
+               _licz:=0;
+               _time:=time();
+               {!
+               |? _licz+=1;
+                  _next:=0;
+                  _ref_nxt:=null();
+                  ZLP.cntx_psh();
+                  {? ZLP.next()
+                  || _ref_nxt:=ZLP.ref()
+                  ?};
+                  ZLP.cntx_pop();
+                  {? exec('zlp_usu','umowy_zlecenia',1)=0
+                  || _msg:='Nie udało się usunąć zgłoszenia: %1'@[exec('ZLP','#to_string')];
+                     KOMM.add(_msg,,,1)
+                  ?};
+                  {? _ref_nxt<>null()
+                  || _next:=ZLP.seek(_ref_nxt)
+                  ?};
+                  _next>0
+               !};
+               echo();
+               prgs_clr();
+
+               {? ~ZLP.first()
+               ||
+                  {? HGEN.count()=0
+                  ||
+                     HGEN.IL:=0;
+                     HGEN.ST:='N';
+                     HGEN.ST_OK:='N';
+                     HGEN.GENSTART:='';
+                     HGEN.GENSTOP:='';
+                     HGEN.USERS:=null();
+                     HGEN.put()
+                  ?}
+               || undo();
+                  _can_continue:=0
+               ?};
+               ZLP.unlock()
+            ?};
+            {? _mydo || end() ?};
+
+            {? _dialog<>2
+            || KOMM.select()
+            ?}
+         ?}
+      || HGEN.IL:=0;
+         HGEN.ST:='N';
+         HGEN.ST_OK:='N';
+         HGEN.GENSTART:='';
+         HGEN.GENSTOP:='';
+         HGEN.USERS:=null();
+         HGEN.put()
+      ?}
+   ?};
+::   exec('zlm_open','open_tab',HGEN.ODDZ,2-$ST.AR,form(ST.AM,-2));
+   ~~
+?};
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\hgen_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Usuwa HGEN
+::   WE: [_a] - INTEGER - 0/[1]/2 - czy wyświetlać dialogi
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <PUBLICZNA>
+::----------------------------------------------------------------------------------------------------------------------
+_dialog:=1;
+{? var_pres('_a')=type_of(0)
+|| _dialog:=_a
+?};
+_ask:=_dialog;
+_can_continue:=1;
+_result:=0;
+
+_cur_ref:=HGEN.ref();
+
+_what:=exec('HGEN','#to_string');
+
+HGEN.cntx_psh();
+HGEN.index('ODDZ');
+HGEN.prefix(ST.ODDZ);
+{? ~(HGEN.last() & HGEN.ref()=_cur_ref)
+|| _can_continue:=0
+?};
+HGEN.cntx_pop();
+
+{? _can_continue=0
+|| _msg:='Nie można usunąć: %1.Okresy generacji można usuwać tylko od końca (od ostatniego wstecz).'@[_what];
+   {? _dialog=1
+   || FUN.emsg(_msg)
+   |? _dialog=2
+   || KOMM.add(_msg,2,,1)
+   ?}
+?};
+
+{? _can_continue>0
+|| {? HGEN.count()>0
+   || _msg:='Okres: %1 posiada powiązania w systemie. Czy usunąć najpierw wszystkie zgłoszenia wygenerowane w tym okresie?'@[_what];
+      {? _dialog=1
+      || _can_continue:=FUN.ask(_msg);
+         _ask:=0
+      |? _dialog=2
+      || _can_continue:=0;
+         KOMM.add('Okres: %1 posiada powiązania w systemie. Usunięcie niemożliwe.'@[_what],2,,1)
+      ?};
+      {? _can_continue>0
+      || _can_continue:=exec('hgen_clean','umowy_zlecenia',0);
+
+         {? _can_continue=0
+         || _msg:='Usunięcie zgłoszeń zakończone niepowodzeniem. Nie można usunąć okresu: %1.'@[_what];
+            {? _dialog=1
+            || FUN.emsg(_msg)
+            |? _dialog=2
+            || KOMM.add(_msg,2,,1)
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+
+{? _can_continue>0 & _ask=1
+|| _can_continue:=FUN.ask('Usunąć okres: %1'@[_what])
+?};
+
+{? _can_continue>0
+|| _can_continue:=HGEN.del(,1)
+?};
+
+{? _can_continue>0
+|| _result:=1
+?};
+_result
+
+
+\hgen_del_gr1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Akcja grupa przed Usuń w HGEN
+::   WY: 0
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=HGEN;
+
+{? FUN.ask('Zaznaczonych okresów: %1. Czy usunąć je wszystkie?'@[$_tab.sel_size()])
+|| _sel:=_tab.sel_aget();
+
+   {? _sel.last()
+   || KOMM.init(250,,'Usuwanie okresów generacji.'@);
+      {!
+      |? _tab.cntx_psh(); _tab.prefix();
+         {? _tab.seek(_sel.REF,)
+         || exec('hgen_del','umowy_zlecenia',2)
+         ?};
+         _tab.cntx_pop();
+         _sel.prev()
+      !};
+      KOMM.select();
+      _tab.last()
+   ?}
+?};
+0
+
+
+\hgen_del_gr2
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Akcja grupa po Usuń w HGEN
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+~~
+
+
+\hgen_reset
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Resetuje status generacji i liczniki
+::   WY: 0 - porażka
+::       1 - sukces
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+
+_result:=0;
+
+_msg:='Uwaga, to jest funkcja techniczna, potrzebna w wyjątkowych sytuacjach.\n\n'
+      'Resetuje ona status generowania i licznik zgłoszeń. '
+      'Jej użycie, a następnie wygenerowanie zgłoszeń może spowodować powielenie pozycji zgłoszeń '
+      'w przypadku gdy były przesuwane pomiędzy okresami.'@;
+
+{? FUN.ask(_msg)
+|| HGEN.IL:=0;
+   HGEN.ST:='N';
+   HGEN.ST_OK:='N';
+   HGEN.GENSTART:='';
+   HGEN.GENSTOP:='';
+   HGEN.USERS:=null();
+   _result:=HGEN.put()
+?};
+_result
+
+
+\hgen_gen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: funkcja generuj w okienku generacji
+::   WE: [_a] - tryb cichy (bez komunikatów): 1/[0]
+::   WY: '' lub komunikat błędu
+::  OLD: \hg_gen/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_silent:={? var_press('_a')=type_of(0) || _a || 0 ?};
+_result:='';
+:: sprawdzenie czy jest grupa numeracji ZLE
+{? exec('FindInSet','#table','NRDOK','NRDOK','ZLE','ZLE')=null()
+|| _msg:='Brak zdefiniowanej numeracji dla zgłoszeń do umów - typ ZLE.\n\n'
+         'Numeracje należy zdefiniować w obszarze [Ustawienia i parametryzacja]\"\n'
+         'lub zaimportować z danych wzorcowych.\n\n'
+         'Generacja niemożliwa.'@;
+   {? ~_silent
+   || FUN.info(_msg)
+   ?};
+   return(_msg)
+?};
+:: sprawdzenie czy poprzednie pozycje sa wygenerowane
+_st:='T';
+HGEN.cntx_psh();
+HGEN.index('ODDZ');
+HGEN.prefix(ST.ODDZ);
+{? HGEN.prev() || _st:=HGEN.ST ?};
+HGEN.cntx_pop();
+
+_can_continue:=1;
+:: generowanie
+{? _st='T'
+||
+   {? ~_silent
+   || _what:=exec('HGEN','#to_string');
+
+      {? _can_continue>0 & (HGEN.ST='T' | HGEN.IL>0)
+      || _msg:='W okresie: %1 zgłoszenia zostały już wygenerowane.\n\n'
+               'Czy chcesz usunąć najpierw wszystkie zgłoszenia i generować ponownie?'@[_what];
+         _can_continue:=FUN.ask(_msg);
+
+         {? _can_continue>0
+         || _can_continue:=exec('hgen_clean','umowy_zlecenia',0)
+         ?}
+      || {? _can_continue>0
+         || _can_continue:=FUN.ask('Czy generować pozycje zgłoszeń w okresie: %1?'@[_what])
+         ?}
+      ?}
+   ?};
+
+   {? _can_continue>0 & HGEN.ST='N'
+   ||
+      {? _can_continue>0
+      ||
+         HGEN.ST:='T';
+         HGEN.IL:=0;
+         HGEN.ST_OK:='N';
+         HGEN.GENSTART:=19+tm_form(HGEN.tm_stamp());
+         HGEN.GENSTOP:='';
+         HGEN.USERS:=OPERATOR.USER;
+         HGEN.put();
+         {? ~_silent
+         || _msg:='Generowanie zgłoszeń w okresie: %1'@[_what];
+            progress(,_msg+'…',exec('nazwa','#system'),1)
+         ?};
+         UM.index('NR');
+         UM.prefix(HGEN.ODDZ,'N');
+         {? UM.first()
+         ||
+            _size:=UM.size();
+            _licz:=0;
+            _time:=time();
+            {!
+            |?
+               _licz+=1;
+::               FZL.ECHO(_licz,_size,_time,time(),UM.SYM);
+               UM.cntx_psh();
+               _mydo:=do_state()=0;
+               {? _mydo || do() ?};
+               _noakt:=UM.STU().A<>'T' & UM.STU().RODZ<>'E';
+               {? UM.STU().GZ='T' & ~_noakt
+               || exec('um_zle','umowy_zlecenia',UM.ref(),HGEN.OD,HGEN.DO,HGEN.ref())
+               ?};
+               {? _mydo || end() ?};
+               UM.cntx_pop();
+               UM.next()
+            !}
+         ?};
+         HGEN.get();
+         HGEN.ST_OK:='T';
+         HGEN.GENSTOP:=19+tm_form(HGEN.tm_stamp());
+         HGEN.put();
+
+         {? ~_silent
+         || prgs_clr();
+            echo()
+         ?};
+
+         exec('hgen_ile','umowy_zlecenia',HGEN.ref())
+      ?}
+   ?}
+|| _result:='Należy wygenerować zgłoszenia w poprzednich okresach.'@;
+   {? ~_silent
+   || FUN.info(_result)
+   ?}
+?};
+_result
+
+
+\hgen_ile
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: obliczanie ilosci wygenerowanych pozycji dla HGEN
+::   WE: _a - HGEN.ref()
+::  OLD: \hg_ile/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+HGEN.cntx_psh();
+HGEN.clear();
+{? HGEN.seek(_a)
+||
+   exec('zlm_open','open_tab',HGEN.ODDZ,2-$HGEN.AR,form(HGEN.OD~2,-2));
+   ZLP.cntx_psh();
+   ZLP.index('R');
+   ZLP.prefix('T');
+   _ile:=ZLP.size();
+   ZLP.cntx_pop();
+   exec('zlm_open','open_tab',HGEN.ODDZ,2-$HGEN.AR,form(HGEN.OD~2,-2));
+   HGEN.IL:=_ile;
+   HGEN.put()
+?};
+HGEN.cntx_pop();
+''
+
+
+\hgen_zlp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wyswietlanie wygenerowanych pozycji
+::  OLD: \hg_zlp/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('jm_kpo','jm');
+HGEN.cntx_psh();
+
+exec('open','open_tab',ST.ODDZ,2-$HGEN.AR);
+exec('zlm_open','open_tab',ST.ODDZ,2-$HGEN.AR,form(HGEN.OD~2,-2));
+
+:: TODO - przywrócić jak będzie działać
+::exec('zlp_oknr','umowy_zlecenia');
+
+_grp:=ZLP.grp_make(,,'tre_zgl',,,,,'maximized');
+_after_rfr:="
+   {? grp_empty(ZLP,'HGEN')
+   || ZLE.blank()
+   ?};
+   grp_edisp(ZLE,'INFO',1,1);
+   ~~";
+_before:="";
+ZLP.grp_sel(_grp,,'HGEN',,_after_rfr,,,,_before,,0,0,'maximized','HGEN');
+ZLP.grp_splt(_grp,,'horizontal','bottom',25);
+ZLP.grp_edit(_grp,ZLE,'INFO',,,,,,'maximized');
+ZLP.win_sel(_grp);
+
+ZLP.hdr_sel(' od %1 do %2'@[HGEN.OD$6,HGEN.DO$6]);
+ZLP.index('R');
+ZLP.prefix('T');
+ZLE.blank();
+ZLP.select();
+exec('hgen_ile','umowy_zlecenia',HGEN.ref());
+
+exec('open','open_tab',ST.ODDZ,2-$ST.AR);
+exec('zlm_open','open_tab',ST.ODDZ,2-$ST.AR,form(ST.AM,-2));
+
+HGEN.cntx_pop();
+''
+
+
+\hg_data
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: podpowiadanie daty na blanku
+::  OLD: \hg_data/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=date(ST.AR,1,1);
+HGEN.cntx_psh();
+HGEN.index('ODDZ');
+HGEN.prefix(ST.ODDZ);
+{? HGEN.last()
+|| _wyn:=HGEN.DO+1
+?};
+HGEN.cntx_pop();
+_wyn
+
+
+\hg_dt_do
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: wypelnienie pola data do na blanku
+::  OLD: \hg_dt_do/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+date(HGEN.OD~1,HGEN.OD~2,0)
+
+
+\hgen_kolor
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: kolorowanie nie generowanych rekordow w tabeli HGEN
+::  OLD: \hg_kolor/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+::exec('hgen_ile','umowy_zlecenia',HGEN.ref());
+::{? HGEN.ST='N' || 1 || 0 ?}
+~~
+
+
+\warstat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: status zlecen warsztatowych
+::  OLD: \warstat/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+
+{? ZLP.SR='N'
+|| POM.S:={? ZLP.ZLE().CZUM='N' & ZLP.DW<>date(0,0,0)
+          || 'Wykonano'
+          |? ZLP.ZLE().CZUM='N' & ZLP.DP<>date(0,0,0)
+          || 'Podstawiono'
+          || 'Niezrealizowane'
+          ?}
+|? ZLP.SR='R'
+|| POM.S:='Realizowane'
+|? ZLP.SR='X'
+|| POM.S:='Anulowane'
+|| POM.S:='Zrealizowane'
+?};
+{? ZLP.UMK_P<>null || POM.S:='Koszt dodatkowy' ?};
+POM.S
+
+
+\bl_zle
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [2010]
+:: OPIS: Wartosc poczatkowa ZLP.ZLE
+::  OLD: \bl_zle/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZLE.ref()
+
+
+\zle_typ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [2010]
+:: OPIS: Wartosc poczatkowa ZLE.TYP
+::  OLD: \zle_typ/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZLEC.TYP
+
+
+\hgen_parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [19.22]
+:: OPIS: Parametry pracy w oknie HGEN
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_oddz:=ST.ODDZ;
+_okr_ref:=ST.OKR_REF;
+{? __PARSES.editPar('OddzialLogProd')
+|| {? _oddz<>ST.ODDZ || exec('init','lum') ?};
+   exec('before_hgen','lum');
+   AreaTitle.setTitle()
+?}
+;
+~~
+
+
+\zlp_nofa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: przelaczanie znacznika na nie fakturuj
+::  OLD: \zlp_nofa/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.cntx_psh();
+{? ZLP.ZLE().UM().FAS().KOD<>'N'
+||
+   {? ZLP.FAKS='N'
+   || _ok:='';
+      {? ZLP.F='N'
+      || {? FUN.ask('Zmienić status na "fakturować"?'@)
+         || _ok:='T'
+         ?}
+      |? ZLP.F='T'
+      || {? FUN.ask('Zmienić status na "nie fakturować"?'@)
+         || _ok:='N'
+         ?}
+      ?};
+      {? _ok<>''
+      || do();
+         ZLP.clear();
+         ZLP.F:=_ok;
+         ZLP.put();
+         end()
+      ?}
+   || FUN.info('Pozycja zafakturowana.'@)
+   ?}
+|| FUN.info('Umowa ma status "nie fakturować". Zmiana znacznika niemożliwa.'@)
+?};
+ZLP.cntx_pop();
+''
+
+
+\env
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Środowisko obszaru roboczego LUM_ZGL
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::UWAGA: _fld, i _mth to formułki pomocnicze, zeby wygodniej tworzyć tablicę i komentować poszczególne jej elementy
+::       powiedzmy, że to bedzie pole
+         _fld:="31+form(_a)";
+::       powiedzmy, że to bedzie metoda
+         _mth:="31+form(_a)";
+
+_env:=obj_new(
+::             Zmienne pomocnicze
+                _fld('REF_1','ZLP.ref')
+               ,_fld('REF_2','ZLP.ref')
+               ,_fld('TAB','')
+
+::             identyfikatory okienek
+               ,_fld('wid_main','ID okienka głównego')
+
+::             tytuły okienek
+               ,_fld('tit_main','Tytuł okienka głównego')
+
+::             uchwyty do okien
+               ,_fld('WIN_MAIN','Uchwyt okienka grupowego')
+
+::             METODY
+               ,_mth('select','Pokazuje okno obszaru')
+             );
+
+_env.REF_1:=null();
+_env.REF_2:=null();
+_env.wid_main:='#lum_zgl_main';
+_env.tit_main:='';
+_env.WIN_MAIN:='';
+
+_env.select:="
+   params_set(params_get());
+
+:: DRO_TODO_AWI: sprawdzić czy potrzebne następujące ustawienia:
+::   exec('nul_uprf','umowy_zlecenia');
+   exec('jm_kpo','jm');
+   exec('slo_m_ok','material','U');
+   exec('zlp_oknr','umowy_zlecenia');
+   exec('zlp_aktu','umowy_zlecenia');
+
+   exec('icon_before','umowy_zlecenia');
+
+   exec('grp_make','umowy_zlecenia',.);
+
+   ZLP.win_sel(.WIN_MAIN);
+
+   exec('init','lum');
+
+:: Ustalenie treści linku
+   _params:=params_get();
+   {? type_of(_params)>0 & var_pres('LINK',_params)
+   || _link:=_params.LINK
+   || _link:=''
+   ?};
+
+   _oddz:='';
+   _rok:=_mc:=0;
+   _oddz_ref:=null();
+
+:: Obsługa linku
+   {? _link<>''
+
+::    Ustalenie parametrów na podstawie przekazanego rekordu
+   || _dobrze:=1;
+      {? ref_tab(_link)=ZLP
+      || _name:= exec('FindAndGet','#table',ZLP,_link,,'name()','');
+         {? _name<>''
+         || _name:=_name+5;
+            _oddz:=1+_name;
+            _rok:=2000+#(2+(1-_name));
+            _mc:=#(3-_name)
+         ?}
+      ?};
+
+      {? _oddz='' | _rok=0 | _mc=0
+      || _dobrze:=0;
+         FUN.info('Nie odnaleziono zlecenia jednorazowego: %1'@[exec('record','#to_string',_link)])
+      ?};
+
+      {? _dobrze
+      || _oddz_ref:=exec('FindInSet','#table','ODDZ','KOD2',_oddz,,,1);
+::   Wykluczenie dostępu na podstawie uprawnień do danych - oddziały
+         {? ~exec('spr_upr','users','ODDZ',_oddz_ref)
+         || _dobrze:=0
+         ?}
+      ?};
+
+      {? _dobrze
+::       Ustalenie parametrów sesji
+      || __PARSES.setVal('OddzialLogProd',_oddz);
+         _args:=__PARSES.args('OkresRok');
+         _args.OBSZAR:='LUM';
+         _args.AR:=_rok;
+         _args.AM:=_mc;
+         __PARSES.setVal('OkresRok',_args)
+      || return(0)
+      ?}
+
+   ?};
+
+   AreaTitle.setTabWin(ZLP,~~);
+   AreaTitle.setTitle();
+
+   {? _link<>''
+   || ZLP.index('R');
+      ZLP.prefix('');
+      {? ZLP.seek(_link)
+      || {? ZLP.ZLE().CZUM='T'
+         || ZLP.index('UZUP');
+            ZLP.prefix();
+            exec('zlp_actions','umowy_zlecenia','UZUP');
+            ZLP.select(,1,5,,'UZUP',,1)
+         || ZLP.index('R');
+            ZLP.prefix('N');
+            exec('zlp_actions','umowy_zlecenia','WER_ZGL');
+            ZLP.select(,1,5,,'WER_ZGL',,1)
+         ?}
+      || return(0)
+      ?}
+   || ZLP.index('R');
+      ZLP.prefix('N');
+      exec('zlp_actions','umowy_zlecenia','WER_ZGL');
+      ZLP.select()
+   ?}
+
+:: DRO_TODO_AWI:  sprawdzić czy potrzebne następujące ustawienia:
+::   exec('nul_uprf','umowy_zlecenia');
+";
+
+_env
+
+
+\grp_make
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Tworzy okienko grupowe obszaru
+::   WE: _a - _env - srodowisko - wynik działąnia exec('env','umowy_zlecenia')
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_env:=_a;
+_tab:=ZLP;
+{? _env.WIN_MAIN=''
+||
+:: okno grupowe
+   _grpbefor:="
+      ~~
+   ";
+   _grp:=_tab.grp_make(_env.tit_main,_grpbefor,_env.wid_main,1,1,"exec('exit','zws',_a)");
+
+:: zakładka - Jednorazowe
+   _far:="";
+   _fb:="
+      _env:=params_get().env_zgl;
+      _env.TAB:='jednorazowe';
+      ZLP.index('R');
+      ZLP.prefix('N')
+   ";
+   _fa:="
+      _env:=params_get().env_zgl;
+      _env.REF_1:=ZLP.ref()
+   ";
+   _tab.grp_sel(_grp,,'WER_ZGL','Jednorazowe'@,_far,,,,_fb,_fa,,,'maximized','WER_ZGL');
+
+:: zakładka - Z umów
+   _far:="";
+   _fb:="
+      _env:=params_get().env_zgl;
+      _env.TAB:='z_umow';
+      ZLP.index('TFAK');
+      ZLP.prefix('T')
+   ";
+   _fa:="
+      _env:=params_get().env_zgl;
+      _env.REF_2:=ZLP.ref()
+   ";
+   _tab.grp_sel(_grp,,'UZUP','Z umów'@,_far,,,,_fb,_fa,,,'maximized','Z_UMOW');
+
+:: zakładka - Wszystkie
+   _far:="";
+   _fb:="
+      _env:=params_get().env_zgl;
+      _env.TAB:='wszystkie';
+      ZLP.index('UZUP');
+      ZLP.prefix()
+   ";
+   _fa:="
+      _env:=params_get().env_zgl;
+      _env.REF_2:=ZLP.ref()
+   ";
+   _tab.grp_sel(_grp,,'UZUP','Wszystkie'@,_far,,,,_fb,_fa,,,'maximized','UZUP');
+
+:: DRO_TODO_AWI: zakładka - Posesje
+:: zakładka - Posesje
+::   _wer:='WERSPACZ';
+::   FAKS.win_fml(_wer,,'SYM',,'ICON_BEFORE',exec('faks_sym_ib','faktury_nag'));
+::   FAKS.win_fml(_wer,,'NR',,'ICON_BEFORE',exec('faks_sym_it','faktury_nag'));
+::   _far:="
+::      exec('lsp_fak_var','lsp');
+::      FILTER.FAKS:=null();
+::      params_exec('faks_far_wers','lsp','LUM_FAK')";
+::   _fb:="
+::      _env:=params_get().env_fak;
+::      FAKS.index('FPACZKA');
+::      FAKS.prefix({? _env.RODZ='U' || _env.REF_U || _env.REF_Z ?})
+::   ";
+::   _fa:="
+::      _env:=params_get().env_fak;
+::      _env.REF_Z:=FAKS.FPACZKA
+::   ";
+::   _tab.grp_sel(_grp,FAKS,_wer,'Dokumenty'@,_far,,,,_fb,_fa,,,'maximized');
+
+   _tab.win_sel(_grp);
+   _env.WIN_MAIN:=_grp;
+
+   AreaTitle.setTabWin(_tab,_grp);
+   AreaTitle.setTitle();
+   ~~
+?};
+~~
+
+
+\icon_before
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Formuły na ICON_BEFORE dla okien zgłoszeń jednorazowych
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_formikon:="
+
+   params_set(params_get());
+   _env:=params_get().env_zgl;
+
+   {? ZLP.STAT_REJ='N' | exec('zlp_czy_anulowane','umowy_zlecenia')
+   || exec('pusta','#icon')
+   |? ZLP.SR='Z'
+   || exec('zaakceptowany','icon')
+   |? ZLP.STAT_REJ='Z'
+   || exec('zarejestrowany','icon')
+   || exec('pusta','#icon')
+   ?}
+
+";
+ZLP.win_fml('WER_ZGL',POM,'S','KOD','ICON_BEFORE',_formikon);
+ZLP.win_fml('UZUP',POM,'S','KOD','ICON_BEFORE',_formikon);
+_formikon:="
+
+   params_set(params_get());
+   _env:=params_get().env_zgl;
+
+   {? exec('zlp2TR_NAG','transport_wspolne',ZLP.uidref())=2
+   || exec('transpDO','icon')
+   || exec('pusta','#icon')
+   ?}
+
+";
+ZLP.win_fml('WER_ZGL',,'DZP',,'ICON_BEFORE',_formikon);
+ZLP.win_fml('UZUP',,'DZP',,'ICON_BEFORE',_formikon);
+_formikon:="
+
+   params_set(params_get());
+   _env:=params_get().env_zgl;
+
+   {? exec('zlp2TR_NAG','transport_wspolne',ZLP.uidref(),,1)=1
+   || exec('transpZ','icon')
+   || exec('pusta','#icon')
+   ?}
+
+";
+ZLP.win_fml('WER_ZGL',,'DZ',,'ICON_BEFORE',_formikon);
+ZLP.win_fml('UZUP',,'DZ',,'ICON_BEFORE',_formikon);
+~~
+
+
+\zlp_actions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: ZLP.actions & ZLP.actions_grayed
+::   WE: [_a] - akronim okienka, domyślnie cur_win ...
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_okn:={? var_pres('_a')=type_of('') & _a<>'' || _a || cur_win(1,1)?};
+_tab:='';
+_params:=params_get();
+{? type_of(_params)<>type_of(~~)
+      &
+   var_pres('TAB',_params)=type_of('')
+||
+   _tab:=_params.TAB
+?};
+
+{? ZLP.size()=0
+|| return('')
+?};
+
+_move:={? exec('get','#params',4250,2,OPERATOR.USER)='T' || '' || 'N(BM)' ?};
+_anul:=exec('zlp_czy_anulowane','umowy_zlecenia');
+
+_zam:={? ~exec('czy_z_ok','okresy',4,4,ST.AR,ST.AM) || 'ZDUPN(WOA):D' || '' ?};
+
+_czy_tr:=exec('czy_tr','transport_wspolne',ZLP.ref());
+_akt_wyk:=~_anul & _czy_tr & ZLP.DW=date(0,0,0) & ZLP.IDBIG<>0 & ZLP.SP='N';
+_Tr_nzl:=~~;
+{? _czy_tr
+||
+   _Tr_nzl:=exec('get_tr_nzl','transport_zlec',ZLP.uidref());
+   _tr_nzl_r:=obj_new('STATUS');
+   _Tr_nzl.cntx_psh();
+   _Tr_nzl.prefix('R');
+   _tr_nzl_r.STATUS:='';
+   {? _Tr_nzl.first()
+   ||
+      _tr_nzl_r.STATUS:=exec('FindAndGet','#table',TR_NZL,_Tr_nzl.REF,,"TR_NZL.STATUS",'')
+   ?};
+   _tr_nzl_z:=obj_new('STATUS');
+   _Tr_nzl.prefix('Z');
+   _tr_nzl_z.STATUS:='';
+   {? _Tr_nzl.first()
+   ||
+      _tr_nzl_z.STATUS:=exec('FindAndGet','#table',TR_NZL,_Tr_nzl.REF,,"TR_NZL.STATUS",'')
+   ?};
+   _Tr_nzl.cntx_pop()
+?};
+
+_isSel:=ZLP.sel_size()>0;
+{? _tab='jednorazowe' | _okn='WER_ZGL'
+||
+   _realizuj:=
+       {? ZLP.SR='N' & ZLP.STAT_REJ='Z' & ~_anul & ZLP.DW<>date(0,0,0)
+       || ''
+       || 'R'
+       ?};
+   _fakturuj:=
+       {? ZLP.FAKS='T' | ZLP.STAT_REJ='N' | ZLP.SR='N' & ZLP.ZLE().TFAK='T' | _anul
+       || 'F'
+       || ''
+       ?};
+
+   _fak_usu:='N(U)';
+   {? ZLP.FAP<>null() | ZLP.FAPU<>null()
+   || FAP.cntx_psh();
+      FAKS.cntx_psh();
+      {? ZLP.FAP<>null()
+      || {? FAP.name<>ref_name(ZLP.FAP)
+         || FAP.use(ref_name(ZLP.FAP));
+            FAKS.use('faktu'+(FAP.name()+3))
+         ?};
+         {? ZLP.FAP().FAKS().STAT_REJ='N'
+         || _fak_usu:=''
+         ?}
+      ?};
+      {? _fak_usu<>'' & ZLP.FAPU<>null()
+      || {? FAP.name<>ref_name(ZLP.FAPU)
+         || FAP.use(ref_name(ZLP.FAPU));
+            FAKS.use('faktu'+(FAPU.name()+3))
+         ?};
+         {? ZLP.FAPU().FAKS().STAT_REJ='N'
+         || _fak_usu:=''
+         ?}
+      ?};
+      FAP.cntx_pop();
+      FAKS.cntx_pop()
+   ?};
+
+   _zaliczkuj:={? ZLP.F='N' | ZLP.FAKS='T' | ZLP.STAT_REJ='N' | ZLP.STAT_REJ='' | ZLP.STAT_REJ='A' || 'N(C)' || '' ?};
+   _wycofaj:={? _isSel | (ZLP.STAT_REJ='Z' & ~_anul) || '' || 'N(W)' ?};
+
+   _zre:=0;
+   {? _czy_tr || _zre:=_tr_nzl_r.STATUS=exec('tr_nzl_status_zrealizowane','transport_zlec') ?};
+   _podstaw:=
+      {? ~_anul & ZLP.STAT_REJ='Z' & ZLP.SP='T'
+            &
+         (
+         (_czy_tr=0 | _zre=1) & ZLP.DP=date(0,0,0)
+            |
+         _zre=0 & ZLP.DP<>date(0,0,0)
+         )
+      || ''
+      || 'N(P)'
+      ?};
+   _zre:=0;
+   {? _czy_tr || _zre:=_tr_nzl_z.STATUS=exec('tr_nzl_status_zrealizowane','transport_zlec') ?};
+   _zabierz:=
+      {? ~_anul & ZLP.SR='N' & ZLP.STAT_REJ='Z' & (ZLP.DP<>date(0,0,0) | ZLP.SP='N')
+            &
+         (
+         (_czy_tr=0 | _zre=1) & ZLP.DW=date(0,0,0)
+            |
+         _zre=0 & ZLP.DW<>date(0,0,0)
+         )
+      || ''
+      || {? _akt_wyk || '' || 'N(K)' ?}
+      ?};
+   _wymiana:=
+      {? ~_anul & ZLP.SR='N' & ZLP.STAT_REJ='Z'
+            &
+         ZLP.DZP<>date(0,0,0) & ZLP.DZ<>date(0,0,0) & ZLP.DW=date(0,0,0)
+      || ''
+      || 'N(Y)'
+      ?};
+   _generuj:={? _czy_tr & ~_anul & ZLP.SR='N' & ZLP.STAT_REJ='Z' || '' || 'G' ?};
+
+   _przenies:={? ~_isSel & (_anul | ZLP.DW<>date(0,0,0)) || 'N(M)' || '' ?};
+   _kpo:={? ZLP.STAT_REJ='Z' & ~_anul || '' || 'O' ?};
+   _multiwym:={? ZLP.STAT_REJ='Z' & ~_anul & ZLP.RODZ='P' & ZLP.SP='T' & ZLP.DP=date(0,0,0) || '' || 'N(R)' ?};
+   _popraw_zakoncz:=
+:obsługa wtyczki
+   {? ZLP.STAT_REJ='N' & ~_anul
+   ||
+      {? Plugin.run('ZLP_POPR_001')
+      ||
+         ''
+      ||
+         'P'
+      ?}
+   ||
+      {? Plugin.run('ZLP_POPR_001')<>2 & Plugin.run('ZLP_POPR_001')
+      ||
+         'UZ'
+      ||
+         'PUZ'
+      ?}
+   ?};
+
+   _tr_nzl:={? ~_anul & _czy_tr & exec('canGen_trnzl4zlp','transport_zlec',_Tr_nzl) || '' || 'N(G)' ?};
+   _tr_zm_dzp:=
+      {? ~_anul & ZLP.SR='N' & ZLP.STAT_REJ='Z' & ZLP.SP='T' & ZLP.DP=date(0,0,0)
+            &
+         (_czy_tr=0 | exec('w_transporcie','transport_wspolne',_tr_nzl_r.STATUS)=0)
+      || ''
+      || 'N(E)'
+      ?};
+   _tr_zm_dz:=
+      {? ~_anul & ZLP.SR='N' & ZLP.STAT_REJ='Z' & ZLP.DW=date(0,0,0)
+            &
+         (_czy_tr=0 | exec('w_transporcie','transport_wspolne',_tr_nzl_z.STATUS)=0)
+      || ''
+      || 'N(I)'
+      ?};
+   _transport:={? ZLP.sel_size() | exec('zlp2TR_NAG','transport_wspolne',ZLP.uidref())=3 || '' || 'N(S)' ?};
+
+   _act:=_popraw_zakoncz+_realizuj+_fakturuj+_fak_usu+_zaliczkuj+_wycofaj+_podstaw+_zabierz+_wymiana+_przenies+_kpo
+      +_zam+_generuj+_tr_nzl+_tr_zm_dzp+_tr_zm_dz+_transport+_move+_multiwym;
+   ZLP.actions_grayed('WER_ZGL',_act)
+
+|? _tab='z_umow' | _tab='wszystkie' | _okn='UZUP'
+||
+   _czum:='';
+   _tfak:='';
+   {? ZLP.ZLE
+   ||
+      ZLP.ZLE();
+      _czum:=ZLE.CZUM;
+      _tfak:=ZLE.TFAK
+   ?};
+   _realizuj:=
+      {? ~_anul
+            &
+         ZLP.SR='N' & ZLP.DW<>date(0,0,0)
+            &
+         (ZLP.STAT_REJ='Z' | _czum='T')
+            &
+         ZLP.UMK_P=null()
+      || ''
+      || 'R'
+      ?};
+   _kpo:=
+      {? ~_anul
+            &
+         (
+         (_czum='T' & _tfak='T' & ZLP.FAKS='N')
+            |
+         (ZLP.STAT_REJ='Z' & ZLP.RP='H')
+         )
+      || ''
+      || 'O'
+      ?};
+   _popraw:=
+      {? ~_anul
+            &
+         ZLP.SR='N' & ZLP.DW<>date(0,0,0)
+            &
+         (ZLP.STAT_REJ='N' | _czum='T')
+            &
+         ZLP.RP='H'
+            &
+         exec('get','#params',4200,,OPERATOR.USER)='T'
+      || ''
+      || 'P'
+      ?};
+   _zakoncz:=
+      {? ~_anul
+            &
+         ZLP.STAT_REJ='N' & _czum='N'
+      || ''
+      || 'Z'
+      ?};
+   _usun:=
+      {? ~_anul
+            &
+         ZLP.STAT_REJ='N'
+            &
+         _czum='N'
+      || ''
+      || 'U'
+      ?};
+   _act:=_realizuj+_kpo+_popraw+_zakoncz+_usun;
+   ZLP.actions_grayed('UZUP',_act)
+
+|? _okn='WER'
+||
+   _popraw_usun:={? ZLP.STAT_REJ='N' & ~_anul || '' || 'PU' ?};
+   _act:=_popraw_usun;
+   ZLP.actions_grayed('WER',_act)
+?}
+
+
+\zle_win_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Zwraca okno redakcji tabeli ZLE
+::   WE: _a - akronim pola redakcji
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_win_akr:={? var_pres('_a')=type_of('') || _a || 'REDP' ?};
+_title:='Zgłoszenie jednorazowe'@;
+_win_red:=ZLE.mk_edit(_title,,'zle_redp',,,'html_maximized');
+ZLE.win_etab(_win_red,'Dane podstawowe'@);
+ZLE.win_ewin(_win_red,,_win_akr);
+ZLE.win_etab(_win_red,'Dane dodatkowe'@);
+{? _win_akr='REA'
+|| ZLE.win_ewin(_win_red,,'REA_DOD')
+|| ZLE.win_ewin(_win_red,,'REDP_DOD')
+?};
+M.actions('NL_WERU','W');
+
+_win_red
+
+
+\zle_set_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.22]
+:: OPIS: Zaznacza wymagalne pola, włącza/wyłącza pola w paczce faktur
+::   WE: _a - akronim okna redakcji
+::       [_b] - 'P'-podstawienie, 'Z'-zabranie, 'W'-wymiana,
+::              'X'-przeplanowanie podstawienie,
+::              'Y'-przeplanowanie zabranie
+::               lub ''-domyślnie
+::       [_c] - 1-wyszarzenie zapalenie klawiszy plan 0(domyślnie)-nie
+::   WY:
+::  OLD: \zle_set_efld_opt/!lum_zgl_dzgl.fml
+::----------------------------------------------------------------------------------------------------------------------
+_win_red:={? var_pres('_a')=type_of('') || _a || ZLE.win_edit('?') ?};
+_rodz:={? var_pres('_b')=type_of('')    || _b || '' ?};
+_btnopt:={? var_pres('_c')=type_of(0)   || _c || 0 ?};
+ZLP.cntx_psh();
+_nomod:=ZLEC.POP;
+_istrn:=_nomod & exec('czy_tr','transport_wspolne',ZLP.ref()) & exec('get_tr_nzl','transport_zlec',ZLP.uidref()).size();
+_iskpo:=ZLP.KPO<>null();
+ZLP.cntx_pop();
+
+{? _win_red='' || return(~~) ?};
+:: wygaszenie klawiszy do planu
+{? _win_red='REDP'
+|| {? ZLP.MJ().TR_RODZ().CTRL='N'
+   || ZLE.btn_eopt('REDP','DZP','state=grayed');
+      ZLE.btn_eopt('REDP','DZ','state=grayed')
+   || ZLE.btn_eopt('REDP','DZP','state=normal');
+      ZLE.btn_eopt('REDP','DZ','state=normal')
+   ?}
+?};
+
+::{? (';PW'*_rodz)>1 || ZLE.efld_opt(_win_red,'mark=1',ZLP,'DP') || ZLE.efld_opt(_win_red,'mark=0',ZLP,'DP') ?};
+{? (';P'*_rodz)>1 || ZLE.efld_opt(_win_red,'mark=1',ZLP,'DP') || ZLE.efld_opt(_win_red,'mark=0',ZLP,'DP') ?};
+{? (';Z'*_rodz)>1  || ZLE.efld_opt(_win_red,'mark=1',ZLP,'DW') || ZLE.efld_opt(_win_red,'mark=0',ZLP,'DW') ?};
+
+:: kontrahent
+ZLE.efld_opt(_win_red,'mark=1',ZLP,'KH',);
+:: waluta
+ZLE.efld_opt(_win_red,'mark=1',ZLP,'WAL');
+:: cennik
+ZLE.efld_opt(_win_red,'mark=1',,'TAR');
+:: data zgłoszenia
+
+{? (';XY'*_rodz)>1
+|| _enabX:={? _rodz='X' || 'enable=1' || 'enable=0' ?};
+   _enabY:={? _rodz='Y' || 'enable=1' || 'enable=0' ?};
+   _markX:={? _rodz='X' || 'mark=1' || 'mark=0' ?};
+   _markY:={? _rodz='Y' || 'mark=1' || 'mark=0' ?};
+   ZLE.efld_opt(_win_red,_enabX,ZLP,'DZP');
+   ZLE.efld_opt(_win_red,_enabX,ZLP,'DP');
+   ZLE.efld_opt(_win_red,_enabX,ZLP,'DK');
+   ZLE.efld_opt(_win_red,_enabX,ZLP,'DK_OD');
+   ZLE.efld_opt(_win_red,_enabX,ZLP,'DK_DO');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'DZ');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'DW');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'DKP');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'GW_OD');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'GW_DO');
+   ZLE.efld_opt(_win_red,_markX,ZLP,'DZP');
+   ZLE.efld_opt(_win_red,_markY,ZLP,'DZ')
+|| {? ZLP.SP='T'
+   || _enabP:='enable=1';
+      _markP:='mark=1';
+      _enabDP:=_enabP
+   || _enabP:='enable=0';
+      _markP:='mark=0';
+      _enabDP:={? ZLP.IDBIG<>0 || 'enable=1' || _enabP ?}
+   ?};
+   _enabY:='enable=1';
+   _markY:='mark=0';
+   ZLE.efld_opt(_win_red,_enabP,ZLP,'DZP');
+   ZLE.efld_opt(_win_red,_enabDP,ZLP,'DP');
+   ZLE.efld_opt(_win_red,_enabP,ZLP,'DK');
+   ZLE.efld_opt(_win_red,_enabP,ZLP,'DK_OD');
+   ZLE.efld_opt(_win_red,_enabP,ZLP,'DK_DO');
+   ZLE.efld_opt(_win_red,_markP,ZLP,'DZP');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'DZ');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'DW');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'DK');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'GW_OD');
+   ZLE.efld_opt(_win_red,_enabY,ZLP,'GW_DO');
+   ZLE.efld_opt(_win_red,_markY,ZLP,'DZ')
+?};
+:: numer posesji
+ZLE.efld_opt(_win_red,'mark=1',ZLEC,'POS_NR');
+:: usługa podstawowa
+ZLE.efld_opt(_win_red,'mark=1',ZLP,'MJ');
+:: ilość
+ZLE.efld_opt(_win_red,'mark=1',ZLP,'IL');
+:: ilość do fakturowania
+{? ZLP.M_R<>null & ZLP.ILR=0
+|| ZLE.efld_opt(_win_red,'mark=1',ZLP,'ILR')
+|| ZLE.efld_opt(_win_red,'mark=0',ZLP,'ILR')
+?};
+:: ilość dodatek
+{? ZLP.M_D<>null & ((ZLP.ILD=0 & ZLP.PRD=0) | (ZLP.ILD>0 & ZLP.PRD>0))
+|| ZLE.efld_opt(_win_red,'mark=1',ZLP,'ILR')
+|| ZLE.efld_opt(_win_red,'mark=0',ZLP,'ILR')
+?};
+:: powód niefakturowania przy przetrzymaniu
+{? ~exec('pr_zlp_pow','umowy_zlecenia')
+|| ZLE.efld_opt(_win_red,'editable=grayed',ZLP,'POW')
+?};
+:: przeplanowanie wygaszenie pól
+{? _rodz='X' | _rodz='Y' | _nomod
+||
+   ZLE.efld_opt(_win_red,'mark=0',,'KH');
+   ZLE.efld_opt(_win_red,'mark=0',ZLEC,'POS_NR');
+   ZLE.efld_opt(_win_red,'mark=0',ZLE,'TAR');
+   _editable:='editable=0';
+   _editbble:={? _nomod || 'editable=1' || 'editable=0' ?};
+   _editcble:={? _istrn || 'editable=0' || 'editable=1' ?};
+   _editdble:={? _iskpo || 'editable=0' || 'editable=1' ?}
+||
+   _editable:='editable=1';
+   _editbble:='editable=1';
+   _editcble:='editable=1';
+   _editdble:='editable=1'
+?};
+ZLE.efld_opt(_win_red,_editable,,'KH');
+ZLE.efld_opt(_win_red,_editable,ZLP,'HAN');
+ZLE.efld_opt(_win_red,_editable,ZLP,'KH_ODB');
+ZLE.efld_opt(_win_red,_editable,ZLEC,'UL');
+ZLE.efld_opt(_win_red,_editable,ZLEC,'MIA');
+ZLE.efld_opt(_win_red,_editcble,ZLEC,'POS_NR');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'LOKAL');
+ZLE.efld_opt(_win_red,_editable,,'TAR');
+ZLE.efld_opt(_win_red,_editable,,'USL');
+ZLE.efld_opt(_win_red,_editbble,,'FAS');
+ZLE.efld_opt(_win_red,_editable,ZLP,'TRN');
+ZLE.efld_opt(_win_red,_editable,ZLP,'WAL');
+ZLE.efld_opt(_win_red,_editable,ZLP,'CB');
+ZLE.efld_opt(_win_red,_editable,,'TFAK');
+ZLE.efld_opt(_win_red,_editable,ZLP,'POJAZD');
+ZLE.efld_opt(_win_red,_editable,ZLP,'ZLBR');
+ZLE.efld_opt(_win_red,_editable,ZLP,'PRACW');
+ZLE.efld_opt(_win_red,_editable,ZLP,'SP');
+ZLE.efld_opt(_win_red,_editable,ZLP,'DP');
+ZLE.efld_opt(_win_red,_editable,ZLP,'DZ');
+ZLE.efld_opt(_win_red,_editable,ZLP,'DW');
+ZLE.efld_opt(_win_red,_editable,ZLP,'POJTYP');
+ZLE.efld_opt(_win_red,_editable,ZLP,'EMPTY');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'IDBIG');
+ZLE.efld_opt(_win_red,_editable,ZLP,'NK');
+ZLE.efld_opt(_win_red,_editable,ZLP,'DK');
+ZLE.efld_opt(_win_red,_editable,ZLP,'DK_OD');
+ZLE.efld_opt(_win_red,_editable,ZLP,'DK_DO');
+ZLE.efld_opt(_win_red,_editable,ZLP,'DKP');
+ZLE.efld_opt(_win_red,_editable,ZLP,'GW_OD');
+ZLE.efld_opt(_win_red,_editable,ZLP,'GW_DO');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'MJ');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'IL');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'RFAK');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'C');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'M_R');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'ILR');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'C_R');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'M_D');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'ILD');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'C_D');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'FP');
+ZLE.efld_opt(_win_red,_editcble,ZLP,'POW');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'OSNAZ');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'OSIM');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'OSTEL');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'NOMAIL');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'MAIL');
+ZLE.efld_opt(_win_red,_editable,ZLP,'KAUCJA');
+ZLE.efld_opt(_win_red,_editable,ZLP,'ZWKAU');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'NRRACH');
+ZLE.efld_opt(_win_red,_editdble,ZLP,'ODP');
+ZLE.efld_opt(_win_red,_editdble,ZLP,'TKPO');
+ZLE.efld_opt(_win_red,_editdble,ZLP,'WYS');
+ZLE.efld_opt(_win_red,_editdble,ZLP,'KG');
+ZLE.efld_opt(_win_red,_editable,ZLP,'ZAL');
+ZLE.efld_opt(_win_red,_editable,ZLP,'SPZLEC');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'U');
+ZLE.efld_opt(_win_red,_editable,FZ,'FORMAPLA');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'OPIS');
+ZLE.efld_opt(_win_red,_editbble,ZLP,'NDRUK');
+{? _rodz='X'
+||
+   ZLE.efld_opt(_win_red,'mark=1',ZLP,'DZP');
+   ZLE.efld_opt(_win_red,'editable=1',ZLP,'DZP');
+   ~~
+
+|? _rodz='Y'
+||
+   ZLE.efld_opt(_win_red,'mark=1',ZLP,'DZ');
+   ZLE.efld_opt(_win_red,'editable=1',ZLP,'DZ');
+   ~~
+?};
+:: wygaszenie klawiszy do planu
+{? _btnopt
+|| {? ZLP.MJ().TR_RODZ().CTRL='N'
+   || ZLE.btn_eopt('REDP','DZP','state=grayed');
+      ZLE.btn_eopt('REDP','DZ','state=grayed')
+   || ZLE.btn_eopt('REDP','DZP','state=normal');
+      ZLE.btn_eopt('REDP','DZ','state=normal')
+   ?}
+?};
+~~
+
+
+\bigbag_genzlp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [12.10]
+:: OPIS: Generuje Big Baga
+::   WE:
+::   WY:
+::  OLD: \bigbag_genzlp/new_um.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask('Wygenerować zgłoszenie jednorazowe na Big Baga?'@)
+||
+   exec('zle_open','open_tab',ST.ODDZ,form((date()~1)-2000,-2,0,'99'),form(date()~2,-2,0,'99'));
+   _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LUM_ZGL_DZGL';
+   _params.AKCJA:='Dołącz';
+   _params.PROC_START:='T';
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'UPM',UPM.ref());
+
+::   _params.CONTEXT:=obj_new('ZAKONCZ');
+::   _params.CONTEXT.ZAKONCZ:=0;
+
+   exec('mp_run','#b__box',_params)
+
+::   exec('zle_zlp','umowy_zlecenia',0); ????
+::   exec('zlp_zadd','umowy_zlecenia');
+::   exec('nul_uprf','umowy_zlecenia')
+?};
+''
+
+
+\zle_zlp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: redakcja zlecen oraz pozycji zlecen
+::   WE: [_a] = 1 - Robić selekta , 0 - Tylko ustawić zmienne
+::  OLD: \zle_zlp/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=1 ?} || _a:=1 ?};
+
+:: UMC.RODZ:=exec('get','#params',7025,2,OPERATOR.USER);
+UMC.RODZ:='N';
+
+exec('nul_uprf','umowy_zlecenia');
+exec('jm_kpo','jm');
+BEER.MW:='F';
+exec('ustaw_ww','eurusd',BEER.MW);
+HELP.POJ:='I';
+POM.TYPDOK:='ZLE';
+POM.TAB:='ZLE';
+POM.ODDZ:=ST.ODDZ;
+ZLEC.TYP:='Z';
+ZLEC.RODZ:='J';
+POMOC.RODZ:='U';
+POMOC.MGR:=POMOC.MGRF:=null;
+exec('slo_m_ok','material','U');
+exec('set_win','umowy');
+
+:: okienka dla ZLP i select
+exec('zlp_oknr','umowy_zlecenia');
+ZLP.win_sel('WER_ZGL');
+ZLP.win_fml('WER_ZGL',,'DP',,'ICON_BEFORE', "{? ZLP.PLTRA<>null || 'xmenu16.png:21' || '' ?}");
+ZLP.win_fml('WER_ZGL',,'MIA','NAZ','ICON_BEFORE', "{? ZLP.ZLE().FAS().KOD='N'  || 'xmenu16.png:85' || '' ?}");
+
+exec('zlp_uprf','umowy_zlecenia');
+exec('zlp_aktu','umowy_zlecenia');
+ZLP.cntx_psh();
+{? ZLP.first()
+|| {!
+   |? {? ZLP.MIA<>ZLP.POS().MIA | ZLP.UL<>ZLP.POS().UL
+      || ZLP.MIA:=ZLP.POS().MIA;
+         ZLP.UL:=ZLP.POS().UL;
+         ZLP.put()
+      ?};
+      ZLP.next()
+   !}
+?};
+ZLP.cntx_pop();
+{? _a
+|| ZLP.select(,1,10);
+   exec('nul_uprf','umowy_zlecenia')
+?};
+''
+
+
+\nul_uprf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2011]
+:: OPIS: zerowanie zmiennych
+::  OLD: \nul_uprf/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZLEC.WYL:='';
+ZLEC.FDP:=date(0,0,0);
+ZLEC.FDW:=date(0,0,0);
+ZLEC.FUSERS:=null;
+ZLEC.FKH:=null;
+ZLEC.FMIA:=null;
+ZLEC.FUL:=null;
+ZLEC.FPOS:='';
+ZLEC.FSR:='';
+ZLEC.FF:='';
+''
+
+
+\up_spr_ilebig
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [MPGK_1240]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? fld<>''
+||
+   _pos:=ZLE.POS().MIA().NAZ+';'+ZLE.POS().UL().UL+';'+ZLE.POS().NR+';'+form(ZLP.LOKAL)+';';
+   BIGB.index('ADR');
+   BIGB.prefix(_pos,_pos);
+   {? BIGB.first()
+   || FUN.ask('W tym roku już mamy zgłoszenie na ten lokal. Chcesz dodać kolejne ?'@)
+   || 1
+   ?}
+|| 1
+?}
+
+
+\czy_wew
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [12.10]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+fld<>'W'
+
+
+\os_konta
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [12.10]
+:: OPIS: Wybierz osobę z listy
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_kh:=ZLE.KH;
+{? ZLP.KH_ODB<>null & ZLP.KH_ODB().KH_LNK || _kh:=ZLP.KH_ODB().KH_LNK ?};
+{? _kh=null()
+|| FUN.emsg('Nie wybrano kontrahenta.'@);
+   ''
+|| KH.cntx_psh();
+   KH.prefix();
+   KH.seek(_kh);
+   KH_OSOB.index('KH');
+   KH_OSOB.prefix(_kh);
+   KH_OSOB.win_sel('SLO');
+   KH_OSOB.win_edit('RED');
+   KH_OSOB.hdr_sel('');
+   KH_OSOB.hdr_sel(' dla kontrahenta: %1'@[KH.SKR]);
+   {? KH_OSOB.select
+   || ZLP.OSNAZ:=KH_OSOB.NAZWISKO;
+      ZLP.OSIM:=KH_OSOB.IMIE;
+      ZLP.OSTEL:=KH_OSOB.GSM;
+      ZLP.MAIL:=KH_OSOB.EMAIL;
+      {? +ZLP.MAIL>=3 || ZLP.NOMAIL:='T' ?};
+      win_disp();
+      KH_OSOB.NAZWISKO
+   || ''
+   ?};
+   KH_OSOB.hdr_sel('');
+   KH.cntx_pop()
+?}
+
+
+\zlp_rach_zwrot
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [12.10]
+:: OPIS:
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLE.KH=null()
+|| FUN.emsg('Nie wybrano kontrahenta.'@);
+   ''
+|| {? exec('m_rb_kh','rachunki',,ZLE.KH,1) & SKID_RBK.ref()<>null()
+   || ZLP.NRRACH:=SKID_RBK.N;
+      ZLP.SKID_RB:=SKID_RBK.ref()
+   || ''
+   ?}
+?}
+
+
+\pltra_copy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [MPGK]
+::  OLD: \pltra_copy/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+PLTRA.get();
+{? FUN.ask('Skopiować samochód na inny dzień ?'@)
+|| UMC.D:=date();
+   UMC.win_edit('D');
+   {? UMC.edit("__CHK.record(UMC,,'D')")
+   ||
+       PLTRA.cntx_psh();
+       PLTRA.SAMNR:=PLTRA.SAM().NRREJ;
+       PLTRA.SKAN:='';
+       PLTRA.ILSKAN:=0;
+       PLTRA.D:=UMC.D;
+       PLTRA.prefix();
+       {? PLTRA.add()
+       || _ref:=PLTRA.ref()
+       || _ref:=null
+       ?};
+       PLTRA.cntx_pop();
+       PLTRA.seek(_ref)
+   ?}
+?};
+1
+
+
+\zlp_put_log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [MPGK_1240]
+:: OPIS: - Zapis do loga operacji
+::   WE: _a - Co napisać
+:::  OLD: \zlp_put_log/qtrasy.fml
+:----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>2 || _a:='' ?} || _a:='' ?};
+_f:=ZLP.memo_get('a','OPIS_LOG');
+{? _f.is_open
+||
+   _lin:=gsub(10+username(),'~',' ')+' '+$date()+' '+$time()+' >> '+_a;
+   fwrite(_f,_lin);
+   ZLP.memo_put(_f,'OPIS_LOG')
+?};
+1
+
+
+\be_z_poj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: przed redakcja pojemnika w zleceniu
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=1;
+UMO.POJ:=ZLP.POJ;
+{? ZLP.POJ<>null
+|| POM.BPOJ:=''
+|| POM.BPOJ:='N'
+?};
+_wyn
+
+
+\ae_z_poj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdzenie po redakcji numeru ewidencyjnego pojemnika czy pojemnik w jest przypisany w innej pozycji zlecenia
+::       zalozenie ze data podstawienia zawsze jest mniejsza od daty wykonania
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=1;
+{? fld<>null
+|| {? ZLP.DP<>date(0,0,0)
+   ||
+      _zlp:=ZLP.ref();
+      _wyn:=1;
+      _data_od:=ZLP.DP;_data_do:=ZLP.DW;_poj:=ZLP.POJ;
+      ZLE.cntx_psh();
+      ZLP.cntx_psh();
+      _ind:=ZLP.ndx_tmp('',,'POJ',,,'DW',,);
+      ZLP.index(_ind);
+      ZLP.prefix(_poj);
+      {? ZLP.last() & ZLP.ref()<>_zlp
+      || {? ZLP.DW>_data_od
+         || _str:=' Pojemnik %1 jest już wykorzystywany\n w terminie od %2 do %3'
+               '\n\n dla kontrahenta %4'
+               '\nna posesji: %5 %6 %7.'@[ZLP.POJ().KOD,$ZLP.DP,$ZLP.DW,ZLP.ZLE().KH().KOD,ZLP.ZLE().POS().UL().MIA().NAZ,ZLP.ZLE().POS().UL().UL,ZLP.ZLE().POS().NR];
+            FUN.info(_str)
+         ?}
+      ?};
+      ZLP.ndx_drop(_ind);
+      ZLP.cntx_pop();
+      ZLE.cntx_pop();
+      ZLP.JM:=POJ.JM
+   ?}
+?};
+_form:="POJ.cntx_psh();POJ.clear();{? POJ.seek(_a) || POJ.S:=_b;POJ.put ?};POJ.cntx_pop()";
+
+{? fld<>null & fld<>UMO.POJ & POJ.S<>'N' & _wyn=1
+||
+   _wyn:=1;
+   FUN.info('Wybrany pojemnik nie jest wolny.\nWybierz inny.'@)
+||
+   _poj:=fld;
+   {? fld<>null & fld<>UMO.POJ
+   || _form(UMO.POJ,'N');
+      _form(_poj,'T')
+   |? fld=null & fld<>UMO.POJ
+   || _form(UMO.POJ,'N')
+   |? fld<>null & UMO.POJ=null
+   || _form(_poj,'T')
+   ?}
+?};
+_wyn
+
+
+\up_poj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MaX [MPGK_1240]
+:: OPIS: Pojemniki do pozycji umowy
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+UMPOJ.index('UP_SRC');
+UMPOJ.prefix($UP.ref());
+UMPOJ.win_sel('WER');
+UMPOJ.win_edit('RED');
+UMPOJ.select();
+''
+
+
+\pr_zlp_pow
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+::   WE: _a - czy pokazywać komunikat
+:: OPIS: przed redakcja ZLP.POW (powód niefakturowania za przetrzymanie)
+::----------------------------------------------------------------------------------------------------------------------
+_a:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+_ctrlslu:=exec('get','#params',100183,2);
+_ref_slu:={? _ctrlslu<>'' || exec('FindInSet','#table','SLU','NAZ',_ctrlslu,,,1,,null()) || null() ?};
+SLU.index('NAZ');
+SLU.prefix();
+{? SLU.seek(_ref_slu)
+|| SLU.ref()
+|| {? _a
+   ||   FUN.info('Wymagane ustawienie parametru aplikacyjnego 100183 - Słownik powodów odstąpienia od fakturowania.'
+                 '\n Niemożliwa edycja powodu odstąpienia.'@)
+   ?};
+   null();
+   0
+?}
+
+
+\zlp_anuluj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MW] [19.22]
+:: OPIS: anulowanie ZLP
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.STAT_REJ:='A';
+ZLP.SPLAN:='X';
+ZLP.SR:='X'
+
+
+\zlp_czy_anulowane
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MW] [19.22]
+:: OPIS: czy ZLP anulowane
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.STAT_REJ='A' | ZLP.SR='X'
+
+
+\ae_zlp_fp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MW] [19.22]
+:: OPIS: po redakcji ZLP.FP (fakturować za przetrzymanie)
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLP.FP='N'
+|| exec('pr_zlp_pow','umowy_zlecenia',1)
+?};
+1
+
+
+\zlp_kol
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2011]
+:: OPIS: kolorowanie zgloszen
+::  OLD: \zlp_kol/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLP.FAKS='T'
+|| 'ZLP#01#01'
+|? ZLP.SR='Z'
+|| 'ZLP#01#02'
+|? exec('zlp_czy_anulowane','umowy_zlecenia')
+|| 'ZLP#01#04'
+|| 'ZLP#01#03'
+?}
+
+
+\zlp_druk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: wydruki pozycji zlecen
+::  OLD: \zlp_druk/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('rep_exec','#b_report','LUM_UMO_XXXX','lum_zlpoz*','Wydruki pozycji zleceń',1);
+''
+
+
+\zlp_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: sprawdzenie czy kontrahent nie jest zablokowany przed dodaniem pozycji zlecenia
+::   WE: [_a] - czy ma przepisywac informacje z pozycji umowy (0 - tak, 1 - nie)
+::  OLD: \zlp_add/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+
+_wyn:=0;
+{? HELP.B='N'
+|| _wyn:=1
+||
+   {? ZLE.KH<>null
+   ||
+      KH_DOD.B:=__War_f('KH_DOD','B',ZLE.KH);
+      {? (KSTE.B='I' | KSTE.B='B') & KH_DOD.B='T'
+      || FUN.info('Kontrahent jest zablokowany.'@);
+         {? KSTE.B='I'
+         || _wyn:=1
+         ?}
+      || _wyn:=1
+      ?}
+   || _wyn:=1
+   ?}
+?};
+
+{? _wyn=1
+|| exec('zlp_gen_dla_up','umowy_zlecenia',UP.ref(),ZLE.ref())
+?}
+
+
+\zlp_gen_dla_up
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [19.22]
+:: OPIS: Dołączenie zgłoszenia jednorazowego (ZLE i ZLP) dla pozycji umowy cyklicznej (UP)
+::   WE : [_a]_UP
+::        [_b] ZLE_UP
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LUM_ZGL_DZGL';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'UP',_a);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZLE_UP',_b);
+
+exec('mp_run','#b__box',_params)
+
+
+\zlp_uprf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: ustala prefix dla okienka na podstawie podanego zakresu
+::  OLD: \zlp_uprf/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ind:='';
+_pfx:='';
+
+{? ZLEC.FDP<>date(0,0,0) || _ind+=',''DP'',,';_pfx+=',ZLEC.FDP'?};
+{? ZLEC.FDW<>date(0,0,0) || _ind+=',''DW'',,';_pfx+=',ZLEC.FDW' ?};
+{? ZLEC.FUSERS<>null || _ind+=',''USERS'',,';_pfx+=',ZLEC.FUSERS().KOD' ?};
+{? ZLEC.FKH<>null || _ind+=',''ZLE'',''KH'',';_pfx+=',ZLEC.FKH' ?};
+{? ZLEC.FMIA<>null || _ind+=',''MIA'',,';_pfx+=',ZLEC.FMIA' ?};
+{? ZLEC.FUL<>null || _ind+=',''UL'',''UL'',';_pfx+=',ZLEC.FUL().UL' ?};
+{? ZLEC.FPOS<>'' || _ind+=',''POS'',''NR'',';_pfx+=',ZLEC.FPOS' ?};
+{? ZLEC.FSR<>'' || _ind+=',''SR'',,';_pfx+=',ZLEC.FSR' ?};
+{? ZLEC.FF<>'' || _ind+=',''FAKS'',,';_pfx+=',ZLEC.FF'?};
+
+{? _ind<>'' & ZLEC.WYL<>'T'
+||
+   ZLP.ndx_drop();
+   {? ZLEC.RODZ='J'
+   ||
+      _ind:='ZLP.ndx_tmp(,,''ZLE'',''CZUM'','+_ind;
+      _pfx:='ZLP.prefix(''N'''+_pfx
+   ||
+      _ind:='ZLP.ndx_tmp(,,''RP'',,'+_ind;
+      _pfx:='ZLP.prefix(''H'''+_pfx
+   ?};
+   _ind+=')';
+   _pfx+=')';
+   _ndx:=$(_ind);
+   _pfx:=$(_pfx);
+   _ndx:=_ndx();
+   ZLP.index(_ndx);
+   ZLP.hdr_sel();
+   ZLP.hdr_sel(' - ograniczone wg zakresu'@);
+   _pfx()
+||
+   ZLP.hdr_sel();
+   {? ZLEC.RODZ='J'
+   ||
+      ZLP.index('R');
+      ZLP.prefix('N')
+   ||
+      ZLP.index('UZUP');
+      ZLP.prefix('H')
+   ?}
+?};
+''
+
+
+\zlp_fakr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2009]
+:: OPIS: fakturowanie zlecenia jednorazowego
+::   WE: _a - ZLP.ref()
+::       _b - typ dokumentu sprzedazy
+::  OLD: \zlp_fakr/um_zlec2.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zlp:=_a;
+_typysp_t:=_b;
+
+_result:=1;
+
+_name:=ref_name(_zlp);
+{? _name='' || return(0) ?};
+ZLP.cntx_psh();
+ZLP.use(_name);
+ZLP.cntx_psh();
+ZLP.prefix();
+{? ~ZLP.seek(_zlp)
+||
+   FUN.info('Nie znaleziono zgłoszenia jednorazowego.'@);
+   _result:=0
+
+|? ZLP.FAKS='N'
+||
+   {? ZLP.F<>'T'
+   ||
+      FUN.info('Zgłoszeniu nadano znacznik nie fakturować.'@);
+      _result:=0
+
+   |? ZLP.SR='X'
+   ||
+      FUN.info('Zrezygnowano z realizacji zgłoszenia.'@);
+      _result:=0
+
+   |? ZLE.TFAK='T' & ZLP.SR<>'Z'
+   ||
+      FUN.info('Zgłoszenie będzie można fakturować gdy zostanie zrealizowane.'@);
+      _result:=0
+
+   |? exec('czy_z_ok','okresy',-2)=0
+   ||
+      _result:=0
+   ?};
+   {? _result=1
+   ||
+      _ask:=0;
+      {? ZLP.DW=date(0,0,0)
+      ||
+         _result:=FUN.ask('Zgłoszenie ma nieuzupełnioną datę wykonania.\n'
+                          'Wystawić fakturę do niewykonanego zgłoszenia?'@)
+      ?};
+      {? _result
+      ||
+:: fakturowanie
+         params_exec('wystinne','faktury_nag','J','J',,,,,,,,_typysp_t)
+      ?}
+   ?}
+?};
+ZLP.cntx_pop();
+ZLP.cntx_pop();
+_result
+
+
+\zle_fak
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: reczne fakturowanie pozycji zlecen
+::   WE: _a - ZLP.ref
+::       _b - zakres zgłoszeń
+::  OLD: \zle_fak/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zlp:=_a;
+_qqq:=_b;
+
+_wyn:=0;
+
+_continue:=1;
+ZLP.cntx_psh();
+{? _zlp
+||
+   ZLP.use(ref_name(_zlp));
+   ZLP.cntx_psh();
+   ZLP.prefix();
+   _continue:=ZLP.seek(_zlp)
+?};
+_ref_fak:=FAKS.ref();
+_fas_ref:={? _zlp=null() || exec('kst_fas','umowy') || ZLP.ZLE().FAS ?};
+_cb:={? _zlp=null() || 'N' || ZLP.CB ?};
+_where:=FAKS.WHERE;
+
+{? _continue
+||
+   {? _qqq=0
+   ||
+      _qqq:=FUN.choice('Fakturowanie zgłoszeń kontrahenta %1 w bieżącym miesiącu'
+         '\n(zgłoszenia jednorazowe, na podstawie umowy, koszty dodatkowe).'
+         '\n\nFakturuj zgłoszenia:'@[FAKS.KH().SKR],1,'Tylko bieżące'@,'Pozostałe &jednorazowe'@,'Wszystkie'@)
+   ?};
+   ZLP.index('F_FAKS');
+   {? _qqq=2
+   || ZLP.prefix('N','T',_fas_ref,FAKS.KH,FAKS.KH_ODB,FAKS.WAL,_cb,'N')
+   |? _qqq=3
+   || ZLP.prefix('N','T',_fas_ref,FAKS.KH,FAKS.KH_ODB,FAKS.WAL,_cb)
+   || ZLP.prefix('~','~')
+   ?}
+?};
+
+{? _continue
+      &
+   (_qqq=1 | ZLP.first())
+||
+:: komunikaty ini
+   exec('JCQ_decl','#message');
+   VAR_DEL.delete('__cq');
+   __cq:=obj_new(@.CLASS.JCQ);
+   __cq.init(,,'Informacje o fakturowaniu zgłoszeń dla kontrahenta '+FAKS.KH().SKR);
+   __cq.sect_beg(FAKS.SYM);
+
+   {? _qqq>1
+   ||
+      {!
+      |?
+         {? ZLP.ZLE().TFAK='T' & ZLP.SR<>'Z'
+         ||
+            __cq.sect_beg(ZLP.POS().UL().KDP+' '+ZLP.POS().MIA().NAZ+', '+ZLP.POS().UL().UL+' '+ZLP.POS().NR
+               +', zgłoszenie wykonania '+$ZLP.DZ+'.');
+            __cq.add('Zgłoszenie będzie można fakturować gdy zostanie zrealizowane.',2);
+            __cq.sect_end()
+         ||
+            ZLP.TEN:='*';
+            ZLP.USER:=20+username();
+            ZLP.put()
+         ?};
+         ZLP.next()
+      !}
+   ?};
+
+   _ndx:=ZLP.ndx_tmp('',,'ZLE','KH',,'TEN',,,'USER',,);
+   ZLP.index(_ndx);
+   ZLP.prefix(FAKS.KH,'*',20+username());
+   {? ZLP.first()
+   ||
+      _wyn:=1;
+      exec('zlt_ini','umowy_faktury');
+      _do_state:=do_state();
+      {? _do_state=0 || do() ?};
+      {!
+      |?
+         __cq.sect_beg(ZLP.POS().UL().KDP+' '+ZLP.POS().MIA().NAZ+', '+ZLP.POS().UL().UL+' '+ZLP.POS().NR
+            +', zgłoszenie wykonania '+$ZLP.DZ+'.');
+         _tar:=obj_new(3);
+         _tar[1]:=ZLP.C;
+         _tar[2]:=0;
+         _tar[3]:='';
+         {? ~exec('zlp_czy_anulowane','umowy_zlecenia') & exec('uzup_tmp','umowy_faktury',_tar,1,0)>0
+         ||
+            {? _where='L'
+            || __cq.add('Wystawiono dokument zaliczkowy do zgłoszenia.',1)
+            || __cq.add('Zgłoszenie zafakturowane.',1)
+            ?}
+         ?};
+         &_tar;
+         __cq.sect_end();
+         ZLP.next()
+      !};
+      __zlt.ndx_drop();
+      _ndx_zlt:=__zlt.ndx_tmp('',,'KHK',,,'M',,,'POS',,,'R',,);
+      __zlt.index(_ndx_zlt);
+      __zlt.prefix();
+      {? __zlt.first()
+      ||
+         {!
+         |?
+            {? __zlt.R='D' || _zl_r:='D' || _zl_r:='P' ?};
+            _cena:=_cwal:=0;
+            {? __zlt.WAL=$INFO.NAROD
+            || _cena:=__zlt.C
+            || _cwal:=__zlt.C
+            ?};
+
+            UMO.M:=exec('FindAndGet','#table',M,__zlt.M,,,null());
+            UMO.WAL:=exec('FindAndGet','#table',SLO,__zlt.WAL,,,null());
+            UMO.JM:=exec('FindAndGet','#table',JM,__zlt.JM,,,null());
+            exec('ADDPOZF','faktury_poz',UMO.M,__zlt.IL,_cena,0
+               ,exec('m_vat','material',UMO.M,FAKS.KH,exec('exp_ue','typysp'),FAKS.AR,FAKS.AM)
+               ,_zl_r,__zlt.U,_cwal,,UMO.WAL,UMO.JM);
+            exec('tar_cenm_s','ceny',__zlt.TAP);
+            FAP.put();
+
+            ZLP.prefix();
+            {? ZLP.seek(__zlt.ZLP_REF,form(8+__zlt.ZLP_REF))
+            ||
+               {? FAKS.WHERE='J'
+               ||
+                  ZLP.FAKS:='T';
+                  {? __zlt.R='D'
+                  || ZLP.FAPU:=FAP.ref()
+                  || ZLP.FAP:=FAP.ref()
+                  ?};
+                  ZLP.clear();
+                  ZLP.put()
+               ?}
+            ||
+               undo()
+            ?};
+
+            __zlt.next()
+         !}
+      ||
+         _wyn:=0
+      ?};
+      __zlt.ndx_drop(_ndx_zlt);
+      {? _do_state=0 || _wyn:=end() ?};
+
+      __cq.sect_end();
+      __cq.select();
+      VAR_DEL.delete('__cq')
+   ?};
+   ZLP.ndx_drop(_ndx);
+   exec('odzn_wsz','umowy_zlecenia')
+
+|? _continue
+||
+   {? _qqq>1 || FUN.info('Brak niezafakturowanych zgłoszeń.'@) ?}
+?};
+{? _zlp<>null() || ZLP.cntx_pop() ?};
+ZLP.cntx_pop();
+_wyn
+
+
+\z_typcen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: okresla rodzaj  dla pozycji zlecenia dla biezaco otwartych tabel
+::   WE: _a - pozycja zlecenia - ref
+::   WY: -2 - brak okreslonego typu fakturowania
+::       -1 - nieznany typ zlecenia
+::        0 - brak rekordu
+::        1 - zew. z realizacja
+::        2 - zew. z umowy
+::        3 - wew. z realizacja
+::        4 - wew. z umowy
+::  OLD: \z_typcen/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+
+ZLP.cntx_psh();
+ZLP.clear();
+{? ZLP.seek(_a)
+|| {? ZLP.ZLE().TYP='Z' | ZLP.ZLE().TYP='W'
+   || {? ZLP.ZLE().TFAK='T' | ZLP.ZLE().TFAK='N'
+      || {? ZLP.ZLE().TYP='Z' & ZLP.ZLE().TFAK='T' || _wyn:=1
+         |? ZLP.ZLE().TYP='Z' & ZLP.ZLE().TFAK='N' || _wyn:=2
+         |? ZLP.ZLE().TYP='W' & ZLP.ZLE().TFAK='T' || _wyn:=3
+         |? ZLP.ZLE().TYP='W' & ZLP.ZLE().TFAK='N' || _wyn:=4
+         ?}
+      || _wyn:=-2
+      ?}
+   || _wyn:=-1
+   ?}
+?};
+ZLP.cntx_pop();
+_wyn
+
+
+\odzn_wsz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: odznacza wszystkie rekordy dla biezacej dziedziny i uzytkownika
+::  OLD: \odzn_wsz/um_zlec.fml
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.cntx_psh();
+ZLP.index('USER');
+ZLP.prefix(20+username,'*');
+{? ZLP.first()
+|| {!
+   |?
+      ZLP.clear();
+      ZLP.TEN:='';
+      ZLP.USER:='';
+      ZLP.put();
+      ZLP.prefix(20+username,'*');
+      ZLP.first()
+   !}
+?};
+ZLP.cntx_pop();
+''
+
+
+\pr_rodz_zlp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: przed redakcją pola ZLP.RODZ
+::----------------------------------------------------------------------------------------------------------------------
+UMO.RODZZLP=''
+
+
+\zlp2zabierz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Zgłoszenie jednorazowe - Zabierz dla wymiany
+::   WE: _a - ref ZLP
+::       _b - data wykonania
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.cntx_psh();
+ZLP.prefix();
+{? ZLP.seek(_a) & _b<>date(0,0,0)
+|| ZLP.DW:=_b;
+   ZLP.put(1);
+   _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LUM_ZGL_DZGZ';
+   _params.UIDREF:=ZLP.uidref();
+   _params.AKCJA:='Zabierz';
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZLP',ZLP.ref());
+   UMO.RODZZLP:='Z';
+
+   exec('mp_run','#b__box',_params);
+   UMO.RODZZLP:=''
+?};
+ZLP.cntx_pop();
+~~
+
+
+\bez2realizuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Zgłoszenie jednorazowe - Podstaw & Zabierz dla wywołanego Realizuj
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.cntx_psh();
+UMC.win_edit('REA');
+{? UMC.edit() & UMC.D<>date(0,0,0)
+|| {? ZLP.DP=date(0,0,0)
+   || ZLP.DP:=UMC.D;
+      ZLP.put(1);
+      _params:=exec('mp_run_a','#b__box');
+      _params.ACT_UID:='LUM_ZGL_DZGP';
+      _params.UIDREF:=ZLP.uidref();
+      _params.AKCJA:='Podstaw';
+      _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+      exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZLP',ZLP.ref());
+      UMO.RODZZLP:='P';
+      exec('mp_run','#b__box',_params);
+      UMO.RODZZLP:='';
+      obj_del(_params)
+   ?};
+   {? ZLP.DW=date(0,0,0)
+   || ZLP.DW:=UMC.D;
+      ZLP.put(1);
+      _params:=exec('mp_run_a','#b__box');
+      _params.ACT_UID:='LUM_ZGL_DZGZ';
+      _params.UIDREF:=ZLP.uidref();
+      _params.AKCJA:='Zabierz';
+      _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+      exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZLP',ZLP.ref());
+      UMO.RODZZLP:='Z';
+      exec('mp_run','#b__box',_params);
+      UMO.RODZZLP:='';
+      obj_del(_params)
+   ?}
+?};
+ZLP.cntx_pop();
+~~
+
+
+\pr_zlp_sp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Po redakcji pola SP
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.STAT_REJ='N'
+
+
+\po_zlp_sp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Po redakcji pola SP
+::----------------------------------------------------------------------------------------------------------------------
+{? ZLP.SP='N'
+|| ZLP.DZP:=ZLP.DP:=ZLP.DK:=date(0,0,0);
+   ZLP.DK_OD:=ZLP.DK_DO:=time(0,0,0);
+   ZLP.RODZ:='Z'
+|| ZLP.RODZ:='P'
+?};
+exec('zle_set_efld_opt','umowy_zlecenia');
+1
+
+
+\pr_dzp_dp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Przed redakcją pól DZP, DP
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.SP='T'
+
+
+\stanPlan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Ustala wartość znacznika SPLAN
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.SPLAN:={? ZLP.STAT_REJ='N'
+           || 'N'
+           |? ZLP.SP='T'
+           || {? ZLP.DP=date(0,0,0) || 'P'
+              |? ZLP.DW=date(0,0,0) || 'Z'
+              || 'X'
+              ?}
+           || {? ZLP.DW=date(0,0,0) || 'Z'
+              || 'X'
+              ?}
+           ?};
+~~
+
+
+\zlp_dzp_btn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: przycisk pola ZLP.DZP
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_oddz:={? ZLP.ZLE=null() || ZLE.ODDZ || exec('FindAndGet','#table',ZLE,ZLP.ZLE,,"ZLE.ODDZ",'') ?};
+exec('data_transportu','transport_moc','ZLP.DZP',ZLP.MJ().TR_RODZ,_oddz)
+
+
+\zlp_dz_btn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: przycisk pola ZLP.DZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_oddz:={? ZLP.ZLE=null() || ZLE.ODDZ || exec('FindAndGet','#table',ZLE,ZLP.ZLE,,"ZLE.ODDZ",'') ?};
+exec('data_transportu','transport_moc','ZLP.DZ',ZLP.MJ().TR_RODZ,_oddz)
+
+
+\zlp_word
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Wydruk zgłoszenia jednorazowego do WORD
+::----------------------------------------------------------------------------------------------------------------------
+ZLP.ZLE().KH(); ZLP.KH_ODB();
+exec('generuj','szablon_zws','LUM_ZGL_JEDNORAZOWE');
+~~
+
+
+\aktWymien
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [20.42]
+:: OPIS: Aktualizacja pola WYMIANA i WYMIANA2
+::   WE: _a - nowy ZLP
+::       _b - wymiana
+::       _c - nowe pole pole WYMIANA
+::----------------------------------------------------------------------------------------------------------------------
+_uidzlp:={? var_pres('_a')=type_of('') & (+_a)=48 || _a || '' ?};
+
+{? _uidzlp<>''
+|| _tran:=do_state();
+   _pos:=exec('FindAndGet','#table',ZLP,_uidzlp,,"WYMIANA:=uidref();put(1);POS",null());
+   _rr:=#(4-(6+form(_uidzlp+16)));
+   exec('zle_psh','open_tab');
+   {? ~_tran || do() ?};
+   _pos:=exec('FindAndGet','#table',ZLP,_uidzlp,,"WYMIANA:=uidref();put(1);POS",null());
+   _rr:=#(4-(6+form(_uidzlp+16)));
+   {! _jj:=0..1
+   |! {! _ii:=1..12
+      |! exec('zle_open','open_tab',ST.ODDZ,$(_rr+_jj),form(_ii,-2));
+         ZLP.index('POS3');
+         ZLP.prefix(_pos);
+         {? ZLP.first() & ZLP.find_tab('first','WYMIANA2',,'=',_b)
+         || {!
+            |? ZLP.WYMIANA2:=_uidzlp;
+               {? ~ZLP.put(1) || undo() ?};
+               ZLP.find_tab('next','WYMIANA2',,'=',_b)
+            !}
+         ?}
+      !}
+   !};
+   {? ~_tran || end() ?};
+   exec('zle_pop','open_tab')
+?};
+~~
+
+
+\po_idbig
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.22]
+:: OPIS: Po redakcji pola IDBIG
+::----------------------------------------------------------------------------------------------------------------------
+_idbig:=ZLP.IDBIG;
+_poj:=ZLP.POJ;
+_empty:=ZLP.EMPTY;
+{? ZLP.SP='N' & ZLP.IDBIG=0 || ZLP.DP:=date(0,0,0) ?};
+exec('zle_set_efld_opt','umowy_zlecenia');
+ZLP.IDBIG:=_idbig;
+ZLP.POJ:=_poj;
+ZLP.EMPTY:=_empty;
+1
+
+:Sign Version 2.0 jowisz:1045 2023/11/28 08:30:36 2aa794ab05a6e481b48e8273d78074ca496e20bd64e3a78901dee7a7ef4f8b05c9f4b8461bbda46081071d9fe51a2672c0e10dcfc73061ea74e1556f2802442c843fb77b3fde9b7fd7f384ec17872a9869d70b7fe9d64bebc8b40b5672ba3879c28d51c7a199d4d839f194737838e1927b864fdc15082e0443284f770b095cd1

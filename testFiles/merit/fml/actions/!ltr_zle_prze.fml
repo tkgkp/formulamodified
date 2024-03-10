@@ -1,0 +1,528 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ltr_zle_prze.fml
+:: Utworzony: 11.09.2019
+:: Autor: AWI
+:: Systemy: Merit
+::======================================================================================================================
+:: Zawartość: Formuły czynności LTR_ZLE_PRZE - Przeplanuj dyspozycję transportu
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Formuła główna czynności LTR_ZLE_PRZE
+::   WE: _a - [obj_new] - parametry wejsciowe czynności
+::       _b - [obj_new] - parametry wewnętrzne czynności
+::       _c - [obj_new] - parametry wyjściowe czynności
+::       _d - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=TR_RODZ
+::# kind=WE,   symbol=TR_NZL, type=_TR_NZL,  name=Dyspozycja transportu,   required=T, keyref=T
+
+_in:=params_get().in;
+::_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+{? var_pres('_context')=type_of(~~)
+||
+   _context:=obj_new('WHERE');
+   _context.WHERE:=''
+?};
+{? var_pres('DZP',_context)<>type_of(date()) || _dzp:=date(0,0,0) || _dzp:=_context.DZP ?};
+{? var_pres('DZ',_context)<>type_of(date())  || _dz:=date(0,0,0) || _dz:=_context.DZ ?};
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_auto:=_mp.isAutoRun() | _mp.isService();
+_area:=_mp.pathArea('LTR_ZLE');
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | (_mp.pathArea() & ~_area);
+
+exec('init','ltr');
+VAR_DEL.delete('__DT');
+
+:: Sprawdzenie uprawnień
+params_set('in',_in,'user',OPERATOR.USER,'mp',_mp);
+{? exec('permissions','!ltr_zle_prze')=0
+||
+   _mp.error('Brak uprawnień do uruchomienia czynności.'@);
+   return()
+?};
+
+:: dyspozycja transportowa
+_tr_nzl:=null();
+{? var_pres('TR_NZL',_in)=type_of(null()) || _tr_nzl:=_in.TR_NZL ?};
+{? _tr_nzl=null()
+||
+   _mp.error('Nie podano dyspozycji transportowej.'@);
+   return()
+?};
+
+_done:=0;
+TR_NZL.cntx_psh();
+TR_NZL.use(ref_name(_tr_nzl));
+TR_NZL.cntx_psh();
+TR_NZL.prefix();
+{? TR_NZL.seek(_tr_nzl)
+||
+   {? ~exec('tr_rodz_ope','transport_wspolne',TR_NZL.TR_RODZ,'Dyspozycja transportu'@,'Przeplanowanie niemożliwe.'@)
+   || 0
+
+   |? TR_NZL.TR_RODZ=null()
+   ||
+      FUN.info('Nie podano rodzaju transportu.\nPrzeplanowanie niedostępne.'@)
+
+   |? exec('FindAndGet','#table',TR_NZL,_tr_nzl,,"
+         (
+         TR_NZL.STATUS=exec('tr_nzl_status_oczekujace','transport_zlec')
+            |
+         TR_NZL.STATUS=exec('tr_nzl_status_nowe','transport_zlec')
+            |
+         TR_NZL.STATUS=exec('tr_nzl_status_do_planowania','transport_zlec')
+         )
+      ",0)=0
+   ||
+::    zlecenie transportowe nie spełnia kryteriów
+      FUN.info(
+         {? _context.WHERE='DZP'
+         || 'Zmiana daty podstawienia niedostępna.'@
+         |? _context.WHERE='DZ'
+         || 'Zmiana daty wykonania niedostępna.'@
+         || 'Przeplanowanie niedostępne.'@
+         ?})
+   ||
+      _Tab:=ref_tab(TR_NZL.DOK_REF);
+      {? type_of(_Tab)=type_of(~~) || _Tab:=TR_NZL ?};
+      _tr_rodz:=TR_NZL.TR_RODZ;
+      _before:=obj_new('DT','TR_MOC');
+      _before.DT:={? TR_NZL.TR_MOC || TR_NZL.DT || date(0,0,0) ?};
+      _before.TR_MOC:=TR_NZL.TR_MOC;
+      _after:=obj_new('DT','RODZ','DZP','DZ');
+      _after.DT:=_before.DT;
+      _after.RODZ:=TR_NZL.RODZ;
+      _after.DZP:=_dzp;
+      _after.DZ:=_dz;
+      _loop:=1;
+      {? _auto & TR_NZL.WYM_MOC='T' & TR_NZL.TR_MOC
+      ||
+:: czynność uruchomiona automatycznie i jest wymagana moc transportowa
+         _done:=1;
+         _loop:=0
+      ?};
+      {!
+      |? _loop
+      |!
+:: redakcja daty transportu
+         {? _auto & _dz=date(0,0,0) & _dzp=date(0,0,0)
+         ||
+::       próba automatycznego przydzielenia mocy
+            _after.DT:=TR_NZL.DT
+
+         |? _Tab=ZLP
+         ||
+::       dyspozycja transportowa ze zgłoszenia jednorazowego
+            _loop:=exec('zlp_edit','!ltr_zle_prze',TR_NZL.DOK_REF,_after)
+         ||
+::       dyspozycja transportowa ręczna lub tabela bez specjalnej obsługi
+            __DT:=_before.DT;
+            _valid:="
+               {? TR_NZL.DT=date(0,0,0)
+               || FUN.info('Nie podano daty dyspozycji transportu.'@); 'DT'
+               |? __DT=TR_NZL.DT
+               || FUN.info('Nie zmieniono daty dyspozycji transportu.'@); 'DT'
+               || ''
+               ?}
+            ";
+            exec('tr_nzl_win_edit_set','transport_zlec',,2);
+            _loop:=TR_NZL.edit(_valid);
+            {? _loop
+            ||
+               _after.DT:=TR_NZL.DT
+            ?}
+         ?};
+:: aktualizacja daty transportu
+         {? _loop
+         ||
+            do();
+            TR_NZL.TR_MOC:=null();
+            {? _after.DT<>date(0,0,0)
+            ||
+               _il_szt:={? _after.DT=_before.DT || 0 || TR_NZL.IL_SZT ?};
+               TR_NZL.TR_MOC:=exec('tr_moc','transport_moc',TR_NZL.TR_RODZ,_after.DT,_il_szt,TR_NZL.ODDZ)
+            ?};
+            {? _after.DT=date(0,0,0) & _auto
+            ||
+               end();
+               _done:=0;
+               _loop:=0
+            |? TR_NZL.TR_MOC=null() & (_dz<>date(0,0,0) | _dzp<>date(0,0,0))
+            || end();
+               _tr_moc_il:=exec('tr_moc_il','transport_moc',TR_NZL.TR_RODZ,_after.DT,TR_NZL.ODDZ);
+               FUN.emsg('Brak mocy przerobowych w dniu %1 dla kategorii transportu %2.'
+                     '\nDostęna moc przerobowa ilość w szt.: %3.'@
+                     [$_after.DT,exec('record','#to_string',TR_NZL.TR_RODZ),
+                     form(_tr_moc_il,,,'99')]);
+               ZLP.r_unlock()
+            |? TR_NZL.TR_MOC=null()
+             & TR_NZL.TR_RODZ().CTRL='T'
+             & _after.DT<>date(0,0,0)
+            ||
+               end();
+               _tr_moc_il:=exec('tr_moc_il','transport_moc',TR_NZL.TR_RODZ,_after.DT,TR_NZL.ODDZ);
+               {? FUN.ask('Brak mocy przerobowych w dniu %1 dla kategorii transportu %2.'
+                     '\nDostęna moc przerobowa ilość w szt.: %3.'
+                     '\nCzy chcesz podać inny termin?'@[$_after.DT,exec('record','#to_string',TR_NZL.TR_RODZ),
+                     form(_tr_moc_il,,,'99')])
+               ||
+                  _auto:=0
+               ||
+                  _loop:=0
+               ?}
+            ||
+               {? _Tab=ZLP
+               ||
+::             dyspozycje transportowe ze zgłoszenia jednorazowego
+                  _done:=
+                     exec('FindAndGet','#table',ZLP,TR_NZL.DOK_REF,,"
+                        _after:=_b;
+                        _rodz:=_b.RODZ;
+                        {? _rodz='R'
+                        || ZLP.DZP:=_after.DT
+                        || ZLP.DZ:=_after.DT
+                        ?};
+                        _result:=ZLP.put();
+                        ZLP.r_unlock();
+                        _result
+                     ",0,_after)
+               ||
+::             dyspozycja transportowa ręczna lub tabela bez specjalnej obsługi
+                  _done:=1
+               ?};
+               {? _done
+               ||
+                  TR_NZL.DT:=_after.DT;
+                  exec('setMMYY','transport_zlec');
+                  TR_NZL.STATUS:=exec('tr_nzl_status','transport_zlec');
+                  {? TR_NZL.WHERE='TR_NZL' || exec('status_MG','transport_wspolne') ?};
+                  TR_NZL.PLAN:=
+                     {? TR_NZL.STATUS=exec('tr_nzl_status_do_planowania','transport_zlec')
+                     || 'T'
+                     || 'N'
+                     ?};
+                  {? TR_NZL.put()
+                  ||
+::                   aktualizacja danych na zleceniach transportowych wg danych źródłowych
+                     {? TR_NZL.WHERE='ZLP'
+                     ||
+                        exec('tr_nzl_upd','transport_zlec',TR_NZL.DOK_REF)
+                     ?};
+::                log
+                     exec('log_nag','transport_wspolne',TR_NZL.uidref(),'mocpr','z dnia %1 na dzień %2'@[$_before.DT,
+                        $_after.DT]);
+:: aktualizacja mocy transportowych
+                     exec('FindAndGet','#table',TR_MOC,_before.TR_MOC,,"
+                        exec('use','transport_moc')
+                     ");
+                     exec('FindAndGet','#table',TR_MOC,TR_NZL.TR_MOC,,"
+                        exec('use','transport_moc')
+                     ")
+                  ?}
+               ?};
+               _loop:=0;
+               end()
+            ?}
+         ||
+:: odblokowanie redagowanych rekordów
+            {? _Tab=ZLP
+            ||
+               exec('FindAndGet','#table',ZLP,TR_NZL.DOK_REF,,"ZLP.r_unlock()",)
+            ?}
+         ?}
+      !}
+   ?}
+?};
+VAR_DEL.delete('__DT');
+TR_NZL.cntx_pop();
+TR_NZL.cntx_pop();
+{? _done || _mp.done() ?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Opis czynności LTR_ZLE_PRZE
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+
+{? var_pres('TR_NZL',_in)=type_of(null()) & _in.TR_NZL
+|| 'Przeplanuj dyspozycję transportową: %1'@@[exec('record','#to_string',_in.TR_NZL)]
+|| 'Przeplanuj dyspozycję transportową'@@
+?}
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+_wyn:=1;
+_wyn
+
+
+\tr_nzl_przeplanuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Przeplanuj dyspozycję transportową - wołaną z dyspozycji transportowych
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LTR_ZLE_PRZE';
+_params.AKCJA:='TR_NZL';
+_params.CONTEXT:=obj_new('WHERE');
+_params.CONTEXT.WHERE:='TR_NZL';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+_params.UIDREF:=TR_NZL.uidref();
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'TR_NZL',TR_NZL.ref());
+
+exec('mp_run','#b__box',_params)
+
+
+\zlp_przeplanuj_podst
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Przeplanuj dyspozycje transportowe - Zmień datę podstawienia
+::   WE: [_a] - ZLP.DZP
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_a:={? var_pres('_a')=type_of(date()) || _a || date(0,0,0) ?};
+
+{? ZLP.SP<>'T'
+||
+   FUN.emsg('Zgłoszenie nie dotyczy podstawienia.'@);
+   return()
+
+|? ZLP.DP<>date(0,0,0)
+||
+   FUN.emsg('Wykonano podstawienie.\nZmiana daty podstawienia niedostępna.'@);
+   return()
+?};
+
+_rodz:='R';
+_tr_nzl:=null();
+_Tr_nzl:=exec('get_tr_nzl','transport_zlec',ZLP.uidref());
+_Tr_nzl.prefix(_rodz);
+{? _Tr_nzl.first()
+||
+   _tr_nzl:=exec('FindAndGet','#table',TR_NZL,_Tr_nzl.REF,,,null())
+?};
+
+{? _tr_nzl=null()
+||
+:: brak dyspozycji transportowej dotyczącej podstawienia
+   {? exec('czy_tr','transport_wspolne',ZLP.ref())
+   ||
+:: włączona obsługa dyspozycji transportowych
+      FUN.emsg('Brak dyspozycji transportowej rozładunku.\nZmiana daty podstawienia niedostępna.'@)
+   ||
+:: wyłączona obsługa dyspozycji transportowych
+      FUN.emsg('Wyłączona obsługa transportu.\nZmiana daty wykonania niedostępna.'@)
+::      _before:=obj_new('DT');
+::      _before.DT:=ZLP.DZP;
+::      _after:=obj_new('DT','RODZ');
+::      _after.DT:=ZLP.DZP;
+::      _after.RODZ:=_rodz;
+::      exec('zlp_edit','!ltr_zle_prze',ZLP.ref(),_after);
+::      {? _before.DT<>_after.DT
+::      ||
+::         ZLP.DZP:=_after.DT;
+::         ZLP.put()
+::      ?}
+   ?}
+
+||
+   _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LTR_ZLE_PRZE';
+   _params.AKCJA:='ZLP';
+   _params.CONTEXT:=obj_new('WHERE','DZP');
+   _params.CONTEXT.WHERE:='DZP';
+   _params.CONTEXT.DZP:=_a;
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   _params.UIDREF:=exec('FindAndGet','#table',TR_NZL,_tr_nzl,,"TR_NZL.uidref()",'');
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'TR_NZL',_tr_nzl);
+   exec('mp_run','#b__box',_params)
+?}
+
+
+\zlp_przeplanuj_wykon
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: Przeplanuj dyspozycje transportowe - Zmień datę wykonania
+::   WE: [_a] - ZLP.DZ
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_a:={? var_pres('_a')=type_of(date()) || _a || date(0,0,0) ?};
+{? ZLP.DW<>date(0,0,0)
+||
+   FUN.emsg('Wykonano zgłoszenie.\nZmiana daty wykonania niedostępna.'@);
+   return()
+?};
+
+_rodz:='Z';
+_tr_nzl:=null();
+_Tr_nzl:=exec('get_tr_nzl','transport_zlec',ZLP.uidref());
+_Tr_nzl.prefix(_rodz);
+{? _Tr_nzl.first()
+||
+   _tr_nzl:=exec('FindAndGet','#table',TR_NZL,_Tr_nzl.REF,,,null())
+?};
+
+{? _tr_nzl=null()
+||
+:: brak dyspozycji transportowej dotyczącej wykonania
+   {? exec('czy_tr','transport_wspolne',ZLP.ref())
+   ||
+:: włączona obsługa dyspozycji transportowych
+      FUN.emsg('Brak dyspozycji transportowej załadunku.\nZmiana daty wykonania niedostępna.'@)
+   ||
+:: wyłączona obsługa dyspozycji transportowych
+      FUN.emsg('Wyłączona obsługa transportu.\nZmiana daty wykonania niedostępna.'@)
+::      _before:=obj_new('DT');
+::      _before.DT:=ZLP.DZ;
+::      _after:=obj_new('DT','RODZ');
+::      _after.DT:=ZLP.DZ;
+::      _after.RODZ:=_rodz;
+::      exec('zlp_edit','!ltr_zle_prze',ZLP.ref(),_after);
+::      {? _before.DT<>_after.DT
+::      ||
+::         ZLP.DZ:=_after.DT;
+::         ZLP.put()
+::      ?}
+   ?}
+
+||
+   _params:=exec('mp_run_a','#b__box');
+   _params.ACT_UID:='LTR_ZLE_PRZE';
+   _params.AKCJA:='ZLP';
+   _params.CONTEXT:=obj_new('WHERE','DZ');
+   _params.CONTEXT.WHERE:='DZ';
+   _params.CONTEXT.DZ:=_a;
+   _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+   _params.UIDREF:=exec('FindAndGet','#table',TR_NZL,_tr_nzl,,"TR_NZL.uidref()",'');
+   exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'TR_NZL',_tr_nzl);
+
+   exec('mp_run','#b__box',_params)
+?}
+
+
+\zlp_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.42]
+:: OPIS: edycja daty podstawienia lub daty wykonania zgłoszenia jednorazowego
+::   WE: _a - ZLP.uidref()
+::       _b - zmienna nazwana
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_dok_ref:=_a;
+_after:=_b;
+
+exec('FindAndGet','#table',ZLP,_dok_ref,,"
+   _after:=_b;
+   _rodz:=_b.RODZ;
+   _dz:=_b.DZ;
+   _dzp:=_b.DZP;
+   _result:=0;
+   {? ~ZLP.r_lock(1,1,1)
+   ||
+      FUN.info('Zgłoszenie (%1) redagowane przez innego użytkownika.'@[
+         exec('record','#to_string',ZLP.ref())])
+   ||
+      __War_f:=\"exec('FindInSet','#table',_a,_a,_c,REF.FIRMA,$(_a+'.'+_b))\";
+      @.ZLE.cntx_psh();
+      {? ZLP.ZLE || @.ZLE.use(ref_name(ZLP.ZLE)) ?};
+      @.ZLP.ZLE();
+      {? _rodz='R'
+      || exec('zle_win_edit_set','transport_zlec','X')
+      || exec('zle_win_edit_set','transport_zlec','Y')
+      ?};
+      __DT:=_after.DT;
+      _valid:=
+         {? _rodz='R'
+         || \"
+            {? ZLP.DZP=date(0,0,0)
+            || FUN.info('Nie podano daty podstawienia.'@); 'DZP'
+            |? __DT=ZLP.DZP
+            || FUN.info('Nie zmieniono daty podstawienia.'@); 'DZP'
+            || ''
+            ?}
+            \"
+         || \"
+            {? ZLP.DZ=date(0,0,0)
+            || FUN.info('Nie podano daty wykonania.'@); 'DZ'
+            |? __DT=ZLP.DZ
+            || FUN.info('Nie zmieniono daty wykonania.'@); 'DZ'
+            || ''
+            ?}
+            \"
+         ?};
+      exec('jm_kpo','jm');
+      _poj:=ZLP.POJ;
+      {? _dz=date(0,0,0) & _dzp=date(0,0,0) & @.ZLE.edit(_valid)
+      ||
+         _after.DT:={? _rodz='R' || ZLP.DZP || ZLP.DZ ?};
+         {? _poj<>ZLP.POJ || ZLP.put(1) ?};
+         _result:=1
+      |? _dz<>date(0,0,0) | _dzp<>date(0,0,0)
+      || {? _rodz='R' || ZLP.DZP:=__Zgloszenia_jednorazowe.DZP || ZLP.DZ:=__Zgloszenia_jednorazowe.DZ ?};
+         {? _valid()=''
+         || _after.DT:={? _rodz='R' || ZLP.DZP || ZLP.DZ ?};
+            {? _poj<>ZLP.POJ || ZLP.put(1) ?};
+            _result:=1
+         ?}
+      ?};
+      @.ZLE.cntx_pop()
+   ?};
+   _result
+",0,_after)
+
+
+\tr_log_przeplanuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Przeplanuj dyspozycję transportową - wołaną z niezrealizowanych tras
+::----------------------------------------------------------------------------------------------------------------------
+{? (TR_LOG.name()+4)='____' & TR_LOG.DOK<>''
+|| TR_NZL.cntx_psh();
+   TR_NZL.index('DOK_REF');
+   TR_NZL.prefix(TR_LOG.DOK);
+   {? TR_NZL.first() & (TR_NZL.WHERE='ZLP' | TR_NZL.WHERE='UPMZAD')
+   || _params:=exec('mp_run_a','#b__box');
+      _params.ACT_UID:='LTR_ZLE_PRZE';
+      _params.AKCJA:='TR_NZL';
+      _params.CONTEXT:=obj_new('WHERE');
+      _params.CONTEXT.WHERE:='TR_NZL';
+      _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+      _params.UIDREF:=TR_NZL.uidref();
+      exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'TR_NZL',TR_NZL.ref());
+      exec('mp_run','#b__box',_params)
+   ?};
+   TR_NZL.cntx_pop()
+?};
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:41 75d848bebadae787d60229c45c910f279a549417c0fe458e214133b9e4f1ce0e3a8dd58341e97708330aeaa81125266ea182ec194fb0bbd42fcb53ce86cd9f14433208b6ff3c894cf0b2fa7ea7aea2b545583495581bd490194178367cee1ca3ba51e0432deea3ef71d956d22976a38ecfe2397fe1570001f8015e5911de8681

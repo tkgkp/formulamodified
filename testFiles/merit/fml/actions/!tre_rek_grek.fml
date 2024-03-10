@@ -1,0 +1,341 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tre_rek_grek.fml
+:: Utworzony: 23.02.2021
+:: Autor: [rr]
+:: Systemy: Merit
+::======================================================================================================================
+:: Zawartość: Formuły czynności TRE_REK_GREK - Generowanie reklamacji
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Formuła główna czynności TRE_REK_GREK
+::   WE: _a - [obj_new] - parametry wejsciowe czynności
+::       _b - [obj_new] - parametry wewnętrzne czynności
+::       _c - [obj_new] - parametry wyjściowe czynności
+::       _d - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ
+::# properties=LOOP
+::# parses=exec('parses','!tre_rek_grek')
+::# kind=WE,   symbol=FAKS,    type=_FAKS,    name=Faktura,                required=N, keyref=T
+::# kind=WE,   symbol=ZK_N,    type=_ZK_N,    name=Zamówienie sprzedaży,   required=N, keyref=T
+::# kind=WE,   symbol=ZD_NAG,  type=_ZD_NAG,  name=Zamówienie dostaw,      required=N, keyref=T
+::# kind=WE,   symbol=ND,      type=_ND,      name=Dokument magazynowy,    required=N, keyref=T
+::# kind=WE,   symbol=RODZ,    type=STRING,   name=Rodzaj reklamacji,      required=T
+::# kind=WY,   symbol=REK_N,   type=_REK_N,   name=Reklamacja,             required=N, keyref=N
+
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_areaFS:=_mp.pathArea('LSP_FAK');
+_areaZS:=_mp.pathArea('LSP_ZKN');
+_areaMG:=_mp.pathArea('LMG_MAG');
+_areaRS:=_mp.pathArea('TRE_REK');
+
+_areaFZ:=_mp.pathArea('LZK_ZAK');
+_areaZZ:=_mp.pathArea('LZK_DST');
+_areaRZ:=_mp.pathArea('TRE_RDO');
+
+_area:=_areaFS | _areaZS | _areaRS | _areaFZ | _areaZZ | _areaRZ | _areaMG;
+
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | (_mp.pathArea() & ~_area);
+
+_out.GRPKEY:=_mp.grpkey(_in.GRPKEY,_out.GRPKEY);
+
+exec('init','tre');
+
+
+:: Sprawdzenie uprawnień
+params_set('in',_in,'user',OPERATOR.USER,'mp',_mp);
+{? exec('permissions','!tre_rek_grek')=0
+||
+   _mp.error('Brak uprawnień do uruchomienia czynności.'@);
+   return()
+?};
+
+_rodz:={? var_pres('RODZ',_in)=type_of('') || _in.RODZ || '' ?};
+
+_cancel:=0;
+_error:=0;
+:: dokument źródłowy
+_dok:=null();
+_dokF:={? var_pres('FAKS',_in)=type_of(null()) || _in.FAKS || null() ?};
+_dokZ:={? var_pres('ZK_N',_in)=type_of(null()) || _in.ZK_N || null() ?};
+_dokD:={? var_pres('ZD_NAG',_in)=type_of(null()) || _in.ZD_NAG || null() ?};
+_dokN:={? var_pres('ND',_in)=type_of(null()) || _in.ND || null() ?};
+
+{? _dokF<>null()
+|| _rodz:=exec('FindAndGet','#table',FAKS,_dokF,,"SZ",'');
+   {? _rodz<>'' || _dok:=_dokF ?}
+?};
+{? _dok=null() & _dokZ<>null()
+|| _rodz:='S';
+   _dok:=_dokZ
+|? (_dok=null() & _dokD<>null())
+|| _rodz:='Z';
+   _dok:=_dokD
+|? (_dok=null() & _dokN<>null())
+|| _rodz:='Z';
+   _dok:=_dokN
+?};
+
+{? _dok=null() & ~((';SZ'*_rodz)>1)
+|| _ok:=0;
+   _error:=1;
+   _mp.error('Nie wskazano rodzaju reklamacji.'@)
+|| _ok:=1
+?};
+
+{? _ok & _mp.loop()=0
+:: Pierwsze uruchomienie
+|| BEER.SZ:=_rodz;
+   _f_log:="1";
+   _mp.trigRef('REK_N',,1,,exec('kind_out','#b_port'),'REK_N',,_f_log,1);
+
+   {? _akcja='Dołącz'
+   || _Tab:=ref_tab(_dok);
+      _uid:=exec('FindAndGet','#table',_Tab,_dok,,"uidref()",'');
+      _sym:=exec('FindAndGet','#table',_Tab,_dok,,"SYM",'');
+      _stat_rej:=exec('FindAndGet','#table',_Tab,_dok,,"STAT_REJ",'N');
+      {? _uid='' || return(~~) ?};
+
+      _ok:=0;
+      {? _Tab=FAKS
+      || {? _stat_rej<>'T'
+         || FUN.info('Reklamacje można wygenerować tylko dla zaakceptowanego dokumentu.'@)
+         |? exec('FindAndGet','#table',_Tab,_dok,,"WHERE='L'",0)
+         || FUN.info('Reklamacji nie można wygenerować dla dokumentu zaliczkowego.'@)
+         |? exec('FindAndGet','#table',_Tab,_dok,,"T().KOR<>'N'",0)
+         || FUN.info('Reklamacji nie można wygenerować dla dokumentu korygującego.'@)
+         || _ok:=FUN.ask('Czy utworzyć reklamację dla dokumentu %1 %2?'@[{? BEER.SZ='S' || 'sprzedaży'@ || 'zakupu'@ ?},_sym])
+         ?}
+      |? _Tab=ZK_N
+      || {? _stat_rej<>'T'
+         || FUN.info('Reklamacje można wygenerować tylko dla zaakceptowanego zamówienia.'@)
+         || _ok:=FUN.ask('Czy utworzyć reklamację do zamówienia sprzedaży %1?'@[_sym])
+         ?}
+      |? _Tab=ZD_NAG
+      || {? _stat_rej<>'T'
+         || FUN.info('Reklamacje można wygenerować tylko dla zaakceptowanego zamówienia.'@)
+         || _ok:=FUN.ask('Czy utworzyć reklamację do zamówienia dostaw %1?'@[_sym])
+         ?}
+      |? _Tab=ND
+      || {? _stat_rej<>'T'
+         || FUN.info('Reklamacje można wygenerować tylko dla zaakceptowanego dokumentu.'@)
+         || _ok:=FUN.ask('Czy utworzyć reklamację do dokumentu %1?'@[_sym])
+         ?}
+      ?}
+   |? _ok & (_akcja='Generuj' | _proc)
+   || _ok:=1
+   ?};
+
+   {? _ok
+   || _mp.trigRef('REK_N',,1,,exec('kind_out','#b_port'),'REK_N');
+      _result:=exec('rek_n_gen','reklamacje',_dok,_rodz);
+      {? ~_result
+      || _cancel:=1;
+         _mp.cancel()
+      ?}
+   ?};
+   ~~
+?};
+
+{? ~_error & ~_cancel
+|| do();
+
+   _ref:=_mp.grpkeyGet();
+   _ref:={? _ref=~~ || null() || exec('FindAndGet','#table',REK_N,_ref,,,null()) ?};
+   {? _ref=null()
+   ||
+:: Brak elementu lub nie znaleziono elementu
+      _mp.save(exec('kind_out','#b_port'),'REK_N',null())
+   ||
+      _mp.save(exec('kind_out','#b_port'),'REK_N',_ref)
+   ?};
+:: Wykluczenie elementu z pętli, zakończenie czynności
+:: grpkey - _port - del
+   {? _mp.grpkeyDel()
+   ||
+      {? _mp.grpkeyGet()<>~~
+      ||
+::    kontynuacja pętli
+         _mp.loop_continue()
+      ||
+::    lub nie
+         _mp.save(exec('kind_out','#b_port'),'LOOP','N')
+      ?}
+   ?};
+   _mp.done();
+   end()
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Opis czynności TRE_REK_GREK
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? type_of(_out)>type_of(~~) & var_pres('REK_N',_out)>type_of(~~)
+|| 'Zakończ rejestrację reklamacji: %1'@@[exec('record','#to_string',_out.REK_N)]
+|| 'Zarejestruj reklamację'@@
+?}
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+_wyn:=1;
+_wyn
+
+
+\rekl_zk_n
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Funkcja generująca reklamacje z ZK_N
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='TRE_REK_GREK';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+_params.UIDREF:=ZK_N.uidref();
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZK_N',ZK_N.ref());
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ','S');
+exec('mp_run','#b__box',_params);
+''
+
+
+\rekl_zd_nag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Funkcja generująca reklamacje z ZD_NAG
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='TRE_REK_GREK';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+_params.UIDREF:=ZD_NAG.uidref();
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ZD_NAG',ZD_NAG.ref());
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ','Z');
+exec('mp_run','#b__box',_params);
+''
+
+
+\rekl_faks_s
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Funkcja generująca reklamacje z FAKS
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='TRE_REK_GREK';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+_params.UIDREF:=FAKS.uidref();
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'FAKS',FAKS.ref());
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ','S');
+exec('mp_run','#b__box',_params);
+''
+
+
+\rekl_faks_z
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Funkcja generująca reklamacje z FAKS
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='TRE_REK_GREK';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+_params.UIDREF:=FAKS.uidref();
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'FAKS',FAKS.ref());
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ','Z');
+exec('mp_run','#b__box',_params);
+''
+
+
+\rekl_nd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Funkcja generująca reklamacje z ND
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='TRE_REK_GREK';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+_params.UIDREF:=ND.uidref();
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ND',ND.ref());
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ','Z');
+exec('mp_run','#b__box',_params);
+''
+
+
+\rekl_gen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Funkcja generująca reklamacje z obszaru reklamacji klienta lub dostawców
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='TRE_REK_GREK';
+_params.AKCJA:='Generuj';
+_params.PROC_START:='T';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'RODZ',BEER.SZ);
+exec('mp_run','#b__box',_params);
+''
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.14]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+{? var_pres('FAKS',_in)=type_of(null()) & _in.FAKS
+|| __PARSES.setVal('OddzialLogProd',exec('FindAndGet','#table',FAKS,_in.FAKS,,"ODDZ",ST.ODDZ))
+|? var_pres('ZK_N',_in)=type_of(null()) & _in.ZK_N
+|| __PARSES.setVal('OddzialLogProd',exec('FindAndGet','#table',ZK_N,_in.ZK_N,,"ODDZ",ST.ODDZ))
+|? var_pres('ZD_NAG',_in)=type_of(null()) & _in.ZD_NAG
+|| __PARSES.setVal('OddzialLogProd',exec('FindAndGet','#table',FAKS,_in.ZD_NAG,,"ODDZ",ST.ODDZ))
+|? var_pres('ND',_in)=type_of(null()) & _in.ND
+|| __PARSES.setVal('OddzialLogProd',exec('FindAndGet','#table',ND,_in.ND,,"ODDZ",ST.ODDZ))
+?};
+1
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 94c541b7e82931cf975694770c91e61e8475f90ee73eab893762fc62751f4eeb23f7d6a9d1f694ce316a87d92a2f88dc6f84390b6896259f542c48c8eb869f63d358f14da3a127ae84a4f9b40afafd237eb4913f34cdfb7b6f1dbf4048ba8c72cf114f59bc5d5e2b02ab7c397aad49da202cc11ce55fadc20ad77fd5f7b8f8e4

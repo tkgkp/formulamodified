@@ -1,0 +1,437 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku: #id.fml [17.00]
+:: Utworzony: 17.12.2014
+:: Autor: AK
+::======================================================================================================================
+:: Zawartość: Uniwersalne formuły kontrolujące poprawność danych: nip, pesel, iban, regon, nr dowodu, id
+::======================================================================================================================
+
+
+\nip_ok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.10]
+:: OPIS: Formula sprawdzajaca poprawnosc numeru NIP
+::   WE:  _a - STRING - sprawdzany NIP
+::       [_b] - silent (1,0)
+::   WY: 1/0 - poprawny/niepoprawny NIP
+::  OLD: \nip_ok/skid_id.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? 2+_a='PL' || _a:=2-_a ?};
+_dl:=+(|_a);
+_zwrot:=1;
+{? _dl & (PAR_SKID.get(15)='T')
+|| _nip:='';
+   {! _i:=1.._dl
+   |? _zwrot
+   |! _znak:=1+_a;
+      {? #_znak<>0 | _znak='0'
+      || _nip+=_znak
+      |? _znak<>'-'
+      || _zwrot:=0
+      ?}; _a:=1-_a
+   !};
+   {? _zwrot & +_nip<>10
+   || _zwrot:=0
+   |? _zwrot
+   || _nip1:=_nip; _suma:=0;
+      {! _i:=1..9
+      |! _znak:=1+_nip1;
+         _suma+=(#_znak*{? _i=1
+                        || 6
+                        |? _i=2
+                        || 5
+                        |? _i=3
+                        || 7
+                        || (_i-2)
+                        ?});
+         _nip1:=1-_nip1
+      !};
+      _wynik:=_suma%*11;
+      {? _wynik<>#(_nip+1) || _zwrot:=0 ?}
+   ?}
+?};
+{? ~_zwrot
+|| {? 2+DOK.NIP='PL' || _doknip:=2-DOK.NIP || _doknip:=DOK.NIP ?};
+   {? (var_pres('g_dokkh1')>0
+       & (g_dokkh1[2]=0 | g_dokkh2[2]<>DOK.KH | g_dokkh3[2]<>_doknip))
+     | var_pres('g_dokkh1')<=0
+   || {? ~(_=2 & _b=1)
+      || _zwrot:=FUN.ask('Wprowadzony numer NIP jest niepoprawny.\nCzy akceptować?'@)
+      ?};
+      {? var_pres('g_dokkh1')>0 & _zwrot=1
+      || g_dokkh1[2]:=1; g_dokkh2[2]:=DOK.KH; g_dokkh3[2]:=_doknip
+      ?}
+   || _zwrot:=1
+   ?}
+?};
+_zwrot
+
+
+\iban_ok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [8.10]
+:: OPIS: Formula sprawdzajaca poprawnosc numeru NRB lub IBAN
+::   WE: _a: sprawdzany IBAN (STRING)
+::       [_b: jesli rozny od zera to pomimo ustawienia parametru globalnego nr 16 komunikat o
+::       niezgodnosci formatu nie bedzie wyswietlany]
+::       [_c: jesli jest to zawiera kod kraju z ktorego pochodzi bank konta]
+::   WY: 1/0 - poprawny/niepoprawny IBAN
+::  OLD: \iban_ok/skid_id.fml
+::----------------------------------------------------------------------------------------------------------------------
+
+_ret:=1;
+:: czy wyswietlac komunikat o niepoprawnym IBAN
+_vask:=_vchk:=(PAR_SKID.get(16)='T');
+{? _vask & _>1 || _vask:=~_b ?};
+{? _vchk
+:: kontrola poprawnosci IBAN
+:: usuniecie spacji
+|| _a:=exec('rb_nosp','#string',_a);
+:: zmiana z formatu NRB na IBAN (jesli konieczna)
+   KRAJE.cntx_psh();
+   exec('czytaj','#stalesys',,XINFO,'KRAJ');
+   {? _>=3 & _c<>''
+   || _vk:=_c
+   || _vk:={? XINFO.KRAJ || XINFO.KRAJ().KODISO || 'PL' ?}
+   ?};
+   KRAJE.cntx_pop();
+   {? #(2+_a)<>0 & (2+_a)<>'00' || _a:=_vk+_a ?};
+:: jesli rachunek w polskim banku to kontrola 26 znakow
+   {? 2+_a='PL' & +_a<>28 || _ret:=0 ?};
+:: przesuniecie pierwszych 4 znakow na koniec
+   {? _ret
+   || _a:=(4-_a)+(4+_a); _r:='';
+:: zamiana liter na liczby
+      {! _i:=1..+_a |!
+         _n:={? #(1+_a)=0 & (1+_a)<>'0' || $(%(~-(1+_a))-55) || 1+_a ?}; _r+=_n; _a:=1-_a
+      !};
+      {? +_r<=16 & (#_r)%*97<>1
+      || _ret:=0
+      || _mod:='';
+         {! |?
+            _r1:=_mod; _r1+=(9-(+_mod))+_r; _r:=(9-(+_mod))-_r; _mod:=$((#_r1)%*97);
+            {? _r='' || {? #_mod<>1 || _ret:=0 ?}; 0 || 1 ?}
+         !}
+      ?}
+   ?}
+?};
+{? _vask & ~_ret
+|| _ret:=FUN.ask('Wprowadzony numer konta nie jest zgodny z formatem IBAN.\nCzy na pewno akceptować?'@)
+?};
+_ret
+
+
+\calc_lk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMA [8.70]
+:: OPIS: Formula oblicza liczbe kontrolna do rachunku IBAN
+::   WE: _a: rachunek bankowy w formacie IBAN z liczba kontrolna 00
+::   WY: liczba kontrolna
+::  OLD: \calc_lk/skid_id.fml
+::----------------------------------------------------------------------------------------------------------------------
+_a:=(4-_a)+(2+_a)+'00'; _r:='';
+:: zamiana liter na liczby
+{! _i:=1..+_a |!
+   _n:={? #(1+_a)=0 & (1+_a)<>'0' || $(%(~-(1+_a))-55) || 1+_a ?}; _r+=_n; _a:=1-_a
+!};
+:: obliczenie liczby kontrolnej
+{? +_r<=16 & (#_r)%*97<>1
+|| _ret:=$((#_r)%*97)
+|| _mod:='';
+   {! |?
+     _r1:=_mod; _r1+=(9-(+_mod))+_r; _r:=(9-(+_mod))-_r; _mod:=$((#_r1)%*97);
+     _ret:=_mod; {? _r='' || 0 || 1 ?}
+   !}
+?};
+_ret:=98-#_ret; _ret:={? _ret<10 || '0'+$_ret || $_ret ?}
+
+
+\pesel_ok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2011]
+:: OPIS: Walidacja poprawnosci numeru PESEL (zakres lat od 1800 do 2299)
+::   WE: _a  - pesel      [STRING]
+::      [_b] - data ur    [DATE]
+::      [_c] - plec       [STRING] - K lub M
+::   WY: Tresc komunikatu [STRING], jesli poprawny to oznaczenie plci
+::  OLD: \pesel_ok/skid_id.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? PAR_SKID.get(238)<>'T' || return('') ?};
+{? _=0 | +_a=0 || return('') ?};
+{? +_a<>11 || return('Numer musi składać się z 11 cyfr.'@) ?};
+_plec:={? #(1+(_a+2))%2<>#(1+(_a+2))/2 || 'M' || 'K' ?};
+_datau:=exec('pesel_dt','#id',_a);
+
+{? _datau~1=0
+|| return('Błędna data urodzenia w numerze PESEL.'@)
+|? _datau~1<1800 | _datau~1>2299
+|| return('Przekroczenie zakresu algorytmu numeru PESEL.'@)
+|? _>=2 & _datau<>_b
+|| return('Niezgodność z datą urodzenia.'@)
+|? _>=3 & _c<>_plec
+|| return('Niezgodność płci.'@)
+|? exec('pesel_lk','#id',_a)<>_a+1
+|| return('Błąd weryfikacji sumy kontrolnej.'@)
+?};
+_plec
+
+
+\pesel_lk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2011]
+:: OPIS: Obliczenie liczby kontrolnej numeru PESEL
+::   WE: _a - pesel lub pesel bez ostatniej cyfry kontrolnej [STRING]
+::   WY: liczba kontrolna [STRING]
+::  OLD: \pesel_lk/skid_id.fml
+::----------------------------------------------------------------------------------------------------------------------
+_p11:=((1*#(1+_a))+
+       (3*#(1+(1-_a)))+
+       (7*#(1+(2-_a)))+
+       (9*#(1+(3-_a)))+
+       (1*#(1+(4-_a)))+
+       (3*#(1+(5-_a)))+
+       (7*#(1+(6-_a)))+
+       (9*#(1+(7-_a)))+
+       (1*#(1+(8-_a)))+
+       (3*#(1+(9-_a)))
+      )%*10;
+_p11:=$(10-_p11);
+{? _p11='10' || '0' || _p11 ?}
+
+
+\pesel_dt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2011]
+:: OPIS: Ustalenie daty urodzenia na podstawie pierwszych szesciu cyfr numeru pesel
+::       badz konwersja daty na pierwszych 6 cyfr numeru PESEL
+::       (algorytm uwzglednia pelny zakres numeracji PESEL od 1800 do 2299)
+::   WE: _a - numer PESEL badz jego czesc (co najmniej 6 cyfr) [STRING]
+::   WY: data urodzenia [DATE]
+::  OLD: \pesel_dt/skid_id.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _=0 || return(date(0,0,0)) ?};
+{? var_pres('_a')=type_of(date)
+|| {? (_a~1)>=1800 & (_a~1)<=1899
+   || return((('00'+($(_a~1)+2))+2)+(('00'+($((_a~2)+80)))+2)+(('00'+($(_a~3)))+2))
+   |? (_a~1)>=1900 & (_a~1)<=1999
+   || return((('00'+($(_a~1)+2))+2)+(('00'+($(_a~2)))+2)+(('00'+($(_a~3)))+2))
+   |? (_a~1)>=2000 & (_a~1)<=2099
+   || return((('00'+($(_a~1)+2))+2)+(('00'+($((_a~2)+20)))+2)+(('00'+($(_a~3)))+2))
+   |? (_a~1)>=2100 & (_a~1)<=2199
+   || return((('00'+($(_a~1)+2))+2)+(('00'+($((_a~2)+40)))+2)+(('00'+($(_a~3)))+2))
+   |? (_a~1)>=2200 & (_a~1)<=2299
+   || return((('00'+($(_a~1)+2))+2)+(('00'+($((_a~2)+60)))+2)+(('00'+($(_a~3)))+2))
+   || return('')
+   ?}
+?};
+{? #_a=0 | +_a<6 || return(date(0,0,0)) ?};
+_rok:=2+(6+_a);
+_mie:=2+(2-(6+_a));
+_dzi:=(6+_a)+2;
+{? ',8,9'*(1+_mie)
+|| _rok:='18'+_rok;
+   _mie:=('00'+$((#_mie)-80))+2
+|? ',2,3'*(1+_mie)
+|| _rok:='20'+_rok;
+   _mie:=('00'+$((#_mie)-20))+2
+|? ',4,5'*(1+_mie)
+|| _rok:='21'+_rok;
+   _mie:=('00'+$((#_mie)-40))+2
+|? ',6,7'*(1+_mie)
+|| _rok:='22'+_rok;
+   _mie:=('00'+$((#_mie)-60))+2
+|| _rok:='19'+_rok
+?};
+{? #_mie<1 | #_mie>12 | #_dzi<1 | #_dzi>date(#_rok,#_mie,0)~3
+|| return(date(0,0,0))
+?};
+date(#_rok,#_mie,#_dzi)
+
+
+\regon_ok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2011]
+:: OPIS: Walidacja algorytmiczna poprawnosci numeru REGON
+::   WE:  _a  - REGON [STRING]
+::       [_b] - silent [INTEGER] (0 lub brak - z komunikatami, >0 - ciche wykonanie)
+::   WY: wynik kontroli - 1 - poprawnie, 0 - blad,
+::  OLD: \regon_ok/skid_id.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? PAR_SKID.get(239)<>'T' || return(1) ?};
+_wy:=1;
+{? _=0 | +_a=0 || _wy:=-1 ?};
+{? +_a=7 || _a:='00'+_a ?};
+{? +_a<>9 & +_a<>14 || _wy:=-2 ?};
+{? _wy>0
+|| _rg:={? +_a<>14 | #(9-_a)=0
+        || (8*#(1+_a))+
+           (9*#(1+(1-_a)))+
+           (2*#(1+(2-_a)))+
+           (3*#(1+(3-_a)))+
+           (4*#(1+(4-_a)))+
+           (5*#(1+(5-_a)))+
+           (6*#(1+(6-_a)))+
+           (7*#(1+(7-_a)))
+        || (2*#(1+_a))+
+           (4*#(1+(1-_a)))+
+           (8*#(1+(2-_a)))+
+           (5*#(1+(3-_a)))+
+           (0*#(1+(4-_a)))+
+           (9*#(1+(5-_a)))+
+           (7*#(1+(6-_a)))+
+           (3*#(1+(7-_a)))+
+           (6*#(1+(8-_a)))+
+           (1*#(1+(9-_a)))+
+           (2*#(1+(10-_a)))+
+           (4*#(1+(11-_a)))+
+           (8*#(1+(12-_a)))
+      ?}%*11;
+      {? _rg=10 || _rg:=0 ?};
+   _wy:={? +_a=9 | #(9-_a)<>0 || _rg=#(_a+1) || _rg=#((9+_a)+1) ?}
+?};
+{? ~(var_pres('_b')=type_of(0) & _b=1)
+|| {? _wy=-2 || _wy:=FUN.ask('Niewłaściwa długość numeru REGON.\nCzy akceptować?'@)
+   |? _wy=-1 || FUN.wdrerror('Niewłaściwe parametry wejściowe funkcji.'@); _wy:=1
+   |? _wy=0  || _wy:=FUN.ask('Wprowadzony numer REGON jest niepoprawny.\nCzy akceptować?'@)
+   ?}
+?};
+_wy
+
+
+\dowod_ok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2011]
+:: OPIS: Walidacja algorytmiczna poprawnosci numeru dowodu osobistego
+::       (kontrola algorytmiczna dla nowych numerow dowodow osobistych)
+::   WE:  _a  - nr dowodu (wraz z seria) [STRING]
+::       [_b] - silent [INTEGER] (0 lub brak - z komunikatami, >0 - ciche wykonanie)
+::   WY: wynik kontroli - 1 - poprawnie, 0 - blad, lub liczba ujemna - kod błędu
+::  OLD: \dowod_ok/skid_id.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? PAR_SKID.get(237)<>'T' || return(1) ?};
+_wy:=1;
+{? var_pres('_a')<>type_of('')
+|| _wy:=-1
+|| _a:=~-(form(_a));
+   _a:=STR.gsub(_a,' ','');
+   _a:=STR.gsub(_a,'-','');
+   {? +_a<>9 || _wy:=-2 ?};
+   _ckontr:=((4+_a)+1);
+   {? '0123456789'*_ckontr
+   || _ckontr:=#_ckontr
+   || _wy:=-3
+   ?}
+?};
+{? _wy>0
+|| _waga:="{? '0123456789'*_a  || #_a
+           |? _a='A' || 10
+           |? _a='B' || 11
+           |? _a='C' || 12
+           |? _a='D' || 13
+           |? _a='E' || 14
+           |? _a='F' || 15
+           |? _a='G' || 16
+           |? _a='H' || 17
+           |? _a='I' || 18
+           |? _a='J' || 19
+           |? _a='K' || 20
+           |? _a='L' || 21
+           |? _a='M' || 22
+           |? _a='N' || 23
+           |? _a='O' || 24
+           |? _a='P' || 25
+           |? _a='Q' || 26
+           |? _a='R' || 27
+           |? _a='S' || 28
+           |? _a='T' || 29
+           |? _a='U' || 30
+           |? _a='V' || 31
+           |? _a='W' || 32
+           |? _a='X' || 33
+           |? _a='Y' || 34
+           |? _a='Z' || 35
+           || -1
+           ?}
+          ";
+   _do:=obj_new(+_a);
+   {! _iter..+_a
+   |! _do[_iter]:=_waga((_iter+_a)+1)
+   !};
+:: wagi dla numeru dowodu osobistego: 73173173
+   {? _do[1]>=10 & _do[1]<=35
+    & _do[2]>=10 & _do[2]<=35
+    & _do[3]>=0  & _do[3]<=35
+    & _do[4]>=0  & _do[4]<=9
+    & _do[5]>=0  & _do[5]<=9
+    & _do[6]>=0  & _do[6]<=9
+    & _do[7]>=0  & _do[7]<=9
+    & _do[8]>=0  & _do[8]<=9
+    & _do[9]>=0  & _do[9]<=9
+   || {? _do[3]>=0 & _do[3]<=9
+      || 'podany numer jest prawdopodobnie numerem starego typu dokumentu - ignorujemy bez sygnalizacji';
+         _wy:=2
+      |? (((_do[1]*7)+(_do[2]*3)+_do[3]+(_do[5]*7)+(_do[6]*3)+_do[7]+(_do[8]*7)+(_do[9]*3))%*10)<>_ckontr
+      || _wy:=0
+      ?}
+   || _wy:=-3
+   ?}
+
+?};
+
+_kom:={? _wy=-3 | _wy=-2
+      || 'Podany numer nie jest zgodny ze schematem właściwym\ndla dowodów osobistych nowego typu.'@
+      |? _wy=-1
+      || 'Błąd wywołania funkcji. Kontrola nie została dokonana.'@
+      |? _wy<1
+      || 'Błędny numer dowodu osobistego.'@
+      || ''
+      ?};
+{? ~(var_pres('_b')=type_of(0) & _b=1) & +_kom
+|| {? FUN.ask('%1\nCzy akceptować pomimo to?'@[_kom])
+   || _wy:=1
+   ?}
+?};
+_wy
+
+
+\gen_id
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Generuje identyfikator
+::   WE: _a - długosc identyfikatora
+::       _b - rodzaj (brak lub zero - alfanumeryczny, różny od zera - numeryczny)
+::----------------------------------------------------------------------------------------------------------------------
+_ch:='0123456789';
+{? var_pres('_b')<>type_of(0) | ~_b
+|| _ch+='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+?};
+
+_id:='';
+{! _n:=1.._a
+|! _id+=int(rand*+_ch)+1+_ch+1
+!};
+_id
+
+
+\pesel_ok_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KW [23.25]
+:: OPIS: Walidacja poprawnosci numeru PESEL (zakres lat od 1800 do 2299)
+::   WE: _a  - pesel      [STRING]
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:=1;
+{? +_a<>11 || return(_zwrot:=FUN.info('Numer musi składać się z 11 cyfr.')) ?};
+_datau:=exec('pesel_dt','#id',_a);
+{? _datau~1=0
+|| return(_zwrot:=FUN.info('Błędna data urodzenia w numerze PESEL.'))
+|? _datau~1<1800 | _datau~1>2299
+|| return(_zwrot:=FUN.info('Przekroczenie zakresu algorytmu numeru PESEL.'))
+|? exec('pesel_lk','#id',_a)<>_a+1
+|| return(_zwrot:=FUN.info('Błąd weryfikacji sumy kontrolnej.'))
+?};
+_zwrot
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:13:35 adae3afefbccf8db9e9777cc6b4fae58bdd32f851f139ebb40ba8f875ea3c431278b172ac7e223bebeef2aa0ee3986b7e39dec53db8d1301c6d928bf1bf7e2735c373f8ae13adb38dd8639f78bc1829d7b5e45573c739a3af884ffb8f2d9794e74fe32356be19520193b978727ea960faea8a9fb5ad89e049fb6f9b2764f7d17

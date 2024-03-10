@@ -1,0 +1,312 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !fst_ewi_dotz.fml
+:: Utworzony: 25.11.2015
+:: Autor: PJ
+::======================================================================================================================
+:: Zawartość: Formuły czynności FST_EWI_DOTZ - Rejestracja danych w tabeli zużycia
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Rejestracja danych w tabeli zużycia - główna formuła czynności FST_EWI_DOTZ.
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=FJKS
+::
+exec('srst_zuz_edit','!fst_ewi_dotz')
+
+
+\korekta
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Zwraca informacje o korektach liczby okresów amortyzacji naturalnej dla bieżacego środka
+::   WE: _a - wskazanie na środek SRSR.ref()
+::   WY: STRING
+::----------------------------------------------------------------------------------------------------------------------
+_korekta:='';
+SRDO.cntx_psh();
+SRDO.index('SRODZAJD');
+SRDO.prefix(_a,'W');
+{? SRDO.first()
+|| {! |?
+      {? SRDO.TYP().OKE='T'
+      || _korekta+='\nKorekta %1, o liczbę okresów: %2'@[SRDO.SYMBOL,$SRDO.OKE]
+      ?};
+      SRDO.next()
+   !}
+?};
+SRDO.cntx_pop();
+_korekta
+
+
+\srst_zuz_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Redakcja tabeli zużycia
+::----------------------------------------------------------------------------------------------------------------------
+_dalej:=1;
+{? 1+SRST.MF().T='N' & SRST.MF().MP=1 & (SRST.SRSR().ROK=SRST.ROK & SRST.SRSR().OKRES=SRST.OKRES)
+|| FUN.emsg('Edycja tabeli zużycia jest możliwa od następnego okresu po wprowadzeniu środka.'@);
+   _dalej:=0
+|? SRST.OKRES=0 | SRST.OKRES>12
+|| FUN.emsg('W okresach: Bilans otwarcia lub Bilans zamknięcia edycja tabeli zużycia nie jest możliwa.'@);
+   _dalej:=0
+|? SRST.NAL='T' & (_=0 | _a<>'P')
+|| FUN.emsg('W bieżącym okresie naliczono amortyzację, edycja tabeli zużycia nie jest możliwa.'@);
+   _dalej:=0
+||
+   {? SRST.S='T' & (_=0 | _a<>'P')
+   || _dalej:=SRD.curMonth(SRST.ROK,SRST.OKRES,'F');
+      {? ~_dalej
+      || FUN.emsg('Dla środków amortyzowanych sezonowo zużycie można wprowadzać\n'
+                  'tylko w aktywnych miesiącach zgodnie ze schematem dla środka\n'
+                  '(schemat: %1).'@[SRST.SCH_SEZ().KOD])
+      ?}
+   ?};
+   {? _dalej
+   || __tmp_zuz.find_key(SRST.ROK,SRST.OKRES);
+      {? __tmp_zuz.CZY_NAT='N'
+      || _korekta:=exec('korekta','!fst_ewi_dotz',SRSR.ref());
+         OKRO_F.cntx_psh();
+         {? _=0 | _a<>'P'
+         || _okres:=SRSR.OKRO_F().NAZ+' '+SRSR.ROK_F().NAZ
+         || _okres:=$SRSR.OKRO_F().OES+'/'+$SRSR.OKRO_F().RES
+         ?};
+         OKRO_F.cntx_pop();
+         FUN.emsg('Wskazany okres jest poza zakresem czasowym amortyzowania środka metodą\n'
+                  'naturalną. Wprowadzono z liczbą okresów: %1, środek w ewidencji od: %2.\n %3'@[$SRSR.OKE,_okres,_korekta]);
+         _dalej:=0
+      ?}
+   ?}
+?};
+_dalej
+
+
+\chk_srst_zuz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Weryfikacja pól dotyczących tabeli zużycia po redakcji tabeli zużycia
+::----------------------------------------------------------------------------------------------------------------------
+{? SRST.PZUZ<0
+|| FUN.emsg('Pole Planowane zużycie nie może zawierać wartości ujemnych.'@);
+   'PZUZ'
+|? SRST.RZUZ<0
+|| FUN.emsg('Pole Rzeczywiste zużycie środka nie mogą zawierać wartości ujemnych.'@);
+   'RZUZ'
+|| _pzuz:=exec('sum_zuz','fst','P',SRST.ROK,SRST.OKRES,1);
+   {? 5+SRST.name()='srstr' || _real:=1 || _real:=0 ?};
+   {? _real || _rzuz:=exec('sum_zuz','fst','R',SRST.ROK,SRST.OKRES,1) ?};
+   {? _pzuz>SRST.MAX
+   || FUN.emsg('Suma planowanego zużycia (%1) przekracza wartość wprowadzoną w defincji środka ('
+               '%2)'@[form(_pzuz,,2,'9'),form(SRST.MAX,,2,'9')]);
+      'PZUZ'
+   |? _real & _rzuz>SRST.MAX
+   || FUN.emsg('Suma rzeczywitego zużycia (%1) przekracza wartość wprowadzoną w defincji środka ('
+               '%2)'@[form(_rzuz,,2,'9'),form(SRST.MAX,,2,'9')]);
+      'RZUZ'
+   || 1
+   ?}
+?}
+
+
+\srsr_tab_zuz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła wyświetla tabelę zużycia dla bieżącego środka (jeżeli jest amortyzowany metodą naturalną)
+::   WE: [_a] jeżeli _a i _a='P' to wersja okna dla planu amortyzacji
+::----------------------------------------------------------------------------------------------------------------------
+SRST.cntx_psh(); SRSR.cntx_psh();
+{? _>0 & _a='P'
+|| SRST.index('PODAT');
+   SRST.prefix(SRSR.ref(),SRSR.ROK,SRSR.OKRES);
+   SRST.first()
+?};
+_view:=1;
+{? 1+SRST.MF().T<>'N'
+|| FUN.info('Funkcja dotyczy środków amortyzowanych bilansowo metodą naturalną.'@);
+   _view:=0
+?};
+{? _view & (((_=0 | _a<>'P') & SRST.GRP='T') | (_>0 & _a='P' & SRSR.GRP='T'))
+|| FUN.info('W przypadku zestawów środków redagowanie tabeli zużycia dostępne jest na poziomie\n'
+            ' elementów składowych zestawu.'@);
+   _view:=0
+?};
+
+{? _view
+|| SRSR.prefix();
+   SRST.SRSR();
+   {? SRSR.r_lock(1,1,1)
+   || _readonly:=0
+   || FUN.emsg('Uwaga: środek został zablokowany przez innego użytkownika, tabela zużycia\n'
+               'zostanie wyświetlona w trybie tylko do odczytu.'@);
+      _readonly:=1
+   ?};
+   _sel:=SRST.win_sel('?');
+   SRST.cntx_psh();
+   {? _>0 & _a='P'
+   || SRST.index('PODAT');
+      SRST.prefix(SRSR.ref())
+   || SRST.index('SROD');
+      SRST.prefix(SRSR.ref())
+   ?};
+   _win:=SRST.mk_sel('Tabela zużycia'@,'P',0,'_tab_zuz',10,5,15,,'U');
+   {? _=0 | _a<>'P'
+   || SRST.win_fld(_win,SRST,'ROK_F','NAZ',,10,,1,'Rok bilansowy'@);
+      SRST.win_fld(_win,SRST,'OKRO_F','NAZ',,15,,1,'Okres bilansowy'@)
+   ?};
+   SRST.win_fld(_win,SRST,'ROK',,,13,,1,'Rok podatkowy'@);
+   SRST.win_fld(_win,SRST,'OKRES','OES',,13,,1,'Okres podatkowy'@);
+   SRST.win_fld(_win,SRST,'OKE',,,10,,1,'Liczba okresów'@);
+   SRST.win_fld(_win,SRST,'MAX',,,12,2,1,'Liczba jednostek'@);
+   SRST.win_fld(_win,SRST,'PZUZ',,,16,2,0,'Planowane zużycie'@);
+   {? _=0 | _a<>'P'
+   || SRST.win_fld(_win,SRST,'RZUZ',,,16,2,0,'Rzeczywiste zużycie'@)
+   ?};
+   {? _=0 | _a<>'P'
+   || SRST.win_fld(_win,SRST,'NAL',,,6,,1,'Naliczono?'@,,,2,,"'T'","'N'")
+   ?};
+   SRST.win_fld(_win,SRST,'AMOF',,,16,2,1,'Kwota amortyzacji'@);
+   {? ~_readonly
+   || {? _=0 | _a<>'P'
+      || SRST.win_act(_win,,'Popraw',,,,"exec('srst_zuz_edit','!fst_ewi_dotz')","exec('razems_refresh','!fst_ewi_dotz')",1,,,,);
+         task_attach('FST_EWI_DOTZ')
+      || SRST.win_act(_win,,'Popraw',,,,"exec('srst_zuz_edit','!fst_ewi_dotz','P')","exec('razems_refresh','!fst_ewi_dotz')",1,,,,);
+         task_attach('FST_EWZ_DPOB')
+      ?}
+   ?};
+   SRST.win_act(_win,,'Rekord',,,,"exec('rekprzed','color','SRST#03#')","exec('chk_srst_zuz','!fst_ewi_dotz')");
+   SRST.win_act(_win,,'Formuła','Legenda'@@,,,,"exec('legenda','color','SRST#03#')",,,,,'L');
+   _red:=SRST.win_edit('?');
+   SRST.win_edit();
+
+   _sql:='select TO_STRING(SRST.ROK) as ROKP, sum(PZUZ) as SPZUZ, sum(RZUZ) as SRZUZ, sum(AMOF) as SAMOF '
+        +'from SRST where SRST.SRSR=:_a group by SRST.ROK';
+   VAR_DEL.delete('__RAZEMS','__idx_ra');
+   __RAZEMS:=sql(_sql,SRSR.ref());
+   {? __RAZEMS.first()
+   || _spzuz:=_srzuz:=_samof:=0;
+      __RAZEMS.cntx_psh();
+      {! |?
+         _spzuz+=__RAZEMS.SPZUZ;
+         _srzuz+=__RAZEMS.SRZUZ;
+         _samof+=__RAZEMS.SAMOF;
+         __RAZEMS.next()
+      !};
+      __RAZEMS.cntx_pop();
+      __RAZEMS.ROKP:='Razem';
+      __RAZEMS.SPZUZ:=_spzuz;
+      __RAZEMS.SRZUZ:=_srzuz;
+      __RAZEMS.SAMOF:=_samof;
+      __RAZEMS.add();
+      __idx_ra:=__RAZEMS.ndx_tmp(,,'ROKP',,0);
+      __RAZEMS.index(__idx_ra);
+      __RAZEMS.find_key($SSTALE.AO().RES)
+   ?};
+   _winr:=__RAZEMS.mk_sel('Podumowanie'@,,,'__zrazems_win',,,5);
+   __RAZEMS.win_sel(_winr);
+   _space:=' ';
+   {? _=0 | _a<>'P'
+   || __RAZEMS.win_fld(_winr,__RAZEMS,'ROKP',,,91,,,_space)
+   || __RAZEMS.win_fld(_winr,__RAZEMS,'ROKP',,,62,,,_space)
+   ?};
+   __RAZEMS.win_fld(_winr,__RAZEMS,'SPZUZ',,,16,2,,'Planowane zużycie'@);
+   {? _=0 | _a<>'P'
+   || __RAZEMS.win_fld(_winr,__RAZEMS,'SRZUZ',,,16,2,,'Rzeczywiste zużycie'@)
+   ?};
+   {? _=0 | _a<>'P'
+   || __RAZEMS.win_fld(_winr,__RAZEMS,'SAMOF',,,28,2,,'Amortyzacja bil.'@)
+   || __RAZEMS.win_fld(_winr,__RAZEMS,'SAMOF',,,16,2,,'Amortyzacja bil.'@)
+   ?};
+   __RAZEMS.win_act(_winr,,'Rekord',,,,"{? __RAZEMS.ROKP*'Razem' || 1 || '' ?}");
+
+   {? SRST.KIND='T'
+   || _title:='Tabela zużycia dla środka: %1, jednostka eksploatacji: %2 (%3)'@[SRST.NRI,SRST.SRSR().JM().KOD,SRST.SRSR().JM().NAZ]
+   || _title:='Tabela zużycia dla elementu: %1, jednostka eksploatacji: %2 (%3)'@[SRST.NRI,SRST.SRSR().JM().KOD,SRST.SRSR().JM().NAZ]
+   ?};
+   _grp:=SRST.grp_make(_title,"grp_disp(__RAZEMS,__RAZEMS.win_sel('?'))",'_tab_zuz',3,3);
+   SRST.win_sel(_grp);
+   SRST.grp_sel(_grp,,_win,'Tabela zużycia'@,"",,,14,"","",0,1,'maximized','srst_sel_zuz');
+   SRST.grp_splt(_grp,,'horizontal','dół',20);
+   SRST.grp_sel(_grp,__RAZEMS,_winr,'Podsumowanie'@,"",,,3,"","",0,0,'maximized');
+
+:: mapa okresów zużycia
+   VAR_DEL.delete('__tmp_zuz');
+   __tmp_zuz:=exec('mapa_zuz','fst');
+:: okno tabeli zużycia
+   SRST.select(,1,-1,,'srst_sel_zuz');
+   VAR_DEL.delete('__tmp_zuz');
+
+   SRST.cntx_pop();
+   VAR_DEL.delete('__RAZEMS','__idx_ra');
+   SRST.win_sel(_sel);
+   SRST.win_edit(_red);
+   SRSR.prefix();
+   SRST.SRSR();
+   {? ~_readonly || SRSR.r_unlock() ?}
+?};
+SRST.cntx_pop(); SRSR.cntx_pop()
+
+
+\razems_refresh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [17.00]
+:: OPIS: Formuła odświeża podsumowanie w tabeli zużycia po funkcji Popraw
+::----------------------------------------------------------------------------------------------------------------------
+{? (5-SRST.name())+1<>'r' || _plan:=1 || _plan:=0 ?};
+{? _plan
+|| SRSR.PLAN_NAL:='N';
+   SRSR.put();
+   {? SRSR.GRP='E'
+   || SRSR.cntx_psh();
+      SRSR.prefix();
+      {? SRSR.seek(SRSR.TREE,SRSR.name())
+      || SRSR.PLAN_NAL:='N';
+         SRSR.put()
+      ?};
+      SRSR.cntx_pop()
+   ?}
+?};
+_sql:='select TO_STRING(SRST.ROK) as ROKP, sum(PZUZ) as SPZUZ, sum(RZUZ) as SRZUZ, sum(AMOF) as SAMOF '
+     +'from SRST where SRST.SRSR=:_a group by SRST.ROK';
+_tmp:=sql(_sql,SRSR.ref());
+_idx_tm:=_tmp.ndx_tmp(,,'ROKP',,0);
+_tmp.index(_idx_tm);
+_tmp.prefix();
+__RAZEMS.cntx_psh();
+{? __RAZEMS.first()
+|| {! |?
+      {? _tmp.find_key(__RAZEMS.ROKP)
+      || __RAZEMS.SPZUZ:=_tmp.SPZUZ;
+         __RAZEMS.SRZUZ:=_tmp.SRZUZ;
+         __RAZEMS.SAMOF:=_tmp.SAMOF;
+         __RAZEMS.put()
+      ?};
+      __RAZEMS.next()
+   !}
+?};
+{? __RAZEMS.first()
+|| _spzuz:=_srzuz:=_samof:=0;
+   __RAZEMS.cntx_psh();
+   {! |?
+      {? __RAZEMS.ROKP<>'Razem'
+      || _spzuz+=__RAZEMS.SPZUZ;
+         _srzuz+=__RAZEMS.SRZUZ;
+         _samof+=__RAZEMS.SAMOF
+      ?};
+      __RAZEMS.next()
+   !};
+   __RAZEMS.cntx_pop();
+   {? __RAZEMS.find_key('Razem')
+   || __RAZEMS.SPZUZ:=_spzuz;
+      __RAZEMS.SRZUZ:=_srzuz;
+      __RAZEMS.SAMOF:=_samof;
+      __RAZEMS.put()
+   ?}
+?};
+__RAZEMS.cntx_pop();
+grp_disp(__RAZEMS,__RAZEMS.win_sel('?'))
+
+:Sign Version 2.0 jowisz:1028 2019/06/07 15:55:43 a9eb7b15b32ce1f4fab4c53e8c88823be85d99889f17017ea9c793d5ce3d9b50753acb96ed63fa9a3341abfbd75a3b5a7584ad8ce9a9712d2a0f018183838fe30d86903b35e05ab13e0d16546f53173b1dfb89f6c442b1bac941aec028a69892d53c5a5903d277f8eb73796ff491059b0189c96b4654a59f86de6d8c1b716818

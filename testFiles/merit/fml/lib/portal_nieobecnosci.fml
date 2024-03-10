@@ -1,0 +1,1818 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: portal_nieobecnosci.fml
+:: Utworzony: 23.03.2020
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Plik zawiera formuły wykorzystywane do obsługi nieobecności na portalu.
+::======================================================================================================================
+
+
+\_map_identyf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Formuła zwraca identyfikator (prefix) tabeli tymczasowej (na serwerze) z mapą nieobecności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'portal_nieobecnosci_map'
+
+
+\_map_erase
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Formuła kasująca zawartość tabeli tymczasowej (na serwerze) z mapą nieobecności - o ile tabela została
+::       utworzona. Funkcja wywoływana z wyzwalaczy typu "po" (czyli w transakcj) dla tabel wykorzystywanych przy
+::       budowaniu tabeli.
+::   WE:
+::   WY: Wynik operacji: 1/0.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_ident:=exec('_map_identyf','portal_nieobecnosci');
+_STLIST:=st_list(_ident,0);
+{? _STLIST.first()
+|| _MAP:=st_open(_STLIST.IDENT,1);
+   {? type_of(_MAP)=type_of(R)
+   || {? _MAP.lock(2)
+      || {? _MAP.first()
+         || {!
+            |? _MAP.del()
+            !};
+            _ret:=~_MAP.first()
+         ?}
+      || _ret:=0
+      ?}
+   ?}
+?};
+_ret
+
+
+\_map
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła tworząca tabelę tymczasową (na serwerze) z mapą nieobecności.
+::       Zakładamy, że zdefiniowany już jest obiekt __RUB.
+::   WE:
+::   WY: Uchwyt tabeli tymczasowej (przechowywanej na serwerze) z mapą nieobecności lub ~~.
+::----------------------------------------------------------------------------------------------------------------------
+:: Typ techniczny (chr_AbsenceType.AbsenceTypeTech):
+::UW - urlop wypoczynkowy
+::OW - odbiór dni wolnych (nieobsługujemy)
+::UO - urlop z tytułu opieki nad dzieckiem
+::U1 - urlop okolicznościowy na 1 dzień (sztuczka formułowa)
+::U2 - urlop okolicznościowy na 2 dni  (sztuczka formułowa)
+::UD - urlop dla niepełnosprawnych
+::UH - urlop na rehabilitację
+::UM - urlop macierzyński
+::SW - siła wyższa
+::OP - urlop opiekuńczy
+
+:: RangeOfDaysBackForRequest [LDOP] - brany jest z podtypu lub typu - więc lepiej umieszczać tylko na podtypie
+:: IsOnPersonAbsenceRequest [WNIOSKI] - jeżeli nie ma na typie, to na podtypie nie ma sensu.
+::                                      Wartość musi być przechowywane osobno dla typu i osobno dla podtypu.
+:: AdditionalInfo [INFO] - brany jest z podtypu lub typu - więc lepiej umieszczać tylko na podtypie
+:: IsAttachmentEnabled [ZAL] - jest tylko na typie, ale w ERP-ie część podtypów może mieć "1" a część "0" ...
+::                             Innymi słowy: jeżeli choć jeden podtyp ma "1", to typ też musi.
+
+{? PORTALWU.lock(1,,1)
+|| _ident:=exec('_map_identyf','portal_nieobecnosci');
+   _STLIST:=st_list(_ident,0);
+   _MAP:={? _STLIST.first() || st_open(_STLIST.IDENT,1) || ~~ ?};
+   {? type_of(_MAP)=type_of(~~)
+   || _MAP:=st_create(2
+         ,'REF','STRING[16]','SQL-ref'
+::       LD - pole do szczególnej obsługi urlopu okolicznościowego, przyjmuje wartości:
+::          0 - długość nieobecności nie ma znaczenia [domyślnie];
+::          1 - neobecność jednodniowa;
+::          2 - nieobecność dłuższa niż jeden dzień.
+         ,'LD','INTEGER','Liczba dni'
+         ,'TYP','STRING[8]','Typ'
+         ,'PODTYP','STRING[8]','Podtyp'
+         ,'TYPN','STRING[32]','Nazwa typu'
+         ,'PODTYPN','STRING[32]','Nazwa podtypu'
+         ,'WARIANT','STRING[16]','Wariant'
+         ,'TECH','STRING[20]','Typ techniczny'
+         ,'PODTECH','STRING[40]','Podtyp techniczny'
+         ,'NWNIOSKI','STRING[1]','Podlega wnioskowaniu (typ)'
+         ,'PWNIOSKI','STRING[1]','Podlega wnioskowaniu (podtyp)'
+         ,'LDOP','INTEGER','Dopuszczalna liczba dni opóźnienia'
+         ,'ZAL','STRING[1]','Obsługa załączników'
+         ,'INFO','SYS_MEMO','Dodatkowe informacje'
+::       Dla nieobecności ze zdefiniowanym typem i podtypem, w EXT powinna być wstawiona '*' dla "rekordu głównego".
+         ,'EXT','STRING[2]','Dodatkowe informacje'
+      );
+      _MAP.st_id_make(PORTALWU.name(0),_ident,300);
+      _MAP.ndx_tmp(,,'TYP',,,'PODTYP',,)
+   ?};
+   {? ~_MAP.first()
+::    Tabela istnieje, ale:
+::       * albo została utworzona przed chwilą,
+::       * albo zmienił się jeden z rekordów mających wpływ na jej zawartość, która została usunięta, aby wymusić
+::         odtworzenie.
+   ||
+::    Wykorzystywane atrybuty:
+::       1111  - Urlop na żądanie
+::       1112  - Urlop wypoczynkowy
+::       1113  - Urlop dodatkowy
+::       115   - Urlopy macierzyńskie
+::       1151  - Urlop macierzyński
+::       1153  - Urlop ojcowski
+::       1161  - Urlop okolicznościowy
+::       1162  - Opieka z art. 188
+::       1171  - Urlop rehabilitacyjny
+::       12    - Zasiłki
+::       193   - Wnioski urlopowe
+::       1181  - Nieobecność siła wyższa
+::       1191  - Urlop opiekuńczy
+
+      _atrybuty:=spli_str('1111,1112,1113,115,1151,1153,1161,1162,1171,12,193,1181,1191',',');
+      _as:=obj_len(_atrybuty);
+      _le:='';
+      {! _lp:=1 .. _as
+      |! _le+=',\'a%1\''[_atrybuty[_lp]]
+      !};
+      _kody:=($('obj_new(%1)'[1-_le]))();
+      {! _lp:=1 .. _as
+      |! _kody[_lp]:=',%1,'[__RUB.sys_sql(#_atrybuty[_lp])]
+      !};
+      _wart:=($('obj_new(%1)'[1-_le]))();
+
+      R.cntx_psh();
+      R.index('RUBKLKOD');
+      R.prefix('N',);
+      {? R.first()
+      || PORTALWU.cntx_psh();
+         PORTALWU.index('RN');
+         PORTALWU.prefix();
+         {!
+         |? {! _lp:=1 .. _as
+            |! _wart[_lp]:=_kody[_lp]*',%1,'[$R.RN]
+            !};
+            {! _ld:=1 .. _wart.a1161+1
+            |! _podtypy:='';
+               _MAP.blank();
+               _MAP.memo_set(,'INFO');
+               _MAP.REF:=$R.ref();
+               {? _wart.a1111 | _wart.a1112
+               || _MAP.TYP:='URLOP';
+                  _MAP.TYPN:='Urlopy wypoczynkowe';
+                  _MAP.PODTYP:=$R.RN;
+                  _MAP.PODTYPN:=R.RT;
+                  {? _wart.a1112
+                  || _podtypy:=_kody.a1111+_kody.a1112;
+                     _MAP.EXT:='*'
+                  ?}
+               |? _wart.a115
+               || _MAP.TYP:='UM';
+                  _MAP.TYPN:='Urlopy macierzyńskie';
+                  _MAP.PODTYP:=$R.RN;
+                  _MAP.PODTYPN:=R.RT;
+                  {? _wart.a1151
+                  || _podtypy:=_kody.a115;
+                     _MAP.EXT:='*'
+                  ?}
+               || _MAP.TYP:=$R.RN;
+                  _MAP.TYPN:=R.RT
+               ?};
+               _MAP.WARIANT:={? _wart.a12 || 'ZASIŁKI' || 'INNE' ?};
+               _MAP.TECH:=
+                  {? _wart.a1161
+                  || _MAP.LD:=_ld;
+                     _MAP.TYP+=%(64+_ld);
+                     _MAP.TYPN+=' (%1 d.)' [$_ld];
+                     _MAP.EXT:='D'+$_ld;
+                     'U'+$_ld
+                  |? _wart.a1111 | _wart.a1112
+                  || 'UW'
+                  |? _wart.a1113
+                  || 'UD'
+                  |? _wart.a115
+                  || 'UM'
+                  |? _wart.a1162
+                  || 'UO'
+                  |? _wart.a1171
+                  || 'UH'
+                  |? _wart.a1181
+                  || 'SW'
+                  |? _wart.a1191
+                  || 'OP'
+                  || ''
+                  ?};
+               _MAP.PODTECH:=
+                  {? _wart.a1111
+                  || 'na żądanie'
+                  |? _wart.a1112
+                  || 'wypoczynkowy'
+                  |? _wart.a1153
+                  || 'Ojcowski'
+                  || ''
+                  ?};
+               _MAP.NWNIOSKI:={? _wart.a193 || 'T' || 'N' ?};
+               _MAP.ZAL:='N';
+
+               {? PORTALWU.find_key(R.RN)
+               || _MAP.ZAL:=PORTALWU.ZAL;
+                  _MAP.LDOP:=PORTALWU.LDOP;
+                  _MAP.memo_set(PORTALWU.memo_txt(,1,'INFO'),'INFO')
+               ?};
+
+               {? _MAP.PODTYP<>''
+               || _MAP.TYPN+='*';
+                  _MAP.PWNIOSKI:=_MAP.NWNIOSKI;
+                  {? _podtypy<>''
+::                   Zmienna _podtypy jest wypełniana tylko dla nieobecności "głównej" z podtypami.
+::                   Jeżeli choć jeden z podtypów obsługiwany jest przez wnioski, to typ "główny" również musi być.
+                  || _pa:=spli_str(_podtypy,',');
+                     {! _lp:=1 .. obj_len(_pa)
+                     |? _MAP.NWNIOSKI='N' | _MAP.ZAL='N'
+                     |! {? _pa[_lp]<>''
+                        || {? _MAP.NWNIOSKI='N' & _kody.a193*_pa[_lp]
+                           || _MAP.NWNIOSKI:='T'
+                           ?};
+                           {? _MAP.ZAL='N' & PORTALWU.find_key(#_pa[_lp])
+                           || _MAP.ZAL:=PORTALWU.ZAL
+                           ?}
+                        ?}
+                     !};
+                     obj_del(_pa)
+                  ?}
+               ?};
+
+               _MAP.add() & _MAP.memo_put(,'INFO')
+            !};
+            R.next()
+         !};
+         PORTALWU.cntx_pop()
+      ?};
+      R.cntx_pop()
+
+   ?};
+   PORTALWU.unlock();
+   _MAP
+|| ~~
+?}
+
+
+\merit2portal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła mapująca nieobecność w Mericie na nieobecność w portalu.
+::   WE:  _a  [REFERENCE] - Wskazanie rubryki płacowej.
+::        _b  [DATE]      - Data badania stanu (początku nieobecności).
+::       [_c] [DATE]      - Dodatkowy parametr dla urlopu okolicznościowego - data końcowa.
+::   WY: Tablica elementów nazwanych z parametrami nieobecności.
+::----------------------------------------------------------------------------------------------------------------------
+_ref:=_a;
+_od:=_b;
+_do:={? var_pres('_c')=type_of(date()) || _c || ~~ ?};
+
+_ret:=obj_new(
+   'ok'
+   ,'Type','TypeName','SubType','SubTypeName','Variant','TypeTech','SubtypeTech'
+   ,'RangeOfDaysBackForRequest','IsAttachmentEnabled','AdditionalInfo','RequestType','RequestSubType','ext'
+);
+_ret.ok:=0;
+
+_ld:={? _od=_do || 1 || 2 ?};
+_MAP:=exec('_map','portal_nieobecnosci');
+{? type_of(_MAP)<>type_of(~~)
+|| _MAP.prefix($_ref);
+   {? _MAP.find_key(0) | _MAP.find_key(_ld)
+   || _val:="{? _a='' || ~~ || _a ?}";
+      _ret.Type:=_val(_MAP.TYP);
+      _ret.TypeName:=_val(_MAP.TYPN);
+      _ret.SubType:=_val(_MAP.PODTYP);
+      _ret.SubTypeName:=_val(_MAP.PODTYPN);
+      _ret.Variant:=_val(_MAP.WARIANT);
+      _ret.TypeTech:=_val(_MAP.TECH);
+      _ret.SubtypeTech:=_val(_MAP.PODTECH);
+      _ret.RangeOfDaysBackForRequest:=_MAP.LDOP;
+      _ret.IsAttachmentEnabled:=_MAP.ZAL='T';
+      _ret.AdditionalInfo:=_val(exec('strcut','#string',_MAP.memo_txt(,1,'INFO'),6000,1));
+      _ret.RequestType:=_val(_MAP.NWNIOSKI);
+      _ret.RequestSubType:=_val(_MAP.PWNIOSKI);
+::    ext musi być napisem (zawsze)
+      _ret.ext:=_MAP.EXT;
+      _ret.ok:=1
+   ?};
+   _MAP.prefix()
+?};
+_ret
+
+
+\portal2merit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła mapująca nieobecność w portalu na nieobecność w Mericie.
+::   WE: [_a] [STRING] - Typ nieobecności (na portalu).
+::       [_b] [STRING] - Podtyp nieobecności (na portalu).
+::   WY: Tablica elementów nawanych.
+::----------------------------------------------------------------------------------------------------------------------
+_typ:={? var_pres('_a')=type_of('') || _a || '' ?};
+_podtyp:={? var_pres('_b')=type_of('') || _b || '' ?};
+
+_ret:=obj_new('R','RN','RT','ETYPY');
+_ret.R:=null();
+_ret.RN:=0;
+_ret.RT:='';
+_ret.ETYPY:=null();
+
+_MAP:=exec('_map','portal_nieobecnosci');
+{? type_of(_MAP)<>type_of(~~) & _MAP.find_tab(,'TYP',,'=',_typ,'PODTYP',,'=',_podtyp)
+|| R.cntx_psh();
+   R.prefix();
+   PORTALWU.cntx_psh();
+   PORTALWU.index('RN');
+   PORTALWU.prefix();
+   {? R.seek(_MAP.REF) & PORTALWU.find_key(R.RN)
+   || _ret.R:=R.ref();
+      _ret.RN:=R.RN;
+      _ret.RT:=R.RT;
+      _ret.ETYPY:=PORTALWU.ETYPY
+   ?};
+   PORTALWU.cntx_pop();
+   R.cntx_pop()
+?};
+
+_ret
+
+
+\kolory
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Formuła tworząca tablicę elementów nazwanych (obiekt) do obsługi kolorów nieobecności na portalu.
+::       Wywoływana podczas parametryzacji (z odpowiedniej czynności) oraz podczas wysyłania danych na portal.
+::       Korzysta z obiektów klasy:
+::          * @.CLASS.JAR;
+::          * @.CLASS.RUB.
+::   WE: [_a] [NUMBER] - Numer rubryki. Brak parametru oznacza obsługę wszystkich rubryk związanych z nieobecnościami.
+::   WY: Tablica elementów nazwanych.
+::----------------------------------------------------------------------------------------------------------------------
+_rn:={? var_pres('_a')=type_of(0) || _a || ~~ ?};
+
+_NBKOLOR:=obj_new('cfg','plik','sekcja','fpar','TAB','run');
+
+:: Pole z kolorem.
+_NBKOLOR.cfg:=obj_new('fld','help','msg');
+_NBKOLOR.cfg.fld:='Kolor'@;
+_NBKOLOR.cfg.help:='Kolor nieobecności na portalu'@;
+_NBKOLOR.cfg.msg:='Nieprawidłowa wartość pola: ""%1""'@ [_NBKOLOR.cfg.fld];
+
+:: Plik z kolorami.
+_NBKOLOR.plik:='zws_par_ppnb.txt';
+_NBKOLOR.sekcja:='KOLORY';
+_NBKOLOR.fpar:="'R'+$_a";
+
+:: Tabela z oknami.
+_w1:={? _rn=~~ || '' || ' and R.RN='+$_a ?};
+_NBKOLOR.TAB:=sql('select R.RN, R.RT, space(11) as KOLOR, 0 as SYNC from R where R.RK=\'N\''+_w1+' order by R.RN');
+
+{? _rn=~~
+:: Budowa okien ma sens tylko przy obsłudze wszystkich nieobecności.
+|| _NBKOLOR.TAB.fld_fml('KOLOR','BEFORE_DISPLAY',"'%1,%1' [cur_tab(1,1).KOLOR]");
+   _NBKOLOR.TAB.fld_fml('KOLOR','F3',"exec('edit_color','#edit',cur_tab(1,1).KOLOR)");
+
+   _ws:=_NBKOLOR.TAB.mk_sel('Nieobecności'@,,,'#nb',,,,,'U');
+   _NBKOLOR.TAB.win_fld(_ws,,'RN',,,,,,MS.name(R,'RN'),,MS.comment(R,'RN'));
+   _NBKOLOR.TAB.win_fld(_ws,,'RT',,,,,,MS.name(R,'RT'),,MS.comment(R,'RT'));
+   _NBKOLOR.TAB.win_fld(_ws,,'KOLOR',,,,,,_NBKOLOR.cfg.fld,,_NBKOLOR.cfg.help);
+   _NBKOLOR.TAB.win_act(_ws,,'Formuła','Popraw'@@,,,$("
+      _TAB:=cur_tab(1,1);
+      _before:=_TAB.KOLOR;
+      {? _TAB.edit(""
+            {? (_msg:=exec('valid_rgb_dec','#color',cur_tab(1,1).KOLOR,1))<>''
+            || FUN.emsg(\'"+_NBKOLOR.cfg.msg+"\'+'\n'+_msg);
+               'KOLOR'
+            || ''
+            ?}
+         "") & _before<>_TAB.KOLOR
+      || R.cntx_psh();
+         R.index('RUBKOD');
+         R.prefix(_TAB.RN);
+         {? R.first()
+         || _obj:=params_get().obj;
+            _TAB.SYNC:=1;
+            exec('set','#profile',_obj.plik,_obj.sekcja,_obj.fpar(_TAB.RN),_TAB.KOLOR);
+            R.put(,1) & _TAB.put()
+         ?};
+         R.cntx_pop()
+      ?}
+   "),,1);
+   _NBKOLOR.TAB.win_act(_ws,,'Szukaj');
+   _NBKOLOR.TAB.win_act(_ws,,'Kolejność');
+   _NBKOLOR.TAB.win_sel(_ws);
+
+   _we:=_NBKOLOR.TAB.mk_edit('Nieobecnść'@,,'#nb');
+   _NBKOLOR.TAB.win_esep(_we,'Dane podstawowe'@);
+   _NBKOLOR.TAB.win_efld(_we,,'RN',,,,,1,MS.name(R,'RN'),,MS.comment(R,'RN'));
+   _NBKOLOR.TAB.win_efld(_we,,'RT',,,,,1,MS.name(R,'RT'),,MS.comment(R,'RT'));
+   _NBKOLOR.TAB.win_efld(_we,,'KOLOR',,,,,,_NBKOLOR.cfg.fld,,_NBKOLOR.cfg.help,,'F3_button=1');
+   _NBKOLOR.TAB.efld_opt(_we,'mark=1',,'KOLOR');
+   exec('ok_esc','#window',_NBKOLOR.TAB,_we);
+   _NBKOLOR.TAB.win_edit(_we);
+
+   _NBKOLOR.run:="
+      params_set('obj',.);
+      .TAB.select();
+      {? .TAB.first()
+      || {!
+         |? {? ~.TAB.SYNC
+            || exec('set','#profile',.plik,.sekcja,.fpar(.TAB.RN),.TAB.KOLOR)
+            ?};
+            .TAB.next()
+         !}
+      ?}
+   "
+?};
+
+:: Uzupełnienie kolorami.
+{? _NBKOLOR.TAB.first()
+|| {!
+   |? _kolor:=exec('get','#profile',_NBKOLOR.plik,_NBKOLOR.sekcja,_NBKOLOR.fpar(_NBKOLOR.TAB.RN));
+      {? _kolor=''
+      || _kolor:=
+            {? __RUB.sys_attr(_NBKOLOR.TAB.RN,1921)
+::             Choroba.
+            || '255:51:51'
+            |? __RUB.sys_attr(_NBKOLOR.TAB.RN,1922)
+::             Opieka.
+            || '0:255:255'
+            |? __RUB.sys_attr(_NBKOLOR.TAB.RN,1923)
+::             Pozostałe.
+            || '255:255:0'
+            |? __RUB.sys_attr(_NBKOLOR.TAB.RN,1924)
+::             Urlop wypoczynkowy.
+            || '0:255:0'
+            |? __RUB.sys_attr(_NBKOLOR.TAB.RN,1925)
+::             Urlop wychowawczy.
+            || '255:0:255'
+            || '0:0:255'
+            ?}
+      || _NBKOLOR.TAB.SYNC:=1
+      ?};
+      _NBKOLOR.TAB.KOLOR:=_kolor;
+      _NBKOLOR.TAB.put();
+      _NBKOLOR.TAB.next()
+   !}
+?};
+
+_NBKOLOR
+
+
+\zalegly
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.14]
+:: OPIS: Czy bieżąca nieobecność wykorzystuje limit zaległy? Formuła ma zastosowanie do:
+::          * Urlopu wypoczynkowego (atrybut 111).
+::   WE:
+::   WY: 1/0.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=0;
+
+R.cntx_psh();
+R.prefix();
+_kody:=__RUB.sys_sql(111,N.OD);
+{? (',%1,' [_kody])*(',%1,' [$N.NB().RN])
+|| _rok:=N.OD~1;
+:: Odczyt danych z karty urlopowej.
+   KART_URL.cntx_psh();
+   KART_URL.index('PRAC_ROK');
+   KART_URL.prefix(N.P);
+   _zalg:={? KART_URL.find_le(_rok) || KART_URL.LIM_ZALG ?};
+   KART_URL.cntx_pop();
+:: Odczyt danych z nieobecności.
+   _sql:=
+      'select sum(N.NG) NG '
+      'from N join R using(N.NB,R.REFERENCE) '
+      'where N.REFERENCE<>:_a and N.P=:_b and R.RN in (:_c) and N.OD between to_date(:_d) and to_date(:_e)';
+   _NB:=sql(_sql,N.ref(),N.P,_kody,date(_rok,1,1),N.OD);
+   _wyk:={? type_of(_NB)<>type_of(~~) & _NB.first() || _NB.NG ?};
+   _ret:=_wyk<=_zalg
+?};
+R.cntx_pop();
+
+_ret
+
+
+\limit_cfg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła przygotowuje struktury wykorzystywane przy wysyłaniu na portal informacji o limitach.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_buf:=obj_new('TAB','ZALD','ZALG','AKTD','AKTG','NZD','LRD','LRG','save','update');
+_buf.TAB:=tab_tmp(3,
+:: RN jest wykorzystywany przy obsłudze karty urlopowej, ponieważ w jednym rekordzie zawiera ona informacje o:
+::    - urlopie wypoczynkowym (+ na żądanie);
+::    - urlopie dodatkowym.
+:: Dla DS mimo, że pole ma stałą wartość to i tak jest wypełniane.
+   'RN','INTEGER','Kod nieobecności',
+   'OD','DATE','Data od',
+   'DO','DATE','Data do',
+   'ZALD','REAL','Zaległy - dni',
+   'ZALG','REAL','Zaległy - godziny',
+   'AKTD','REAL','Bieżący - dni',
+   'AKTG','REAL','Bieżący - godziny',
+   'LRD','REAL','Limit roczny - dni',
+   'LRG','REAL','Limit roczny - godziny',
+::   W - Wypoczynkowy, Z - Na żądanie, D - dodatkowy / K - Dni kalendarzowe, R - Dni robocze, G - Godziny robocze.
+   'TYP','STRING[1]','Typ urlopu [W,Z,D] / limitu [K,R,G]',
+   'ND','REAL','Nieobecność - dni',
+   'NG','REAL','Nieobecność - godziny',
+::
+   'NZD','REAL','Limit urlopu na żądanie - dni'
+);
+_buf.save:="
+   .ZALD:=.TAB.ZALD;
+   .ZALG:=.TAB.ZALG;
+   .AKTD:=.TAB.AKTD;
+   .AKTG:=.TAB.AKTG;
+   .NZD:=.TAB.NZD;
+   .LRD:=.TAB.LRD;
+   .LRG:=.TAB.LRG;
+   1
+";
+_buf.update:="
+   .TAB.ZALD+=.ZALD;
+   .TAB.ZALG+=.ZALG;
+   .TAB.AKTD+=.AKTD;
+   .TAB.AKTG+=.AKTG;
+   .TAB.NZD+=.NZD;
+   .TAB.LRD+=.LRD;
+   .TAB.LRG+=.LRG;
+   1
+";
+_buf
+
+
+\limit_ku
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła robocza wywoływana dla bieżącego rekordu tabeli KART_URL, tworzy tabelę tymczasową z informacjami o
+::       dostępnych (do wykorzystania) dla pracownika limitach urlopowych. Jednocześnie są zwracane informacje o:
+::          - urlopie wypoczynkowym (+ na żądanie);
+::          - urlopie dodatkowym.
+::   WE:
+::   WY: Tablica elementów nazwanych.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=obj_new('TAB','uw','uz','ud','pierwszy');
+_ret.pierwszy:=KART_URL.PIERWSZY='T' & (2004<=KART_URL.ROK) & (KART_URL.ROK=P.NAB_URL~1) & exec('czy_nowy','kart_url');
+
+_buf:=exec('limit_cfg','portal_nieobecnosci');
+_TAB:=_buf.TAB;
+
+_update:="
+   _TAB:=_a;
+   _rn:=_b;
+   _od:=_c;
+   _ld:=_d;
+   _lg:=_e;
+   _nt:={? var_pres('_f')=type_of('') || _f || '' ?};
+
+   {? _od<>date(0,0,0) & _ld<>0 & _lg<>0
+   || {? ~(_put:=_TAB.find_key(_rn,_od))
+      || _TAB.blank();
+         _TAB.RN:=_rn;
+         _TAB.OD:=_od
+      ?};
+      {? _nt=''
+      || _TAB.AKTD+=_ld;
+         _TAB.AKTG+=_lg;
+         _TAB.LRD+=_ld;
+         _TAB.LRG+=_lg
+      || _TAB.TYP:=_nt;
+         _TAB.ND+=_ld;
+         _TAB.NG+=_lg
+      ?};
+      {? _put
+      || _TAB.put()
+      || _TAB.add()
+      ?}
+   ?}
+";
+
+_fnorma:=exec('norma_fml','godziny');
+
+_d0:=date(0,0,0);
+
+_rok:=KART_URL.ROK;
+_start:=date(_rok,1,1);
+
+_lim_nz:=obj_new('val','get');
+_lim_nz.get:="
+   _ret:={? .val<_a || .val || _a ?};
+   .val-=_ret;
+   _ret
+";
+
+R.cntx_psh();
+R.prefix();
+KST_PAR.cntx_psh();
+exec('czytaj','#stalesys',_start,KST_PAR,'URLOP','URL_CHOR','URL_LIM');
+_uw:=obj_new('ref','RN');
+_uw.ref:=KST_PAR.URLOP;
+_uw.RN:=KST_PAR.URLOP().RN;
+_uz:=obj_new('ref','RN');
+_uz.ref:=KST_PAR.URL_CHOR;
+_uz.RN:=KST_PAR.URL_CHOR().RN;
+_lim_nz.val:=KST_PAR.URL_LIM;
+KST_PAR.cntx_pop();
+_ud:=obj_new('ref','RN');
+_ud.RN:=__RUB.sys_kod(1113);
+_ud.ref:=__RUB.ref(_ud.RN);
+R.cntx_pop();
+
+P.cntx_psh();
+P.prefix();
+KART_URL.P();
+
+:: Przygotowanie limitów.  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_ekw:=exec('ekw_rok','pracownik',P.ref(),_rok);
+{? _ekw.ok
+|| _ekw_norma:=_fnorma(_ekw.DT)
+?};
+
+{? _ret.pierwszy
+|| _MONTH:=exec('pierwszy','kart_url',1);
+   {? _MONTH.first()
+   || {!
+      |? _TAB.blank();
+         _TAB.RN:=_uw.RN;
+         _TAB.OD:=date(_rok,_MONTH.N,1);
+         {? _TAB.OD<P.DZA
+         || _TAB.OD:=P.DZA
+         ?};
+         _TAB.AKTD:=_MONTH.W;
+         _TAB.AKTG:=_fnorma(_TAB.OD)*_TAB.AKTD;
+         _TAB.NZD:=_lim_nz.get(_TAB.AKTD);
+         _TAB.add();
+         _MONTH.next()
+      !};
+      {? _ekw.ok & _ekw.EKW>0
+      || {!
+         |? {? _ekw.EKW<=_TAB.AKTG
+            || _TAB.AKTG-=_ekw.EKW;
+               _TAB.AKTD-=_ekw.EKW/_ekw_norma;
+               _ekw.EKW:=0
+            || _ekw.EKW-=_TAB.AKTG;
+               _TAB.AKTG:=_TAB.AKTD:=0
+            ?};
+            _TAB.put() & _ekw.EKW>0 & _TAB.prev()
+         !}
+      ?}
+   ?}
+|| _TAB.blank();
+   _TAB.RN:=_uw.RN;
+   _TAB.OD:=date(_rok,1,1);
+   {? _TAB.OD<P.DZA
+   || _TAB.OD:=P.DZA
+   ?};
+   _TAB.ZALD:=KART_URL.LIM_ZAL;
+   _TAB.ZALG:=KART_URL.LIM_ZALG;
+   _TAB.AKTD:=KART_URL.LIM_AKT;
+   _TAB.AKTG:=KART_URL.LIM_AKTG;
+   {? _ekw.ok & _ekw.EKW
+   || {? _ekw.EKW<=_TAB.ZALG
+      || _TAB.ZALG-=_ekw.EKW;
+         _TAB.ZALD-=_ekw.EKW/_ekw_norma;
+         _ekw.EKW:=0
+      |? _ekw.EKW-=_TAB.ZALG;
+         _TAB.ZALG:=_TAB.ZALD:=0;
+         _ekw.EKW<=KART_URL.LIM_AKTG
+      || _TAB.AKTG-=_ekw.EKW;
+         _TAB.AKTD-=_ekw.EKW/_ekw_norma;
+         _ekw.EKW:=0
+      || _ekw.EKW-=_TAB.AKTG;
+         _TAB.AKTG:=_TAB.AKTD:=0
+      ?}
+   ?};
+   _TAB.LRD:=_TAB.AKTD;
+   _TAB.LRG:=_TAB.AKTG;
+   _TAB.NZD:=_lim_nz.get(_TAB.AKTD);
+   _TAB.add();
+   _od:=_TAB.OD;
+
+   _url_dodd:=KART_URL.URL_DOD;
+   _url_dodg:=KART_URL.URL_DODG;
+   {? _ekw.ok & _ekw.EKW
+   || {? _ekw.EKW<=_url_dodg
+      || _url_dodg-=_ekw.EKW;
+         _url_dodd-=_ekw.EKW/_ekw_norma;
+         _ekw.EKW:=0
+      || _ekw.EKW-=_url_dodg;
+         _url_dodg:=_url_dodd:=0
+      ?}
+   ?};
+   {? _update(_TAB,_uw.RN,KART_URL.DATA_DOD,_url_dodd,_url_dodg) & _lim_nz.val
+   || _TAB.NZD:=_lim_nz.get(_TAB.AKTD);
+      _TAB.put()
+   ?};
+
+   {? (KART_URL.DATA_NSP<>_d0 & KART_URL.URL_NSP<>0 & KART_URL.URL_NSPG<>0)
+      | (KART_URL.NSP_ZAL<>0 & KART_URL.NSP_ZALG<>0)
+   || _odnsp:={? (KART_URL.DATA_NSP=_d0) | (KART_URL.DATA_NSP~1<_rok) || _od || KART_URL.DATA_NSP ?};
+      {? ~(_put:=_TAB.find_key(_ud.RN,_odnsp))
+      || _TAB.blank();
+         _TAB.RN:=_ud.RN;
+         _TAB.OD:=_odnsp
+      ?};
+      _TAB.ZALD+=KART_URL.NSP_ZAL;
+      _TAB.ZALG+=KART_URL.NSP_ZALG;
+      {? _ekw.ok & _ekw.EKW_NSP
+      || {? _ekw.EKW_NSP<=_TAB.ZALG
+         || _TAB.ZALG-=_ekw.EKW_NSP;
+            _TAB.ZALD-=_ekw.EKW_NSP/_ekw_norma;
+            _ekw.EKW_NSP:=0
+         || _ekw.EKW_NSP-=_TAB.ZALG;
+            _TAB.ZALG:=_TAB.ZALD:=0
+         ?}
+      ?};
+      _TAB.AKTD+=KART_URL.URL_NSP;
+      _TAB.AKTG+=KART_URL.URL_NSPG;
+      {? _ekw.ok & _ekw.EKW_NSP
+      || {? _ekw.EKW_NSP<=_TAB.AKTG
+         || _TAB.AKTG-=_ekw.EKW_NSP;
+            _TAB.AKTD-=_ekw.EKW_NSP/_ekw_norma;
+            _ekw.EKW_NSP:=0
+         || _ekw.EKW_NSP-=_TAB.AKTG;
+            _TAB.AKTG:=_TAB.AKTD:=0
+         ?}
+      ?};
+      {? _put
+      || _TAB.put()
+      || _TAB.LRD:=_TAB.AKTD;
+         _TAB.LRG:=_TAB.AKTG;
+         _TAB.add()
+      ?}
+   ?}
+
+?};
+
+:: Przygotowanie nieobecności. - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+N.cntx_psh();
+N.index('NIEORM');
+N.prefix('N',P.ref(),_rok);
+{? N.first()
+|| {!
+   |? {? N.NB=_uw.ref
+      || _update(_TAB,_uw.RN,N.OD,N.NR,N.NG,'W')
+      |? N.NB=_uz.ref
+      || _update(_TAB,_uw.RN,N.OD,N.NR,N.NG,'Z')
+      |? N.NB=_ud.ref
+      || _update(_TAB,_ud.RN,N.OD,N.NR,N.NG,'D')
+      ?};
+      N.next()
+   !}
+?};
+N.cntx_pop();
+
+:: Obróbka danych. - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+{! _lp:=1 .. 2
+|! _rn:={? _lp=1 || _uw.RN || _ud.RN ?};
+   _TAB.prefix(_rn);
+   {? _TAB.first()
+   ||
+::    Dni urlopowe narastająco (z pełną dokładnością).
+      _ndn:=0;
+::    Dni "rozliczone".
+      _rdn:=0;
+      {!
+      |? {? _TAB.TYP<>''
+         || _ng:=_TAB.NG;
+            _ndn+=_ng/_fnorma(_TAB.OD);
+            _nd:=_ndn$2-_rdn;
+            _rdn+=_nd;
+
+            {? _TAB.ZALG>0 & _TAB.TYP<>'Z'
+::             Urlop zaległy nie jest rozliczany urlopem na żądanie (Z).
+            || _valg:={? _TAB.ZALG<_ng || _TAB.ZALG || _ng ?};
+               _TAB.ZALG-=_valg;
+               {? _TAB.ZALG<0
+               || _TAB.ZALG:=0
+               ?};
+               _ng-=_valg;
+               {? _ng<0
+               || _ng:=0
+               ?};
+               _vald:={? _TAB.ZALD<_nd || _TAB.ZALD || _nd ?};
+               _TAB.ZALD-=_vald;
+               {? _TAB.ZALD<0
+               || _TAB.ZALD:=0
+               ?};
+               _nd-=_vald;
+               {? _nd<0
+               || _nd:=0
+               ?}
+            ?};
+            {? _ng>0
+            || _TAB.AKTG-=_ng;
+               _TAB.AKTD-=_nd
+            ?};
+            {? _TAB.TYP='Z'
+            || _TAB.NZD-=_TAB.ND;
+               {? _TAB.NZD<0
+               || _TAB.NZD:=0
+               ?}
+            ?}
+         ?};
+         _TAB.put();
+         _buf.save();
+         _TAB.next() & _buf.update()
+      !}
+   ?};
+:: Uzupełnienie "Daty do" i korekta wartości ujemnych.
+   {? _TAB.last()
+   || _do:=date(_rok,12,31);
+      {? P.DZ<>_d0 & P.DZ<_do
+      || _do:=P.DZ
+      ?};
+      {!
+      |? _TAB.DO:=_do;
+         {? _TAB.AKTG<0
+         || _TAB.AKTG:=0
+         ?};
+         {? _TAB.AKTD<0
+         || _TAB.AKTD:=0
+         ?};
+         _TAB.put();
+         _do:=_TAB.OD-1;
+         _TAB.prev()
+      !}
+   ?};
+   _TAB.prefix()
+!};
+
+P.cntx_pop();
+
+_ret.TAB:=_TAB;
+_ret.uw:=_uw;
+_ret.uz:=_uz;
+_ret.ud:=_ud;
+_ret
+
+
+\limit_ds
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła robocza wywoływana dla bieżącego rekordu tabeli DS, tworzy tabelę tymczasową z informacjami o
+::       dostępnych (do wykorzystania) dla pracowniaka limitach nieobecności.
+::   WE:
+::   WY: Tablica elementów nazwanych.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=obj_new('TAB');
+
+_buf:=exec('limit_cfg','portal_nieobecnosci');
+_TAB:=_buf.TAB;
+_ret.TAB:=_TAB;
+
+{? ~__RUB.sys_attr(DS.NB,1931)
+|| return(_ret)
+?};
+
+_rok:=DS.R;
+
+R.cntx_psh();
+R.prefix();
+_rn:=DS.NB().RN;
+R.cntx_pop();
+
+P.cntx_psh();
+P.prefix();
+DS.P();
+
+:: Limit.  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+_TAB.blank();
+_TAB.RN:=_rn;
+_TAB.OD:=date(_rok,1,1);
+_TAB.TYP:=DS.NR;
+{? _TAB.TYP='G'
+|| _TAB.ZALG:=DS.NZ;
+   _TAB.AKTG:=DS.NN;
+   _TAB.LRG:=DS.NN
+|| _TAB.ZALD:=DS.NZ;
+   _TAB.AKTD:=DS.NN;
+   _TAB.LRD:=DS.NN
+?};
+_TAB.add();
+
+:: Nieobecności. - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+N.cntx_psh();
+N.index('NIEORM');
+N.prefix('N',DS.P,_rok);
+{? N.first()
+|| {!
+   |? {? N.NB=DS.NB
+      || {? ~(_put:=_TAB.find_key(_rn,N.OD))
+         || _TAB.blank();
+            _TAB.RN:=_rn;
+            _TAB.OD:=N.OD;
+            _TAB.TYP:=DS.NR
+         ?};
+         {? _TAB.TYP='G'
+         || _TAB.NG+=N.NG
+         |? _TAB.TYP='K'
+         || _TAB.ND+=N.NK
+         |? _TAB.TYP='R'
+         || _TAB.ND+=N.NR
+         ?};
+         {? _put
+         || _TAB.put()
+         || _TAB.add()
+         ?}
+      ?};
+      N.next()
+   !}
+?};
+N.cntx_pop();
+
+:: Obróbka danych. - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+{? _TAB.first()
+|| {? _TAB.OD<P.DZA
+   || _TAB.OD:=P.DZA;
+      _TAB.put()
+   ?};
+
+   {!
+   |? {? _TAB.TYP='G'
+      || _ng:=_TAB.NG;
+         {? _TAB.ZALG>0
+         || _valg:={? _TAB.ZALG<_ng || _TAB.ZALG || _ng ?};
+            _TAB.ZALG-=_valg;
+            {? _TAB.ZALG<0
+            || _TAB.ZALG:=0
+            ?}
+         ?};
+         {? _ng>0
+         || _TAB.AKTG-=_ng;
+            {? _TAB.AKTG<0
+            || _TAB.AKTG:=0
+            ?}
+         ?}
+
+      || _nd:=_TAB.ND;
+         {? _TAB.ZALD>0
+         || _vald:={? _TAB.ZALD<_nd || _TAB.ZALD || _nd ?};
+            _TAB.ZALD-=_vald;
+            {? _TAB.ZALD<0
+            || _TAB.ZALD:=0
+            ?}
+         ?};
+         {? _nd>0
+         || _TAB.AKTD-=_nd;
+            {? _TAB.AKTD<0
+            || _TAB.AKTD:=0
+            ?}
+         ?}
+      ?};
+      _TAB.put();
+      _buf.save();
+      _TAB.next() & _buf.update()
+   !}
+?};
+
+:: Uzupełnienie "Daty do".
+{? _TAB.last()
+|| _do:=date(_rok,12,31);
+   {? P.DZ<>date(0,0,0) & P.DZ<_do
+   || _do:=P.DZ
+   ?};
+   {!
+   |? _TAB.DO:=_do;
+      _TAB.put();
+      _do:=_TAB.OD-1;
+      _TAB.prev()
+   !}
+?};
+
+P.cntx_pop();
+
+_ret
+
+
+\edokum2nwu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła zwracająca wskazanie na rekord tabeli NWU na podstawie danych w rekordzie tabeli EDOKUM (obsługującym
+::       wniosek urlopowy).
+::   WE: _a [REFERENCE] - EDOKUM.
+::   WY: ~~        - Błędny parametr wywołania.
+::       null()    - Rekord tabeli EDOKUM nie jest związany z wnioskiem urlopowym lub wniosku nie udało się znaleźć.
+::       NWU.ref() - Wniosek urlopowy związany z rekordem tabeli EDOKUM.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(null()) & _a<>null() & ref_tab(_a)=EDOKUM
+|| _edokum:=_a
+|| return()
+?};
+
+_ret:=null();
+_name:=ref_name(_edokum);
+{? _name=exec('nwu_edokum_mask','portal_method_chr')
+|| EDOKUM.cntx_psh();
+   {? EDOKUM.name()<>_name
+   || EDOKUM.use(_name)
+   ?};
+   EDOKUM.prefix();
+   {? EDOKUM.seek(_edokum) & +EDOKUM.DOK_POW=48 & type_of(ref_tab(EDOKUM.DOK_POW))>0 & ref_tab(EDOKUM.DOK_POW)=NWU
+   || NWU.cntx_psh();
+      NWU.prefix();
+      {? NWU.seek(EDOKUM.DOK_POW)
+      || _ret:=NWU.ref()
+      ?};
+      NWU.cntx_pop()
+   ?};
+   EDOKUM.cntx_pop()
+?};
+_ret
+
+
+\nwu_check
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła sprawdzająca poprawność wypełnienia wniosku urlopowego (Portal HR). Formuła wywoływana dla rekordu
+::       tabeli EDOKUM, w którym pole DOK_POW wskazuje na powiązany wniosek urlopowy.
+::       Uwaga: formuła "powiązana" z \nwu_check/wnioski_urlopowe.fml. Ewentualne zmiany być może należy nanieść również
+::              tam.
+::   WE:
+::   WY: Komunikat z informacją o błędzie lub ''.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:='';
+
+NWU.cntx_psh();
+NWU.prefix();
+_nwu:=exec('edokum2nwu','portal_nieobecnosci',EDOKUM.ref());
+{? _nwu=null() | ~NWU.seek(_nwu)
+|| _ret:='Brak powiązania z wnioskiem urlopowym.'
+
+|| exec('MS','#object');
+   exec('__RUB','object');
+
+   _refR:=NWU.R;
+   _od:=NWU.OD;
+   _do:=NWU.DO;
+
+   P.cntx_psh();
+   P.prefix();
+   NWU.P();
+
+:: Część poniższych warunków jest już weryfikowana przez portal, ale dla uniezależnienia się od logiki portalu -
+:: wykonajmy pełna walidację.
+
+   {? _ret=''
+::    Prosta kontrola wypełnienia pól.
+   || {? NWU.OD<P.DZA
+      || _ret:='"%1" nie może być wcześniejsza niż "%2" (%3).'@ [MS.name(NWU,'OD'),MS.name(P,'DZA'),$P.DZA]
+
+      |? NWU.DO<NWU.OD
+      || _ret:='"%1" nie może być wcześniejsza niż "%2".'@ [MS.name(NWU,'DO'),MS.name(NWU,'OD')]
+
+      |? P.DZ<>date(0,0,0) & P.DZ<NWU.DO
+      || _ret:='"%1" nie może być późniejsza niż "%2" (%3).'@ [MS.name(NWU,'DO'),MS.name(P,'DZ'),$P.DZ]
+
+      |? NWU.OD~1<>NWU.DO~1
+      || _ret:='Wniosek nie może obejmować przełomu lat.'@
+      ?}
+   ?};
+
+   {? _ret=''
+::    Kontrola nakładania się okresów (nieobecności).
+   || _overlap:=
+::       Jeżeli w jednym dniu mamy dwie nieobecności na część dnia, to jedna z nich musi być nieobecnością z Art. 188.
+         "  {? _a.PARTDAY='T' & __RUB.sys_attr(_b,1162,_c) & ~__RUB.sys_attr(_d,1162,_c)
+            || 0
+            |? _a.PARTDAY='T' & __RUB.sys_attr(_d,1162,_c) & ~__RUB.sys_attr(_b,1162,_c)
+            || 0
+            || 1
+            ?}
+         ";
+
+      N.cntx_psh();
+      N.index('NIEOBECN');
+      N.prefix('N',NWU.P);
+      {? N.last()
+      || {!
+         |? {? N.OD<=_do & N.DO>=_od & ~__RUB.sys_attr(N.NB,122722,_od) & ~__RUB.sys_attr(N.NB,122742,_od)
+            || {? _overlap(N,N.NB,_od,_refR)
+               || _ret:=
+                     'We wnioskowanym okresie (%1 - %2)\nzarejestrowana jest już nieobecność (%3 - %4).'@
+                     [$_od,$_do,$N.OD,$N.DO]
+               ?}
+            ?};
+            _ret='' & N.prev() & date(N.OD~1,N.OD~2,1)>=date(_od~1,_od~2,1)
+         !}
+      ?};
+      N.cntx_pop()
+   ?};
+
+   {? _ret=''
+::    Kontrola nakładania się okresów (wnioski).
+   || _ref:=NWU.ref();
+      NWU.cntx_psh();
+      NWU.index('OD');
+      NWU.prefix(NWU.P);
+      {? NWU.find_le(_do) & NWU.ref()<>_ref & NWU.DO>=_od & ~('NWO'*NWU.AZ) & NWU.N=null() & NWU.OS_N=null()
+      || {? _overlap(NWU,NWU.R,_od,_refR)
+         || _ret:=
+               'We wnioskowanym okresie (%1 - %2)\nzarejestrowany jest już inny wniosek (%3 - %4).'@
+               [$_od,$_do,$NWU.OD,$NWU.DO]
+         ?}
+      ?};
+      NWU.cntx_pop()
+   ?};
+
+   {? _ret='' & NWU.PARTDAY='T' & __RUB.sys_attr(NWU.R,1162,NWU.OD) & NWU.G<>ceil(NWU.G)
+::    Kontrola wprowadzenia pełnych godzin dla opieki Art. 188 na część dnia
+   || _ret:='Dla wybranego rodzaju nieobecności dopuszczalne jest podawanie tylko pełnych godzin nieobecności.'@
+   ?};
+
+:: Walidacja pól dodatkowych  -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+   _params:=json_parse(EDOKUM.memo_txt(0,1,'PARAMS'));
+   _params_is_ntab:=obj_ntab(_params);
+   {? _ret='' & __RUB.sys_attr(NWU.R,1162,NWU.OD)
+::    Opieka Art. 188 Kp - dedykowana obsługa "oświadczenia": deklaracji sposobu wykorzystania (dni / godziny).
+::    Pole OnHourlyBasisDecision nie musi występować w komunikacie.
+   || _ret:=exec('nwu_check_188','portal_nieobecnosci',EDOKUM.ref(),NWU.ref())
+
+   |? _ret='' & __RUB.sys_attr(NWU.R,1153,NWU.OD)
+::    Urlop ojcowski
+   || RD.cntx_psh();
+      RD.prefix();
+      {? ~_params_is_ntab
+      || _ret:='Błąd wewnętrzny (brak parametrów dodatkowych).'
+      |? var_pres('PersonFamilyId',_params)<>type_of(0)
+      || _ret:='Brak wskazania dziecka, którego dotyczy wniosek o urlop ojcowski.'
+      |? var_pres('PersonFamilyId__ID_ERP',_params)<>type_of('') | +_params.PersonFamilyId__ID_ERP<>16 |
+         type_of(ref_tab(_params.PersonFamilyId__ID_ERP))<>type_of(RD) | ref_tab(_params.PersonFamilyId__ID_ERP)<>RD |
+         ~RD.seek(_params.PersonFamilyId__ID_ERP)
+      || _ret:=
+            'Odnalezienie dziecka [__id_cloud=%1], którego dotyczy wniosek o urlop ojcowski nie powiodło się.'
+            [$_params.PersonFamilyId]
+      ?};
+      RD.cntx_pop()
+
+   |? _ret='' & __RUB.sys_attr(NWU.R,1181,NWU.OD)
+::    Siła wyższa - dedykowana obsługa  "oświadczenia": deklaracji sposobu wykorzystania (dni / godziny).
+::    Pole OnHourlyBasisDecision nie musi występować w komunikacie.
+   || _ret:=exec('nwu_check_sw','portal_nieobecnosci',EDOKUM.ref(),NWU.ref())
+
+   |? __RUB.sys_attr(NWU.R,1191,NWU.OD)
+::    Urlop opiekuńczy
+   || {? ~_params_is_ntab
+      || _ret:='Błąd wewnętrzny (brak parametrów dodatkowych).'
+      |? var_pres('PersonFamilyId',_params)<>type_of(0) &
+::       Jeżeli opieka dotyczy członka rodziny, który jest wprowadzony do ERP-a, to informacja o nim przyjdzie w polu
+::       PersonFamilyId. W przeciwnym wypadku dane będą w tablicy AdditionalData__JSON. Ale jedno z tych pól musi
+::       wystąpić.
+         var_pres('AdditionalData__JSON',_params)<>type_of(obj_new(1))
+      || _ret:='W komunikacie brak informacji o osobie, która wymaga opieki lub wsparcia.'
+      |? var_pres('Reason',_params)<>type_of('')
+      || _ret:='W komunikacie brak informacji o przyczynie konieczności zapewnienia osobistej opieki lub wsparcia.'
+
+      || _stpk:="
+::           _a  - Kod ZUS stopnia pokrewieństwa.
+::          [_b] - Płeć.
+::          [_c] - Imię.
+            _kod:=
+               {? _a='01'
+               || 'MALZONEK'
+               |? _a='11'
+               || {? (var_pres('_b')=type_of('') & _b='K') | (var_pres('_c')=type_of('') & -(_c+1)='a')
+                  || 'CORKA'
+                  || 'SYN'
+                  ?}
+               |? _a='30' || 'MATKA'
+               |? _a='31' || 'OJCIEC'
+               |? _a='NIESP' || 'NIESP'
+               || '???'
+               ?};
+
+            SLO_KOD.cntx_psh();
+            SLO_KOD.index('KOD');
+            SLO_KOD.prefix(exec('slo_typ','ext_slo','NWOPO'));
+            _ret:={? SLO_KOD.find_key(_kod,) || SLO_KOD.ref() || null() ?};
+            SLO_KOD.cntx_pop();
+            _ret
+         ";
+
+         NWOPO.cntx_psh();
+         NWOPO.index('NWU');
+         NWOPO.prefix();
+         _put:=NWOPO.find_key(NWU.ref());
+         NWOPO.blank();
+         NWOPO.P:=NWU.P;
+         NWOPO.OD:=NWU.OD;
+         NWOPO.DO:=NWU.DO;
+         NWOPO.NWU:=NWU.ref();
+         NWOPO.AZ:='N';
+
+         NWOPO.memo_set(_params.Reason,'PRZYCZ');
+
+         {? var_pres('PersonFamilyId__ID_ERP',_params)=type_of('')
+         || RD.cntx_psh();
+            RD.prefix();
+            {? +_params.PersonFamilyId__ID_ERP=16 & type_of(ref_tab(_params.PersonFamilyId__ID_ERP))=type_of(RD) &
+               ref_tab(_params.PersonFamilyId__ID_ERP)=RD & RD.seek(_params.PersonFamilyId__ID_ERP)
+            || NWOPO.NAZWISKO:=RD.NA;
+               NWOPO.PIERWSZE:=RD.IM;
+               S_ZUS.cntx_psh();
+               S_ZUS.prefix();
+               NWOPO.SLO_KOD:=_stpk(RD.STPK().KOD,RD.PLEC);
+               S_ZUS.cntx_pop()
+            || _ret:='Odnalezienie wskazanego członka rodziny [%1] nie powiodło się.'[_params.PersonFamilyId__ID_ERP]
+            ?};
+            RD.cntx_pop()
+
+::          Osoby wymagającej opieki nie ma w ERP-ie - dane będą w tablicy AdditionalData__JSON
+         || _arr:=obj_new('val','get');
+            _arr.val:=_params.AdditionalData__JSON;
+            _arr.get:="{? var_pres(_a,.val)>0 || ($('_a.%1'[_a]))(.val) || '' ?}";
+
+            NWOPO.NAZWISKO:=_arr.get('LastName');
+            NWOPO.PIERWSZE:=_arr.get('FirstName');
+
+            {? _arr.get('IsFamilyMember')='1'
+            || NWOPO.SLO_KOD:=_stpk(_arr.get('RelationshipZUSCode'),,NWOPO.PIERWSZE)
+            || NWOPO.SLO_KOD:=_stpk('NIESP');
+
+               KRAJE.cntx_psh();
+               KRAJE.index('KRAJE');
+               KRAJE.prefix();
+               {? (_kraj:=_arr.get('CountryName'))<>'' & KRAJE.find_key(_kraj,)
+               || NWOPO.KRAJ:=KRAJE.ref()
+               ?};
+               KRAJE.cntx_pop();
+
+               NWOPO.WOJEWODZ:=_arr.get('Province');
+               NWOPO.POWIAT:=_arr.get('SubProvince');
+               NWOPO.GMINA:=_arr.get('District');
+               NWOPO.KOD:=_arr.get('PostalCode');
+               NWOPO.POCZTA:=_arr.get('Post');
+               NWOPO.MIASTO:=_arr.get('City');
+               NWOPO.ULICA:=_arr.get('Street');
+               NWOPO.DOM:=_arr.get('HouseNumber');
+               NWOPO.LOKAL:=_arr.get('ApartmentNumber')
+            ?}
+         ?};
+
+         {? _ret=''
+         || {? NWOPO.SLO_KOD=null()
+            || _ret:='Podany stopień pokrewieństwa nie upoważnia do wnioskowania o urlop opiekuńczy.'
+            |? ~({? _put || NWOPO.put(1) || NWOPO.add(1) ?} & NWOPO.memo_put(,'PRZYCZ'))
+            || _ret:=
+                  {? _put
+                  || 'Aktualizacja oświadczenia wniosku nie powiodła się.'
+                  || 'Utworzenie oświadczenia wniosku nie powiodło się.'
+                  ?}
+            ?}
+         ?};
+         NWOPO.cntx_pop()
+
+      ?}
+   ?};
+:: -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=
+
+   {? _ret=''
+   || _grk:=exec('oblicz_grk','wnioski_urlopowe',NWU.P,NWU.R,NWU.OD,NWU.DO,NWU.ref());
+:: !!! Co z obsługą przekroczenia limitu?
+      {? _grk.OK
+::       Udało się ustalić limity
+      || {? _grk.IL1<_grk.IL2
+         || _ret:=
+               'Wprowadzony wniosek (%1 %3)\n'
+               'przekracza dopuszczalny limit (%2 %3).'@
+               [exec('il_form','wnioski_urlopowe',_grk.JM,_grk.IL2),
+                exec('il_form','wnioski_urlopowe',_grk.JM,_grk.IL1),
+                exec('jm','wnioski_urlopowe',_grk.JM2)
+               ]
+         ?}
+
+::    W tym miejscu wiemy, że limitów nie udało się ustalić.
+      |? __RUB.sys_attr(NWU.R,1933,NWU.OD) | __RUB.sys_attr(NWU.R,1931,NWU.OD)
+      || _ret:=
+            {? _grk.ERR_TXT=''
+            || 'Brak limitów urlopowych.'@
+            || _grk.ERR_TXT
+            ?}+'\n'+
+            'Nie można zarejestrować wniosku urlopowego.'@+'\n'+
+            'Zgłoś problem do działu kadr.'@
+
+::    Nieobecność nie ma ustawionego atrybutu 1933 (wymaga limitu). Oznacza to, że wniosek może być złożony i
+::    rozpatrywany. Poinformowanie pracownika / przełożonego o braku limitów i ewentualnych konsekwencjach nie jest
+::    mozliwe - każdy komunikat interpretowany jest jako informacja o błędzie.
+::      || _ret:=
+::            {? _grk.ERR_TXT=''
+::            || 'Brak limitów urlopowych.'@
+::            || _grk.ERR_TXT
+::            ?}+'\n'+
+::            {? _tryb<2
+::            || 'Wniosek może zostać odrzucony przez przełożonego na etapie akceptacji.'@
+::            || 'System nie kontroluje ilości akceptowanych dni urlopu.'@+'\n'+'Zgłoś problem do działu kadr.'@
+::            ?}
+      ?}
+   ?};
+
+   P.cntx_pop()
+?};
+NWU.cntx_pop();
+
+_ret
+
+
+\nwu_verify
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła zmieniająca status i/lub osobę weryfikującą.
+::       Zakłada się, że formuła jest wykonywana dla bieżącego rekordu tabeli EDOKUM.
+::       Formuła do wykorzystania w obsłudze wniosku urlopowego obsługiwanego przez HR Portal.
+::   WE: [_a] [STRING]    - Wartość statusu wniosku urlopowego do ustalenia, [domyślnie: ? - Do weryfikacji].
+::       [_b] [REFERENCE] - Osoba weryfikująca wniosek. Parametr ma znaczenie dla _a='T' lub _a='N'.
+::   WY: ~~ - Rekord tabeli EDOKUM nie jest związany z wnioskiem urlopowym.
+::        0 - Zapamietanie nie powiodło się.
+::        1 - Zapamiętanie powiodło się lub zmiana nie była potrzebna.
+::----------------------------------------------------------------------------------------------------------------------
+_nwu:=exec('edokum2nwu','portal_nieobecnosci',EDOKUM.ref());
+{? _nwu=null()
+|| return()
+?};
+
+_status:={? var_pres('_a')=type_of('') & +_a=1 & 'TN?'*_a || _a || '?' ?};
+_kto_wer:={? var_pres('_b')=type_of(null()) & _b<>null() & ref_tab(_b)=OSOBA || _b || ~~ ?};
+
+_ret:=0;
+NWU.cntx_psh();
+NWU.prefix();
+{? NWU.seek(_nwu)
+|| _ds:=do_state();
+
+   {? _ds<2
+   || {? _ds=0
+      || do()
+      ?};
+
+      _put:=0;
+      {? NWU.AZ<>_status
+      || NWU.AZ:=_status;
+         exec('__RUB','object');
+         {? NWU.AZ='T' & __RUB.sys_attr(NWU.R,1153,NWU.OD)
+::          Akceptacja wniosku o urlop ojcowski - kopiowanie załączników.
+         || P.cntx_psh();
+            P.prefix();
+            NWU.P();
+            _kod:=ref_name(EDOKUM.ref())+2;
+            EDOKUMZ.cntx_psh();
+            EDOKUMZ.use('skid_n'+_kod);
+            EDOKUMZ.index('NAZWA');
+            EDOKUMZ.prefix(EDOKUM.ref());
+            {? EDOKUMZ.first()
+            || _esign:=exec('ESIGN','#object');
+               _params:=json_parse(EDOKUM.memo_txt(0,1,'PARAMS'));
+               _params_is_ntab:=obj_ntab(_params);
+               RD.cntx_psh();
+               RD.prefix();
+               SLO_NAZ.cntx_psh();
+               SLO_NAZ.prefix();
+               ZALACZ.cntx_psh();
+               ZALACZ.prefix();
+               {!
+               |? _msc:='';
+                  _tz:=EDOKUMZ.TYP_ZAL().NAZWA;
+                  {? _tz='Akt urodzenia dziecka' | _tz='Postanowienie sądu o przysposobieniu dziecka'
+                     | _tz='Decyzja o odroczeniu obowiązku szkolnego'
+                  || {? _params_is_ntab & var_pres('PersonFamilyId__ID_ERP',_params)=type_of('')
+                        & RD.seek(_params.PersonFamilyId__ID_ERP)
+                     || _msc:='RD'
+                     ?}
+                  ?};
+                  ZALACZ.blank();
+                  exec('zalacz_bl','zalacz','P',_msc);
+                  ZALACZ.TYP_ZAL:=EDOKUMZ.TYP_ZAL;
+                  ZALACZ.LOK:='Z wniosku o urlop ojcowski';
+                  ZALACZ.ZAL:=EDOKUMZ.EDOKUM;
+                  {? ZALACZ.add()
+                  || _esign.start();
+                     _esign.v_blob_add(ZALACZ,'ZAL','DTSIGN');
+                     _esign.verify(1);
+                     _esign.stop()
+                  ?};
+                  EDOKUMZ.next()
+               !};
+               ZALACZ.cntx_pop();
+               SLO_NAZ.cntx_pop();
+               RD.cntx_pop()
+            ?};
+            EDOKUMZ.cntx_pop();
+            P.cntx_pop()
+
+         |? NWU.AZ='T' & __RUB.sys_attr(NWU.R,1191,NWU.OD)
+::          Urlop opiekuńczy
+         || NWOPO.cntx_psh();
+            NWOPO.index('NWU');
+            NWOPO.prefix(NWU.ref());
+            {? NWOPO.first() & NWOPO.AZ<>'T'
+            || NWOPO.AZ:='T';
+               NWOPO.memo_get(,'PRZYCZ');
+::             Podczytanie do bufora pola typu SYS_MEMO, ze względu na specyfikę walidacji.
+               NWOPO.put()
+            ?};
+            NWOPO.cntx_pop()
+         ?};
+         _put+=1
+      ?};
+      {? 'TN'*_status & _kto_wer<>~~ & _kto_wer<>NWU.KTO_WER
+      || NWU.KTO_WER:=_kto_wer;
+         _put+=1
+      ?};
+      _ret:={? _put || NWU.put() || 1 ?}*{? _ds=0 || end() || do_state()=1 ?}
+
+   ?}
+?};
+NWU.cntx_pop();
+_ret
+
+
+\nwu_accept
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła po akceptacji wniosku urlopowego - ustawia status i osobę weryfikującą.
+::       Zakłada się, że formuła jest wykonywana dla bieżącego rekordu tabeli EDOKUM.
+::       Formuła do wykorzystania w obsłudze wniosku urlopowego obsługiwanego przez HR Portal.
+::----------------------------------------------------------------------------------------------------------------------
+exec('nwu_verify','portal_nieobecnosci','T',exec('FindAndGet','#table',USERS,OPERATOR.USER,,"OSOBA","null()"))
+
+
+\nwu_reject
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Formuła po odrzuceniu wniosku urlopowego - ustawia status i osobę weryfikującą.
+::       Zakłada się, że formuła jest wykonywana dla bieżącego rekordu tabeli EDOKUM.
+::       Formuła do wykorzystania w obsłudze wniosku urlopowego obsługiwanego przez HR Portal.
+::----------------------------------------------------------------------------------------------------------------------
+exec('nwu_verify','portal_nieobecnosci','N',exec('FindAndGet','#table',USERS,OPERATOR.USER,,"OSOBA","null()"))
+
+
+\portalwu_init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Formuła inicjująco-sprzątająca w PORTALWU - odpowiedzialna za synchronizację zawartości tabeli na podstawie
+::       atrybutu 193.
+::   WE: [_a] [NUMBER] - Tryb wsadowy (bez komunikatów?) [0*/1].
+::   WY: Lista kodów nieobecności zaktualizowanych pozycji.
+::----------------------------------------------------------------------------------------------------------------------
+_batch:=var_pres('_a')=type_of(0) & _a;
+
+exec('__RUB','object');
+_new:='';
+R.cntx_psh();
+R.prefix();
+_R:=__RUB.sys_rub(193);
+PORTALWU.cntx_psh();
+PORTALWU.index('RN');
+PORTALWU.prefix();
+:: Faza I - usuwanie zbędnych.
+{? PORTALWU.first()
+|| {!
+   |? {? _R.find_key(PORTALWU.R().RN)
+      || PORTALWU.next()
+      || PORTALWU.del()
+      ?}
+   !}
+?};
+:: Faza II - dodawanie nowych.
+{? _R.first()
+|| _wu_ogolny:=exec('def_wu_ogolny','etypy',1);
+   {!
+   |? {? ~PORTALWU.find_key(_R.RN) & R.find_key(_R.RN)
+      || PORTALWU.blank();
+         PORTALWU.R:=R.ref();
+         PORTALWU.ETYPY:=_wu_ogolny;
+         {? PORTALWU.add()
+         || _new+=',%1'[$R.RN]
+         ?}
+      ?};
+      _R.next()
+   !}
+?};
+PORTALWU.cntx_pop();
+R.cntx_pop();
+_new:=1-_new;
+{? ~_batch & _new<>''
+|| {? _new*','>0
+   || FUN.info('Zweryfikuj parametry wniosków dla składników: %1.'@[_new])
+   || FUN.info('Zweryfikuj parametry wniosku dla składnika: %1.'@[_new])
+   ?}
+?};
+_new
+
+
+\nwu_check_188
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TMR [22.26]
+:: OPIS: Formuła sprawdzająca poprawność wypełnienia wniosku urlopowego art. 188 (Portal HR).
+::   WE: _a [REFERENCE] - wskazanie na rekord tabeli EDOKUM
+::       _b [REFERENCE] - wskazanie na rekord tabeli NWU
+::   WY: '' / opis błędu
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+_edokum:={? var_pres('_a')=type_of(null()) || _a || return(_result) ?};
+   _nwu:={? var_pres('_b')=type_of(null()) || _b || return(_result) ?};
+
+_continue:=1;
+EDOKUM.cntx_psh();
+_name:=ref_name(_edokum);
+{? EDOKUM.name()<>_name
+|| EDOKUM.use(_name)
+?};
+EDOKUM.prefix();
+NWU.cntx_psh();
+NWU.prefix();
+{? EDOKUM.seek(_edokum) & NWU.seek(_nwu)
+|| _err:=exec('oMsgErr','portal_walidacja');
+:: odczytujemy zapamiętane parametry wniosku
+   _params:=json_parse(EDOKUM.memo_txt(0,1,'PARAMS'));
+   _params_is_ntab:=obj_ntab(_params);
+   _act:={? _params_is_ntab & var_pres('act',_params)=type_of('')
+         || _params.act
+         || ''
+         ?};
+
+:: Specjalna obsługa wniosku "Opieka Art. 188 KP" Z OŚWIADCZENIEM - wartość w polu 'OnHourlyBasisDecision' będzie liczbą
+:: Dla pozostałych przypadków w polu powinna znajdować się wartość NULL, po rozpakowaniu metodą getValue(): ~~ (void)
+   _declaration:=obj_new('type','containsValue');
+   _declaration.containsValue:=_params_is_ntab & var_pres('OnHourlyBasisDecision',_params)=type_of(0);
+   _declaration.type:=_declaration.containsValue & _params.OnHourlyBasisDecision;
+
+   _basis:=obj_new('days','hours');
+   {! _ii:=1..obj_len(_basis) |! _basis[_ii]:=obj_new('type','desc') !};
+   _basis.days.type:=0;
+   _basis.days.desc:='dni'@;
+   _basis.hours.type:=1;
+   _basis.hours.desc:='godziny'@;
+
+   _incorrectType:=0;
+
+   _KOMM:=obj_new(@.CLASS.JCQ);
+   {? _KOMM.init()
+   || exec('md_info','staz',EDOKUM.DOSTAWCA,NWU.OD~1,_KOMM,0,0,0);
+      {? _size:=_KOMM.get_size()
+      || {! _ii:=1.._size |! _result+=_KOMM.get_msg(_ii)+'\n' !};
+         _continue:=0
+      ?}
+   ?};
+
+:: !!! Obecnie nie obsługujemy deklaracji złożonej razem z wnioskiem dlatego w RRxx jest to do przerobienia
+:: TODO: po wprowadzeniu obsługi deklaracji należy usunąć bazowanie na zmiennej _act
+
+   {? _continue
+   || {? _declaration.containsValue
+      || {? _act='add'
+         || DS.cntx_psh();
+            DS.index('DYSCYPLI');
+            DS.prefix();
+            _ds:=DS.find_key(NWU.P,NWU.OD~1,NWU.R);
+            {? _ds
+            || _result:='Istnieje już zapis w dyscyplinie pracy dotyczący limitu z Art. 188 KP w danym roku.'@;
+               _continue:=0
+            || _mydo:=do_state()=0;
+               {? _mydo || do() ?};
+               DS.blank(1);
+               DS.P:=NWU.P;
+               DS.R:=NWU.OD~1;
+               DS.NB:=NWU.R;
+               {? ~DS.add(1)
+               || _result:='Nie powiódł się zapis informacji do kartoteki dyscypliny pracy '
+                           'dotyczący limitu z Art. 188 KP w danym roku.'@;
+                  _continue:=0
+               || DS.NR:={? _declaration.type=_basis.hours.type || 'G' || 'R' ?};
+                  _atr:=
+                     {? _declaration.type=_basis.days.type
+                     || 19711
+                     |? _declaration.type=_basis.hours.type
+                     || 19712
+                     || 0
+                     ?};
+                  _limit:=obj_new('system','amount');
+                  _limit.system:=0;
+                  {? _atr
+                  || _limit.system:=__RUB.sys_val(_atr,date())
+                  || _incorrectType:=1;
+                     _continue:=0
+                  ?};
+                  {? _continue
+                  || {? type_of(_limit.system)=type_of(0)
+                     || _limit.amount:=_limit.system
+                     || _result:='Nie powiodło się odnalezienie atrybutu przypisanego do rubryki.'@;
+                        _continue:=0
+                     ?};
+
+::                   pobranie informacji o zapisach znajdujących się w "Okresach zatrudnienia"
+                     _md:=exec('md_staz','staz',NWU.P().OSOBA,DS.R);
+                     {? _result.ok
+                     || {? (_declaration.type=_basis.days.type & _md.godz>0) |
+                           (_declaration.type=_basis.hours.type & _md.dni>0) |
+                           (_md.dni>0 & _md.godz>0)
+                        || _continue:=0;
+                           _KOMM:=obj_new(@.CLASS.JCQ);
+                           {? _KOMM.init()
+                           || exec('md_info','staz',NWU.P().OSOBA,DS.R,_KOMM,0,0,0);
+                              {? _size:=_KOMM.get_size()
+                              || {! _index:=1.._size |! _result+=_KOMM.get_msg(_index) !};
+                                 _result+=' '+_err.kadry
+                              ?}
+                           ?}
+                        ?}
+                     ?};
+
+                     {? _continue
+                     || _wym:=1;
+                        H.cntx_psh();
+                        H.use('_hist');
+                        H.index('_HISTKOD');
+                        H.prefix(NWU.P,'Z');
+                        {? H.find_le(date())
+                        || _wym:=H.WYL/H.WYM
+                        ?};
+                        H.cntx_pop();
+
+::                      możemy sumować _md.dni i _md.godz bo będąc w tym miejscu tylko jedno pole powinno mieć wartość
+                        _ile:=ceil(_limit.amount*{? _declaration.type=_basis.hours.type || _wym || 1 ?});
+                        _ile:=_ile-(_md.dni+_md.godz);
+                        {? _ile<=0
+                        || _ile:=0;
+                           _continue:=0;
+                           _result:='Wykorzystano już dostępny limit opieki w roku %1. '[$DS.R]+_err.kadry
+                        ?};
+
+                        {? _continue
+                        || DS.NN:=_ile;
+                           DS.NP:=DS.NN-DS.NW;
+                           DS.NZ:=0;
+                           DS.NL:=DS.NN;
+                           DS.DNL:=date();
+                           {? DS.put(1)
+                           ||  exec('FUNKCJE','object');
+                               FUNKCJE.OBLICZDS(DS.R)
+                           || _result:='Nie powiódł się zapis informacji dot. limitu do bazy danych [%1].'@ ['DS'];
+                              _continue:=0
+                           ?}
+                        ?}
+                     ?}
+                  ?}
+               ?};
+::             W przypadku niepowodzenia wykonania powyższych operacji konieczność usunięcia nowopowstałego zapisu
+::             w dyscyplinie pracy
+               {? ~_continue || undo() ?};
+               {? _mydo || end() ?}
+            ?};
+            DS.cntx_pop()
+         || _incorrectType:=1
+         ?}
+      ||
+::       nie mamy przesłanej deklaracji we wniosku więc weryfikujemy tylko zgodność z wpisem w dyscyplinie pracy
+            DS.cntx_psh();
+            DS.index('DYSCYPLI');
+            DS.prefix();
+            _ds:=DS.find_key(NWU.P,NWU.OD~1,NWU.R);
+            {? _ds
+            ||  {? (DS.NR='G' & NWU.PARTDAY<>'T') | (DS.NR<>'G' & NWU.PARTDAY='T')
+                || _typ_ds:={? DS.NR='G' || 'godziny robocze'@ || 'dni robocze'@ ?};
+                   _result:='Wniosek niezgodny z rodzajem limitu wpisanym w kartotece dyscypliny pracy '
+                            'dotyczącego limitu z Art. 188 KP w danym roku. '
+                            'Należy złożyć wniosek na %1.'@[_typ_ds]+
+                            ' %1'[_err.kadry]
+                ?}
+            ?};
+            DS.cntx_pop()
+      ?};
+
+      {? _incorrectType
+      || _result:='Nieprawidłowy typ wymiaru urlopu art. 188 KP dostarczony na wniosku%1.'@ [
+            _desc:='';
+            {? _declaration.containsValue
+            || {! _ii:=1..obj_len(_basis)
+               |! {? _basis[_ii].type=_declaration.type || _desc:=': \"%1\"' [_basis[_ii].desc] ?}
+               !}
+            ?};
+            _desc
+         ]
+      ?}
+   ?}
+?};
+NWU.cntx_pop();
+EDOKUM.cntx_pop();
+_result
+
+
+\nwu_check_sw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [22.26]
+:: OPIS: Formuła sprawdzająca poprawność wypełnienia wniosku o zwolnienie od pracy z powodu działania siły wyższej
+::       (Portal HR) w zakresie oświadczenia o sposobie wykorzystania (dni/godziny). Kontrola limitów odbywa się
+::       standardowymi mechanizmami.
+::   WE: _a [REFERENCE] - Wskazanie na rekord tabeli EDOKUM.
+::       _b [REFERENCE] - Wskazanie na rekord tabeli NWU.
+::   WY: '' / opis błędu
+::----------------------------------------------------------------------------------------------------------------------
+_result:='';
+_edokum:={? var_pres('_a')=type_of(null()) || _a || return(_result) ?};
+   _nwu:={? var_pres('_b')=type_of(null()) || _b || return(_result) ?};
+
+EDOKUM.cntx_psh();
+_name:=ref_name(_edokum);
+{? EDOKUM.name()<>_name
+|| EDOKUM.use(_name)
+?};
+EDOKUM.prefix();
+NWU.cntx_psh();
+NWU.prefix();
+{? EDOKUM.seek(_edokum) & NWU.seek(_nwu)
+|| _params:=json_parse(EDOKUM.memo_txt(0,1,'PARAMS'));
+:: Powyżej: odczytujemy zapamiętane parametry wniosku, w szczególności ref utworzonej dyscypliny pracy.
+:: Specjalna obsługa wniosku o zwolnienie od pracy z powodu działania siły wyższej z OŚWIADCZENIEM - wartość w polu
+:: 'OnHourlyBasisDecision' będzie liczbą. Dla pozostałych przypadków w polu powinna znajdować się wartość NULL,
+:: po rozpakowaniu metodą getValue(): ~~ (void)
+   {? obj_ntab(_params) & var_pres('OnHourlyBasisDecision',_params)=type_of(0)
+   || _err:=exec('oMsgErr','portal_walidacja');
+      P.cntx_psh();
+      P.prefix();
+      NWU.P();
+      DS.cntx_psh();
+      DS.index('DYSCYPLI');
+      DS.prefix();
+      _mydo:=do_state()=0;
+      {? _mydo || do() ?};
+      _put:=DS.find_key(P.ref(),NWU.OD~1,NWU.R);
+      {? _put
+      || DS.NW:=DS.NP:=DS.NZ:=DS.NL:=0;
+         DS.DNL:=date(0,0,0)
+      || DS.blank();
+         DS.P:=P.ref();
+         DS.R:=NWU.OD~1;
+         DS.NB:=NWU.R
+      ?};
+      {? _params.OnHourlyBasisDecision
+      || DS.NR:='G';
+         _atr:=19742;
+         _opis:='godziny'
+      || DS.NR:='R';
+         _atr:=19741;
+         _opis:='dni'
+      ?};
+::    Zajrzyjmy jeszcze do okresów zatrudnienia.
+      _oz:=exec('wyzsza_staz','staz',P.OSOBA,DS.R);
+      {? (DS.NR='G' & _oz.dni) | (DS.NR='R' & _oz.godz)
+      || _result:=
+            'Obecna deklaracja sposobu korzystania (%1) '
+            'jest niezgodna z deklaracjami u poprzednich pracodawców.'[_opis]+' '+_err.kadry
+      |? _lim:=__RUB.sys_val(_atr,NWU.OD);
+         type_of(_lim)<>type_of(0)
+      || _result:='Brak definicji atrybutu %1.'[$_atr]+' '+_err.kadry
+::       Nie sprawdzamy czy _lim>0 - może w przyszłości limit zostanie zabrany ...
+      |? DS.NN:=_lim;
+         {? DS.NR='G'
+::          Art. 148¹. § 4. Wymiar godzinowy proporcjonalnie do etatu.
+         || _wym:=1;
+            H.cntx_psh();
+            H.use('_hist');
+            H.index('_HISTKOD');
+            H.prefix(P.ref(),'Z',);
+            {? H.find_le(NWU.OD)
+            || _wym:=H.WYL/H.WYM
+            ?};
+            H.cntx_pop();
+            {? _wym<1
+            || DS.NN:=ceil(DS.NN*_wym)
+            ?};
+            DS.NN-=_oz.godz
+         || DS.NN-=_oz.dni
+         ?};
+         {? DS.NN<0
+::          Ujemny limit nie jest OK, ale nie będziemy tego sygnalizowali (w tym miejscu) - badanie limitu odbędzie się
+::          w ramach wspólnej obsługi wniosków urlopowych. W tym miejscu jedynie trochę naprosujmy dane.
+         || DS.NN:=0
+         ?};
+         ~{? _put || DS.put(1) || DS.add(1) ?}
+      || _result:=
+            {? _put
+            || 'Modyfikacja limitu na rok %1 nie powiodła się.'[NWU.OD~1]
+            || 'Utworzenie limitu na rok %1 nie powiodło się.'[NWU.OD~1]
+            ?}
+      |? _put
+      || exec('FUNKCJE','object');
+         FUNKCJE.OBLICZDS(DS.R)
+      ?};
+      {? _result<>''
+      || undo()
+      ?};
+      {? _mydo
+      || end()
+      ?};
+      DS.cntx_pop();
+      P.cntx_pop()
+   ?}
+?};
+NWU.cntx_pop();
+EDOKUM.cntx_pop();
+_result
+
+:Sign Version 2.0 jowisz:1045 2023/09/01 08:20:01 27097b84bc7877867e1a0183f01142f84a7b027e5c977080938b0ef6562fd5c769666674094e8c2b1b5304d03df822c711ca2b930d2dedbd4a553511c08232519ccd52c5f57ed45c4e936964da3a965d653ce74aae1b1f552ec5fe723ff1f6972a404f84a66510702ef160c73070f4d238dc8e65a103f141b458e8844f7ebd38

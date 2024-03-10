@@ -1,0 +1,3628 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_dzsm.fml
+:: Utworzony: 14.02.2022
+:: Autor: AKUL
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_DZSM - Generowanie zlecenia na podstawie stanów magazynowych
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Formuła główna czynności generowania zleceń na podstawie stanów magazynowych (TTE_PZL_DZSM)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+:: WŁAŚCIWOŚCI CZYNNOŚCI
+::# permissions=ODDZ,LMG
+::# properties=LOOP
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=KTM, type=_M, name=Indeks materiałowy, required=N
+{? var_pres('KTM',_in)<>type_of(~~) & var_pres('KTM',_in)<>type_of(null()) || return() ?};
+{? var_pres('KTM',_in)=type_of(~~) || _in.KTM:=null() ?};
+::# kind=WE, symbol=MG, type=_MG, name=Magazyn, required=N
+{? var_pres('MG',_in)<>type_of(~~) & var_pres('MG',_in)<>type_of(null()) || return() ?};
+{? var_pres('MG',_in)=type_of(~~) || _in.MG:=null() ?};
+::# kind=WE, symbol=SC, type=_SC, name=Dostawa, required=N
+{? var_pres('SC',_in)<>type_of(~~) & var_pres('SC',_in)<>type_of(null()) || return() ?};
+{? var_pres('SC',_in)=type_of(~~) || _in.SC:=null() ?};
+::# kind=WE, symbol=ZTP, type=_ZTP, name=Typ zlecenia, required=N, fml_val="exec('ztp_select','zl_head','P')", fml_exp="exec('ztp_export','zl_head',_a)"
+{? var_pres('ZTP',_in)<>type_of(~~) & var_pres('ZTP',_in)<>type_of(null()) || return() ?};
+{? var_pres('ZTP',_in)=type_of(~~) || _in.ZTP:=null() ?};
+::# kind=WE, symbol=ZLOZONE, type=STRING, name=Podpowiedź znacznika dla procesu z półfabrykatami, required=N, fml_val="exec('complex_select','!tte_pzl_dzwe')"
+{? var_pres('ZLOZONE',_in)<>type_of(~~) & var_pres('ZLOZONE',_in)<>type_of('') || return() ?};
+{? var_pres('ZLOZONE',_in)=type_of(~~) || _in.ZLOZONE:='P' ?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=ZL, type=_ZL, name=Zlecenie, required=N
+{? var_pres('ZL',_out)<>type_of(~~) & var_pres('ZL',_out)<>type_of(null()) || return() ?};
+::# kind=WY, symbol=KATEGORIA, type=STRING, name=Kategoria zlecenia, required=N
+{? var_pres('KATEGORIA',_out)<>type_of(~~) & var_pres('KATEGORIA',_out)<>type_of('') || return() ?};
+
+:: Ustawiam wartość domyślną argumentu LOOP żeby brama się nie zawiesiła
+_mp.save(exec('kind_out','#b_port'),'LOOP','N');
+
+_key:=_out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+
+_can_continue:=1;
+_done:=0;
+
+{? _can_continue>0
+||
+:: warunki wyłączające...
+::   {? ~(_in.KTM | _in.MG | | _in.SC | _in.GRP_KEY<>'')
+::   || _mp.error('Parametr %1, %2, %3 albo %4 musi być podany.'@@['KTM','MG','SC','GRP_KEY'])
+::   {? 0 & _in.SC<>null() & ((_in.KTM<>null() & _in.KTM<>exec('FindAndGet','#table',SC,_in.SC,,"SC.M",null()))
+::      | _in.MG<>null() & _in.MG<>exec('FindAndGet','#table',SC,_in.SC,,"SC.MAG",null()))
+::   || _msg:=
+::         'Niezgodność wywołania czynności.\n'
+::         'Przekazany indeks materiałowy i magazyn musi być zgodny z danymi zawartymi na dostawie.'@@;
+::      FUN.emsg(_msg);
+::      _mp.error(_msg)
+   {? _can_continue>0
+   ||
+      {? _mp.loop()=0
+      ||
+         {? _key<>''
+         ||
+            _ktm:={? _in.KTM<>null()
+                  || $_in.KTM
+                  |? var_pres('_context')>0 & var_pres('KTM',_context)>100
+                  || _context.KTM
+                  || ''
+                  ?};
+            _mg:={? _in.MG<>null() || $_in.MG || '' ?};
+            _sc:={? _in.SC<>null()
+                 || $_in.SC
+                 |? var_pres('_context')>0 & var_pres('SC',_context)>100
+                 || _context.SC
+                 || ''
+                 ?};
+::          Wyświetlenie panelu ze stanami magazynowymi (dziedzina zależna od przekazanych parametrów).
+            {? _mp.pathProc()
+            ||
+::             Ze startu procesów uruchamiane w kontekście wszystkich magazynów, materiałów i dostaw
+               _result:=exec('zlisty','!tte_pzl_dzsm',,,,_in.ZTP,_in.ZLOZONE)
+            || _result:=exec('zlisty','!tte_pzl_dzsm',_ktm,_mg,_sc,_in.ZTP,_in.ZLOZONE)
+            ?};
+            {? _result.RESULT>=0
+            || _env_zlisty:=_result.ENV_ZLISTY;
+               _tab_m:=_env_zlisty.TAB_M;
+               _tab_sc:=_env_zlisty.TAB_SC;
+               {? _result.RESULT>0
+               || _tab_wyr:=_env_zlisty.TAB_WYR;
+                  _tab_wyrsc:=_env_zlisty.TAB_WYRSC;
+                  {? _tab_wyr.first()>0
+                  ||
+                     _grupa:={? _tab_wyr.size()>1 || 1 || 0 ?};
+                     {? _grupa>0
+                     || KOMM.init(250,,'Generowanie zleceń na podstawie stanów magazynowych'@)
+                     ?};
+                     M.cntx_psh();
+                     M.clear();
+                     {!
+                     |?
+::                      Generowanie zleceń
+                        {? var_pres('_args_zl')>100 || obj_del(_args_zl) ?};
+                        _args_zl:=exec('tab2args','!tte_pzl_dzsm',,_tab_wyr);
+                        _args_zl.SPLIT:=0;
+                        _args_zl.GEN_ZLZAM:=0;
+                        _args_zl.DIALOG:=0;
+                        _args_zl.GRUPA:=_grupa;
+                        _args_zl.ZTP:=exec('FindInSet','#table','ZTP','TP',_tab_wyr.ZTP,,,1,,null());
+                        _args_zl.COMPLEX:=_tab_wyr.COMPLEX;
+::                      Przypisanie cechy zlecenia
+                        {? _tab_wyr.M_ATR<>''
+                        || _dk_c:='';
+                           _m_atr:=exec('FindAndGet','#table',M_ATR,_tab_wyr.M_ATR,,,null());
+                           {? _m_atr<>null()
+                           ||
+::                            Zakładam ceche, lub zwracam istniejącą
+                              _dk_c:=$(exec('m_atr_sprdod','mat_atr'
+                                 ,_tab_wyr.WAR01
+                                 ,_tab_wyr.WAR02
+                                 ,_tab_wyr.WAR03
+                                 ,_tab_wyr.WAR04
+                                 ,_tab_wyr.WAR05
+                                 ,_tab_wyr.WAR06
+                                 ,_tab_wyr.WAR07
+                                 ,_tab_wyr.WAR08
+                                 ,_tab_wyr.WAR09
+                                 ,_tab_wyr.WAR10
+                                 ,_m_atr
+                              ))
+                           ?};
+                           _args_zl.DK_C:=_dk_c
+                        ?};
+::                      Ustawienie VAR.GRUPA=T - zbieranie komunikatow do komm
+                        VAR.GRUPA:='T';
+                        params_exec('auto_sm','!tte_pzl_dzsm',_args_zl);
+                       {? _args_zl.RESULT.tab.first()
+                       ||
+                          {!
+                          |?
+                            _mp.grpkeyAdd(exec('FindAndGet','#table',ZL,_args_zl.RESULT.tab.SQL,,"uidref()",''));
+                            _args_zl.RESULT.tab.next()
+                          !};
+::                        Zarezerowanie surowców
+                          _tab_wyrsc.prefix($_tab_wyr.ref());
+                          {? _tab_wyrsc.first()
+                          || _tab_sc.clear();
+                             {!
+                             |?
+                                 {? _tab_sc.seek(_tab_wyrsc.SC) & M.seek(_tab_sc.MREF)
+                                 ||
+::                                  Aktualizacja (zwolnienie) ilości z rezerwacji początkowej
+                                    {? _tab_sc.REZ<>'' & REZ.seek(_tab_sc.REZ)
+                                    || REZ.ILR-=_tab_wyrsc.IL;
+                                       REZ.put()
+                                    ?};
+                                    _mg:=exec('FindAndGet','#table',MG,_tab_sc.MGREF,,,null());
+                                    _zl:=exec('FindAndGet','#table',ZL,_args_zl.RESULT.tab.SQL,,,null());
+                                    exec('zam_tymc','rezerwacje',0,_mg,_tab_sc.SRDK,_zl,_tab_wyrsc.IL,'T');
+                                    REZ.REFREA:=_tab_wyrsc.TMAT;
+                                    REZ.put()
+                                 ?};
+                                _tab_wyrsc.next()
+                             !}
+                          ?}
+                       ?};
+                       _tab_wyr.next()
+                     !};
+                     M.cntx_pop();
+                     {? _grupa>0
+                     || KOMM.select()
+                     ?}
+                  ?}
+               ?};
+::             Usunięcie rezerwacji początkowych
+               REZ.cntx_psh();
+               REZ.use((REZ.name()-2)+'__');
+               REZ.clear();
+               _tab_m.cntx_psh();
+               _tab_m.clear();
+               _tab_sc.cntx_psh();
+               {? _tab_m.first()
+               || _mg:=_env_zlisty.MG;
+                  {!
+                  |?
+                     _mat:=exec('FindAndGet','#table',M,_tab_m.REF,,,null());
+                     _nrk:=0;
+                     _ilr:=0;
+                     _czy_rez:=0;
+                     _tab_sc.prefix(_tab_m.REF,);
+                     {? _tab_sc.first()
+                     || {!
+                        |?
+                           {? _tab_sc.REZ<>'' & REZ.seek(_tab_sc.REZ)
+                           || _czy_rez:=1;
+                              _ilr+=REZ.ILR;
+                              REZ.del()
+                           ?};
+                           _tab_sc.next()
+                        !}
+                     ?};
+::                   Aktualizacja stanów/rezerwacji
+                     {? _czy_rez>0
+                     || {? _mg<>null()
+                        || exec('obl_stan','magazyn_stan',_mat,1,_mg);
+                           exec('aktu_rez','rezerwacje',_mat,_nrk,_ilr,,,_mg)
+                        || exec('obl_stan','magazyn_stan',_mat,5);
+                           exec('aktu_rez','rezerwacje',_mat,_nrk,_ilr)
+                        ?}
+                     ?};
+                     _tab_m.next()
+                  !}
+               ?};
+               _tab_sc.cntx_pop();
+               _tab_m.cntx_pop();
+               REZ.cntx_pop()
+            ?}
+         ?}
+      ?};
+      {? _key<>''
+      ||
+::       Generacja - wypycham pierwsze zlecenie na wyjście
+         _zl_uidref:=_mp.grpkeyGet();
+         {? type_of(_zl_uidref)=type_of('')
+         ||
+            _done:=1;
+            M.cntx_psh();
+            ZL.cntx_psh();
+            ZL.prefix();
+            {? ZL.seek(_zl_uidref)
+            ||
+               do();
+               _can_continue:=ZL.put();
+               _mp.save(exec('kind_out','#b_port'),'ZL',ZL.ref());
+               _mp.save(exec('kind_out','#b_port'),'KATEGORIA',ZL.RODZAJ);
+               _mp.save(exec('kind_out','#b_port'),'GRPKEY',_key);
+               _mp.grpkeyDel();
+               end();
+
+::             Jeżeli są jeszcze jakieś zlecenia to kontynuuję pętlę
+               _zl_uidref:=_mp.grpkeyGet();
+               {? type_of(_zl_uidref)=type_of('')
+               || _mp.loop_continue()
+               ?}
+            ?};
+            M.cntx_pop();
+            ZL.cntx_pop()
+         ||
+::          Zakończenie (nie powstało żadne zlecenie) - wypycham nullowe zlecenie na wyjście
+            _mp.save(exec('kind_out','#b_port'),'ZL',null());
+            _done:=1
+         ?}
+      || _mp.error('Brak oczekiwanego parametru %1.'@@['GRPKEY'])
+      ?};
+      {? _done>0
+      || _mp.done()
+      ?}
+   ?}
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Opis dla czynności generowania zleceń na podstawie stanów magazynowych (TTE_PZL_DZSM)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='Generuj nowe zlecenia produkcyjne na podstawie stanów magazynowych'@@;
+_desc
+
+
+\tab2args
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Generuję/aktualizuję tablicę z argumentami dla funkcji generujących zlecenie na podstawie
+::       stanów magazynowych
+::   WE: [_a] - wynik działania exec('auto_args','zl_gen')
+::       _b - tab_tmp
+::   WY: _args - argumenty dla funkcji generującej, wynik działania exec('auto_args','zl_gen')
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('auto_args','zl_gen')
+?};
+_tab:=_b;
+
+_can_continue:=1;
+_args.M:=_tab.MREF;
+_args.KTM:=_tab.KTM;
+_args.ILOSC:=_tab.IL;
+_args.IL_WYTW:=_tab.IL;
+_args.JM_SYM:=_tab.JM;
+::_args.COMPLEX:=_tab.COMPLEX;
+{? _tab.TKTL<>''
+|| _args.TKTL:=exec('FindAndGet','#table',TKTL,_tab.TKTL,,,null())
+?};
+{? _tab.DK_C<>''
+|| _args.DK_C:=_tab.DK_C
+?};
+_data:=date()+exec('get','#params',500103,1);
+_args.DTR:=_data;
+_args.PL_DATA:=_data;
+::_args.PL_TIME:=_tab.ENDT;
+_args.GRP_KEY:='';
+_args.OPIS:='Generowane ze stanów magazynowych';
+_args
+
+
+\auto_sm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Funkcja generowania jednego lub wielu zleceń na podstawie stanów magazywnoych
+::   WE: _a - _args - argumenty dla funkcji generujacej, wynik dzialania exec('auto_args','zl_gen')
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+{? var_pres('_a')>100
+|| _args:=_a
+|| _args:=exec('auto_args','zl_gen')
+?};
+
+_result:=0;
+_can_continue:=1;
+
+_mp:=params_get().mp;
+
+_locked:=1;
+{? _locked>0
+||
+:: Sprawdzenie produktu w zleceniach nadrzędnych
+   {? _can_continue>0 & _args.ZL_NAD<>null()
+   || {? exec('FindAndGet','#table',ZL,_args.ZL_NAD,,"$KTM=_b.M",0,_args)
+      || _msg:='Indeks produktu jest wykorzystany w zleceniu wyższego poziomu.'@;
+         {? _args.GRUPA>0
+         || KOMM.add(_msg,4)
+         |? _args.DIALOG>0
+         || FUN.info(_msg)
+         ?};
+         _mp.error(_msg);
+         _can_continue:=0
+      || {? exec('FindAndGet','#table',ZL,_args.ZL_NAD,,
+               "exec('chk_ktm','zl_head',TREE,exec('FindAndGet','#table',M,_b.M))>0",0,_args
+            )
+         || _msg:='Indeks produktu jest wykorzystany w zleceniu wyższego poziomu.'@;
+            {? _args.GRUPA>0
+            || KOMM.add(_msg,4)
+            |? _args.DIALOG>0
+            || FUN.info(_msg)
+            ?};
+            _mp.error(_msg);
+            _can_continue:=0
+         ?}
+      ?}
+   ?};
+:: Sprawdzenie terminu realizacji
+   {? _can_continue>0
+   ||
+      {? _args.DIALOG>0
+      || {? _args.PL_DATA<date()
+         || {? ~FUN.ask('Generowanie zlecenia\n\n'
+                  'Termin realizacji jest wcześniejszy, niż data powołania zlecenia.\n'
+                  'Czy wygenerować zlecenie (konieczna będzie korekta daty na zleceniu)?'@,
+               )
+            || _can_continue:=0
+            ?}
+         ?}
+      || _msg:='Termin realizacji jest wcześniejszy, niż data powołania zlecenia.'@;
+         _mp.error(_msg);
+         {? _args.GRUPA>0
+         || {? _args.PL_DATA<date()
+            || KOMM.add(_msg,2);
+               _can_continue:=0
+            ?}
+         ?}
+      ?}
+   ?};
+   {? _can_continue>0
+   || {? exec('sprdt','zl_head')
+      || exec('auto_zl_core','zl_gen',_args)
+      ?}
+   ?}
+?};
+~~
+
+
+\zlisty
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Generowanie zleceń ze stanów magazynowych (dostaw)
+::   WE: [_a] - $M.ref() lub tabela z listą refów (tabela musi posiadać pole REF).
+::              Jak nie podane to brane pod uwagę wszystkie indeksy materiałowe.
+::       [_b] - $MG.ref() - konkretny magazyn, jak nie podany to brane po uwagę dostawy ze wszystkich magazynów
+::       [_c] - $SC.ref() lub tabela z listą refów (tabela musi posiadać pole REF).
+::              Jeżeli podana to parametry wejściowe _a i _b ustalane na podstawie danych dostawy (SC.M,SC.MAG).
+::              Dozwolone dostawy dotyczące wyłącznie jednego materiału i jednego magazynu
+::       [_d] - ZTP.ref() - Typ zlecenia, jak nie podany, to wybierany podczas generowania
+::       [_e] - Czy generować zlecenia złożone: 'T' - tak,
+::                                              'N' - nie (bedą generowane zlecenia proste)
+::                                             ['P'] - decyzja podczas generowania
+::   WY: obiekt _result o polach: RESULT - INTEGER - wynik działania tab_wyr.select() lub -1 gdy wystąpił błąd
+::                                ENV_ZLISTY - odwołanie do środowiska generatora
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('RESULT','ENV_ZLISTY');
+_result.RESULT:=0;
+_result.ENV_ZLISTY:=~~;
+_tab_ktm:='';
+_tab_dost:='';
+
+_sc:={? var_pres('_c')>0 || _c || '' ?};
+_ztp:={? var_pres('_d')=type_of(null()) || _d || null() ?};
+_complex:={? var_pres('_e')=type_of('') || _e || 'P' ?};
+
+{? type_of(_sc)=type_of('') & _sc=''
+||
+:: Nie przekazano dostaw
+   _ktm:={? var_pres('_a')>0 || _a || '' ?};
+   _mg:={? var_pres('_b')=type_of('') || _b || '' ?}
+||
+:: Przekazano konkretne dostawy
+   {? var_pres('_sc')>100
+   || _tab_dost:=_sc;
+      {? _sc.first()
+      || _ktm:=exec('FindAndGet','#table',SC,_sc.REF,,"$SC.M",'');
+         _mg:=exec('FindAndGet','#table',SC,_sc.REF,,"$SC.MAG",'')
+      ?}
+   |? type_of('_sc')=type_of('') & _sc<>''
+   || _ktm:=exec('FindAndGet','#table',SC,_sc,,"$SC.M",'');
+      _mg:=exec('FindAndGet','#table',SC,_sc,,"$SC.MAG",'');
+      _tab_dost:=tab_tmp(,'REF','STRING[16]','$M.ref()');
+      _tab_dost.REF:=_sc;
+      _tab_dost.add()
+   ?}
+?};
+
+{? var_pres('_ktm')>100
+|| _tab_ktm:=_ktm
+|? type_of(_ktm)=type_of('') & _ktm<>''
+|| _tab_ktm:=tab_tmp(,'REF','STRING[16]','$M.ref()');
+   _tab_ktm.REF:=_ktm;
+   _tab_ktm.add()
+?};
+_fill_sc:={? var_pres('_tab_ktm')=type_of('') || 0 || 1 ?};
+
+{? ~exec('sprdt','zl_head') || _result.RESULT:=-1; return(_result) ?};
+
+set_help(exec('set_help','#help','TTE_PZL_DZSM'));
+M.cntx_psh(); M.clear();
+MG.cntx_psh(); MG.clear();
+SM.cntx_psh(); SM.clear();
+DK_C.cntx_psh(); DK_C.clear();
+REZ.cntx_psh(); REZ.use((REZ.name()-2)+'__'); REZ.clear();
+ATR.cntx_psh(); BEER.cntx_psh(); VAR.cntx_psh();
+ZL.cntx_psh();
+
+:: Środowisko generatora ze stanów magazynoych
+_env_zlisty:=exec('env_zlisty','!tte_pzl_dzsm',_tab_ktm,_mg,~_fill_sc,_ztp,_complex);
+_result.ENV_ZLISTY:=_env_zlisty;
+
+params_set('env_zlisty',_env_zlisty);
+_tab_m:=_env_zlisty.TAB_M;
+_tab_sc:=_env_zlisty.TAB_SC;
+:: Uzupełnienie tabeli ze stanami
+{? _fill_sc>0
+||
+:: Nie podano konkretnych dostaw, uzupełniam wszystkie
+   _tab_m.index(_env_zlisty.NDX_M);
+   _tab_m.prefix(1);
+   {? _tab_m.first()
+   || {!
+      |?
+         exec('sc_tab_add','!tte_pzl_dzsm',_tab_m.REF,_mg,_tab_dost);
+         _tab_m.next()
+      !}
+   ?}
+::   Na ten moment zawsze brane pod uwagę aktywne dostawy, więc dodatkowa walidacja nie jest potrzebna
+::   {? type_of(_tab_dost)>100 & _tab_sc.size()=0
+::   || FUN.info('Żadna z wybranych dostaw nie jest dostępna na stanie.'@);
+::      return(_result)
+::   ?}
+?};
+:: Ustawienie filtra na listę uprawnionych magazynów (przy pracy w kontekście wielu magazynów)
+_filtr:=1;
+{? _env_zlisty.MG<>null()
+|| BEER.RS:=1
+|| BEER.RS:=11;
+   _filtr:=MG.f_active();
+   {? ~_filtr || exec('zakrMag','lmg') ?}
+?};
+
+:: Usunięcie materiałów z zerowym stanem dostępnym
+_tab_m.clear();
+{? _tab_m.first()
+|| {!
+   |?
+      {? M.seek(_tab_m.REF)
+      || exec('zwr_stan','magazyn_stan',M.ref(),BEER.RS,_env_zlisty.MG,0);
+         {? BEER.SD<=0
+         || _next:=_tab_m.del(,1)=2
+         || _next:=_tab_m.next()
+         ?}
+      || _next:=_tab_m.next()
+      ?};
+      _next
+   !}
+?};
+_tab_m.index(_env_zlisty.NDX_M2);
+_tab_m.prefix();
+{? _tab_m.first()
+||
+   {? _tab_m.select()
+   ||
+::    Przetworzenie tabeli materiałów - usunięcie niepotrzebnych wpisów
+::    (niewybranych w kontekście uruchomienia od strony zleceń)
+      _tab_m.index(_env_zlisty.NDX_M);
+      _tab_m.prefix(0);
+      {? _tab_m.first()
+      || {!
+         |?
+            _tab_m.del()
+         !}
+      ?};
+      _tab_m.prefix();
+::    Przetworzenie tabeli dostaw - usunięcie niepotrzebnych wpisów (nierozpisane dostawy)
+      _tab_m.cntx_psh();
+      _tab_m.clear();
+      {? _tab_m.first()
+      ||
+         {!
+         |?
+            _czy_rez:=0;
+            _tab_sc.prefix(_tab_m.REF,);
+            _nrk:=0;
+            _ilr:=0;
+            {? _tab_sc.first()
+            || {!
+               |?
+                  {? _tab_sc.IL<=0
+                  ||
+::                   Usunięcie powiązanej rezerwacji
+                     {? _tab_sc.REZ<>'' & REZ.seek(_tab_sc.REZ)
+                     || _czy_rez:=1;
+                        _ilr+=REZ.ILR;
+                        REZ.del()
+                     ?};
+                     _next:=_tab_sc.del(,1)=2
+                  || _tab_sc.LEFT:=_tab_sc.IL;
+                     _tab_sc.SD:=_tab_sc.IL;
+                     _tab_sc.put();
+                     _next:=_tab_sc.next()
+                  ?};
+                  _next
+               !}
+            ?};
+::          Aktualizacja stanów po usunięciu rezerwacji
+            {? _czy_rez>0
+            || _mat:=exec('FindAndGet','#table',M,_tab_m.REF,,,null());
+               _mag:=_env_zlisty.MG;
+               {? _mag<>null()
+               || exec('obl_stan','magazyn_stan',_mat,1,_mag);
+                  exec('aktu_rez','rezerwacje',_mat,_nrk,_ilr,,,_mag)
+               || exec('obl_stan','magazyn_stan',_mat,5);
+                  exec('aktu_rez','rezerwacje',_mat,_nrk,_ilr)
+               ?}
+            ?};
+            _tab_m.next()
+         !}
+      ?};
+      _tab_m.cntx_pop();
+::    Otworzenie masek tabel technologii
+      exec('tktl_cntx_psh','tech_common');
+      exec('tktl_use','tech_common');
+::    Wyszukanie listy kart technologicznych zawierających daną listę materiałów
+      _tab_tktl:=_env_zlisty.TAB_TKTL:=exec('find_tktl','!tte_pzl_dzsm');
+      {? type_of(_tab_tktl)>100
+      || {? _tab_tktl.first()
+         ||
+            _tab_wyr:=_env_zlisty.TAB_WYR;
+::          Wygenerowanie dostępnych do utworzenia produktów
+            exec('generate_list_wyr','!tte_pzl_dzsm');
+            {? _tab_wyr.first()
+            ||
+::             Odświeżenie ilości maksymalnych
+               exec('wyr_il_aktu','!tte_pzl_dzsm');
+               {? _tab_wyr.select()
+               || {? _tab_wyr.first()
+                  || _ztp:={? _env_zlisty.ZTP<>'' || _env_zlisty.ZTP || '' ?};
+                     {? _ztp=''
+                     ||
+::                      Jeżeli zdefiniowany tylko 1 typ to go automatycznie przypisuje
+                        ZTP.cntx_psh();
+                        ZTP.clear();
+                        {? ZTP.f_active()>0 || ZTP.f_clear() ?};
+                        _typy:=exec('typy_zlecen','zl_head','P');
+                        ZTP.f_set('TYP',,'ZTP.REFERENCE in (select :_a.REF from :_a)',_typy);
+                        {? ZTP.f_size()=1
+                        || ZTP.f_first();
+                           _ztp:=ZTP.TYP
+                        ?};
+                        ZTP.cntx_pop()
+                     ?};
+                     _complex:=_env_zlisty.COMPLEX;
+::                   Usunięcie wpisów z zerową ilością
+                     {!
+                     |?
+                        {? _tab_wyr.IL<=0
+                        || _next:=_tab_wyr.del(,1)=2
+                        ||
+::                         Przypisane typu i kategorii zlecenia (złożone/proste)
+                           {? _ztp<>''
+                           || _tab_wyr.ZTP:=_ztp
+                           ?};
+                           {? _complex='T'
+                           || _tktl:=exec('FindAndGet','#table',TKTL,_tab_wyr.TKTL,,,null());
+                              {? exec('czy_pf','tech_mater',_tktl)
+                              || _tab_wyr.COMPLEX:='T'
+                              || _tab_wyr.COMPLEX:='N'
+                              ?}
+                           || _tab_wyr.COMPLEX:='N'
+                           ?};
+                           _tab_wyr.put();
+                           _next:=_tab_wyr.next()
+                        ?};
+                        _next
+                     !}
+                  ?};
+::                Wyświetlenie okna z listą zleceń
+                  _tab_wyr.cntx_psh();
+                  _tab_wyr.win_sel(_env_zlisty.GRP_WYR_ZL);
+                  {? _tab_wyr.select()
+                  || _result.RESULT:=1
+                  ?};
+                  _tab_wyr.cntx_pop()
+               ?}
+            ?}
+         || FUN.info('Nie znaleziono technologii zawierającej wszystkie wybrane surowce.'@)
+         ?}
+      || FUN.emsg('Wystąpił problem z utworzeniem listy dostępnych technologii.'@)
+      ?};
+      exec('tktl_cntx_pop','tech_common')
+   ?}
+|| FUN.info('Zerowy stan dostępny wybranych surowców.'@)
+?};
+{? ~_filtr || MG.f_clear() ?};
+ZL.cntx_pop();
+REZ.cntx_pop();
+M.cntx_pop();
+MG.cntx_pop();
+SM.cntx_pop();
+DK_C.cntx_pop();
+ATR.cntx_pop(); BEER.cntx_pop(); VAR.cntx_pop();
+
+_result
+
+
+\env_zlisty
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Środowisko generatora z listy stanów magazynowych
+::   WE: [_a] - tabela robocza - indeksy materiałowe (tabela musi zawierać pole REF typu STRING[16])
+::              Jak nie podana to brane pod uwagę wszystkie materiały
+::       [_b] - $MG.ref() - jak podany, to stany wyliczane tylko z podanego magazynu
+::       [_c] - INTEGER - czy dodatkowe akcje Zaznacz/Odznacz: [0]/1
+::       [_d] - ZTP.ref() - Typ zlecenia, jak nie podany, to wybierany podczas generowania
+::       [_e] - Czy generować zlecenia złożone: 'T' - tak,
+::                                              'N' - nie (bedą generowane zlecenia proste)
+::                                             ['P'] - decyzja podczas generowania
+::----------------------------------------------------------------------------------------------------------------------
+_tab_ktm:={? var_pres('_a')>100 || _a || '' ?};
+_mg:={? var_pres('_b')=type_of('') || _b || '' ?};
+_czy_sel:={? var_pres('_c')=type_of(0) || _c || 0 ?};
+_ztp:={? var_pres('_d')=type_of(null()) || _d || null() ?};
+_complex:={? var_pres('_e')=type_of('') || _e || 'P' ?};
+
+_env_zlisty:=obj_new('GRP','MG','ZTP','COMPLEX','CZY_SEL','GRP_WYR','GRP_WYR_ZL',
+::                   Tabela z indeksami materiałowymi
+                     'TAB_M','WER_M','NDX_M','NDX_M1','NDX_M2',
+::                   Tabela dostaw
+                     'TAB_SC','WER_SC','WER_SC_WYR','NDX_SC','NDX_SC1','NDX_SC2','NDX_SC3',
+::                   Tabela wyrobów
+                     'TAB_WYR','WER_WYR','NDX_WYR','WER_WYR_ZL','RED_WYR_ZL',
+::                   Tabele techniczne:
+::                   Tabela technologii posiadające listę danych surowców
+                     'TAB_TKTL',
+::                   Ppowiązania surowców technologicznych z materiałami M->TMAT
+                     'TAB_TMAT',
+::                   Tabela dostaw z ilościami zgrupowanymi wg materiału, wartości cech
+                     'TAB_SUMSC',
+::                   Tabela powiązań - jakie dostawy wchodzą w skład danej sumy (TAB_SUMSC->TAB_SC)
+                     'TAB_SCS','NDX_SCS','NDX_SCS1',
+::                   Tabela przeliczników surowca dla wyrobu technologicznego
+                     'TAB_PRZ',
+::                   Tabela powiązań wyrobu technologii z listą dostaw (TAB_WYR->TAB_SUMSC)
+                     'TAB_WYRSUM',
+::                   Tabela powiązań wyrobu technologii z dostawą - rozpisanie ilości z dostaw (TAB_WYR->TAB_SC)
+                     'TAB_WYRSC'
+);
+:: Magazyn, dla którego sprawdzane stany, jak null() to brane pod uwagę stany ze wszystkich magazynów
+_env_zlisty.MG:={? _mg<>'' || exec('FindAndGet','#table',MG,_mg,,,null()) || null() ?};
+:: czy dodatkowe akcje Zaznacz/Odznacz
+_env_zlisty.CZY_SEL:=_czy_sel;
+:: Typ generowanych zleceń
+_env_zlisty.ZTP:=exec('FindAndGet','#table',ZTP,_ztp,,"ZTP.TYP",'');
+:: Czy generować zlecenia złożone
+_env_zlisty.COMPLEX:=_complex;
+
+:: Tabela z indeksami materiałowymi
+_tab_m:=sql('
+   select
+      M.REFERENCE as REF,
+      M.KTM as KTM,
+      M.N as NAZ,
+      JM.KOD as JM,
+      0 as SD,
+      0 as SW,
+      cast(0 as REAL_TYPE) as SUM_IL,
+      '+{? var_pres('_tab_ktm')>100 || ' 1 as SEL ' || ' 0 as SEL ' ?}+'
+   from M
+      join JM using (M.J,JM.REFERENCE)
+   where M.A=\'T\' and M.RODZ=\'T\'
+         '+{? var_pres('_tab_ktm')>100 || ' and M.REFERENCE in (select REF from :_a) ' || '' ?}+'
+   order by SEL,KTM'
+   ,_tab_ktm
+);
+_env_zlisty.TAB_M:=_tab_m;
+:: Indeks: SEL, KTM
+_env_zlisty.NDX_M:=_tab_m.index('?');
+:: Indeks: REF
+_env_zlisty.NDX_M1:=_tab_m.ndx_tmp(,1,'REF',,);
+:: Indeks: KTM
+_env_zlisty.NDX_M2:=_tab_m.ndx_tmp(,1,'KTM',,);
+
+:: Okno wertowania, na bazie okna STANY tabeli M
+_env_zlisty.WER_M:=_wer_m:=_tab_m.mk_sel('Stany magazynowe'@,'P',0,'#zlistysmmm',19,5,20,0,'U','T',0,0,0,'','','on');
+:: Pola
+{? _czy_sel>0
+|| _tab_m.win_fld(_wer_m,,'SEL','','',-3,0,0,'Wybrany'@,,'Czy materiał został wybrany do analizy'@,2,,"1","0")
+?};
+_tab_m.win_fld(_wer_m,,'KTM','','',20,0,0,'Indeks'@);
+_tab_m.win_fld(_wer_m,,'NAZ','','',30,0,1,'Nazwa'@);
+::_tab_m.win_fld(_wer_m,BEER,'SRT','','',-12,ST.DOKL,1,'Rezerwacje tymczasowe'@);
+::_tab_m.win_fld(_wer_m,BEER,'SRR','','',-12,ST.DOKL,1,'Rezerwacje z zamówienia'@);
+::_tab_m.win_fld(_wer_m,BEER,'SW','','',-12,ST.DOKL,1,'W wydaniu'@);
+_tab_m.win_fld(_wer_m,BEER,'SD','','',-12,ST.DOKL,1,'Dostępne'@);
+_tab_m.win_fld(_wer_m,,'SUM_IL','','',-12,ST.DOKL,1,'Ilość'@,,'Łączna ilość ze wszystkich dostaw'@);
+_tab_m.win_fld(_wer_m,,'JM',,,7,0,1,'jm'@@);
+:: Akcje
+{? _czy_sel>0
+|| _tab_m.win_act(_wer_m,0,'Formuła','&Zaznacz'@@,,,"params_exec('tab_m_chk','!tte_pzl_dzsm',1)",,0,1,,,'Z');
+   _tab_m.win_act(_wer_m,0,'Formuła','&Odznacz'@@,,,"params_exec('tab_m_chk','!tte_pzl_dzsm',0)",,0,1,,,'O')
+?};
+_tab_m.win_act(_wer_m,0,'Formuła','&Akceptuj'@@,,,"params_exec('tab_m_akc','!tte_pzl_dzsm')",,0,0,,,'A');
+_tab_m.win_act(_wer_m,1,'Formuła','&Akceptuj'@@,,,"params_exec('tab_m_akc','!tte_pzl_dzsm')",,0,0,,,'A');
+_tab_m.win_act(_wer_m,0,'Formuła','Sz&czegóły'@@,'','Szczegółowa informacja o danym indeksie materiałowym'@,
+   "exec('btninfm','magazyn_stan')",,,,,,'C');
+_tab_m.win_act(_wer_m,0,'Formuła','Wyko&rzystanie indeksu'@@,'','Wykorzystanie indeksu w technologiach'@,
+   "exec('wykorzyst','material','T')",,,,,,'R');
+_before:="
+   _result:='';
+:: Podczytanie M
+   _tab:=cur_tab(1,1);
+   {? M.seek(_tab.REF,)
+   || VAR.A_T:=M.ref();
+      _env_zlisty:=params_get().env_zlisty;
+      _mg:=_env_zlisty.MG;
+::    Wyliczenie stanów
+      exec('zwr_stan','magazyn_stan',M.ref(),BEER.RS,_mg,0);
+::    Wyliczenie łącznej ilości z dostaw
+      _tab_sc:=_env_zlisty.TAB_SC;
+      _sum:=0;
+      _tab_sc.cntx_psh();
+      _tab_sc.index(_env_zlisty.NDX_SC2);
+      _tab_sc.prefix(_tab.REF);
+      {? _tab_sc.first()
+      ||
+         {!
+         |?
+            _sum+=_tab_sc.IL;
+            _tab_sc.next() & _tab_sc.IL>0
+         !}
+      ?};
+      _tab_sc.cntx_pop();
+      _tab.SUM_IL:=_sum;
+      _tab.put();
+::    Wyznaczenie akcji domyślnej (zaznacz/odznacz)
+      _default:='';
+      {? _tab.sel_size()>0
+      || _default:='Z'
+      || {? _tab.SEL>0
+         || _default:='O'
+         || _default:='Z'
+         ?}
+      ?};
+      _tab.actions(_env_zlisty.WER_M,,_default,1);
+::    Kolorowanie
+      _tab_sc.cntx_psh();
+      _tab_sc.index(_env_zlisty.NDX_SC3);
+      _tab_sc.prefix(2,_tab.REF);
+      {? _tab_sc.first()
+      || _result:=Color.fnd_kol('__TABM#01#01')
+      ?};
+      {? _result=''
+      || _tab_sc.prefix(1,_tab.REF);
+         {? _tab_sc.first()
+         || _result:=Color.fnd_kol('__TABM#01#02')
+         ?}
+      ?};
+      _tab_sc.cntx_pop()
+   ?};
+  _result
+";
+_tab_m.win_act(_wer_m,0,'Rekord',,,,_before);
+_tab_m.win_act(_wer_m,0,'Szukaj');
+_tab_m.win_act(_wer_m,0,'Kolejność');
+_tab_m.win_act(_wer_m,0,'Formuła','Legenda'@@,'','Objaśnienie kolorów użytych w danym oknie wertowania'@,
+   "exec('legenda','color','__TABM#01')",,,,,,'L');
+:: Przyciski
+btn1:=_tab_m.win_btn(_wer_m,'text="%1",btn_label_align=center,panel=bottom,align=end'['&Akceptuj'@@],'menu:A');
+
+:: Tabela z dostawami
+_tab_sc:=tab_tmp(2,
+   'MREF','STRING[16]','$M.ref()',
+   'LP','INTEGER','Kolejność pobierania',
+   'MG','STRING[8]','Magazyn',
+   'DT','DATE','Data dostawy',
+   'TW','DATE','Termin ważności',
+   'SD','REAL','Stan dostępny',
+   'C','REAL','Cena',
+   'S','REAL','Stan',
+   'SW','REAL','W wydaniu',
+   'JM','STRING[10]','jm',
+   'DOST','STRING[100]','Dostawa',
+   'SCEAN','STRING[128]','Identyfikator dostawy',
+   'WAR01','STRING[25]','Wartość cechy 1',
+   'WAR02','STRING[25]','Wartość cechy 2',
+   'WAR03','STRING[25]','Wartość cechy 3',
+   'WAR04','STRING[25]','Wartość cechy 4',
+   'WAR05','STRING[25]','Wartość cechy 5',
+   'WAR06','STRING[25]','Wartość cechy 6',
+   'WAR07','STRING[25]','Wartość cechy 7',
+   'WAR08','STRING[25]','Wartość cechy 8',
+   'WAR09','STRING[25]','Wartość cechy 9',
+   'WAR10','STRING[25]','Wartość cechy 10',
+   'MGREF','STRING[16]','$MG.ref()',
+   'SCREF','STRING[16]','$SC.ref()',
+   'DK_C','STRING[16]','$DK_C.ref()',
+   'IL','REAL','Ilość do wykorzystania',
+   'RDK','REAL','rdk',
+   'NDK','STRING[16]','ndk',
+   'SRDK','STRING[16]','srdk',
+   'STATUS','INTEGER','Status błędu',
+   'LEFT','REAL','Pozostała ilość',
+   'REZ','STRING[48]','REZ.uidref()'
+);
+_env_zlisty.TAB_SC:=_tab_sc;
+:: Indeks: MREF, LP
+_env_zlisty.NDX_SC:=_tab_sc.index('?');
+:: Indeks: SCREF
+_env_zlisty.NDX_SC1:=_tab_sc.ndx_tmp(,1,'SCREF',,);
+:: Indeks: MREF, IL
+_env_zlisty.NDX_SC2:=_tab_sc.ndx_tmp(,1,'MREF',,,'IL',,1);
+:: Indeks: STATUS, MREF
+_env_zlisty.NDX_SC3:=_tab_sc.ndx_tmp(,1,'STATUS',,,'MREF',,);
+
+_tab_sc.fld_fml('IL','EDIT_FORMAT',"'in_prec='+$VAR.A_T().DOKL");
+
+:: Okno wertowania
+_env_zlisty.WER_SC:=_wer_sc:=_tab_sc.mk_sel('Dostawy'@,'P',,'#zlistysmsc',1,2,,,'U');
+:: Pola
+_tab_sc.win_fld(_wer_sc,,'LP',,,-5,,1,'Lp.'@,,'Kolejność pobierania dostaw'@);
+_tab_sc.win_fld(_wer_sc,,'DT',,,-10,,1,'Data dostawy'@);
+{? _env_zlisty.MG=null()
+|| _tab_sc.win_fld(_wer_sc,,'MG',,,8,,1,'Magazyn'@)
+?};
+_tab_sc.win_fld(_wer_sc,,'C',,,10,,1,'Cena'@);
+_tab_sc.win_fld(_wer_sc,,'DOST',,,20,,1,'Dostawa'@);
+_tab_sc.win_fld(_wer_sc,,'TW',,,-10,,1,'Termin ważności'@);
+::_tab_sc.win_fld(_wer_sc,,'S',,,12,ST.DOKL,1,'Stan'@);
+::_tab_sc.win_fld(_wer_sc,,'SW',,,12,ST.DOKL,1,'W wydaniu'@);
+_tab_sc.win_fld(_wer_sc,,'SD',,,12,ST.DOKL,1,'Stan dostępny'@);
+::_tab_sc.win_fld(_wer_sc,,'JM',,,6,,,'jm'@,,'Jednostka miary'@);
+_tab_sc.win_fld(_wer_sc,,'IL',,,12,ST.DOKL,0,'Ilość'@);
+_tab_sc.win_sel(_wer_sc);
+
+:: Akcje
+_after:="
+:: Odświeżenie sumy ilości
+   params_set(params_get());
+   grp_disp(params_get().env_zlisty.TAB_M,params_get().env_zlisty.WER_M,0)
+";
+
+_tab_sc.win_act(_wer_sc,0,'Popraw',,,,,_after,1);
+_before:="
+   _tab:=cur_tab(1,1);
+   _tab.IL:=_tab.SD;
+   {? _tab.STATUS>0
+   || _tab.STATUS:=0
+   ?};
+   _tab.put();
+:: Odświeżenie sumy ilości
+   {? VAR.GRUPA<>'T'
+   || params_set(params_get());
+      grp_disp(params_get().env_zlisty.TAB_M,params_get().env_zlisty.WER_M,0)
+   ?}
+";
+_before_gr:="
+   VAR.GRUPA:='T';
+   ~~
+";
+_after_gr:="
+   VAR.GRUPA:='N';
+:: Odświeżenie sumy ilości
+   params_set(params_get());
+   grp_disp(params_get().env_zlisty.TAB_M,params_get().env_zlisty.WER_M,0);
+   ~~
+";
+_tab_sc.win_act(_wer_sc,0,'Formuła','&Wypełnij'@@,,'Pobiera maksymalną dostępną ilość'@,_before,,,1,
+   _before_gr,_after_gr,'W');
+_before:="
+   _tab:=cur_tab(1,1);
+   _tab.IL:=0;
+   {? _tab.STATUS>0
+   || _tab.STATUS:=0
+   ?};
+   _tab.put();
+:: Odświeżenie sumy ilości
+   {? VAR.GRUPA<>'T'
+   || params_set(params_get());
+      grp_disp(params_get().env_zlisty.TAB_M,params_get().env_zlisty.WER_M,0)
+   ?}
+";
+
+_tab_sc.win_act(_wer_sc,0,'Formuła','&Zeruj'@@,,'Zeruje pobieraną ilość'@,_before,,,1,_before_gr,_after_gr,'Z');
+_show_dk:="
+   _tab_sc:=cur_tab(1,1);
+   _ref:=_tab_sc.SRDK;
+   _msk:=(ref_name(_ref))+3;
+   ND.cntx_psh();
+   DK.cntx_psh();
+   DK_L.cntx_psh();
+   DK.use((5+DK.name())+_msk);
+   ND.use((5+ND.name())+_msk);
+   DK_L.use((5+DK_L.name())+_msk);
+   DK.clear();
+   {? DK.seek(_ref,)
+   || DK.N().SYM;
+      exec('disp_dk_pom','magdok_wspolne',1)
+   ?};
+   DK.cntx_pop();
+   ND.cntx_pop();
+   DK_L.cntx_pop();
+   ~~
+";
+_tab_sc.win_act(_wer_sc,0,'Formuła','Pokaż &dokument'@@,,'Pokaż dokument'@,_show_dk,,,,,,'D');
+_tab_sc.win_act(_wer_sc,0,'Menu','Przesuń&'@@,,'Przenumerowanie pozycji'@,,,,,,,'Ń');
+_tab_sc.win_act(_wer_sc,0,'Formuła','W &górę'@@,'#Ń','Przesuwa rekord w górę o n pozycji'@,,
+   "params_exec('tab_sc_move','!tte_pzl_dzsm','U')",,1,"params_exec('tab_sc_move','!tte_pzl_dzsm','U')",,'G',0);
+_tab_sc.act_icn(_wer_sc,0,'ŃG','|2arrow-up');
+_tab_sc.win_act(_wer_sc,0,'Formuła','W &dół'@@,'#Ń','Przesuwa rekord w dół o n pozycji'@,
+   "params_exec('tab_sc_move','!tte_pzl_dzsm','D')",,,1,"params_exec('tab_sc_move','!tte_pzl_dzsm','D')",,'D');
+_tab_sc.act_icn(_wer_sc,0,'ŃD','|2arrow-down');
+_tab_sc.win_act(_wer_sc,0,'Formuła','Do &numeru'@@,'#Ń','Przesuwa rekord do wskazanego numeru'@,
+   "params_exec('tab_sc_move','!tte_pzl_dzsm','N')",,,1,"params_exec('tab_sc_move','!tte_pzl_dzsm','N')",,'N');
+_tab_sc.act_icn(_wer_sc,0,'ŃN','|arrow-goto-next');
+_tab_sc.win_act(_wer_sc,0,'Szukaj');
+_tab_sc.win_act(_wer_sc,0,'Kolejność');
+_tab_sc.win_act(_wer_sc,0,'Formuła','Legenda'@@,,,"exec('legenda','color','__TABSC#01')",,,,,,'L');
+_before:="
+  _tab_sc:=cur_tab(1,1);
+  _result:='';
+:: Kolorowanie
+  {? _tab_sc.STATUS=2 | _tab_sc.SD<_tab_sc.IL
+  || _result:=Color.fnd_kol('__TABSC#01#01')
+  |? _tab_sc.STATUS=1
+  || _result:=Color.fnd_kol('__TABSC#01#02')
+  ?};
+  _result
+";
+_after:="
+:: Walidacja rekordu po modyfikacji
+   _res:='';
+   _tab:=cur_tab(1,1);
+   {? _tab.IL<0
+   || FUN.info('Ilość nie może być ujemna.'@);
+      _res:='IL'
+   |? _tab.IL>_tab.SD
+   || FUN.info('Ilość pobierana nie może być większa od dostępnej ilości na stanie.'@);
+      _res:='IL'
+   ?};
+   {? _res='' & _tab.STATUS>0
+   || _tab.STATUS:=0
+   ?};
+   _res
+";
+_tab_sc.win_act(_wer_sc,,'Rekord',,,,_before,_after);
+
+_dnd:="
+:: Zmiana LP w oknie dostaw
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_sc:=_env_zlisty.TAB_SC;
+   _tab_sc.cntx_psh();
+   _ref:=dnd_info('dest_record');
+   {? _tab_sc.seek(_ref)
+   || exec('zmien_lp','#dragdrop','LP',_env_zlisty.NDX_SC)
+   ?};
+   _tab_sc.cntx_pop()
+";
+_tab_sc.dnd_sel(_wer_sc,,'records.#zlistysmsc',_dnd);
+
+:: Okno wertowania dla wyrobów
+_env_zlisty.WER_SC_WYR:=_wer_sc_wyr:=_tab_sc.mk_sel('Dostawy'@,'P',,'#zlistysmscwyr',1,2,,,'U');
+:: Pola
+_tab_sc.win_fld(_wer_sc_wyr,,'DT',,,10,,1,'Data dostawy'@);
+_tab_sc.win_fld(_wer_sc_wyr,,'DOST',,,20,,1,'Dostawa'@);
+_tab_sc.win_fld(_wer_sc_wyr,,'IL',,,12,ST.DOKL,1,'Stan dostępny'@);
+_tab_sc.win_fld(_wer_sc_wyr,,'LEFT',,,12,ST.DOKL,1,'Pozostało'@);
+_tab_sc.win_sel(_wer_sc_wyr);
+
+_tab_sc.win_act(_wer_sc_wyr,0,'Formuła','Pokaż &dokument'@@,,'Pokaż dokument'@,_show_dk,,1,,,,'D');
+
+:: Tabela z listą wyrobów
+_tab_wyr:=tab_tmp(4,
+   'KTM','STRING[50]','Indeks materiałowy',
+   'NAZ','STRING[100]','Nazwa',
+   'NRK','STRING[50]','Nr karty technologicznej',
+   'WER','STRING[6]','Wersja',
+   'WAR01','STRING[25]','Wartość cechy 1',
+   'WAR02','STRING[25]','Wartość cechy 2',
+   'WAR03','STRING[25]','Wartość cechy 3',
+   'WAR04','STRING[25]','Wartość cechy 4',
+   'WAR05','STRING[25]','Wartość cechy 5',
+   'WAR06','STRING[25]','Wartość cechy 6',
+   'WAR07','STRING[25]','Wartość cechy 7',
+   'WAR08','STRING[25]','Wartość cechy 8',
+   'WAR09','STRING[25]','Wartość cechy 9',
+   'WAR10','STRING[25]','Wartość cechy 10',
+   'MREF','STRING[16]','$M.ref()',
+   'DK_C','STRING[16]','$DK_C.ref()',
+   'TKTL','STRING[16]','$TKTL.ref()',
+   'TKTLW','STRING[16]','$TKTLW.ref()',
+   'IL','REAL','Ilość',
+   'IL_MAX','REAL','Maksymalna ilość do utworzenia',
+   'JM','STRING[10]','jm',
+   'M_ATR','STRING[16]','$M_ATR.ref())',
+::   'WYR_SRC','STRING[16]','Źródłowy ref wyrobu (przed podziałem)',
+   'ZTP','STRING[3]','Typ zlecenia',
+   'COMPLEX','STRING[1]','Czy zlecenie złożone'
+);
+_env_zlisty.TAB_WYR:=_tab_wyr;
+:: Indeks: KTM, NAZ, NRK, WER
+_env_zlisty.NDX_WYR:=_tab_wyr.index('?');
+
+_tab_wyr.fld_fml('IL','EDIT_FORMAT',"'in_prec='+$VAR.A_T().DOKL");
+
+:: Okna wertowania - lista wyrobów
+_env_zlisty.WER_WYR:=_wer_wyr:=_tab_wyr.mk_sel('Lista wyrobów'@,'P',,'#zlistysmwyr',1,2,,,'U',,,,,'maximized');
+:: Pola
+_tab_wyr.win_fld(_wer_wyr,,'KTM','','',20,0,1,'Indeks'@);
+_tab_wyr.win_fld(_wer_wyr,,'NAZ','','',30,0,1,'Nazwa'@);
+_tab_wyr.win_fld(_wer_wyr,,'JM',,,7,0,1,'jm'@);
+_tab_wyr.win_fld(_wer_wyr,,'NRK','','',40,0,1,'Nr. karty'@);
+_tab_wyr.win_fld(_wer_wyr,,'WER','','',6,0,1,'Wersja'@);
+_tab_wyr.win_fld(_wer_wyr,,'IL',,,12,ST.DOKL_P,0,'Ilość'@);
+_tab_wyr.win_fld(_wer_wyr,,'IL_MAX',,,12,ST.DOKL_P,1,'Ilość maksymalna'@,,
+   'Maksymalna ilość na jaką można powołać zlecenie na dany wybór'@);
+::_tab_wyr.win_sel(_wer_wyr);
+:: Akcje
+_before:="
+   cur_tab(1,1).win_edit('');
+   1
+";
+_tab_wyr.win_act(_wer_wyr,0,'Popraw',,,,,,1);
+_before:="
+:: Walidacja
+   _result:=1;
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_wyr:=_env_zlisty.TAB_WYR;
+   _tab_wyr.cntx_psh();
+   {? _tab_wyr.first()
+   || _continue:=1;
+      {!
+      |?
+         {? _tab_wyr.IL>0
+         || _continue:=0
+         ?};
+         _continue>0 & _tab_wyr.next()
+      !};
+      {? _continue>0
+      || FUN.info('Należy rozpisać ilość na przynajmniej jednym wyrobie.'@);
+         _result:=0
+      ?}
+   ?};
+   _tab_wyr.cntx_pop();
+   {? _result>0
+   || sel_exit()
+   ?};
+   ~~
+";
+_tab_wyr.win_act(_wer_wyr,0,'Formuła','&Akceptuj'@@,,,_before,,0,0,,,'A');
+_tab_wyr.win_act(_wer_wyr,1,'Formuła','&Akceptuj'@@,,,_before,,0,0,,,'A');
+
+_before_tktl:="
+   _tab_wyr:=cur_tab(1,1);
+   _tktl:=_tab_wyr.TKTL;
+   set_help(exec('set_help','#help','TTE_TEC'));
+   exec('tktl_cntx_psh','tech_common');
+   _msk:=(8+_tktl)+3;
+   exec('tktl_use','tech_common',_msk);
+   {? TKTL.seek(_tktl)
+   || VAR.A_KTL:=TKTL.ref();
+      _red:=exec('win_edit','!tte_tec_pkte');
+      TKTL.win_edit(_red);
+      TKTL.edit()
+   ?};
+   exec('tktl_cntx_pop','tech_common');
+   ~~
+";
+_tab_wyr.win_act(_wer_wyr,0,'Formuła','&Technologia'@@,,,_before_tktl,,0,0,,,'T');
+
+_before:="
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_sc:=_env_zlisty.TAB_SC;
+   _tab_wyr:=_env_zlisty.TAB_WYR;
+   _tab_wyrsum:=_env_zlisty.TAB_WYRSUM;
+   _tab_sumsc:=_env_zlisty.TAB_SUMSC;
+   _tab_scs:=_env_zlisty.TAB_SCS;
+   _sort:='';
+   _from:=' join :_b using (:_a.REFERENCE,:_b.SC)
+            join :_c using (:_b.SUM,:_c.REFERENCE)
+            join :_d using (:_d.SUM,:_c.REFERENCE)
+            join :_e using (:_d.WYR,:_e.REFERENCE)
+          ';
+   _where:=':_e.REFERENCE=\\':_f\\'';
+   _tab_sc.f_set(_sort,_from,_where,_tab_sc,_tab_scs,_tab_sumsc,_tab_wyrsum,_tab_wyr,$_tab_wyr.ref());
+   _tab_sc.select()
+";
+_tab_wyr.win_act(_wer_wyr,0,'Formuła','&Dostawy'@@,,,_before,,0,0,,,'D');
+
+_tab_wyr.win_act(_wer_wyr,0,'Formuła','Sz&czegóły'@@,'','Szczegółowa informacja o danym indeksie materiałowym'@,
+   "exec('btninfm','magazyn_stan')",,,,,,'C');
+_before_attr:="
+   M.cntx_psh();
+   VAR.A_T();
+   VAR_DEL.delete('__smmag');
+   __smmag:=tab_tmp(1,'RSQL','STRING[16]','');
+
+   SM.cntx_psh();
+   SM.index('SMM');
+   SM.prefix(VAR.A_T);
+   {? SM.first()
+   || {!
+      |? _add:=1;
+         __smmag.cntx_psh();
+         __smmag.prefix($SM.MAG);
+         {? __smmag.first()
+         || _add:=0
+         ?};
+         __smmag.cntx_pop();
+
+         {? _add>0
+         ||
+            __smmag.blank();
+            __smmag.RSQL:=$SM.MAG;
+            __smmag.add(1)
+         ?};
+         SM.next()
+      !}
+   ?};
+   SM.cntx_pop();
+   exec('btnatrsm','magazyn_stan',1);
+   M.cntx_pop()
+";
+_tab_wyr.win_act(_wer_wyr,0,'Formuła','Atry&buty'@@,,,_before_attr,,,,,,'B');
+
+_before:="
+:: Podczytanie M
+   {? _a
+   || _tab:=cur_tab(1,1);
+      {? M.seek(_tab.MREF,)
+      || VAR.A_T:=M.ref()
+      ?}
+   ?};
+   ~~
+";
+_after:="
+:: Walidacja rekordu po modyfikacji
+   _res:='';
+   _tab:=cur_tab(1,1);
+   {? _tab.IL<0
+   || FUN.info('Ilość nie może być ujemna.'@);
+      _res:='IL'
+   |? _tab.IL>_tab.IL_MAX
+   || FUN.info('Maksymalna ilość, na jaką można wygenerować zlecenia dla danego wyrobu wynosi %1.'@
+               [form(_tab.IL_MAX,,ST.DOKL_P)]);
+      _res:='IL'
+   ?};
+:: Aktualizacja stanów na dostawch
+   {? _res=''
+   || _il_new:=_tab.IL;
+      _tab.cntx_psh();
+      _tab.get();
+      _il_old:=_tab.IL;
+      _tab.cntx_pop();
+      {? _il_new<>_il_old
+      || params_exec('rozpisz_sc','!tte_pzl_dzsm',_il_old,_il_new)
+      ?}
+   ?};
+   _res
+";
+_tab_wyr.win_act(_wer_wyr,,'Rekord',,,,_before,_after);
+_tab_wyr.win_act(_wer_wyr,0,'Szukaj');
+_tab_wyr.win_act(_wer_wyr,0,'Kolejność');
+:: Przyciski
+_tab_wyr.win_btn(_wer_wyr,'text="%1",btn_label_align=center,panel=bottom,align=end'['&Akceptuj'@@],'menu:A');
+
+:: Okno wertowania - lista zleceń
+_env_zlisty.WER_WYR_ZL:=_wer_wyr_zl:=_tab_wyr.mk_sel('Lista zleceń'@,'P',,'#zlistysmwyrzl',1,2,,,'U',,,,,'maximized');
+:: Pola
+_tab_wyr.win_fld(_wer_wyr_zl,,'KTM','','',20,0,1,'Indeks'@);
+_tab_wyr.win_fld(_wer_wyr_zl,,'NAZ','','',30,0,1,'Nazwa'@);
+_tab_wyr.win_fld(_wer_wyr_zl,,'NRK','','',40,0,1,'Nr. karty'@);
+_tab_wyr.win_fld(_wer_wyr_zl,,'WER','','',6,0,1,'Wersja'@);
+_tab_wyr.win_fld(_wer_wyr_zl,,'IL',,,12,ST.DOKL_P,1,'Ilość'@);
+_tab_wyr.win_fld(_wer_wyr_zl,,'JM',,,7,0,1,'jm'@);
+{? _env_zlisty.ZTP=''
+|| _tab_wyr.win_fld(_wer_wyr_zl,,'ZTP','','',-3,0,0,'Typ zlecenia'@,,'Typ zlecenia'@)
+?};
+_tab_wyr.win_fld(_wer_wyr_zl,,'COMPLEX','','',-3,0,{? _env_zlisty.COMPLEX<>'P' || 1 || 0 ?},'Złożone?'@,,
+      'Czy generowane będzie zlecenie złożone'@,2,,"'T'","'N'");
+
+{? _env_zlisty.ZTP='' | _env_zlisty.COMPLEX='P'
+|| _before:="
+      _env_zlisty:=params_get().env_zlisty;
+      params_set(params_get());
+      _tab_wyr:=_env_zlisty.TAB_WYR;
+      _tab_wyr.win_edit(_env_zlisty.RED_WYR_ZL);
+      {? VAR.GRUPA='T' | _tab_wyr.edit()
+      || {? VAR.GRUPA='T'
+         || {? BEER.ZTP<>null()
+            || _tab_wyr.ZTP:=BEER.ZTP().TYP
+            ?};
+            {? BEER.COMPLEX<>'P'
+            || {? BEER.COMPLEX='T'
+               || _tktl:=exec('FindAndGet','#table',TKTL,_tab_wyr.TKTL,,,null());
+                  {? exec('czy_pf','tech_mater',_tktl)>0
+                  || _tab_wyr.COMPLEX:=BEER.COMPLEX
+                  ?}
+               || _tab_wyr.COMPLEX:=BEER.COMPLEX
+               ?}
+            ?};
+            _tab_wyr.put()
+         || _tab_wyr.put()
+         ?}
+      ?};
+      ~~
+   ";
+   _before_gr:="
+      _result:=0;
+      _env_zlisty:=params_get().env_zlisty;
+      params_set(params_get());
+::    Ustawienie filtru na typ zlecenia
+      ZTP.f_clear();
+      _typy:=exec('typy_zlecen','zl_head','P');
+      ZTP.f_set('TYP',,'ZTP.REFERENCE in (select :_a.REF from :_a)',_typy);
+      obj_del(_typy);
+      ZTP.win_dict('WER_SEL');
+::    Utworzenie okna z danymi do poprawienia
+      _red:=BEER.mk_edit('Uzupełnij dane'@,,'werwyrzlbg',,,'normal');
+      {? _env_zlisty.ZTP=''
+      || BEER.win_efld(_red,,'ZTP','TYP','*',10,,,'Typ zlecenia'@)
+      ?};
+      {? _env_zlisty.COMPLEX='P'
+      || BEER.win_efld(_red,,'COMPLEX',,,,,,'Złożone?'@,,,'check-box'
+            ,'left_label=1,check_label=\"%1\"'['Czy generować zlecenie złożone'@],\"'T'\",\"'N'\",\"'P'\")
+      ?};
+      exec('ok_esc','#window',BEER,_red);
+      BEER.win_edit(_red);
+      _valid:=\"
+         _env_zlisty:=params_get().env_zlisty;
+         _res:=1;
+         {? (_env_zlisty.ZTP='' & BEER.ZTP=null() & _env_zlisty.COMPLEX<>'P') |
+            (_env_zlisty.COMPLEX='P' & BEER.COMPLEX='P' &_env_zlisty.ZTP<>'') |
+            (_env_zlisty.ZTP='' &  _env_zlisty.COMPLEX='P' & BEER.ZTP=null() & BEER.COMPLEX='P')
+         || _res:=0;
+            FUN.info('Nie uzupełniono danych do poprawienia.'@)
+         ?};
+         _res
+      \";
+::    Wartości początkowe
+      BEER.ZTP:=null();
+      BEER.COMPLEX:='P';
+      {? BEER.edit(_valid)
+      || VAR.GRUPA:='T';
+         _result:=1
+      ?};
+      _result
+   ";
+   _after_gr:="
+       VAR.GRUPA:='N';
+       ~~
+   ";
+   _tab_wyr.win_act(_wer_wyr_zl,0,'Formuła','Popraw'@,,,_before,,1,1,_before_gr,_after_gr)
+?};
+_before:="
+   _tab_wyr:=cur_tab(1,1);
+   {? _tab_wyr.size()=1
+   || FUN.info('Na liście musi pozostać przynajmniej jedna definicja zlecenia do utworzenia.\n\nUsunięcie niemożliwe.'@)
+   || {? FUN.ask('Czy usunąć bieżący wiersz?'@)
+      || _tab_wyr.del()
+      ?}
+   ?};
+   0
+";
+_tab_wyr.win_act(_wer_wyr_zl,0,'Formuła','Usuń'@@,,,_before,,,,,,'U');
+
+_f3:="
+   _res:=fld();
+   _ztp:=exec('ztp_select','zl_head','P');
+   {? _ztp<>null()
+   || _res:=ZTP.TYP
+   ?};
+   _res
+";
+_before_edit:="
+   _env_zlisty:=params_get().env_zlisty;
+   _result:=_env_zlisty.ZTP='';
+   _result
+";
+_after_edit:="
+   _res:=0;
+   _ztp:=fld();
+   {? _ztp=''
+   || FUN.info('Typ zlecenia musi być określony.'@)
+   || ZTP.cntx_psh();
+      ZTP.index('RDTP');
+      ZTP.prefix('P',_ztp,);
+      {? ZTP.first()
+      || _res:=1
+      || FUN.info('Nie odnaleziono typu zlecenia o kodzie: \\'%1\\'.'@[_ztp])
+      ?};
+      ZTP.cntx_pop()
+   ?};
+   _res
+";
+_tab_wyr.fld_fml('ZTP','F3',_f3);
+_tab_wyr.fld_fml('ZTP','BEFORE_EDIT',_before_edit);
+_tab_wyr.fld_fml('ZTP','AFTER_EDIT',_after_edit);
+
+_before_edit:="
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_wyr:=_env_zlisty.TAB_WYR;
+   _result:=0;
+   {? _env_zlisty.COMPLEX='P'
+   || _tktl:=exec('FindAndGet','#table',TKTL,_tab_wyr.TKTL,,,null());
+      _result:=exec('czy_pf','tech_mater',_tktl)
+   ?};
+   _result
+";
+_tab_wyr.fld_fml('COMPLEX','BEFORE_EDIT',_before_edit);
+
+_before:="
+   _result:=1;
+:: Walidacja
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_wyr:=_env_zlisty.TAB_WYR;
+   _tab_wyr.cntx_psh();
+   {? _tab_wyr.first()
+   || {!
+      |?
+         {? _tab_wyr.ZTP=''
+         || _result:=0;
+            FUN.info('Należy przypisać typ zlecenia do wszystkich zleceń.'@)
+         ?};
+         _result=1 & _tab_wyr.next()
+      !}
+   ?};
+   _tab_wyr.cntx_pop();
+   {? _result=1
+   || sel_exit()
+   ?}
+";
+_tab_wyr.win_act(_wer_wyr_zl,0,'Formuła','&Generuj zlecenia'@@,,,_before,,0,0,,,'G');
+_tab_wyr.win_act(_wer_wyr_zl,1,'Formuła','&Generuj zlecenia'@@,,,_before,,0,0,,,'G');
+
+_tab_wyr.win_act(_wer_wyr_zl,0,'Formuła','&Technologia'@@,,,_before_tktl,,0,0,,,'T');
+_tab_wyr.win_act(_wer_wyr_zl,0,'Formuła','Sz&czegóły'@@,'','Szczegółowa informacja o danym indeksie materiałowym'@,
+   "exec('btninfm','magazyn_stan')",,,,,,'C');
+_tab_wyr.win_act(_wer_wyr_zl,0,'Formuła','Atry&buty'@@,,,_before_attr,,,,,,'B');
+
+
+_before:="
+   {? _a
+   || _env_zlisty:=params_get().env_zlisty;
+      _tab_wyr:=cur_tab(1,1);
+      _wer_wyr:=cur_win(1,1);
+::    Podczytanie M
+      {? M.seek(_tab_wyr.MREF,)
+      || VAR.A_T:=M.ref()
+      ?};
+::    Wyszarzenie akcji
+      _grayed:=':';
+      {? _tab_wyr.sel_size()=0
+      ||
+::       Wyłączenie akcji Popraw dla przypadku, gdy redagowalne tylko pole z kategorią zlecenia,
+::       a technolopgia nie posiada półfabrykatów
+         {? _env_zlisty.ZTP<>'' & _env_zlisty.COMPLEX='P'
+         || _tktl:=exec('FindAndGet','#table',TKTL,_tab_wyr.TKTL,,,null());
+            {? exec('czy_pf','tech_mater',_tktl)=0
+            || _grayed:='P'+_grayed
+            ?}
+         ?}
+      ?};
+      _tab_wyr.actions_grayed(_wer_wyr,_grayed)
+   ?};
+   ~~
+";
+_after:="
+ ~~
+";
+_tab_wyr.win_act(_wer_wyr_zl,,'Rekord',,,,_before,_after);
+
+:: Przyciski
+_tab_wyr.win_btn(_wer_wyr_zl,'text="%1",btn_label_align=center,panel=bottom,align=end'['&Generuj zlecenia'@@],'menu:G');
+
+:: Okno redagowania - lista zleceń
+_env_zlisty.RED_WYR_ZL:=_red_wyr_zl:=_tab_wyr.mk_edit('Zlecenie do wygenerowania'@,,'#zlistysmwyrzlr',,,'normal');
+:: Pola
+_tab_wyr.win_esep(_red_wyr_zl,'Dane podstawowe'@);
+_tab_wyr.win_efld(_red_wyr_zl,,'KTM','','',30,0,1,'Produkt'@);
+_tab_wyr.win_efld(_red_wyr_zl,,'NAZ','','',30,0,1,' ');
+_tab_wyr.win_efld(_red_wyr_zl,,'NRK','','',30,0,1,'Nr. karty'@);
+_tab_wyr.win_efld(_red_wyr_zl,,'WER','','',30,0,1,'Wersja'@);
+_tab_wyr.win_efld(_red_wyr_zl,,'IL',,,12,ST.DOKL_P,1,'Ilość'@);
+_tab_wyr.win_efld(_red_wyr_zl,,'JM',,,12,0,1,'jm'@);
+_tab_wyr.win_esep(_red_wyr_zl,'Dane generowania'@);
+{? _env_zlisty.ZTP=''
+|| _tab_wyr.win_efld(_red_wyr_zl,,'ZTP','','',9,0,0,'Typ zlecenia'@,,'Typ zlecenia'@,,'F3_button=1');
+   _tab_wyr.efld_opt(_red_wyr_zl,'mark=1',,'ZTP')
+?};
+_tab_wyr.win_efld(_red_wyr_zl,,'COMPLEX','','',,0,{? _env_zlisty.COMPLEX<>'P' || 1 || 0 ?},'Złożone?'@,,
+      'Czy generowane będzie zlecenie złożone'@,'check-box'
+      ,'left_label=1,check_label=\"%1\"'['Czy generować zlecenie złożone'@],"'T'","'N'");
+exec('ok_esc','#window',_tab_wyr,_red_wyr_zl);
+
+:: TABELE TECHNICZNE
+:: Tabela powiązań materiałów z surowcami technologicznymi (TMAT)
+_env_zlisty.TAB_TMAT:=tab_tmp(2,
+   'TKTL','STRING[16]','$TKTL.ref()',
+   'MREF','STRING[16]','$M.ref()',
+   'TMAT','STRING[16]','$TMAT.ref()',
+   'TYPE','STRING[1]','[S]urowiec, [G]rupa',
+   'LIMIT','STRING[1]','Surowiec limitowany'
+);
+:: Tabela z listą technologii posiadających daną listę materiałów
+:: Strunktura zwracana/uzupełniana przez funkcję exec('find_tktl','!tte_pzl_dzsm')
+_env_zlisty.TAB_TKTL:=~~;
+
+:: Tabela dostaw z ilościami zgrupowanymi wg materiału, wartości cech
+_env_zlisty.TAB_SUMSC:=tab_tmp(3,
+   'MREF','STRING[16]','$M.ref()',
+   'DK_C','STRING[16]','$DK_C.ref() - źródłowy DK_C',
+   'MASK','STRING[35]','Maska dziedziczenia',
+   'SD','REAL','Łączna dostępna ilość surowca',
+   'WAR01','STRING[25]','Wartość cechy 1',
+   'WAR02','STRING[25]','Wartość cechy 2',
+   'WAR03','STRING[25]','Wartość cechy 3',
+   'WAR04','STRING[25]','Wartość cechy 4',
+   'WAR05','STRING[25]','Wartość cechy 5',
+   'WAR06','STRING[25]','Wartość cechy 6',
+   'WAR07','STRING[25]','Wartość cechy 7',
+   'WAR08','STRING[25]','Wartość cechy 8',
+   'WAR09','STRING[25]','Wartość cechy 9',
+   'WAR10','STRING[25]','Wartość cechy 10',
+   'LEFT','REAL','Pozostała ilość'
+);
+
+:: Tabela powiązań sumy dostaw z listą dostaw - akie dostawy wchodzą w skład danej sumy (TAB_SUMSC->TAB_SC)
+_tab_scs:=_env_zlisty.TAB_SCS:=tab_tmp(2,
+   'SUM','STRING[16]','$TAB_SUMSC.ref()',
+   'LP','INTEGER','Kolejność pobierania dostaw',
+   'SC','STRING[16]','$TAB_SC.ref()'
+);
+:: Indeks: SUM, SC
+_env_zlisty.NDX_SCS:=_tab_scs.index('?');
+:: Indeks: SC
+_env_zlisty.NDX_SCS1:=_tab_scs.ndx_tmp(,1,'SC',,);
+
+:: Materiały o jakich cechach były wykorzystane do utworzenia
+_tab_wyrsum:=_env_zlisty.TAB_WYRSUM:=tab_tmp(3,
+   'WYR','STRING[16]','$TAB_WYR.ref()',
+   'MREF','STRING[16]','$M.ref()',
+   'SUM','STRING[16]','$TAB_SUMSC.ref()',
+   'TMAT','STRING[16]','$TMAT.ref()'
+);
+
+:: Tabela powiązań wyrobu technologii z dostawą - rozpisanie ilości z dostaw (TAB_WYR->TAB_SC)
+_env_zlisty.TAB_WYRSC:=tab_tmp(3,
+   'WYR','STRING[16]','$TAB_WYR.ref()',
+   'MREF','STRING[16]','$M.ref()',
+   'TMAT','STRING[16]','$TMAT.ref()',
+   'SC','STRING[16]','$TAB_SC.ref()',
+   'IL','REAL','Ilość',
+   'REZ','STRING[16]','$REZ.ref()'
+);
+
+:: Tabela przeliczników surowca dla wyrobu technologicznego
+_env_zlisty.TAB_PRZ:=tab_tmp(3,
+   'TKTLW','STRING[16]','$TKTLW.ref()',
+   'MREF','STRING[16]','$M.ref()',
+   'TMAT','STRING[16]','$TMAT.ref()',
+   'PRZ','REAL','Przelicznik',
+   'DOKL','INTEGER','Dokładność'
+);
+
+:: Okna grupowe
+_close:="
+   _res:=1;
+   {? _a='Esc'
+   || _res:=FUN.ask('Czy przerwać generowanie zleceń? Dotychczas uzupełnione dane zostaną utracone.'@)
+   ?};
+   _res
+";
+:: Okno materiałów i dostaw
+_before:="
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_m:=_env_zlisty.TAB_M;
+   _tab_sc:=_env_zlisty.TAB_SC;
+   _tab_sc.prefix(_tab_m.REF,);
+   _tab_sc.first();
+   params_set(params_get());
+   grp_disp(_tab_sc,_env_zlisty.WER_SC)
+";
+_env_zlisty.GRP:=_grp:=_tab_m.grp_make('Stany magazynowe'@,_before,'#zlistysmgrp',,,,,'html_maximized');
+_after_refresh:="
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_m:=_env_zlisty.TAB_M;
+   _tab_sc:=_env_zlisty.TAB_SC;
+   _tab_sc.prefix(_tab_m.REF,);
+   params_set(params_get());
+   grp_disp(_tab_sc,_env_zlisty.WER_SC,1)
+";
+_tab_m.grp_sel(_grp,,_wer_m,,_after_refresh,,,,,,,,'maximized');
+_tab_m.grp_splt(_grp,,'horizontal','dostawy','10,50%');
+_after_refresh:="
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_sc:=_env_zlisty.TAB_SC;
+   ATR.MJS:='';
+   {? _tab_sc.size()>0
+   ||
+::    Podczytanie wartości cech
+      DK_C.clear();
+      {? DK_C.seek(_tab_sc.DK_C,ref_name(_tab_sc.DK_C),,1)
+      || _symbol:=DK_C.SYM;
+         DK_C.index('SYM');
+         DK_C.prefix(_symbol,_symbol)
+      || DK_C.index('M_ATR');
+         DK_C.prefix(null,'','','');
+         {! _i..10 |! ($('M_ATR.SL_'+form(_i,-2,0,'99')))():=null !}
+      ?}
+   ||
+::    Wyczyszczenie wartości cech
+      DK_C.seek(0,,,1)
+   ?};
+   grp_edisp(DK_C,'DISPR');
+   ~~
+";
+_tab_m.grp_sel(_grp,_tab_sc,_wer_sc,,_after_refresh);
+_tab_m.grp_splt(_grp,'','vertical','attr',',70%');
+_tab_m.grp_edit(_grp,DK_C,'DISPR',,,,,,'maximized_with_title');
+
+_tab_m.win_sel(_grp);
+
+:: Okno wyrobów
+_before:="
+   ~~
+";
+_env_zlisty.GRP_WYR:=_grp_wyr:=_tab_wyr.grp_make('Lista wyrobów'@,_before,'#zlistysmgrpw',,,_close,,'html_maximized');
+_after_refresh:="
+   _tab_wyr:=cur_tab(1,1);
+   _max:=exec('il_atr','mat_atr');
+:: Podczytanie wartości cech
+   {! _it:=1.._max
+   |! _fit:=form(_it,-2,,);
+      ($('DK_C.WAR'+_fit+':=_a.WAR'+_fit))(_tab_wyr)
+   !};
+   DK_C.M_ATR:=exec('FindAndGet','#table',M_ATR,_tab_wyr.M_ATR,,,null());
+   grp_edisp(DK_C,'DISPR');
+   ~~
+";
+_tab_wyr.grp_sel(_grp_wyr,,_wer_wyr,,_after_refresh,,,,,,,,'maximized');
+_tab_wyr.grp_splt(_grp_wyr,'','vertical','tab1',',70%');
+_tab_wyr.grp_edit(_grp_wyr,DK_C,'DISPR',,,,,,,'maximized_with_title');
+
+_tab_wyr.win_sel(_grp_wyr);
+
+:: Okno zleceń
+_before:="
+   ~~
+";
+_env_zlisty.GRP_WYR_ZL:=_grp_wyr_zl:=_tab_wyr.grp_make('Lista zleceń'@,_before,'#zlistysmgrpw',,,_close
+   ,,'html_maximized');
+_after_refresh:="
+   _tab_wyr:=cur_tab(1,1);
+   _max:=exec('il_atr','mat_atr');
+:: Podczytanie wartości cech
+   {! _it:=1.._max
+   |! _fit:=form(_it,-2,,);
+      ($('DK_C.WAR'+_fit+':=_a.WAR'+_fit))(_tab_wyr)
+   !};
+   DK_C.M_ATR:=exec('FindAndGet','#table',M_ATR,_tab_wyr.M_ATR,,,null());
+   grp_edisp(DK_C,'DISPR');
+   ~~
+";
+_tab_wyr.grp_sel(_grp_wyr_zl,,_wer_wyr_zl,,_after_refresh,,,,,,,,'maximized');
+_tab_wyr.grp_splt(_grp_wyr_zl,'','vertical','tab1',',70%');
+_tab_wyr.grp_edit(_grp_wyr_zl,DK_C,'DISPR',,,,,,,'maximized_with_title');
+
+_tab_m.win_sel(_grp);
+
+_env_zlisty
+
+
+\sc_tab_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Dla podanego materiału uzupełnia tabelę z listą dostaw
+::   WE: _a - $M.ref() - indeks materiałowy, którego dostawy dodać
+::       [_b] - $MG.ref() - ograniczenie do dostaw z konkretnego magazynu, jak nie podany to brane ze wszystkich
+::       [_c] - tabela z listą konkretnych dostaw (tabela musi zawierać pole REF typu STRING[16])
+::              Jak nie podana to brane pod uwagę wszystkie dostawy
+::----------------------------------------------------------------------------------------------------------------------
+_mref:={? var_pres('_a')=type_of('') || _a || '' ?};
+_mg:={? var_pres('_b')=type_of('') || _b || '' ?};
+{? var_pres('_c')>100
+|| _tab_dost:=_c;
+   _czy_dost:=1
+|| _tab_dost:='';
+   _czy_dost:=0
+?};
+_max:=exec('il_atr','mat_atr');
+M.cntx_psh();
+M.clear();
+ND.cntx_psh();
+DK.cntx_psh();
+{? M.seek(_mref)
+|| params_set(params_get());
+   _env_zlisty:=params_get().env_zlisty;
+   _tab_sc:=_env_zlisty.TAB_SC;
+   _tab_sc.cntx_psh();
+   _tab_sc.prefix();
+   exec('sc_tymczas','magazyn_stan',exec('FindAndGet','#table',MG,_mg,,,null()),M.ref(),'T',,'Z',1);
+   {? __sc.first()
+   || _lp:=1;
+      {!
+      |?
+         {? _czy_dost=0 | (_czy_dost=1 & _tab_dost.find_key(__sc.REF))
+         ||
+            _tab_sc.DT:=__sc.D;
+            _tab_sc.S:=__sc.S;
+            _tab_sc.C:=__sc.C;
+            _tab_sc.JM:=__sc.JM;
+            {! _it:=1.._max
+            |! _fit:=form(_it,-2,,);
+               ($('_a.WAR'+_fit+':=_b.WAR'+_fit))(_tab_sc,__sc)
+            !};
+            _tab_sc.SCEAN:=__sc.SCEAN;
+            _tab_sc.TW:=__sc.TW;
+            _tab_sc.MREF:=__sc.MAT;
+            _tab_sc.MGREF:=__sc.MAG;
+            _tab_sc.MG:=exec('FindAndGet','#table',MG,_tab_sc.MGREF,,"MG.SYM",'');
+            _tab_sc.SCREF:=__sc.REF;
+            _tab_sc.DK_C:=__sc.DK_C;
+            _tab_sc.RDK:=__sc.RDK;
+            _tab_sc.NDK:=__sc.NDK;
+            _tab_sc.SRDK:=__sc.SRDK;
+::          Wyliczenie stanu dostępnego
+            _mat:=exec('FindAndGet','#table',M,_tab_sc.MREF,,,null());
+            _refmag:=exec('FindAndGet','#table',MG,_tab_sc.MGREF,,,null());
+            _niedst:=(1+exec('FindAndGet','#table','MG',_tab_sc.MGREF,,"MG.TYP",''))<>'D';
+
+            _ilww:=exec('obl_ssc','magazyn_stan',_tab_sc.RDK,_tab_sc.NDK,_refmag,_mat,'S');
+            _ilr:=exec('obl_rsc','magazyn_stan',_tab_sc.RDK,_tab_sc.NDK,_refmag,_mat,_niedst);
+            _stan:=_tab_sc.S;
+            _stad:=exec('FindInSet','#table','SM','SM',_mat,_refmag,"SM.SD",,,0);
+            _sd:=_stan-_ilr-_ilww;
+            {? _sd<0
+            || _sd:=0
+            ?};
+            {? _sd>_stad || _sd:=_stad ?};
+            _tab_sc.SD:=_sd;
+            _tab_sc.SW:=_ilww;
+            _tab_sc.IL:=_tab_sc.SD;
+::          Opis dostawy
+            _dost:='';
+            _nd_msk:='nagdo'+(__sc.NDK+3);
+            _dk_msk:=__sc.NDK;
+            {? ND.name()<>_nd_msk || ND.use(_nd_msk) ?};
+            {? DK.name()<>_nd_msk || DK.use(_dk_msk) ?};
+            DK.index('DOST3');
+            DK.prefix(_refmag,_mat,__sc.RDK,__sc.NDK,'T');
+            {? DK.first()
+            || _dost:=DK.N().KH().KOD+' '+DK.N().TYP().T;
+               _dost+=' - '+$DK.N().NR+' poz.'+$DK.P;
+               {? DK.ZL<>null() || _dost+='; '+'zlecenie: %1'@[DK.ZL().SYM] ?}
+            ?};
+            _tab_sc.DOST:=_dost;
+            _tab_sc.LP:=_lp;
+            {? _tab_sc.SD>0
+            || {? _tab_sc.add()
+               || _lp+=1
+               ?}
+            ?}
+         ?};
+         __sc.next()
+      !}
+   ?};
+   _tab_sc.cntx_pop()
+?};
+DK.cntx_pop();
+ND.cntx_pop();
+M.cntx_pop();
+~~
+
+
+\sc_tab_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Dla podanego materiału usuwa rekordy tabeli z listą dostaw
+::   WE: _a - $M.ref() - indeks materiałowy, którego dostawy usuwać
+::----------------------------------------------------------------------------------------------------------------------
+_mref:={? var_pres('_a')=type_of('') || _a || '' ?};
+
+_env_zlisty:=params_get().env_zlisty;
+_tab_m:=_env_zlisty.TAB_M;
+_tab_sc:=_env_zlisty.TAB_SC;
+_czy_rez:=0;
+_ilr:=0;
+_nrk:=0;
+_mat:=null();
+
+_tab_sc.cntx_psh();
+_tab_sc.prefix(_tab_m.REF,);
+{? _tab_sc.first()
+|| {!
+   |?
+::    Usunięcie powiązanej rezerwacji
+      {? _tab_sc.REZ<>'' & REZ.seek(_tab_sc.REZ)
+      || _czy_rez:=1;
+         _mat:=REZ.M;
+         _ilr+=REZ.ILR;
+         REZ.del()
+      ?};
+      _tab_sc.del()
+   !}
+?};
+_tab_sc.cntx_pop();
+:: Aktualizacja stanów po usunięciu rezerwacji
+{? _czy_rez>0
+|| _mag:=_env_zlisty.MG;
+   {? _mag<>null()
+   || exec('obl_stan','magazyn_stan',_mat,1,_mag);
+      exec('aktu_rez','rezerwacje',_mat,_nrk,_ilr,,,_mag)
+   || exec('obl_stan','magazyn_stan',_mat,5);
+      exec('aktu_rez','rezerwacje',_mat,_nrk,_ilr)
+   ?}
+?};
+~~
+
+
+\sc_tab_stan
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Wylicza stan dostępny i ilość w wydaniu dla dostawy.
+::       Działa na bieżącym buforze tabeli TAB_SC środowiska env_zlisty
+::   WE:
+::   WY: obiekt _result składający się z pól SD (stan dostępny) oraz SW (ilość w wydaniu)
+::----------------------------------------------------------------------------------------------------------------------
+_tab_sc:=params_get().env_zlisty.TAB_SC;
+_result:=obj_new('SD','SW');
+_result.SD:=0;
+_result.SW:=0;
+
+:: Wyliczenie stanu dostępnego
+_mat:=exec('FindAndGet','#table',M,_tab_sc.MREF,,,null());
+_refmag:=exec('FindAndGet','#table',MG,_tab_sc.MGREF,,,null());
+_niedst:=(1+exec('FindAndGet','#table','MG',_tab_sc.MGREF,,"MG.TYP",''))<>'D';
+
+_ilww:=exec('obl_ssc','magazyn_stan',_tab_sc.RDK,_tab_sc.NDK,_refmag,_mat,'S');
+_ilr:=exec('obl_rsc','magazyn_stan',_tab_sc.RDK,_tab_sc.NDK,_refmag,_mat,_niedst);
+_stan:=_tab_sc.S;
+_stad:=exec('FindInSet','#table','SM','SM',_mat,_refmag,"SM.SD",,,0);
+_sd:=_stan-_ilr-_ilww;
+{? _sd<0
+|| _sd:=0
+?};
+{?_sd>(_stad)  || _sd:=_stad ?};
+
+_result.SD:=_sd;
+_result.SW:=_ilww;
+_result
+
+
+\action_generate_sm_all
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Akcja 'Generuj zlecenia' w oknie stanów magazynowych (praca w kontekście wszystkich magazynów)
+::----------------------------------------------------------------------------------------------------------------------
+_tab_sel:=M.sel_aget();
+{? _tab_sel.first()
+|| VAR.GRUPA:='T'
+|| VAR.GRUPA:='N'
+?};
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='TTE_PZL_DZSM';
+_args.PROC_START:='T';
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+
+{? VAR.GRUPA='T' & _tab_sel.size()>1
+|| _args.CONTEXT:=obj_new('KTM');
+   _tab_ktm:=tab_tmp(,'REF','STRING[16]','$M.ref()');
+   {? _tab_sel.first()
+   ||
+      {!
+      |?
+         _tab_ktm.REF:=exec('FindAndGet','#table',M,_tab_sel.REF,_tab_sel.DBMASK,"$M.ref()",'');
+         {? _tab_ktm.REF<>''
+         || _tab_ktm.add()
+         ?};
+         _tab_sel.next()
+      !}
+   ?};
+   _args.CONTEXT.KTM:=_tab_ktm
+|| {? VAR.GRUPA='T'
+   || _ktm:=exec('FindAndGet','#table',M,_tab_sel.REF,_tab_sel.DBMASK,,null());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'KTM',_ktm)
+   || exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'KTM',M.ref())
+   ?}
+?};
+VAR.GRUPA:='N';
+exec('mp_run','#b__box',_args);
+M.sel_adel();
+0
+
+
+\action_generate_sm_one
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Akcja 'Generuj zlecenia' w oknie stanów magazynowych (praca w kontekście aktywnego magazynu)
+::----------------------------------------------------------------------------------------------------------------------
+_tab_sel:=SM.sel_aget();
+{? _tab_sel.first()
+|| VAR.GRUPA:='T'
+|| VAR.GRUPA:='N'
+?};
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='TTE_PZL_DZSM';
+_args.PROC_START:='T';
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+
+{? VAR.GRUPA='T' & _tab_sel.size()>1
+|| _args.CONTEXT:=obj_new('KTM');
+   _tab_ktm:=tab_tmp(,'REF','STRING[16]','$M.ref()');
+   {? _tab_sel.first()
+   ||
+      {!
+      |?
+         _tab_ktm.REF:=exec('FindAndGet','#table',SM,_tab_sel.REF,_tab_sel.DBMASK,"$SM.M",'');
+         {? _tab_ktm.REF<>''
+         || _tab_ktm.add()
+         ?};
+         _tab_sel.next()
+      !}
+   ?};
+   _args.CONTEXT.KTM:=_tab_ktm
+|| {? VAR.GRUPA='T'
+   || _ktm:=exec('FindAndGet','#table',SM,_tab_sel.REF,_tab_sel.DBMASK,"SM.M",null());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'KTM',_ktm)
+   || exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'KTM',SM.M)
+   ?}
+?};
+exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'MG',ST.MAG);
+VAR.GRUPA:='N';
+exec('mp_run','#b__box',_args);
+SM.sel_adel();
+0
+
+
+\action_generate_sm_zl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Akcja 'Dołącz zlecenia na podstawie -> stanów magazynowych' w oknie zleceń produkcyjnych
+::----------------------------------------------------------------------------------------------------------------------
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='TTE_PZL_DZSM';
+_args.PROC_START:='T';
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+
+exec('mp_run','#b__box',_args);
+~~
+
+
+\action_generate_sm_sc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Akcja 'Dołącz zlecenia na podstawie -> stanów magazynowych' w oknie zleceń produkcyjnych
+::----------------------------------------------------------------------------------------------------------------------
+_tab_sel:=SC.sel_aget();
+{? _tab_sel.first()
+|| VAR.GRUPA:='T'
+|| VAR.GRUPA:='N'
+?};
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='TTE_PZL_DZSM';
+_args.PROC_START:='T';
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+
+{? VAR.GRUPA='T' & _tab_sel.size()>1
+|| _args.CONTEXT:=obj_new('SC');
+   _tab_sc:=tab_tmp(,'REF','STRING[16]','$SC.ref()');
+   {? _tab_sel.first()
+   ||
+      {!
+      |?
+         _tab_sc.REF:=exec('FindAndGet','#table',SC,_tab_sel.REF,_tab_sel.DBMASK,"$SC.ref()",'');
+         {? _tab_sc.REF<>''
+         || _tab_sc.add()
+         ?};
+         _tab_sel.next()
+      !}
+   ?};
+   _args.CONTEXT.SC:=_tab_sc
+|| {? VAR.GRUPA='T'
+   || _sc:=exec('FindAndGet','#table',SC,_tab_sel.REF,_tab_sel.DBMASK,,null());
+      exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'SC',_sc)
+   || exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'SC',SC.ref())
+   ?}
+?};
+VAR.GRUPA:='N';
+exec('mp_run','#b__box',_args);
+SC.sel_adel();
+0
+
+
+\find_tktl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Wyszukuje listę kart technologicznych, które zawierają listę przekazanych materiałów
+::   WE: [_a] - tryb uruchomienia: 0 - tylko sprawdza, czy jest jakaś pasująca technologia
+::                                 [1] - uzupełnia tabele _tab_tmat, _tab_tktl
+::       [_b] - tabela z listą surowców (env_zlisty.TAB_M), jak nie podana, to brana z parametrów
+::       [_c] - tabela z listą surowców technologicznych (env_zlisty.TAB_TMAT), jak nie podana, to brana z parametrów
+::   WY: w zależności od _a: tabela z listą refów kart technologicznych (z polem REF typu STRING[16])
+::       lub informacja, czy są pasujące technoglogię dla podanych materiałów (0/1)
+::----------------------------------------------------------------------------------------------------------------------
+_fill_tabs:={? var_pres('_a')=type_of(0) || _a || 1 ?};
+_tab_ktm:={? var_pres('_b')>100 || _b || params_get().env_zlisty.TAB_M ?};
+_tab_tmat:={? var_pres('_c')>100 || _c || params_get().env_zlisty.TAB_TMAT ?};
+
+_result:=0;
+::_tab_tktl:=sql('
+::   select TKTL.REFERENCE as REF
+::   from @TMAT join @TKTL using (TMAT.NRK,TKTL.REFERENCE)
+::   where
+::      TKTL.REFERENCE like \'txktl#_#_#_%\' escape \'#\'
+::      and TMAT.REFERENCE like \'txmat#_#_#_%\' escape \'#\'
+::      and TKTL.TORW=\'T\'
+::      and ((TKTL.TERM_OD<=to_date(:_c) and TKTL.TERM_OD IS NOT NULL) or TKTL.TERM_OD IS NULL)
+::      and ((TKTL.TERM_DO>=to_date(:_c) and TKTL.TERM_DO IS NOT NULL) or TKTL.TERM_DO IS NULL)
+::      and TMAT.ACT=\'T\'
+::      and ((TMAT.GRKTM=\'K\' and TMAT.PT in (select REF from :_a))
+::         or (TMAT.GRKTM=\'G\' and (select TTGP.PT from TTGP where TTGP.REFERENCE=TMAT.TGDFLT) in (select REF from :_a)))
+::   group by  TKTL.REFERENCE
+::   having count(*)>=:_b'
+::   ,_tab_ktm,_tab_ktm.size(),date()
+::);
+:: Przerobienie tabeli z indeksami (zamiana $M.ref() na M.ref())
+_ktm_list:=obj_new(_tab_ktm.size());
+{? _tab_ktm.first()
+|| _it:=1;
+   {!
+   |?
+      _ktm_list[_it]:=exec('FindAndGet','#table',M,_tab_ktm.REF,,,null());
+      _it+=1;
+      _tab_ktm.next()
+   !}
+?};
+_size:=obj_len(_ktm_list);
+_tab_tktl:=tab_tmp(,'REF','STRING[16]','ref');
+TKTL.clear();
+TMAT.index('ANL');
+_where:='
+   TKTL.TORW=\'T\'
+   and TKTL.STAN=\'T\'
+   and((TKTL.TERM_OD<=to_date(:_a) and TKTL.TERM_OD IS NOT NULL) or TKTL.TERM_OD IS NULL)
+   and ((TKTL.TERM_DO>=to_date(:_a) and TKTL.TERM_DO IS NOT NULL) or TKTL.TERM_DO IS NULL)
+';
+TKTL.f_set(,,_where,date());
+{? TKTL.f_first()
+|| {!
+   |?
+      _tmat_added:=0;
+      _dalej:=1;
+      TMAT.prefix('T',TKTL.ref());
+      {? TMAT.first()
+      || _continue:=1;
+         _it:=1;
+         {!
+         |?
+            _added:=0;
+            {? TMAT.find_tab('first','PT',,'=',_ktm_list[_it])
+            ||
+               {!
+               |?
+::                Wykluczenie odpadów oraz półabrykatów, dla których generowane jest podzlecenie
+                  _pf:=(TMAT.RKTL<>'' | TMAT.DFLT_KTL='T');
+                  _odp:=TMAT.SO<>'O';
+                  {? _odp>0 & (_pf=0 | (_pf>0 & TMAT.MAG='T'))
+                  || {? _fill_tabs>0
+                     || _tab_tmat.MREF:=$_ktm_list[_it];
+                        _tab_tmat.TKTL:=$TMAT.NRK;
+                        _tab_tmat.TMAT:=$TMAT.ref();
+                        _tab_tmat.TYPE:='S';
+                        _tab_tmat.LIMIT:=TMAT.LIMIT;
+                        {? _tab_tmat.add()
+                        || _tmat_added:=1;
+                           _added:=1
+                        ?}
+                     || _added:=1
+                     ?}
+                  ?};
+                  TMAT.find_tab('next','PT',,'=',_ktm_list[_it])
+               !}
+            ?};
+            {? TMAT.find_tab('first','TGDFLT','PT','=',_ktm_list[_it])
+            ||
+               {!
+               |?
+::                Wykluczenie odpadów oraz półabrykatów, dla których generowane jest podzlecenie
+                  _pf:=(TMAT.RKTL<>'' | TMAT.DFLT_KTL='T');
+                  _odp:=TMAT.SO<>'O';
+                  {? _odp>0 & (_pf=0 | (_pf>0 & TMAT.MAG='T'))
+                  || {? _fill_tabs>0
+                     || _tab_tmat.MREF:=$_ktm_list[_it];
+                        _tab_tmat.TKTL:=$TMAT.NRK;
+                        _tab_tmat.TMAT:=$TMAT.ref();
+                        _tab_tmat.TYPE:='G';
+                        _tab_tmat.LIMIT:=TMAT.LIMIT;
+                        {? _tab_tmat.add()
+                        || _tmat_added:=1;
+                           _added:=1
+                        ?}
+                     || _added:=1
+                     ?}
+                  ?};
+                  TMAT.find_tab('next','TGDFLT','PT','=',_ktm_list[_it])
+               !}
+            ?};
+            {? _added=0
+            || _continue:=0
+            ?};
+            _it+=1;
+            _continue>0 & _it<=_size
+         !};
+         {? _continue>0
+         || _result:=1;
+            {? _fill_tabs>0
+            || _tab_tktl.REF:=$TKTL.ref();
+               _tab_tktl.add()
+            || _dalej:=0
+            ?}
+         ||
+::          Brak wszystkich materiałów na karcie, usunięcie wcześniej dodanych powiązań
+            {? _fill_tabs>0
+            || {? _tmat_added>0
+               || _tab_tmat.prefix($TKTL.ref());
+                  {? _tab_tmat.first()
+                  || {! |? _tab_tmat.del() !}
+                  ?};
+                  _tab_tmat.prefix()
+               ?}
+            ?}
+         ?}
+      ?};
+      _dalej>0 & TKTL.f_next()
+   !}
+?};
+{? TKTL.f_active() || TKTL.f_clear() ?};
+{? _fill_tabs>0 || _tab_tktl || _result ?}
+
+
+\generate_list_wyr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Generuje listę wyrobów, jaką można będzie utworzyć z danych materiałów i technologii.
+::       Lista generowana jest w rozbiciu na technologie, ich wyroby i cechy dostaw.
+::       Działa w oparciu o przekazane środowiska exec('env_zlisty','!ttte_pzl_dzwe')
+::----------------------------------------------------------------------------------------------------------------------
+_env_zlisty:=params_get().env_zlisty;
+_tab_m:=_env_zlisty.TAB_M;
+_tab_sc:=_env_zlisty.TAB_SC;
+_tab_tktl:=_env_zlisty.TAB_TKTL;
+_tab_tmat:=_env_zlisty.TAB_TMAT;
+_tab_wyr:=_env_zlisty.TAB_WYR;
+_tab_sumsc:=_env_zlisty.TAB_SUMSC;
+_tab_scs:=_env_zlisty.TAB_SCS;
+_tab_prz:=_env_zlisty.TAB_PRZ;
+_tab_sc.clear();
+_buf_matr:=exec('buffer','mat_atr');
+:: Tabela typów atrybutów cech dostawy wyrobu technologicznego
+_tab_tat:=tab_tmp(,
+   'REF','STRING[16]','$TAT.ref()',
+   'INH','STRING[1]','Czy cecha będzie dziedziczona na surowcach',
+   'POZ','STRING[2]','Pozycja, na której znajduje się dany atr.',
+   'WAR','STRING[35]','Aktualna wartość cechy'
+);
+ndx_tab_tat:=_tab_tat.ndx_tmp(,1,'INH',,,'REF',,);
+::tabela typów atrybutów, którę bedą dziedziczone w surowcach
+_tab_tats:=tab_tmp(4,
+   'MREF','STRING[16]','$M.ref()',
+   'TMAT','STRING[16]','$TMAT.ref()',
+   'TAT','STRING[16]','$TAT.ref()',
+   'POZ','STRING[2]','Pozycja, na której znajduje się dany atr.',
+   'TYP','STRING[3]','[SET] - ustaw war., [CHK] - sprawdź war.'
+);
+ndx_tab_tats:=_tab_tats.ndx_tmp(,1,'TYP',,,'MREF',,,'TMAT',,);
+:: Tabela odwołań do przetwarzanych dostaw dla danego wyrobu (lista odwołań do tabeli _tab_sumsc)
+_tmp_sumsc:=tab_tmp(2,
+   'MREF','STRING[16]','$M.ref()',
+   'TMAT','STRING[16]','$TMAT.ref()',
+   'MASK','STRING[35]','Maska dziedziczenia',
+   'REF','STRING[16]','$_tab_sumsc.ref()',
+   'IL','REAL','Minimalna ilość wyrobu do utw. z dostawy'
+);
+M.cntx_psh();
+M_ATR.cntx_psh();
+TKTL.clear();
+TKTLW.index('TP'); TKTLW.clear();
+TMAT.index('ANL'); TMAT.clear();
+{? _tab_tktl.first()
+|| {!
+   |?
+      {? TKTL.seek(_tab_tktl.REF)
+      || _tab_wyr.NRK:=TKTL.NRK;
+         _tab_wyr.WER:=TKTL.WER;
+         _tab_wyr.TKTL:=$TKTL.ref();
+         _max:=exec('il_atr','mat_atr');
+::       Przejście po wyrobach karty
+         TKTLW.prefix(TKTL.ref());
+         {? TKTLW.first()
+         ||
+            {!
+            |?
+               _dokl:=exec('jaka_dok_m','jm',TKTLW.KTM);
+               exec('stop_tpar','tech_param');
+               tpar:=obj_new(@.CLASS.TPAr);
+               tpar.TABLE:=TPAR;
+               tpar.INDEX:='NN';
+               tpar.PREFIX:=TKTLW.TKTL;
+               tpar.KTM:=TKTLW.KTM;
+               tpar.loadp();
+::             Wypełnienie tabeli typów atrybutów cech dostawy wyrobu
+               _tab_tat.erase();
+               _tab_tats.erase();
+               _tmp_sumsc.erase();
+               {? TKTLW.KTM().M_ATR<>null()
+               || TKTLW.KTM().M_ATR();
+                  _it:=1;
+                  _ok:=1;
+                  {!
+                  |?
+                     _fit:=form(_it,-2,0,'99');
+                     _tat:=($('M_ATR.SL_'+_fit))();
+                     {? _tat<>null()
+                     || _tab_tat.REF:=$_tat;
+                        _tab_tat.POZ:=_fit;
+                        _tab_tat.add()
+                     || _ok:=0
+                     ?};
+                     _it+=1;
+                     _it<=_max & _ok>0
+                  !}
+               ?};
+
+               _tab_wyr.TKTLW:=$TKTLW.ref();
+               _tab_wyr.MREF:=$TKTLW.KTM;
+               _tab_wyr.KTM:=TKTLW.KTM().KTM;
+               _tab_wyr.NAZ:=TKTLW.KTM().N;
+               _tab_wyr.JM:=TKTLW.KTM().J().KOD;
+               _tab_wyr.M_ATR:=$TKTLW.KTM().M_ATR;
+::             Przejście po surowcach technologicznych karty
+               _tab_tmat.prefix($TKTL.ref());
+               {? var_pres('_tab_ktm')>100 || obj_del(_tab_ktm) ?};
+               _tab_ktm:=obj_new(_tab_tmat.size());
+               {! _it:=1..obj_len(_tab_ktm) |! _tab_ktm[_it]:=obj_new('MREF','TMAT') !};
+               _rm:=roundmet();
+               roundmet(1);
+               _can_continue:=1;
+               _tmat_lp:=0;
+               {? _tab_tmat.first()
+               || {!
+                  |?
+                     _tmat_lp+=1;
+                     {? TMAT.seek(_tab_tmat.TMAT)
+                     ||
+                        _mref:=_tab_tmat.MREF;
+                        {? TMAT.EXIST<>'' & TMAT.EXIST<>'1'
+                        || _exist:=tpar.calc(TMAT.EXIST)
+                        || _exist:=1
+                        ?};
+                        {? _exist<=0
+                        || _can_continue:=0
+                        ?};
+                        {? _can_continue>0
+                        ||
+                           _spr_mask:=0;
+                           _mask:='';
+::                         Sprawdzenie, czy surowiec technologiczny ma dziedziczone cechy, które znajdują się na
+::                         produkcie karty technologicznej
+                           {? TMAT.ATR_MASK*'T'>0
+                           ||
+::                            Sprawdzenie, czy dziedziczone cechy surowca pokrywają się z cechami wyrobu
+                              _mask:='';
+                              _mask_tmp:=TMAT.ATR_MASK;
+::                            Podczytanie atrybutów surowca
+                              {? _tab_tmat.TYPE='S'
+                              || TMAT.PT().M_ATR()
+                              || TMAT.TGDFLT().PT().M_ATR()
+                              ?};
+                              _it:=1;
+                              {!
+                              |? _it:=_mask_tmp*'T';_it>0
+                              |!
+                                 _fit:=form(_it,-2,0,'99');
+                                 _tat:=($('M_ATR.SL_'+_fit))();
+                                 {? _tab_tat.find_key($_tat)
+                                 || _mask+=$_it+';';
+::                                  Oznaczenie, że cecha produkt będzie dziedziczona
+                                    {? _tab_tat.INH<>'T'
+                                    || _tab_tat.INH:='T';
+                                       _tab_tat.put()
+                                    ?};
+::                                  Oznaczenie, że cecha surowca będzie dziedziczona
+                                    {? _tab_tats.find_tab(,'TAT',,'=',$_tat)
+                                    || _tab_tats.TYP:='CHK'
+                                    || _tab_tats.TYP:='SET'
+                                    ?};
+                                    _tab_tats.MREF:=_mref;
+                                    _tab_tats.TMAT:=$TMAT.ref();
+                                    _tab_tats.TAT:=$_tat;
+                                    _tab_tats.POZ:=_fit;
+                                    _tab_tats.add()
+                                 ?};
+                                 _mask_tmp:=(_it-1)+(_mask_tmp)+'N'+(_it-_mask_tmp)
+                              !};
+                              _mask:=_mask-1;
+                              _spr_mask:=_mask<>''
+                           ?};
+::                         Wyznaczenie normy brutto surowca i przelicznika
+                           _xjm:=TKTL.XJM;
+                           _rm2:=roundmet();
+                           roundmet(2);
+                           _warb:={? TMAT.FORMB<>''
+                                  || tpar.calc(TMAT.FORMB)$ exec('round_abe','tech_mater',TMAT,1)
+                                  || TMAT.WARB
+                                  ?};
+                           roundmet(_rm2);
+                           _prz:=_warb/_xjm;
+::                         Dodanie przelicznika do tabeli technicznej
+                           _tab_prz.TKTLW:=$TKTLW.ref();
+                           _tab_prz.MREF:=_mref;
+                           _tab_prz.TMAT:=$TMAT.ref();
+                           _tab_prz.PRZ:=_prz;
+                           _tab_prz.DOKL:=_dokl;
+                           _tab_prz.add();
+
+::                         Wyliczenie ilości surowca wg wartości cech z dostępnych dostaw (raz dla pary DK_C, _mask)
+                           _tab_sumsc.prefix(_mref,$TMAT.DK_C,_mask,);
+                           {? ~_tab_sumsc.first()
+                           || {? TMAT.DK_C<>null()
+                              || DK_C.cntx_psh();
+                                 DK_C.use(ref_name(TMAT.DK_C));
+                                 DK_C.clear();
+                                 {? DK_C.seek(TMAT.DK_C)
+                                 || _buf_matr.get_dkc()
+                                 ?};
+                                 DK_C.cntx_pop()
+                              || _buf_matr.blank()
+                              ?};
+                              _sort:='LP';
+                              _where:='MREF=\':_a\' ';
+                              {? TMAT.DK_C<>null()
+                              ||
+::                               Jeżeli na surowcu technologicznym jest cecha, to wyszukuje tylko dostawy o zgodnych
+::                               wartościach cechy
+                                 _it:=1;
+                                 _ok:=1;
+                                 {!
+                                 |?
+                                    _fit:=form(_it,-2,0,'99');
+                                    _tat:=($('_a.TAT'+_fit))(_buf_matr);
+                                    {? _tat<>null()
+                                    || _war:=($('_a.WAR'+_fit))(_buf_matr);
+                                       {? _war<>''
+                                       || _where+=' and WAR'+_fit+'=\''+_war+'\' '
+                                       ?}
+                                    || _ok:=0
+                                    ?};
+                                    _it+=1;
+                                    _it<=_max & _ok>0
+                                 !}
+                              ?};
+::                            Wyszukanie pasujących dostaw
+                              _tab_sc.f_set(_sort,,_where,_mref);
+                              {? _tab_sc.f_first()
+                              || _sum:=0;
+                                 {? _spr_mask>0
+                                 ||
+::                                  Są dziedziczone cechy, tworzone zapisy w rozbiciu wg wartości cech
+::                                  Zebranie pozycji wartości dziedziczonych
+                                    {? var_pres('_poz')>100 || obj_del(_poz) ?};
+                                    _poz:=spli_str(_mask,';');
+                                    _str_tmp:='';
+                                    {! _ii:=1..obj_len(_poz)
+                                    |!  _str_tmp+=' WAR'+form(#_poz[_ii],-2,0,'99')+', '
+                                    !};
+                                    _str_tmp:=_str_tmp-1;
+                                    _sql:='select %1 sum(SD) as SD from :_a join filter_of(:_a) group by %1'[_str_tmp];
+                                    {? var_pres('_tab_sql')>100 || obj_del(_tab_sql) ?};
+                                    _tab_sql:=sql(_sql,_tab_sc);
+                                    {? _tab_sql.first()
+                                    || {!
+                                       |?
+                                          _tab_sumsc.blank();
+                                          _tab_sumsc.MREF:=_mref;
+                                          _tab_sumsc.DK_C:=$TMAT.DK_C;
+                                          _tab_sumsc.MASK:=_mask;
+                                          _tab_sumsc.SD:=_tab_sql.SD;
+                                          _tab_sumsc.LEFT:=_tab_sumsc.SD;
+                                          {? TMAT.DK_C<>null()
+                                          ||
+                                             {! _it:=1.._max
+                                             |! _fit:=form(_it,-2,0,'99');
+                                                ($('_a.WAR'+_fit+':=_b.WAR'+_fit))(_tab_sumsc,_buf_matr)
+                                             !}
+                                          ?};
+::                                        Podmiana cech dziedziczonych
+                                          {! _it:=1..obj_len(_poz)
+                                          |!  _fit:=form(#_poz[_it],-2,0,'99');
+                                              ($('_a.WAR'+_fit+':=_b.WAR'+_fit))(_tab_sumsc,_tab_sql)
+                                          !};
+                                          {? _tab_sumsc.add()
+                                          ||
+::                                           Utworzenie powiązań listy dostaw, które wchodzą w skład danej sumy
+                                             _where:='';
+                                             {! _it:=1..obj_len(_poz)
+                                             |!  _fit:=form(#_poz[_it],-2,0,'99');
+                                                 _where+=' WAR'+_fit+'=\''+($('_a.WAR'+_fit))(_tab_sql)+'\'';
+                                                 _where+={? _it=obj_len(_poz) || '' || ' and ' ?}
+                                             !};
+                                             _sql:='select SC.REFERENCE as REF from :_a as SC
+                                                    join filter_of(:_a) where %1'[_where];
+                                             {? var_pres('_sc_refs')>100 || obj_del(_sc_refs) ?};
+                                             _sc_refs:=sql(_sql,_tab_sc);
+                                             {? _sc_refs.first()
+                                             || _lp:=1;
+                                                {!
+                                                |?
+                                                   _tab_scs.SC:=_sc_refs.REF;
+                                                   _tab_scs.SUM:=$_tab_sumsc.ref();
+                                                   _tab_scs.LP:=_lp;
+                                                   {? _tab_scs.add()
+                                                   || _lp+=1
+                                                   ?};
+                                                   _sc_refs.next()
+                                                !}
+                                             ?};
+
+::                                           Wyliczenie minimalnej ilości na jaką można utworzyć produkt z danych dostaw
+                                             _il:={? _dokl>0
+                                                  || (_tab_sumsc.SD/_prz)$_dokl
+                                                  || floor(_tab_sumsc.SD/_prz)
+                                                  ?};
+                                             {? _il>0
+                                             || _tmp_sumsc.MREF:=_mref;
+                                                _tmp_sumsc.TMAT:=$TMAT.ref();
+                                                _tmp_sumsc.REF:=$_tab_sumsc.ref();
+                                                _tmp_sumsc.IL:=_il;
+                                                _tmp_sumsc.add()
+                                             ?}
+                                          ?};
+                                          _tab_sql.next()
+                                       !}
+                                    ?}
+                                 ||
+::                                  Brak dziedziczonych cech, sumowanie ilości z dostaw wg podanej cechy
+                                    _tab_sumsc.blank();
+                                    _tab_sumsc.MREF:=_mref;
+                                    _tab_sumsc.DK_C:=$TMAT.DK_C;
+                                    _tab_sumsc.MASK:=_mask;
+                                    {? _tab_sumsc.DK_C<>''
+                                    || {! _it:=1.._max
+                                       |! _fit:=form(_it,-2,0,'99');
+                                          ($('_a.WAR'+_fit+':=_b.WAR'+_fit))(_tab_sumsc,_buf_matr)
+                                       !}
+                                    ?};
+                                    {? _tab_sumsc.add()
+                                    || _lp:=1;
+                                       {!
+                                       |?
+                                          _sum+=_tab_sc.SD;
+::                                        Utworzenie powiązań listy dostaw, które wchodzą w skład danej sumy
+                                          _tab_scs.SC:=$_tab_sc.ref();
+                                          _tab_scs.SUM:=$_tab_sumsc.ref();
+                                          _tab_scs.LP:=_lp;
+                                          {? _tab_scs.add()
+                                          || _lp+=1
+                                          ?};
+                                          _tab_sc.f_next()
+                                       !};
+                                       _tab_sumsc.SD:=_sum;
+                                       _tab_sumsc.LEFT:=_tab_sumsc.SD;
+                                       _tab_sumsc.put();
+::                                     Wyliczenie minimalnej ilości na jaką można utworzyć produkt z danych dostaw
+                                       _il:={? _dokl>0
+                                            || (_tab_sumsc.SD/_prz)$_dokl
+                                            || floor(_tab_sumsc.SD/_prz)
+                                            ?};
+                                       {? _il>0
+                                       || _tmp_sumsc.MREF:=_mref;
+                                          _tmp_sumsc.TMAT:=$TMAT.ref();
+                                          _tmp_sumsc.REF:=$_tab_sumsc.ref();
+                                          _tmp_sumsc.IL:=_il;
+                                          _tmp_sumsc.add()
+                                       ?}
+                                    ?}
+                                 ?}
+                              ?}
+                           ||
+::                            Już wcześniej wyliczono stany dla danego materiału i wartości cech
+                              {!
+                              |?
+::                               Wyliczenie minimalnej ilości na jaką można utworzyć produkt z danych dostaw
+                                 _il:={? _dokl>0
+                                      || (_tab_sumsc.SD/_prz)$_dokl
+                                      || floor(_tab_sumsc.SD/_prz)
+                                      ?};
+                                 {? _il>0
+                                 || _tmp_sumsc.MREF:=_mref;
+                                    _tmp_sumsc.TMAT:=$TMAT.ref();
+                                    _tmp_sumsc.REF:=$_tab_sumsc.ref();
+                                    _tmp_sumsc.IL:=_il;
+                                    _tmp_sumsc.add()
+                                 ?};
+                                 _tab_sumsc.next()
+                              !}
+                           ?}
+                        ?}
+                     || _can_continue:=0
+                     ?};
+                     {? _can_continue>0
+                     || _tab_ktm[_tmat_lp].MREF:=_mref;
+                        _tab_ktm[_tmat_lp].TMAT:=$TMAT.ref()
+                     ?};
+                     _can_continue>0 & _tab_tmat.next()
+                  !}
+               ?};
+               roundmet(_rm);
+::             Utworzenie listy wyrobów wg danego TKTLW (rozbicie wg cech jeżeli dziedziczone wartości)
+               {? _can_continue>0 & _tmp_sumsc.first()
+               || _tab_tat.cntx_psh();
+                  _tab_tat.index(ndx_tab_tat);
+                  _tab_tat.prefix('T');
+                  _tab_tats.cntx_psh();
+                  _tab_tats.index(ndx_tab_tats);
+                  _tab_sumsc.clear();
+                  params_exec('list_wyr_add','!tte_pzl_dzsm',_tmp_sumsc,_tab_ktm,_tab_tat,_tab_tats);
+                  _tab_tats.cntx_pop();
+                  _tab_tat.cntx_pop()
+               ?};
+               TKTLW.next()
+            !}
+         ?}
+      ?};
+      _tab_tktl.next()
+   !}
+?};
+M.cntx_pop();
+M_ATR.cntx_pop();
+~~
+
+
+\list_wyr_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Dodanie rekordu do listy wyrobów
+::   WE: _a - tabela odwołań do przetwarzanych dostaw dla danego wyrobu (lista odwołań do tabeli _tab_sumsc)
+::       _b - tabela materiałów
+::       _c - tabela z aktualnymi wartościami przetwarzanych cech
+::       _d - tabela typów atrybutów, którę bedą dziedziczone w surowcach
+::      [_e] - INTEGER - poziom rekurencji, jak niepodany to 1
+::      [_f] - STRING - lista wykorzystanych refów tabel _tab_sumsc|TMAT (oddzielonych średnikiem)
+::      [_g] - REAL - maksymalna ilość jaką wyrobu jaką można utworzyć
+::----------------------------------------------------------------------------------------------------------------------
+_env_zlisty:=params_get().env_zlisty;
+_tmp_sumsc:=_a;
+_tab_ktm:=_b;
+_tab_tat:=_c;
+_tab_tats:=_d;
+_level:={? var_pres('_e')=type_of(0) || _e || 1 ?};
+_base_refs:={? var_pres('_f')=type_of('str') || _f || '' ?};
+_base_ilmax:={? var_pres('_g')=type_of(0) || _g || 0 ?};
+
+_tab_sumsc:=_env_zlisty.TAB_SUMSC;
+_tab_wyr:=_env_zlisty.TAB_WYR;
+_tab_wyrsum:=_env_zlisty.TAB_WYRSUM;
+_mref:=_tab_ktm[_level].MREF;
+_tmat:=_tab_ktm[_level].TMAT;
+_result:=1;
+
+_tmp_sumsc.cntx_psh();
+_tmp_sumsc.prefix(_mref,_tmat);
+{? _tmp_sumsc.first()
+|| {!
+   |?
+      _result:=1;
+::    Podczytanie rekordu tabeli _tab_sumsc
+      {? _tab_sumsc.seek(_tmp_sumsc.REF)
+      || _continue:=1;
+         {? _level=1
+         || _refs:=$_tab_sumsc.ref()+'|'+_tmat
+         || _refs:=_base_refs+';'+$_tab_sumsc.ref()+'|'+_tmat
+         ?};
+::       Ustalenie wartości cech dostawy (dla wszystkich surowców, które posiadają dany atrybyt)
+         _tab_tats.prefix('SET',_mref,_tmat);
+         {? _tab_tats.first()
+         || {!
+            |?
+               {? _tab_tat.find_key(_tab_tats.TAT)
+               || _tab_tat.WAR:=($('_a.WAR'+_tab_tats.POZ))(_tab_sumsc);
+                  _tab_tat.put()
+               ?};
+               _tab_tats.next()
+            !}
+         ?};
+::       Sprawdzenie wartości cech (jeżeli wartość cechy dostawy niezgodna z aktualanie przetwarzaną cechą to
+::       pomijam bieżącą dostawę
+         _tab_tats.prefix('CHK',_mref,_tmat);
+         {? _tab_tats.first()
+         || {!
+            |?
+               {? _tab_tat.find_key(_tab_tats.TAT)
+               || _war:=($('_a.WAR'+_tab_tats.POZ))(_tab_sumsc);
+                  {? _tab_tat.WAR<>_war
+                  ||
+::                   Wartość atrybutu cechy aktualnie przetwarzanej dostawy rożni się od wartości cechy wyrobu
+                     _continue:=0
+                  ?}
+               ?};
+               _continue>0 & _tab_tats.next()
+            !}
+         ?};
+         {? _continue>0
+         ||
+::          Ustalana wartość maksymalna do utworzenia
+            {? _level=1
+            || _il_max:=_tmp_sumsc.IL
+            || _il_max:={? _tmp_sumsc.IL<_base_ilmax || _tmp_sumsc.IL || _base_ilmax ?}
+            ?};
+            {? _level<obj_len(_tab_ktm)
+            ||
+::             !!!REKURENCJA!!!
+               _result:=params_exec('list_wyr_add','!tte_pzl_dzsm',_tmp_sumsc,_tab_ktm,
+                  _tab_tat,_tab_tats,_level+1,_refs,_il_max)
+            ?}
+         || _result:=0
+         ?};
+::       Rekordy dodawane tylko podczas rekurencji na najniższym poziomie
+         {? _result>0 & _level=obj_len(_tab_ktm)
+         || {? _il_max>0
+            ||
+::             Przypisanie aktualnych wartości cech do wyrobu
+               {? _tab_tat.first()
+               || {!
+                  |?
+                     ($('_a.WAR'+_tab_tat.POZ+':=\''+_tab_tat.WAR+'\''))(_tab_wyr);
+                     _tab_tat.next()
+                  !}
+               ?};
+               _tab_wyr.IL_MAX:=_il_max;
+               {? _tab_wyr.add()
+               ||
+::                Uzupełnienie tabeli powiązań wyrobów z dostawami
+                  {? var_pres('_sum_refs')>100 || obj_del(_sum_refs) ?};
+                  _sum_refs:=spli_str(_refs,';');
+                  {! _it:=1..obj_len(_sum_refs)
+                  |! {? var_pres('_wyr_sum')>100 || obj_del(_wyr_sum) ?};
+                     _wyr_sum:=spli_str(_sum_refs[_it],'|');
+                     _tab_wyrsum.WYR:=$_tab_wyr.ref();
+                     _tab_wyrsum.SUM:=_wyr_sum[1];
+                     _tab_wyrsum.TMAT:=_wyr_sum[2];
+                     _tab_wyrsum.MREF:=exec('FindAndGet','#table',_tab_sumsc,_tab_wyrsum.SUM,,"MREF",'');
+                     _tab_wyrsum.add()
+                  !}
+               ?}
+            || _result:=0
+            ?}
+         ?}
+      ?};
+      _tmp_sumsc.next()
+   !}
+?};
+_tmp_sumsc.cntx_pop();
+_result
+
+
+\tab_m_akc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Akcja Akceptacuj w oknie z listą materiałów i ich dostaw
+::----------------------------------------------------------------------------------------------------------------------
+_tab_m:=cur_tab(1,1);
+_result:=1;
+_env_zlisty:=params_get().env_zlisty;
+_tab_sc:=_env_zlisty.TAB_SC;
+_tab_m.cntx_psh();
+_tab_m.index(_env_zlisty.NDX_M);
+_tab_m.prefix(1);
+:: Sprawdzenie, czy uzupełniono dostawy na wszystkich wybranych materiałach
+_continue:=0;
+{? _tab_m.first()
+|| _ktms:='';
+   _it:=1;
+   {!
+   |?
+      {? _tab_m.SUM_IL>0
+      || _continue:=1
+      || _ktms+=$_it+'. '+_tab_m.KTM+' - '+_tab_m.NAZ+'\n';
+         _it+=1
+      ?};
+      _tab_m.next()
+   !};
+   {? _continue>0
+   || {? _ktms<>''
+      ||
+::       Do części materiałów nie przypisano dostaw
+         _msg:=_ktms+'\n'+
+               'Do wskazanych materiałów nie określono ilości z dostaw.\n'@+
+               'Czy mimo to kontynuować? (dane surowce nie zostaną wzięte pod uwagę w dalszej analizie)'@;
+         {? ~FUN.ask(_msg)
+         || _result:=0
+         ||
+::          Odznaczenie materiałów z zerową ilością
+            {? _env_zlisty.CZY_SEL>0
+            || {? _tab_m.first()
+               || {!
+                  |?
+                     {? _tab_m.SUM_IL<=0
+                     || _tab_m.SEL:=0;
+                        _tab_m.prefix();
+                        {? _tab_m.put()
+                        ||
+::                         Usunięcie listy dostaw
+                           params_exec('sc_tab_del','!tte_pzl_dzsm',_tab_m.REF)
+                        ?};
+                        _tab_m.prefix(1);
+                        _next:=_tab_m.first()
+                     || _next:=_tab_m.next()
+                     ?};
+                     _next
+                  !}
+               ?}
+            ?}
+         ?}
+      ?}
+   || FUN.info('Należy określić ilość na przynjamniej jednej dostawie.'@);
+      _result:=0
+   ?}
+|| FUN.info('Należy wybrać przynajmniej jeden materiał.'@);
+   _result:=0
+?};
+:: Sprawdzenie, czy nie pobrano więcej z dostawy niż jest na stanie
+_tab_sc.cntx_psh();
+_tab_sc.clear();
+{? _tab_sc.first()
+||
+   {!
+   |?
+      {? _tab_sc.IL>0 & _tab_sc.IL>_tab_sc.SD
+      || _result:=0;
+         FUN.info('Niepoprawnie rozpisane dostawy.\nIlość pobierana nie może być większa od stanu dostępnego.'@)
+      ?};
+      _result>0 & _tab_sc.next()
+   !}
+?};
+_tab_sc.cntx_pop();
+
+:: Sprawdzenie, czy istnieją technologie, które zawierają dana listą surowców
+:: Prefix na tylko zaznaczone materiały
+{? _result>0
+|| _tab_m.cntx_psh();
+   _tab_m.index(_env_zlisty.NDX_M);
+   _tab_m.prefix(1);
+   {? _tab_m.first()
+   ||
+::    Otworzenie masek tabel technologii
+      exec('tktl_cntx_psh','tech_common');
+      exec('tktl_use','tech_common');
+      {? ~exec('find_tktl','!tte_pzl_dzsm',0,_tab_m,_tab_m)
+      || _result:=0;
+         FUN.info('Nie znaleziono technologii zawierającej wszystkie wybrane surowce.'@)
+      ?};
+      exec('tktl_cntx_pop','tech_common')
+   ?};
+   _tab_m.cntx_pop()
+?};
+
+:: Czy wystąpił błąd podczas walidacji:
+:: 0 - brak błędu,
+:: 1 - zmienił się stan ale określona ilość nadal jest na stanie,
+:: 2 - zmienił się stan i określona ilość jest mniejsza niż aktualny stan dostępny
+_err:=0;
+_tab_aktu:=tab_tmp(,'MREF','STRING[16]','$M.ref()','ILR','REAL','Zmieniona ilość');
+:: Sprawdzenie dostaw
+{? _result>0 & _tab_m.first()
+||
+   {!
+   |?
+      _ktm:=exec('FindAndGet','#table',M,_tab_m.REF,,,null());
+      _ilr_sum:=0;
+::    Czy wypełniona ilość na dowolnej dostawie materiału
+      {? _tab_m.SUM_IL>0
+      || _tab_sc.cntx_psh();
+         _tab_sc.index(_env_zlisty.NDX_SC2);
+         _tab_sc.prefix(_tab_m.REF);
+         {? _tab_sc.first()
+         || _continue:=1;
+            {!
+            |?
+               {? _tab_sc.IL>0
+               ||
+::                Sprawdzenie stanu dostępnego (czy nie zmienił się od momentu uruchomienia akcji)
+                  {? var_pres('_stany')>100 || obj_del(_stany) ?};
+                  _stany:=params_exec('sc_tab_stan','!tte_pzl_dzsm');
+                  {? _tab_sc.SD<>_stany.SD
+                  ||
+::                   Zmienił się stan, sprawdzenie czy określona ilość mieści się jeszcze w stanie dostępnym
+                     {? _tab_sc.IL>_stany.SD
+                     || _tab_sc.STATUS:=2;
+                        _tab_sc.SD:=_stany.SD;
+                        _tab_sc.SW:=_stany.SW;
+                        _tab_sc.put();
+                        {? _err<>2
+                        || _err:=2
+                        ?}
+                     || _tab_sc.STATUS:=1;
+                        _tab_sc.SD:=_stany.SD;
+                        _tab_sc.SW:=_stany.SW;
+                        _tab_sc.put();
+                        {? _err=0
+                        || _err:=1
+                        ?}
+                     ?}
+                  ?};
+                  _ilr:={? _tab_sc.IL>_stany.SD || _stany.SD || _tab_sc.IL ?};
+                  {? _tab_sc.REZ=''
+                  ||
+::                   Założenie rezerwacji na dostawę
+                     REZ.blank();
+                     REZ.M:=_ktm;
+                     REZ.JM:=REZ.M().J;
+                     REZ.TYP:='T';
+                     REZ.RODZ:='B';
+                     REZ.RP_REZ:='N';
+                     REZ.KH:=null;
+                     REZ.BTERM:='N';
+                     REZ.REA:='NN';
+::                     REZ.NRK:=exec('blnrkrez','rezerwacje',REZ.TYP,REZ.M);
+                     REZ.NRK:=0;
+                     REZ.MG:={? _env_zlisty.MG<>null()
+                             || _env_zlisty.MG
+                             || exec('FindAndGet','#table',MG,_tab_sc.MGREF,,,null())
+                             ?};
+                     REZ.ILR:=_ilr;
+                     REZ.US:=OPERATOR.USER;
+                     REZ.ODDT:=date();
+                     REZ.DODT:=date()+1;
+                     REZ.SC:=_tab_sc.SRDK;
+                     REZ.SESID:='T'+SYSLOG.ses_id();
+                     {? REZ.add()
+                     || _ilr_sum+=REZ.ILR;
+                        _tab_sc.REZ:=REZ.uidref();
+                        _tab_sc.put()
+                     ?}
+                  ?}
+               || _continue:=0
+               ?};
+               _tab_sc.next() & _continue>0
+            !}
+         ?};
+         _tab_sc.cntx_pop();
+         _tab_aktu.MREF:=$_ktm;
+         _tab_aktu.ILR:=_ilr_sum;
+         _tab_aktu.add()
+      ?};
+      _tab_m.next()
+   !}
+?};
+{? _err>0
+|| _msg:='';
+   {? _err=1
+   || _msg:='Zmienił się dostępny stan dla niektórych z wybranych dostaw.\n'@+
+            'Określone ilości na dostawach są nadal dostępne na magazynach.\n\n'@+
+            'Kontynuować?'@
+   |? _err=2
+   || _msg:='Zmienił się dostępny stan dla niektórych z wybranych dostaw.\n'@+
+            'Określone ilości na dostawach nie są już dostępne na magazynach.\n\n'@+
+            'Czy mimo to kontynuować? (z dostaw zostanie pobrana maksymalna dostępna ilość)'@
+   ?};
+   {? ~FUN.ask(_msg)
+   || _result:=0;
+::    Usunięcie wcześniej utworzonych rezerwacji
+      _tab_sc.cntx_psh();
+      _tab_sc.prefix();
+      {? _tab_sc.first()
+      || {!
+         |?
+            {? _tab_sc.REZ<>''
+            || {? REZ.seek(_tab_sc.REZ)
+               || REZ.del();
+                  _tab_sc.REZ:='';
+                  _tab_sc.put()
+               ?}
+            ?};
+            _tab_sc.next()
+         !}
+      ?};
+      _tab_sc.cntx_pop()
+   ||
+::    Zmiana pobieranych ilości z dostaw (przypisanie maksymalnej dostępnej ilości z dostawy)
+      {? _err=2
+      || _tab_sc.cntx_psh();
+         _tab_sc.index(_env_zlisty.NDX_SC3);
+         _tab_sc.prefix(2);
+         {? _tab_sc.first()
+         || _tab_sc.IL:=_tab_sc.SD;
+            _tab_sc.put()
+         ?};
+         _tab_sc.cntx_pop()
+      ?}
+   ?}
+?};
+_tab_m.cntx_pop();
+{? _result>0
+||
+:: Aktualizacja stanów/rezerwacji
+   {? _tab_aktu.first()
+   || {!
+      |?
+         _ktm:=exec('FindAndGet','#table',M,_tab_aktu.MREF,,,null());
+         {? _env_zlisty.MG<>null()
+         || exec('obl_stan','magazyn_stan',_ktm,1,_env_zlisty.MG);
+            exec('aktu_rez','rezerwacje',_ktm,0,_tab_aktu.ILR)
+         || exec('obl_stan','magazyn_stan',_ktm,5);
+            exec('aktu_rez','rezerwacje',_ktm,0,_tab_aktu.ILR)
+         ?};
+         _tab_aktu.next()
+      !}
+   ?};
+   sel_exit()
+?};
+~~
+
+
+\tab_m_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Akcje Zaznacz/Odznacz w oknie z listą materiałów i ich dostaw
+::   WE: _a - INTERGER: 0 - Odznacz, [1] - Zaznacz
+::----------------------------------------------------------------------------------------------------------------------
+_chk:={? var_pres('_a')=type_of(0) || _a || 1 ?};
+_tab:=cur_tab(1,1);
+_env_zlisty:=params_get().env_zlisty;
+{? _chk>0 & _tab.SEL=0
+|| _mg:=_env_zlisty.MG;
+   params_exec('sc_tab_add','!tte_pzl_dzsm',_tab.REF,_mg);
+   _tab.SEL:=1;
+   _tab.put()
+|? _chk=0 & _tab.SEL=1
+|| params_exec('sc_tab_del','!tte_pzl_dzsm',_tab.REF);
+   _tab.SEL:=0;
+   _tab.put()
+?};
+~~
+
+
+\rozpisz_sc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Aktualizuje stan dostawy po zmianie ilości na wyrobie
+::   WE: _a - REAL - ilość na wyrobie po modyfikacji
+::----------------------------------------------------------------------------------------------------------------------
+_old_il:=_a;
+_new_il:=_b;
+_wsp:={? _new_il>=_old_il || 1 || -1 ?};
+_env_zlisty:=params_get().env_zlisty;
+_tab_wyr:=_env_zlisty.TAB_WYR;
+_tab_wyrsum:=_env_zlisty.TAB_WYRSUM;
+_tab_wyrsc:=_env_zlisty.TAB_WYRSC;
+_tab_scs:=_env_zlisty.TAB_SCS;
+_tab_prz:=_env_zlisty.TAB_PRZ;
+_tab_sc:=_env_zlisty.TAB_SC;
+:: Czy zmieniła się ilość na dowolnej dostawie
+_changed:=0;
+:: Lista  indeksów, które występują wielokrotnie w technologii
+_ktms:=tab_tmp(,'REF','STRING[16]','$M.ref()');
+{? _new_il<=0
+||
+:: Wyzerowanie ilości na wyrobie, usunięcie wszystkich powiązań wyrobu z dostawami
+   _tab_wyrsc.cntx_psh();
+   _tab_wyrsc.clear();
+   _tab_wyrsc.prefix($_tab_wyr.ref());
+   {? _tab_wyrsc.first()
+   || _changed:=1;
+      {!
+      |?
+         _ilosc:=_tab_wyrsc.IL;
+         _sc:=_tab_wyrsc.SC;
+::       Aktualizacja dostępnej ilości na dostawach
+         params_exec('sc_aktu','!tte_pzl_dzsm',_ilosc*_wsp,_sc);
+         _tab_wyrsc.del()
+      !}
+   ?};
+   _tab_wyrsc.cntx_pop()
+|| _tab_wyrsum.clear();
+   _tab_wyrsum.prefix($_tab_wyr.ref());
+   {? _tab_wyrsum.first()
+   || {!
+      |?
+         _mref:=_tab_wyrsum.MREF;
+         _tmat:=_tab_wyrsum.TMAT;
+         {? ~_ktms.find_key(_mref)
+         ||
+::          Sprawdzenie, czy ten sam indeks materiałowy występuje wielokrotnie na wyrobie (technologii)
+            _tab_wyrsum.cntx_psh();
+            _tab_wyrsum.prefix($_tab_wyr.ref(),_mref);
+            {? _tab_wyrsum.first() & _tab_wyrsum.size()>1
+            || _ktms.REF:=_mref;
+               _ktms.add();
+::             Usunięcie wszystkich powiązań wyrobu z dostawami (dla multi=0 zawsze rozpisanie od zera)
+               _tab_wyrsc.cntx_psh();
+               _tab_wyrsc.clear();
+               _tab_wyrsc.prefix($_tab_wyr.ref(),_mref);
+               {? _tab_wyrsc.first()
+               || _changed:=1;
+                  {!
+                  |?
+                     _ilosc:=_tab_wyrsc.IL;
+                     _sc:=_tab_wyrsc.SC;
+::                   Aktualizacja dostępnej ilości na dostawach
+                     params_exec('sc_aktu','!tte_pzl_dzsm',_ilosc*(-1),_sc);
+                     _tab_wyrsc.del()
+                  !}
+               ?};
+               _tab_wyrsc.cntx_pop();
+::             Utworzenie tabeli z rozpiską ilości na dostawach dla danego TMAT
+               {? var_pres('_tmp_tab')>100 || obj_del(_tmp_tab) ?};
+               _tmp_tab:=params_exec('wyr_il_multi','!tte_pzl_dzsm',1)
+            ?};
+            _tab_wyrsum.cntx_pop()
+         ?};
+         {? _ktms.find_key(_mref)
+         || _multi:=1
+         || _multi:=0
+         ?};
+         _tab_scs.prefix(_tab_wyrsum.SUM);
+         {? _tab_scs.first()
+         || _dokl:=exec('jaka_dok_m','jm',_mref);
+            _il:=0;
+::          Wyliczenie ilości potrzebnego surowca dla danej ilości wyrobu
+            _tab_prz.prefix(_tab_wyr.TKTLW,_mref,_tmat);
+            {? _tab_prz.first()
+            || _prz:=_tab_prz.PRZ;
+               {? _dokl>0
+               || _rm:=roundmet();
+                   roundmet(2);
+                  _il:=(_new_il*_prz)$_dokl;
+                   roundmet(_rm)
+               || _il:=ceil(_new_il*_prz)
+              ?};
+              _sum_rozp:=0;
+              {? _multi=0
+              ||
+::                Sprawdzenie, czy już zostało coś rozpisane na dostawach dla wyrobu
+                  _tab_wyrsc.cntx_psh();
+                  _tab_wyrsc.clear();
+                  _tab_wyrsc.prefix($_tab_wyr.ref(),_mref,_tmat);
+
+                  {? _tab_wyrsc.first()
+                  || {!
+                     |?
+                        _sum_rozp+=_tab_wyrsc.IL;
+                        _tab_wyrsc.next()
+                     !}
+                  ?};
+                  _tab_wyrsc.cntx_pop();
+                  _dorozp:=(_il-_sum_rozp)*_wsp
+              || _wsp:=1;
+                 _dorozp:=_il
+              ?};
+               {? _il<_sum_rozp
+               ||
+::                Przypadek zmniejszenia ilości na wyrobie - rozpisana większa ilość surowca niż wymagana
+                  _tab_wyrsc.cntx_psh();
+                  _tab_wyrsc.clear();
+                  _tab_wyrsc.prefix($_tab_wyr.ref(),_mref,_tmat);
+                  {? _tab_wyrsc.last()
+                  || {!
+                     |?
+                        _ilosc:={? _dorozp<=_tab_wyrsc.IL || _dorozp || _tab_wyrsc.IL ?};
+                        _sc:=_tab_wyrsc.SC;
+::                      Aktualizacja dostępnej ilości na dostawach
+                         params_exec('sc_aktu','!tte_pzl_dzsm',_ilosc*_wsp,_sc);
+                         _changed:=1;
+                        {? _ilosc<_tab_wyrsc.IL
+                        || _tab_wyrsc.IL-=_ilosc;
+                           _tab_wyrsc.put()
+                        || _tab_wyrsc.del(,1)
+                        ?};
+                        _dorozp-=_ilosc;
+                        _dorozp<0 & _tab_wyrsc.size()>0
+                     !}
+                  ?};
+                  _tab_wyrsc.cntx_pop()
+               |? _il>_sum_rozp
+               ||
+::                Przypadek zwiększenia ilości na wyrobie - rozpisana mniejsza ilość surowca niż wymagana
+                  {!
+                  |?
+                     {? _tab_sc.seek(_tab_scs.SC)
+                     || {? _tab_sc.LEFT>0
+                        || _ok:=1;
+                           {? _multi>0
+                           || {? ~_tmp_tab.find_tab(,'TMAT',,'=',_tmat,'SC',,'=',$_tab_sc.ref())
+                              || _ok:=0
+                              ?}
+                           ?};
+                           {? _ok>0
+                           || _tab_wyrsc.SC:=$_tab_sc.ref();
+                              _tab_wyrsc.WYR:=$_tab_wyr.ref();
+                              _tab_wyrsc.MREF:=_mref;
+                              _tab_wyrsc.TMAT:=_tmat;
+                              _ilosc:={? _multi>0
+                                      || {? _dorozp<=_tmp_tab.IL || _dorozp || _tmp_tab.IL ?}
+                                      || {? _dorozp<=_tab_sc.LEFT || _dorozp || _tab_sc.LEFT ?}
+                                      ?};
+                              {? _ilosc>0
+                              || _tab_wyrsc.IL:=_ilosc;
+                                 {? _tab_wyrsc.add()
+                                 || _dorozp-=_tab_wyrsc.IL;
+::                                  Aktualizacja dostępnej ilości na dostawach
+                                    params_exec('sc_aktu','!tte_pzl_dzsm',_tab_wyrsc.IL*_wsp,$_tab_sc.ref());
+                                    _changed:=1
+                                 ?}
+                              ?}
+                           ?}
+                        ?}
+                     ?};
+                     _tab_scs.next() &  _dorozp>0
+                  !}
+               ?}
+            ?}
+         ?};
+         _tab_wyrsum.next()
+      !}
+   ?}
+?};
+:: Aktualizacja ilości na wyrobach
+{? _changed>0
+|| params_exec('wyr_il_aktu','!tte_pzl_dzsm')
+?};
+~~
+
+
+\sc_aktu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Aktualizuje stany dostępne po zmianie ilości na wyrobie/dostawach.
+::       Dotyczy tabel TAB_SC, TAB_SUMSC środowiska env_zlisty
+::   WE: _a - INTEGER - ilość o jaką pomniejszany/powiększany jest stan dostępny
+::       _b - SC_TAB.ref() - ref modyfikowanej dostawy
+::   WY: 0/1 - czy udała się aktualizacja stanów
+::----------------------------------------------------------------------------------------------------------------------
+_il:={? var_pres('_a')=type_of(0.0) || _a || 0 ?};
+_ref:={? var_pres('_b')=type_of('') || _b || '' ?};
+::_result:=0;
+
+_env_zlisty:=params_get().env_zlisty;
+_tab_sc:=_env_zlisty.TAB_SC;
+_tab_scs:=_env_zlisty.TAB_SCS;
+_tab_sumsc:=_env_zlisty.TAB_SUMSC;
+{? _il<>0 & _ref<>''
+|| _tab_sc.cntx_psh();
+   _tab_sc.clear();
+   {? _tab_sc.seek(_ref)
+   || _tab_sc.LEFT-=_il;
+::    Test
+::      {? _tab_sc.LEFT>_tab_sc.SD | _tab_sc.LEFT<0 || msg() ?};
+      {? _tab_sc.put()
+      ||
+::       Aktualizacja ilości na powiązanych sumach dostaw (zgrupowanych wg wartości cech)
+         _tab_scs.cntx_psh();
+         _tab_scs.index(_env_zlisty.NDX_SCS1);
+         _tab_scs.prefix($_tab_sc.ref());
+         {? _tab_scs.first()
+         || _tab_sumsc.cntx_psh();
+            _tab_sumsc.clear();
+            {!
+            |?
+               {? _tab_sumsc.seek(_tab_scs.SUM)
+               || _tab_sumsc.LEFT-=_il;
+::                Test
+::                {? _tab_sumsc.LEFT>_tab_sumsc.SD | _tab_sumsc.LEFT<0 || msg() ?};
+                  _tab_sumsc.put()
+               ?};
+               _tab_scs.next()
+            !};
+            _tab_sumsc.cntx_pop()
+         ?};
+         _tab_scs.cntx_pop()
+      ?}
+   ?};
+   _tab_sc.cntx_pop()
+?};
+~~
+
+
+\wyr_il_aktu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Aktualizuje ilości maksymalne, jakie można utworzyć dla danego wyrobu.
+::----------------------------------------------------------------------------------------------------------------------
+_env_zlisty:=params_get().env_zlisty;
+_tab_wyr:=_env_zlisty.TAB_WYR;
+_tab_prz:=_env_zlisty.TAB_PRZ;
+_tab_sumsc:=_env_zlisty.TAB_SUMSC;
+_tab_wyrsum:=_env_zlisty.TAB_WYRSUM;
+_tab_wyrsc:=_env_zlisty.TAB_WYRSC;
+:: Lista pomijanych indeksów (jeżeli ten sam indeks występuje wielokrotnie w technologii)
+_ktms:=tab_tmp(,'REF','STRING[16]','$M.ref()');
+_tab_sumsc.cntx_psh();
+_tab_sumsc.clear();
+_tab_wyr.cntx_psh();
+_tab_wyr.clear();
+{? _tab_wyr.first()
+||
+   {!
+   |?
+      _ktms.erase();
+      _tab_wyrsum.cntx_psh();
+      _tab_wyrsum.prefix($_tab_wyr.ref());
+      {? _tab_wyrsum.first()
+      || _it:=1;
+         {!
+         |?
+            {? _tab_sumsc.seek(_tab_wyrsum.SUM)
+            || _mref:=_tab_sumsc.MREF;
+               _tmat:=_tab_wyrsum.TMAT;
+               _tab_prz.prefix(_tab_wyr.TKTLW,_mref,_tmat);
+               {? _tab_prz.first()
+               || _dokl:=_tab_prz.DOKL;
+                  _prz:=_tab_prz.PRZ;
+                  _left:=_tab_sumsc.LEFT;
+                  {? ~_ktms.find_key(_mref)
+                  || _multi:=0;
+::                   Sprawdzenie,  ten sam indeks materiałowy występuje wielokrotnie na wyrobie (technologii)
+                     _tab_wyrsum.cntx_psh();
+                     _tab_wyrsum.prefix($_tab_wyr.ref(),_mref);
+                     {? _tab_wyrsum.first() & _tab_wyrsum.size()>1
+                     || _multi:=1;
+                        _ktms.REF:=_mref;
+                        _ktms.add();
+                        _tmp_max:=params_exec('wyr_il_multi','!tte_pzl_dzsm')
+                     ?};
+                     _tab_wyrsum.cntx_pop();
+                     {? _multi=0
+                     ||
+::                      Wyliczenie ilości już zarezerwowane pod dany wyrób
+                        _tab_wyrsc.cntx_psh();
+                        _tab_wyrsc.prefix($_tab_wyr.ref(),_mref,_tmat);
+                        {? _tab_wyrsc.first()
+                        ||
+                           {!
+                           |?
+                              _left+=_tab_wyrsc.IL;
+                              _tab_wyrsc.next()
+                           !}
+                        ?};
+                        _tab_wyrsc.cntx_pop();
+                        {? _dokl>0
+                        || _rm:=roundmet();
+                            roundmet(1);
+                           _tmp_max:=(_left/_prz)$_dokl;
+                            roundmet(_rm)
+                        || _tmp_max:=floor(_left/_prz)
+                        ?}
+                     ?}
+                  ?};
+                  {? _it=1
+                  || _il_max:=_tmp_max
+                  || {? _tmp_max<_il_max || _il_max:=_tmp_max ?}
+                  ?};
+                  _it+=1
+               ?}
+            ?};
+            _tab_wyrsum.next()
+         !};
+         _tab_wyr.IL_MAX:=_il_max;
+         _tab_wyr.put()
+      ?};
+      _tab_wyrsum.cntx_pop();
+      _tab_wyr.next()
+   !}
+?};
+_tab_wyr.cntx_pop();
+_tab_sumsc.cntx_pop();
+~~
+
+
+\wyr_il_multi
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Wyznacza ilość maksymalną według zadanego materiału - przypadek, gdy technologia wyrobu zawiera
+::       wiele surowców o tym samym indeksie materiałowym.
+::       Pracuje na odpowiednio zprefixowanej tabeli WYRSUM środowiska env_zlisty
+::   WE: [_a] - co zwracać: [0] - maks ilość wyrobu, 1 - tabela z rozpiską ilości dostaw dostępnych pod dany surowiec
+::   WY: w zależności od _a: maksymalna ilość wyrobu jaką można utworzyć dla zadanego indeksu materiałowego
+::       lub tabela z rozpiską ilości dostaw dostępnych pod dany surowiec
+::----------------------------------------------------------------------------------------------------------------------
+_res_type:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+
+_env_zlisty:=params_get().env_zlisty;
+_tab_wyr:=_env_zlisty.TAB_WYR;
+_tab_wyrsum:=_env_zlisty.TAB_WYRSUM;
+
+_tab_sc:=_env_zlisty.TAB_SC;
+_tab_prz:=_env_zlisty.TAB_PRZ;
+_tab_sumsc:=_env_zlisty.TAB_SUMSC;
+_tab_scs:=_env_zlisty.TAB_SCS;
+_tab_wyrsc:=_env_zlisty.TAB_WYRSC;
+_tab_prz.cntx_psh(); _tab_prz.clear();
+_tab_sumsc.cntx_psh(); _tab_sumsc.clear();
+_tab_scs.cntx_psh(); _tab_scs.clear();
+_tab_wyrsc.cntx_psh(); _tab_wyrsc.clear();
+_tab_wyrsum.cntx_psh();
+_tab_sc.cntx_psh(); _tab_sc.clear();
+:: Tabela dostaw z łączna ilością dostępną
+_tmp_sc:=tab_tmp(,
+   'SC','STRING[16]','',
+   'IL','REAL','Ilość dostępna'
+);
+:: Tabela powiązań surowca z dostawami
+_tmp_sctmat:=tab_tmp(2,
+   'SC','STRING[16]','$_tab_sc.ref()',
+   'TMAT','STRING[16]','$TMAT.ref()',
+   'IL','REAL','Ilość',
+   'PRZ','REAL','Przelicznik'
+);
+_sndx1:=_tmp_sctmat.index('?');
+_sndx2:=_tmp_sctmat.ndx_tmp(,,'TMAT',,,'SC',,);
+:: Tabela surowców
+_tmp_tmat:=tab_tmp(1,
+   'TMAT','STRING[16]','$TMAT.ref()',
+   'PRZ','REAL','Przelicznik',
+   'IL_MAX','REAL','Ilość maksymalna',
+   'IL_SUR','REAL','Ilość surowca',
+   'AKT','INTEGER','Aktywny'
+);
+_tndx1:=_tmp_tmat.index('?');
+_tndx2:=_tmp_tmat.ndx_tmp(,,'IL_MAX',,0,'AKT',,);
+_res:=0;
+_dokl:=-1;
+:: Wyliczenie dostępnej ilości dla dostaw danego matierału
+{? _tab_wyrsum.first()
+|| _mref:=_tab_wyrsum.MREF;
+   {!
+   |?
+      _tmat:=_tab_wyrsum.TMAT;
+      _prz:=1;
+      _tab_prz.prefix(_tab_wyr.TKTLW,_mref,_tmat);
+      {? _tab_prz.first()
+      || _prz:=_tab_prz.PRZ;
+         {? _dokl=-1
+         || _dokl:=_tab_prz.DOKL
+         ?}
+      ?};
+      {? _tab_sumsc.seek(_tab_wyrsum.SUM)
+      || _tab_scs.prefix($_tab_sumsc.ref());
+         {? _tab_scs.first()
+         || {!
+            |?
+               {? ~_tmp_sc.find_key(_tab_scs.SC)
+               || _tmp_sc.SC:=_tab_scs.SC;
+                  {? _tab_sc.seek(_tmp_sc.SC)
+                  || _tmp_sc.IL:=_tab_sc.LEFT
+                  ?};
+                  _tmp_sc.add()
+               ?};
+               _tmp_sctmat.SC:=_tab_scs.SC;
+               _tmp_sctmat.TMAT:=_tab_wyrsum.TMAT;
+               _tmp_sctmat.PRZ:=_prz;
+               _tmp_sctmat.IL:=0;
+               _tmp_sctmat.add();
+               _tab_scs.next()
+            !}
+         ?}
+      ?};
+      _tmp_tmat.TMAT:=_tab_wyrsum.TMAT;
+      _tmp_tmat.PRZ:=_prz;
+      _tmp_tmat.add();
+      _tab_wyrsum.next()
+   !};
+:: Doliczenie ilości już zarezerwowane pod dany wyrób
+   _tab_wyrsc.prefix($_tab_wyr.ref(),_mref);
+   {? _tab_wyrsc.first()
+   ||
+      {!
+      |?
+         {? _tmp_sc.find_key(_tab_wyrsc.SC)
+         || _tmp_sc.IL+=_tab_wyrsc.IL;
+            _tmp_sc.put()
+         ?};
+         _tab_wyrsc.next()
+      !}
+   ?}
+?};
+:: Rozpisanie dostaw pod materiały (początkowo ilości dostaw dzielone są równomiernie na każdy surowiec)
+{? _tmp_sc.first()
+|| {!
+   |?
+::    Wyznaczenie łącznego przelicznika ze wszystkich surowców
+      _tmp_sctmat.prefix(_tmp_sc.SC);
+      {? _tmp_sctmat.first()
+      || _size:=_tmp_sctmat.size();
+         {? _size>1
+         || _sum_prz:=0;
+            {!
+            |?
+               _sum_prz+=_tmp_sctmat.PRZ;
+               _tmp_sctmat.next()
+            !};
+            _tmp_sctmat.first()
+         || _sum_prz:=_tmp_sctmat.PRZ
+         ?};
+         _dorozp:=_tmp_sc.IL;
+         _it:=1;
+         {!
+         |?
+            {? _it=_size
+            || _il:=_dorozp
+            || {? _dokl>0
+               || _rm:=roundmet();
+                   roundmet(1);
+                  _il:=((_tmp_sctmat.PRZ/_sum_prz)*_tmp_sc.IL)$_dokl;
+                   roundmet(_rm)
+               || _il:=floor((_tmp_sctmat.PRZ/_sum_prz)*_tmp_sc.IL)
+               ?}
+            ?};
+            {? _il>0
+            || _dorozp-=_il;
+               _tmp_sctmat.IL:=_il;
+               {? _tmp_sctmat.put()
+               || {? _tmp_tmat.find_key(_tmp_sctmat.TMAT)
+                  || _tmp_tmat.IL_SUR+=_il;
+                     _tmp_tmat.put()
+                  ?}
+               ?}
+            ?};
+            _it+=1;
+            _tmp_sctmat.next()
+         !}
+      ?};
+      _tmp_sc.next()
+   !};
+:: Wyznaczenie ilości maksymalnej do utworzenia
+   {? _tmp_tmat.first()
+   || _it:=1;
+      {!
+      |?
+         {? _dokl>0
+         || _rm:=roundmet();
+             roundmet(1);
+            _tmp_max:=(_tmp_tmat.IL_SUR/_tmp_tmat.PRZ)$_dokl;
+             roundmet(_rm)
+         || _tmp_max:=floor(_tmp_tmat.IL_SUR/_tmp_tmat.PRZ)
+         ?};
+         {? _it=1
+         || _il_max:=_tmp_max
+         || {? _tmp_max<_il_max || _il_max:=_tmp_max ?}
+         ?};
+         _it+=1;
+         _tmp_tmat.IL_MAX:=_tmp_max;
+         _tmp_tmat.put();
+         _tmp_tmat.next()
+      !}
+   ?}
+?};
+_cur_max:=_il_max;
+
+:: Normalizacja (wydzielenie odpowiedniej ilości z dostaw tak, aby dało się utworzyć jak najwięcej wyrobów)
+_continue:=1;
+_tmp_tmat.index(_tndx2);
+_tmp_sctmat.clear();
+{!
+|?
+:: Tabela posortowana od ilości wyrobu jaką można utworzyć, zaczynając od minimalnej
+   {? _tmp_tmat.first()
+   ||
+      {!
+      |?
+         _continue3:=1;
+         _a_tmat:=_tmp_tmat.ref();
+         _a_tmat_s:=_tmp_tmat.TMAT;
+         _a_tmat_prz:=_tmp_tmat.PRZ;
+::       Wyznaczenie przypisanej nadwyżki z dostaw, w porównaniu do wymaganej ilości do aktualnego maxa
+         {? _dokl>0
+         || _rm:=roundmet();
+             roundmet(2);
+            _il_sur:=(_cur_max*_tmp_tmat.PRZ)$_dokl;
+             roundmet(_rm)
+         || _il_sur:=ceil(_cur_max*_tmp_tmat.PRZ)
+         ?};
+         _il_over:=_tmp_tmat.IL_SUR-_il_sur;
+::       Porównanie TMATów - zaczynając od  tego, który ma aktualnie największą ilość maksymalną
+::       Od tego surowca będą pobierane ilości z dostaw, aby wyrównać ilości maksymalne
+         _tmp_tmat.cntx_psh();
+         {? _tmp_tmat.last()
+         ||
+            {!
+            |?
+               _continue2:=1;
+               _changed:=0;
+               {? _tmp_tmat.ref()<>_a_tmat
+               ||
+::                Wyznaczenie ilości, która należałoby rozpisać, aby wyrównać ilości maksymalne pomiędzy TMATami
+                  {? _dokl>0
+                  || _rm:=roundmet();
+                      roundmet(2);
+                     _il_sur:=(_cur_max*_tmp_tmat.PRZ)$_dokl;
+                      roundmet(_rm)
+                  || _il_sur:=ceil(_cur_max*_tmp_tmat.PRZ)
+                  ?};
+                  _dorozp:=_tmp_tmat.IL_SUR-_il_sur-_il_over;
+                  {? _dorozp>0
+                  || _sum_prz:=_a_tmat_prz+_tmp_tmat.PRZ;
+                     {? _dokl>0
+                     || _rm:=roundmet();
+                         roundmet(1);
+                        _dorozp:=((_a_tmat_prz/_sum_prz)*_dorozp)$_dokl;
+                         roundmet(_rm)
+                     || _dorozp:=floor((_a_tmat_prz/_sum_prz)*_dorozp)
+                     ?}
+                  ?};
+                  {? _dorozp>0
+                  ||
+                     _tmp_sctmat.cntx_psh();
+                     _tmp_sctmat.index(_sndx2);
+                     _tmp_sctmat.prefix(_a_tmat_s);
+                     {? _tmp_sctmat.first()
+                     || {!
+                        |?
+::                         Sprawdzenie, czy dana dostawa wspólna z porównywanym TMATem
+                           _ok:=0;
+                           _tmp_sctmat.cntx_psh();
+                           _tmp_sctmat.prefix(_tmp_tmat.TMAT,_tmp_sctmat.SC);
+                           {? _tmp_sctmat.first() & _tmp_sctmat.IL>0
+                           || _ok:=1;
+                              _il:={? _tmp_sctmat.IL>_dorozp || _dorozp || _tmp_sctmat.IL ?};
+                              _tmp_sctmat.IL-=_il;
+                              _tmp_sctmat.put();
+                              _tmp_tmat.IL_SUR-=_il;
+                              _tmp_tmat.put();
+                              _changed:=1;
+                              _dorozp-=_il
+                           ?};
+                           _tmp_sctmat.cntx_pop();
+                           {? _ok>0
+                           ||
+::                            Aktualizacja ilości na źródłowym surowcu i dostawie
+                              _tmp_sctmat.IL+=_il;
+                              _tmp_sctmat.put();
+                              _tmp_tmat.cntx_psh();
+                              _tmp_tmat.prefix();
+                              {? _tmp_tmat.seek(_a_tmat)
+                              || _tmp_tmat.IL_SUR+=_il;
+                                 _tmp_tmat.put()
+                              ?};
+                              _tmp_tmat.cntx_pop()
+                           ?};
+                           _dorozp>0 & _tmp_sctmat.next()
+                        !}
+                     ?};
+                     _tmp_sctmat.cntx_pop();
+                     {? _changed>0
+                     ||
+::                        _tmp_tmat.cntx_psh();
+::                        _prev:={? _tmp_tmat.prev() || _tmp_tmat.ref() || null() ?};
+::                        _tmp_tmat.cntx_pop();
+::                        _tmp_tmat.cntx_psh();
+::                        _next:={? _tmp_tmat.next() || _tmp_tmat.ref() || null() ?};
+::                        _tmp_tmat.cntx_pop();
+::                      Ponowne wyznaczenie ilości maksymalnej
+                        _tmp_tmat.cntx_psh();
+                        _tmp_tmat.index(_tndx1);
+                        _tmp_tmat.prefix();
+                        {? _tmp_tmat.first()
+                        || _it:=1;
+                           {!
+                           |?
+                              {? _dokl>0
+                              || _rm:=roundmet();
+                                  roundmet(1);
+                                 _tmp_max:=(_tmp_tmat.IL_SUR/_tmp_tmat.PRZ)$_dokl;
+                                  roundmet(_rm)
+                              || _tmp_max:=floor(_tmp_tmat.IL_SUR/_tmp_tmat.PRZ)
+                              ?};
+                              {? _it=1
+                              || _il_max:=_tmp_max
+                              || {? _tmp_max<_il_max || _il_max:=_tmp_max ?}
+                              ?};
+                              _it+=1;
+                              _tmp_tmat.IL_MAX:=_tmp_max;
+                              _tmp_tmat.put();
+                              _tmp_tmat.next()
+                           !};
+                           {? _cur_max<>_il_max
+                           || _cur_max:=_il_max
+                           ?}
+                        ?};
+                        _tmp_tmat.cntx_pop();
+                        _continue2:=0
+::                      Sprawdzenie, czy nie zmieniła się kolejność w tabeli przetwarzanych surowców
+::                        _tmp_tmat.cntx_psh();
+::                        _tmp_tmat.index(_tndx2);
+::                        _tmp_tmat.prefix();
+::                        {? _tmp_tmat.first()
+::                        || {? _tmp_tmat.ref()<>_a_tmat
+::                           || _continue2:=0
+::                           ?}
+::                        ?};
+::                        _tmp_tmat.cntx_pop();
+::                        {? _continue2>0
+::                        || _tmp_tmat.cntx_psh();
+::                           {? _tmp_tmat.prev() & _tmp_tmat.ref()<>_prev  || _continue2:=0 ?};
+::                           _tmp_tmat.cntx_pop();
+::                           _tmp_tmat.cntx_psh();
+::                           {? _tmp_tmat.next() & _tmp_tmat.ref()<>_next  || _continue2:=0 ?};
+::                           _tmp_tmat.cntx_pop()
+::                        ?}
+                     ?}
+                  ?}
+               || _tmp_tmat.first()
+               ?};
+               _continue2>0 & _tmp_tmat.prev()
+            !}
+         ?};
+         _tmp_tmat.cntx_pop();
+         {? _continue2=0
+         || _continue3:=0
+         ?};
+         _continue3>0 &_tmp_tmat.next()
+      !}
+   || _continue:=0
+   ?};
+   {? _continue3>0
+   || _continue:=0
+   ?};
+  _continue>0
+!};
+_tab_prz.cntx_pop();
+_tab_sumsc.cntx_pop();
+_tab_scs.cntx_pop();
+_tab_wyrsc.cntx_pop();
+_tab_wyrsum.cntx_pop();
+_tab_sc.cntx_pop();
+{? _res_type=0
+|| _res:=_cur_max
+|| _tmp_sctmat.clear;
+   _tmp_sctmat.f_clear();
+   _res:=_tmp_sctmat
+?};
+_res
+
+
+\tab_sc_move
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AKUL [22.26]
+:: OPIS: Akcja Przesuń w oknie z listą dostaw (TAB_SC)
+::   WE: _a - STRING - kierunek przesuwania: 'U','D','N'
+::----------------------------------------------------------------------------------------------------------------------
+_dir:='N';
+_env_zlisty:=params_get().env_zlisty;
+{? var_pres('_a')=type_of('')
+|| _dir:=_a
+?};
+exec('zmien_lpa','#dragdrop','LP',_env_zlisty.NDX_SC,,,_dir);
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:37 086b34588e11aeb80f33ae5f249cbf63c04140fc24ce69705d4f50b70bfa568d075f24ad12a9bdc4df7c4a8e6bf3d43080d9d993c5743fe3eaf51594190b657ff9f9b9e3ef349252febd91a40cae58f39e9c364c85dddbfd640d931973269ba65d03fd723873b7c5b9b789f5e484597c59f9094c2148f368f42d50b0928bd800

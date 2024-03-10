@@ -1,0 +1,1200 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lmg_mag_dkop.fml
+:: Utworzony: 05.07.2016
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Obsługa kopiowania dokumentów magazynowego
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP
+::# permissions=ODDZ,LMG
+::# parses=exec('parses_nd','lmg')
+::# access=exec('sprUprMag','%todo')
+::# kind=WE,  symbol=TYPYDOK, type=_TYPYDOK, name=Typ dokumentu magazynowego,         required=N, fml_val="exec('typydok','!lmg_mag_dkop')", fml_exp="exec('typydok_export','magdok_nag',_a)"
+::# kind=WE,  symbol=ND,      type=_ND,      name=Dokument magazynowy,                required=T
+::# kind=WE,  symbol=LK,      type=NUMBER,   name=Liczba kopi,                        required=N
+::# kind=WE,  symbol=GRP_KEY, type=STRING,   name=Identyfikator generacji dokumentów, required=N
+::# kind=WE,  symbol=WDOST,   type=STRING,   name=Kopiowanie dostaw,                  required=N fml_val="exec('wybdost','!lmg_mag_dkop')"
+::# kind=WEW, symbol=ND,      type=_ND,      name=Dokument magazynowy,                required=N
+::# kind=WY,  symbol=ND,      type=_ND,      name=Dokument magazynowy,                required=N
+::# kind=WY,  symbol=GRP_KEY, type=STRING,   name=Identyfikator generacji dokumentów, required=N
+
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+
+_context:=params_get().context;
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_proces:=_mp.pathProc();
+
+{? _proces
+:: Sprawdzenie parametrów pracy dla czynności startowej
+|| {? ST.AR=0 | ST.ODDZ_KOD='' | ST.MAG=null() || FUN.info('Ustaw parametry pracy.'@); _wyn:=0; return() ?}
+?};
+
+_nd_ref:={? var_pres('ND',_in)=type_of(~~) || null() || _in.ND ?};
+_auto:=_akcja<>'Kopiuj' & _mp.isAutoRun() & var_pres('TYPYDOK',_in)=type_of(null()) & _in.TYPYDOK<>null();
+
+:: Sprawdzenie uprawnień
+{? params_exec('permissions_chk','lmg')=0 || return() ?};
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy nagłówka dokumentu
+::   del: usuwa rekord kluczowy nagłówka dokumentu
+:: - add: zapisuje parametr wyjściowy ND = wskazanie na nagłówek dokumentu
+::   del: zapisuje parametr wyjściowy ND = null
+_mp.trigRef('ND',,1,,exec('kind_internal','#b_port'),'ND');
+
+{? ~(var_pres('ND',_in)=type_of(null()) & _in.ND)
+|| _mp.error('Brak wymaganego parametru ND.')
+|? exec('FindAndGet','#table',ND,_in.ND,,"MAG().PAL",'')='T'
+|| _mp.error('W magazynie z obsługą palet kopiowanie niedostępne.')
+|? (_lk:=exec('get','#params',600600,1); _lk=0)
+|| FUN.info('Kopiowanie niedostępne. Należy określić maksymalną ilość kopii (parametr 600600).'@);
+   _mp.cancel()
+||
+   _continue:=0;
+   _nd_kopia:='';
+
+   {? _mp.loop()=0
+:: pierwsze wywołanie
+   || ND.cntx_psh();
+      ND.prefix();
+      {? ~ND.seek(_in.ND)
+      || _mp.error('Nie dokumentu magazynowego.')
+      ||
+         {? _akcja='Kopiuj'
+            | _auto
+            | _mp.pathTodo()
+         || {? _auto
+            || HELP.TYP:={? var_pres('TYPYDOK',_in)=type_of(null()) & _in.TYPYDOK<>null()
+                         || _in.TYPYDOK
+                         || ND.TYP
+                         ?};
+               HELP.D:=date();
+               _inn:=exec('FindInSet','#table','INN','INN',HELP.D,ND.MAG,,,,null());
+               _innti:={? _inn<>null() || exec('FindAndGet','#table',INN,_inn,,"TI",time(0,0,0)) || time(0,0,0) ?};
+               HELP.T:={? _innti<>time(0,0,0) || _innti+1 || time(0,0,0) ?};
+               HELP.LK:={? var_pres('LK',_in)=type_of(0) & _in.LK>0
+                        || _in.LK
+                        || 1
+                        ?};
+               HELP.KH:={? HELP.TYP().Z='T' || ND.KH || null() ?};
+               HELP.WDOST:={? var_pres('WDOST',_in)=type_of('') & ';tnTN'*_in.WDOST>1
+                           || {? ~(ST.MAG().TYP*'DOST') | HELP.TYP=null() | HELP.TYP().P='T'
+                               | (ST.MAG().TYP*'DOST' & HELP.TYP().P<>'T' & ((';FL'*HELP.TYP().AFIFO)>1))
+                               | HELP.LK>1
+                              || 'N'
+                              || _in.WDOST
+                              ?}
+                           || 'N'
+                           ?}
+            ?};
+            _lk:={? var_pres('LK',_in)=type_of(0) || _in.LK || 1 ?};
+            {? _auto
+             | exec('par_kop','!lmg_mag_dkop',{? var_pres('TYPYDOK',_in)=type_of(null()) || _in.TYPYDOK || null() ?}
+                ,_lk
+                ,{? var_pres('WDOST',_in)=type_of('') & ';tnTN'*_in.WDOST>1
+                 || {? ~(ST.MAG().TYP*'DOST') | HELP.TYP=null() | HELP.TYP().P='T'
+                     | (ST.MAG().TYP*'DOST' & HELP.TYP().P<>'T' & ((';FL'*HELP.TYP().AFIFO)>1))
+                     | _lk>1
+                    || 'N'
+                    || _in.WDOST
+                    ?}
+                 || 'N'
+                 ?})
+            ||
+               exec('kop_dok1','!lmg_mag_dkop',ND.ref(),HELP.TYP,1,HELP.D,HELP.T);
+
+               _internal:=_mp.load(exec('kind_internal','#b_port'));
+               _continue:={? var_pres('ND',_internal)=type_of(null()) & _internal.ND || 1 || -1 ?};
+               {? _continue=1 || _nd_kopia:=exec('FindAndGet','#table',ND,_internal.ND,,"GRP_KEY",'') ?}
+            || _continue:=-1;
+               _mp.cancel()
+            ?}
+         || _mp.error('Nieobsługiwana ścieżka.')
+         ?}
+      ?};
+      ND.cntx_pop()
+:: wywołanie w pętli
+   || _continue:=var_pres('GRP_KEY',_in)=type_of('') & _in.GRP_KEY<>'';
+      {? _continue || _nd_kopia:=_in.GRP_KEY ?}
+   ?};
+
+   {? _continue=-1
+:: Wycofano się z wystawiania realizacji
+   || 1
+   |? _continue=1 & _nd_kopia<>''
+:: Zapisanie parametru wyjściowego ND, wykluczenie kolejnej realizacji z pętli, zakończenie czynności
+   || ND.cntx_psh();
+      ND.use(ref_name(_in.ND));
+      ND.prefix();
+      _grp_key:=_nd_kopia-1;
+      _grp_key_on:=_grp_key+'1';
+      _grp_key_off:=_grp_key+'0';
+      {? _grp_key<>''
+      || ND.index('GRP_KEY');
+         ND.prefix(_grp_key_on);
+         {? ND.first()
+         || ND.cntx_psh();
+            ND.prefix();
+            ND.GRP_KEY:=_grp_key_off;
+            do();
+            ND.put();
+            _mp.save(exec('kind_out','#b_port'),'ND',ND.ref());
+            _mp.save(exec('kind_out','#b_port'),'GRP_KEY',_nd_kopia);
+            end();
+            ND.cntx_pop();
+            {? ND.first()
+::          kontynuacja pętli
+            || _mp.loop_continue()
+            ?}
+         ?}
+      ?};
+      ND.cntx_pop();
+      _mp.done()
+   || _mp.error('Brak oczekiwanego parametru GRP_KEY.')
+   ?}
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_out:=_mp.load(exec('kind_in','#b_port'));
+
+_ref:=
+   {? var_pres('ND',_in)<>type_of(~~) & _in.ND || _in.ND
+   || null()
+   ?};
+
+{? _ref
+|| 'Skopiuj dokument magazynowy %1'@@[exec('record','#to_string',_ref)]
+|| 'Skopiuj dokument magazynowy'@@
+?}
+
+
+\typydok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła na wartość parametru TYPYDOK
+::   WY: TYPYDOK.ref()
+::----------------------------------------------------------------------------------------------------------------------
+_prod:=exec('tte_lic','tte');
+_war:=
+exec('typ_dok','lmg'
+ ,'not ("TYPYDOK".T in (\'INW+\',\'INW-\',\'KR+\',\'KR-\',\'PRC+\',\'PRC-\',\'KRW\',\'RRU\',\'KN+\',\'KN-\'))'+
+  {? _prod='T' || ' and "TYPYDOK".ZLEC<>\'T\' and "TYPYDOK".WYR<>\'T\'' || '' ?}+
+  ' and "TYPYDOK".KOOP<>\'T\' and ("TYPYDOK".P<>\'N\' or "TYPYDOK".DK<>\'W\')',,,0,0,,,,,-1)
+
+
+\nd_kopia
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Kopia dokumentu
+::  OLD: \kop_dok0/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LMG_MAG_DKOP';
+_params.AKCJA:='Kopiuj';
+_params.PROC_START:='T';
+_params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+
+exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'ND',ND.ref());
+_typ:=BEER.TYPYDOK;
+exec('mp_run','#b__box',_params);
+BEER.TYPYDOK:=_typ;
+{? TYPYDOK.f_active() || TYPYDOK.f_seek(BEER.TYPYDOK) || TYPYDOK.seek(BEER.TYPYDOK) ?};
+~~
+
+
+\par_kop
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [12.30]
+:: OPIS: Procedura do edycji parametrów dla kopiowania pozycji dokumentu - typ skopiowanego dokumentu, ich liczba
+::   WE: _a - typ dokumentu
+::       _b - liczba kopii
+::       _c - kopiowanie dostaw
+::   WY: 0 - nie okreslono wszystkich parametrow kopiowania, 1 - okreslono wszystkie parametry kopiowania
+::  OLD: \par_kop/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_prod:=exec('tte_lic','tte');
+:: przechowuje liste typow dokumentow - nie podlegajacych kopii
+_buf:=tab_tmp(1,'REF','STRING[16]','');
+TYPYDOK.cntx_psh();
+{? ~TYPYDOK.f_active()
+|| TYPYDOK.f_set('T,NAZ',,,)
+|| {? TYPYDOK.f_first()
+   || {!
+      |? _buf.clear();
+         _buf.blank();
+         _buf.REF:=$TYPYDOK.ref();
+         _buf.add(1);
+         TYPYDOK.f_next()
+      !}
+   ?};
+   TYPYDOK.f_clear();
+   TYPYDOK.f_set('T,NAZ',,,)
+?};
+{? TYPYDOK.f_first()
+|| {!
+   |? {? ';INW+;INW-;PRC-;PRC+;KR+;KR-;RRU;KN+;KN-'*(';'+TYPYDOK.T+';')
+       | TYPYDOK.DK='T'
+       | (TYPYDOK.P='N' & TYPYDOK.DK='W')
+       | (_prod='T' & (TYPYDOK.ZLEC='T' | TYPYDOK.WYR='T'))
+      || TYPYDOK.f_del()
+      || TYPYDOK.f_next()
+      ?}
+   !}
+?};
+TYPYDOK.cntx_pop();
+
+_wyn:=0;
+_editbe:=HELP.win_edit('?');
+HELP.TYP:=_a;
+HELP.D:=date(0,0,0);
+HELP.T:=time(0,0,0);
+HELP.LK:=_b;
+HELP.KH:=null();
+HELP.WDOST:=_c;
+HELP.fld_fml('TYP','AFTER_EDIT',"exec('ae_typ','!lmg_mag_dkop')");
+HELP.win_edit('NDKOP');
+_wyn:=HELP.edit("exec('valid_p','!lmg_mag_dkop')");
+{? _wyn=1 & TYPYDOK.f_seek(HELP.TYP)
+|| _wyn:=1
+|? _wyn=1 & HELP.TYP<>null
+|| FUN.info('Nie znaleziono typu dokumentu wybranego do kopiowania'@);
+   _wyn:=0
+?};
+HELP.win_edit(_editbe);
+
+:: przywrocenie do filtra usunietych rekordow
+TYPYDOK.cntx_psh();
+TYPYDOK.prefix();
+{? TYPYDOK.f_first() || {! |? TYPYDOK.f_del() !} ?};
+_buf.clear();
+{? _buf.first()
+|| {!
+   |? {? TYPYDOK.seek(_buf.REF) || TYPYDOK.f_add() ?};
+      _buf.next()
+   !}
+?};
+TYPYDOK.cntx_pop();
+obj_del(_buf);
+_wyn
+
+
+\ae_typ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [RA] [12.30]
+:: OPIS: po redakcji HELP.TYP
+::  OLD: \ae_typ/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_efld_opt','!lmg_mag_dkop');
+1
+
+
+\valid_p
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [12.30]
+:: OPIS: Sprawdza edycje okienka
+::   WY: 0 - ponowienie redakcji, 1 - zakonczenie redakcji
+::  OLD: \valid_p/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:='';
+_lk:=exec('get','#params',600600,1);
+{? HELP.LK>_lk
+|| FUN.info('Za dużo kopii.\nMaksymalna liczba kopii to %1.'@[$_lk]);
+   HELP.LK:=_lk;
+   _wyn:='LK'
+|? HELP.LK<=0
+|| FUN.info('Należy określić poprawną liczbę kopii.'@);
+   _wyn:='LK'
+|? HELP.TYP=null
+|| FUN.info('Należy określić nowy typ dokumentu dla kopii.'@);
+   _wyn:='TYP'
+|? HELP.WDOST='' | 'tnTN'*HELP.WDOST=0
+|| FUN.info('Należy określić czy mają być kopiowane wskazania do dostaw w pozycjach dokumentu (T/N).'@);
+   _wyn:='DOST'
+|? HELP.D<>date(0,0,0) & ~exec('sprd_inw','magdok_wspolne',HELP.D,ST.MAG,{? TYPYDOK.P='T' || 1 || 0 ?},,,HELP.T)
+|| _wyn:='D'
+|? HELP.D<>date(0,0,0) & exec('sprprzec','magazyn_przec',ST.MAG,HELP.D,,HELP.T)<>0
+|| FUN.info('W magazynie %1 wprowadzono arkusz przecen.\n'
+            'Data i godzina kopii dokumentu musi być większa od daty i godziny arkusza.'@[ST.MAG().SYM]);
+   HELP.T:=exec('spr_dttm','magazyn_inw',ST.MAG,HELP.D,1);
+   _wyn:='T'
+|? (HELP.TYP().Z='T' | HELP.TYP().CS='T') & HELP.KH=null()
+|| FUN.info('Wymagany kontrahent.'@);
+   _wyn:='KH'
+|? (HELP.TYP().Z='T' | HELP.TYP().CS='T') & HELP.TYP().P='N' & ST.MAG().COS='T'
+|| {? ST.MAG().DLAKH<>null() & ST.MAG().DLAKH<>HELP.KH
+   || FUN.info('W magzynie konsygnacyjnym dla kontrahenta %1 wymagany ten kontrahent.'@[ST.MAG().DLAKH().KOD]);
+      _wyn:='KH'
+   |? ~HELP.KH().COS
+   || FUN.info('Wymagany kontrahent z obsługą magazynów konsygnacyjnych.'@);
+      HELP.KH:=ST.MAG().DLAKH;
+      _wyn:='KH'
+   ?}
+?};
+{? _wyn='' & HELP.TYP().P='N'
+|| _lk:=exec('ctrl_ile','!lmg_mag_dkop',ND.ref(),HELP.LK,'tT'*HELP.WDOST);
+   {? ~_lk
+   || {? 'tT'*HELP.WDOST
+      || FUN.info('Brak stanu w danym magazynie dla podanych pozycji dokumentu.\n'
+                  'Kopia na dokument rozchodowy niemożliwa (ze wskazaniem dostaw).'@)
+      || FUN.info('Brak stanu w danym magazynie dla podanych pozycji dokumentu.\n'
+                  'Kopia na dokument rozchodowy niemożliwa.'@)
+      ?};
+      _wyn:='TYP'
+   |? _lk<HELP.LK
+   || {? FUN.ask('Możliwe skopiowanie danego dokumentu na dokument rozchodowy w liczbie: %1 kopii.'
+          '\nCzy poprawić liczbę kopii i skopiować dokument?'@[form(_lk,,0,'99')])
+      || HELP.LK:=_lk
+      || _wyn:='LK'
+      ?}
+   ?}
+?};
+_wyn
+
+
+\ctrl_ile
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [12.30]
+:: OPIS: kontola ilosci dla danego kopiowanego dokumentu przychodowego na dokument rozchodowy
+::   WE: _a - ref dokumentu
+::       _b - ilosc kopii
+::       _c - czy kontrola dostaw (ze wskazaniem dostaw)
+::   WY: liczba mozliwych dokuemntów do skopiowania
+::  OLD: \ctrl_ile/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_lkop:=_wyn:=_b;
+_buf:=tab_tmp(2,'MAT','STRING[16]',''
+       ,'DST','STRING[16]',''
+       ,'STN','REAL',''
+       ,'ILE','REAL','');
+ND.cntx_psh();
+DK.cntx_psh();
+DK.index('DOKMAG');
+DK.prefix(_a);
+{? DK.first()
+|| _mag:=DK.N().MAG;
+   {!
+   |?
+      {? DK.M().RODZ<>'U'
+      ||
+         _ilkop:=_lkop*DK.IL;
+         _dst:={? _c || DK.SRDK || 'brak' ?};
+         _buf.clear();
+         {? ~_buf.find_key($DK.M,_dst)
+         || _stan:={? _c
+                   || exec('obl_stad','magazyn_stan',DK.M,_dst)
+                   || exec('obl_stan','magazyn_stan',DK.M,1,_mag);
+                      BEER.SD
+                   ?};
+            _buf.blank();
+            _buf.MAT:=$DK.M;
+            _buf.DST:=_dst;
+            _buf.STN:=_stan;
+            _buf.ILE:=0;
+            _buf.add(1)
+         || _stan:=_buf.STN
+         ?};
+         _iled:=_stan-_buf.ILE;
+         {? _iled>0
+         || {? _iled>=_ilkop
+            || _buf.ILE+=_ilkop;
+               _buf.put(1)
+            || _bkop:=_iled%DK.IL;
+               {? _bkop>0
+               || _buf.ILE+=(_bkop*DK.IL);
+                  _buf.put(1);
+                  {? _wyn>_bkop || _wyn:=_bkop ?}
+               || _wyn:=0
+               ?}
+            ?}
+         || _wyn:=0
+         ?}
+      ?};
+      _wyn & DK.next()
+   !}
+?};
+ND.cntx_pop();
+DK.cntx_pop();
+_wyn
+
+
+\kop_dok1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Roman Firla [12.30]
+:: OPIS: Procedura po akcji Kopiuj gdy nie sa zaznaczone dokumenty. Kopiuje dokument z parametru _a na typ z parametru _b
+::   WE: _a - ref kopiowanego dokumnetu,
+::       _b - typ nowego dokumentu,
+::       _c - pytanie czy przejsc do skopiowanych dokumentów =0 nie dla grupy rekordów =1 - tak dla pojedynczego
+::       _d - data jaką ma mieć skopiowany dokument
+::       [_e] - godzina jaką ma mieć skopiowany dokument
+::   WY: liczba skopiowanych dokumentow
+::  OLD: \kop_dok1/magkop.fml
+::       \kop_dok10/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=3  || {? type_of(_c)<>1 || _c:=1 ?} || _c:=1 ?};
+{? _>=4  || {? type_of(_d)<>4 || _d:=date() ?} || _d:=date() ?};
+_time:={? var_pres('_e')=type_of(time()) || _e || time(0,0,0) ?};
+
+_inwspr:=_zamk:=_zm_dat:=0;
+_nLicz:=_nCzyKop:=1;
+
+_grp_key:=tm_stamp()+'1';
+
+_rprz:=exec('FindAndGet','#table',ND,_a,,"TYP().P+TYP().DS+TYP().CS",'');
+_projekty:=exec('FindAndGet','#table',ND,_a,,"ND.PROJEKTY",null());
+
+ND.cntx_psh();
+ND.prefix();
+DK.cntx_psh();
+DK.prefix();
+DK_L.cntx_psh();
+DK_L.prefix();
+_rok:=#(_d$5+4);
+_mc:=#(2+_d$5);
+{? ~exec('find_okr','!lmg_mag_dkop',_rok,_mc)
+||
+   _rok:=ST.AR;
+   _mc:=ST.AM;
+   _brok:=#(date()$5+4);
+   _bmc:=#(2+date()$5);
+   _d:={? _brok<>_rok | _bmc<>_mc || date(_rok,_mc,0) || date() ?};
+   _zm_dat:=1
+?};
+{? var_pres('__kom')<0|| exec('ini_kom','#message','Kopiowanie pozycji'@)?};
+{? var_pres('__lp')<0 || __lp:=0 ?};
+_inwspr:=exec('sprd_inw','magdok_wspolne',_d,ST.MAG,{? TYPYDOK.P='T' || 1 || 0 ?},,,_time);
+_lock:=-1;
+_utwdok:='';
+_utwtyp:=TYPYDOK.ref();
+_ctrlCN:=exec('get','#params',800850,2);
+{? exec('czy_z_ok','okresy',1,1,_rok,_mc,ST.MAG) & _inwspr & (_lock:=exec('blok_nd','magdok_nag','N'))
+||
+   {!
+   |? _nLicz<=HELP.LK & _nCzyKop
+   |!
+      {? {? _nLicz=1 || exec('kop_dk','!lmg_mag_dkop',#_a,_b,_grp_key) || 1 ?}
+       & ~exec('check_inw','!lmg_mag_dkop',ST.MAG,#_a)
+      ||
+         do();
+         {? ST.AR<>_rok
+         ||
+            ND.cntx_psh(); ND.use('nagdo'+ST.ODDZ+(_d$5+2)); ND.prefix();
+            DK.cntx_psh(); DK.use('dokma'+ST.ODDZ+(_d$5+2)); DK.prefix();
+            DK_L.cntx_psh(); DK_L.use('doklk'+ST.ODDZ+(_d$5+2)); DK_L.prefix()
+         ?};
+         {? (_rRefD:=exec('addnag','magdok_nag',ST.MAG,_rok,_mc,_b,'N',,{? _d=date(0,0,0) || ~~ || _d ?}
+         ,,,,,,,,,,,,,,_projekty))<>null
+         ||
+            {? ND.seek(_rRefD)
+            ||
+               ND.RAB:=__ND_BIS.RAB;
+               ND.WAL:=exec('FindAndGet','#table',SLO,__ND_BIS.WAL,,,null());
+               ND.KRS:=__ND_BIS.KRS;
+               ND.SWAL:=__ND_BIS.SWAL;
+               ND.RTK:=__ND_BIS.RTK;
+               ND.NTK:=__ND_BIS.NTK;
+               ND.DTK:=__ND_BIS.DTK;
+               ND.BTK:=__ND_BIS.BTK;
+
+               ND.NWAL:=exec('FindAndGet','#table',SLO,__ND_BIS.NWAL,,,null());
+               ND.NSWAL:=exec('FindAndGet','#table',SLO,__ND_BIS.NSWAL,,,null());
+               ND.NRTK:=__ND_BIS.NRTK;
+               ND.NNTK:=__ND_BIS.NNTK;
+               ND.NDTK:=__ND_BIS.NDTK;
+               ND.NBTK:=__ND_BIS.NBTK;
+               ND.NKRS:=__ND_BIS.NKRS;
+
+               ND.STAT_REJ:='N';
+               ND.GRP_KEY:=__ND_BIS.GRP_KEY;
+               {? HELP.KH <> null()|| ND.KH:=HELP.KH ?};
+               {? ND.TYP().ZLEC<>'T'
+               || ND.ZL:=null;
+                  ND.WYD:=null
+               |? ND.TYP().ZLEC='T'
+               || ND.ZL:=exec('FindAndGet','#table','ZL',__ND_BIS.ZL,,,null());
+                  ND.WYD:=exec('FindAndGet','#table','SLO',__ND_BIS.WYD,,,null())
+               ?};
+               {? ND.RAB_TYP='' || ND.RAB_TYP:=exec('rab_typ_bl','ceny') ?};
+:: NIP UE
+               INTRAST.NIP:=__ND_BIS.NIP_UE;
+               exec('nd_nip_ue','magdok_nag');
+:: intrastat
+               _ist_copy:=0;
+               {? ND.IST_TYP<>'' & ND.IST_TYP=__ND_BIS.IST_TYP
+                     &
+                  $ND.TYP=__ND_BIS.TYP
+               ||
+                  _ist_copy:=1;
+                  ND.KPW:=__ND_BIS.KPW;
+                  ND.WD:=__ND_BIS.WD;
+                  ND.RTRANSAK:=__ND_BIS.RTRANSAK;
+                  ND.RTRANSPO:=__ND_BIS.RTRANSPO;
+                  _progp:=exec('prog','intrastat',ND.D,'P');
+                  _progw:=exec('prog','intrastat',ND.D,'W');
+                  {? exec('czy_prog_s','intrastat',ND.IST_TYP,_progw,_progp)=0
+                  ||
+                     ND.WD:='';
+                     ND.RTRANSPO:=''
+                  ?}
+               ?};
+:: OSS, IOSS
+               {? ND.TYP().Z='T' & ND.TYP().P='N'
+               ||
+                  ND.KRAJ_VAT:=exec('FindAndGet','#table',KRAJE,__ND_BIS.KRAJ_VAT,,,null());
+                  ND.PROC:=exec('FindAndGet','#table',JPK_SLO,__ND_BIS.PROC,,,null())
+               ?};
+               ND.put;
+               _utwdok:=ND.SYM;
+               _utwtyp:=ND.TYP;
+               exec('copyTab','!lmg_mag_dkop',__DK_BIS,DK,'__DK_BIS','DK','DK.blank(1)',
+                  'DK.N:=ND.ref();'
+                  '{? __ND_BIS.KRAJ_VAT<>'''' & ND.KRAJ_VAT=null() || DK.SV:=null() ?};'
+                  'exec(''istatr_nd2dk'',''magdok_poz'',2);'+
+                  {? _ist_copy || '' || 'exec(''ist_wart_dk'',''magdok_poz'',1);' ?}+
+                  'exec(''add2dk'',''magdok_wspolne'',\''+_rprz+'\')'
+               );
+               {? ST.TYPYDOK=TYPYDOK.ref() & exec('infdodchk','fakso')=1 & exec('get','#params',600602,2)='T'
+               || exec('copyinfdod','!lmg_mag_dkop','ND',_a,ND.ref())
+               || exec('inf_dod','fakso',0,'nagdo')
+               ?};
+               exec('dk_sum','magdok_wspolne',ND.ref())
+            ?};
+            {? do_state()=2 || _nCzyKop:=0 ?}
+         ||
+            _nCzyKop:=0;
+            undo()
+         ?};
+         {? ST.AR<>_rok
+         ||
+            ND.cntx_pop();
+            DK.cntx_pop();
+            DK_L.cntx_pop()
+         ?};
+
+         {? end() & ND.TYP().CS='T'
+          & ($ND.KH<>__ND_BIS.KH | ND.TYP().P<>exec('FindAndGet','#table',TYPYDOK,__ND_BIS.TYP,,"P",''))
+          & _ctrlCN<>'B'
+          & (_ctrlCN='T' | exec('ceny_mat_dok','ceny_dok',2,,ND,1))
+          & ND.r_lock(1,1,1)
+         || _ma_cennik:='N';
+            _choice:=2;
+            _result:=spli_str(exec('fap_czy_cennik','faktury_wspolne',ND.KH,ND.KH_ODB,null(),ND.WAL,DK),' ');
+            _ma_cennik:=_result[1];
+            _choice:=#_result[2];
+
+            ND.cntx_psh(); DK.cntx_psh();
+            {? _ma_cennik='N' & _choice<>2
+            || _ok:=1
+            || FUN.info('Zmieniły się kryteria cenników.\nNależy wyznaczyć ponownie ceny.'@);
+               {!
+               |?
+                  _ok:=exec('ceny_mat_dok','ceny_dok',1,0,ND,,1);
+                  {? _ok=0
+                  || {? FUN.ask('Należy ustalić nowe ceny.\n'
+                         'W przeciwnym razie kopiowanie będzie anulowane.'
+                         '\nCzy anulować kopiowanie?'@)
+                     || exec('n_usun','magdok_nag',0);
+                        _nCzyKop:=0
+                     || 1
+                     ?}
+                  || 0
+                  ?}
+               !}
+            ?};
+            ND.cntx_pop(); DK.cntx_pop();
+            {? _nCzyKop
+            ||
+               _a:=ND.ref;
+               exec('kop_dk','!lmg_mag_dkop',#_a,_b,_grp_key)
+            ?};
+            ND.r_unlock()
+         ?};
+         {? _nCzyKop || exec('add_kom','#message','Utworzono dokument: %1.'@[_utwdok],1,'Kopiowanie pozycji'@,__lp+=1) ?}
+      ||
+         _nCzyKop:=0
+      ?};
+      {? _nCzyKop || _nLicz+=1 ?}
+   !};
+   ND.r_unlock()
+|? _lock<>0
+|| _zamk:=1;
+   exec('add_kom','#message','Ustalono datę dla kopii dokumentów: %1. Okres zamknięty.'@[HELP.D$2]
+    ,4,'Kopiowanie pozycji'@,__lp+=1);
+   exec('add_kom','#message','Kopia niemożliwa proszę wyznaczyć datę kopii ręcznie.'@,4,'Kopiowanie pozycji'@,__lp+=1)
+?};
+ND.cntx_pop();
+DK.cntx_pop();
+DK_L.cntx_pop();
+ND.r_unlock();
+::informacja o ilosci utworzonych dokumentow wyswietlana tylko wtedy jezeli wybrano wiecej niz
+::jedna kopie i nie wszystkie kopie powstaly
+{? _lock<>-1 & _inwspr=0 & _c
+|| exec('add_kom','#message','Ustalono datę dla kopii dokumentów: %1.'@[HELP.D$2],4,'Kopiowanie pozycji'@,__lp+=1);
+   exec('add_kom','#message','Kopia niemożliwa proszę wyznaczyć datę kopii ręcznie.'@,4,'Kopiowanie pozycji'@,__lp+=1)
+?};
+{? _lock<>-1
+|| {? _c & _zm_dat
+   || exec('add_kom','#message','Data z parametru nieokreślona lub niezawierająca się w zdefiniowanych okresach.'@
+       ,1,'Kopiowanie pozycji'@,__lp+=1);
+      exec('add_kom','#message','Ustalono datę dla kopii dokumentów: %1.'@[_d$2],1,'Kopiowanie pozycji'@,__lp+=1);
+      exec('add_kom','#message','Liczba utworzonych dokumentów: %1.'@[$(_nLicz-1)],1,'Kopiowanie pozycji'@,__lp+=1)
+   || {? _c ||  exec('add_kom','#message','Liczba utworzonych dokumentów: %1.'@[$(_nLicz-1)]
+                 ,1,'Kopiowanie pozycji'@,__lp+=1) ?}
+   ?}
+?};
+{? var_pres('__kom')>100 & __kom.get_size()<>0 & _c
+||
+   __kom.select();
+   VAR_DEL.delete('__kom','__lp')
+?};
+{? _zamk || return() ?};
+_nLicz-1
+
+
+\find_okr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Roman Firla [12.30]
+:: OPIS: Procedura szukajaca okres
+::   WE: _a - rok, _b - miesiac
+::   WY: 0 - nie znaleziono, 1 - znaleziono
+::  OLD: \find_okr/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+OKR.cntx_psh();
+OKR.index('OKR');
+_ok:=OKR.find_key(REF.FIRMA,_a,_b);
+OKR.cntx_pop();
+_ok
+
+
+\kop_dk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [12.30]
+:: OPIS: Formula kopiuje pozycje dokumentow do tabeli tymczasowej __DK_BIS
+::   WE: _a - ref dokumentu zrodlowgo #ND.ref,
+::       _b - typ dokumentu kopiowanego
+::       _c - klucz grupujący
+::   WY: wynik kopiowania pozycji do tabeli tymczasowej (1-OK, 0-BAD)
+::  OLD: \kop_dk/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__kom')<0|| exec('ini_kom','#message','Kopiowanie pozycji'@)?};
+{? var_pres('__lp')<0 || __lp:=0 ?};
+_ok:=0;
+DK.cntx_psh();
+ND.cntx_psh();
+ND.prefix();
+{? ND.seek(_a,)
+|| _plus:=ND.TYP().P='T';
+   _czysp:=ND.TYP().DS='T';
+   _zerocw:=0;
+   TYPYDOK.cntx_psh();
+   TYPYDOK.prefix();
+   {? ~TYPYDOK.seek(_b)
+   ||  FUN.info('Nie znaleziono typu dokumentu wybranego do kopiowania'@);
+       DK.cntx_pop();
+       ND.cntx_pop();
+       TYPYDOK.cntx_pop();
+       return(0)
+   || _zerocw:=(_plus & TYPYDOK.P='N') | (~_plus & TYPYDOK.DS='N')
+   ?};
+   {? var_pres('__DK_BIS')>7 || obj_del(__DK_BIS) ?};
+   __DK_BIS:=sql('select * from DK where DK.N=:_a',ND.ref);
+   {? var_pres('__ND_BIS')>7 || obj_del(__ND_BIS) ?};
+   __ND_BIS:=sql('select * from ND where ND.REFERENCE=:_a',ND.ref);
+   {? _ok:=__DK_BIS.first()
+   || {? __ND_BIS.first() || __ND_BIS.GRP_KEY:=_c ?};
+      _put:=0;
+      {!
+      |? __DK_BIS.Z:='N';
+         __DK_BIS.ZP:=0;
+         __DK_BIS.FAP:='';
+         __DK_BIS.REF_KOR:='';
+         __DK_BIS.SRDK:='';
+         __DK_BIS.ZAM_RN:='';
+         __DK_BIS.OPAK_GEN:='';
+         __DK_BIS.PROJEKT:='';
+         __DK_BIS.STATS:='' ;
+         __DK_BIS.ZAM_RP:='';
+
+         PROJEKTY.cntx_psh();PROJTYPY.cntx_psh();
+         PROJEKTY.prefix();PROJTYPY.prefix();
+         __DK_BIS.PROJEKTY:=
+         {? __DK_BIS.PROJEKTY<>'' & PROJEKTY.seek(__DK_BIS.PROJEKTY)
+         & (TYPYDOK.PROJZAKR='Wszystkie' | (4+PROJEKTY.T().R)=(4+TYPYDOK.PROJZAKR))
+         || __DK_BIS.PROJEKTY
+         || ''
+         ?};
+         PROJEKTY.cntx_pop();PROJTYPY.cntx_pop();
+
+         {? HELP.J2<>'T' & ~exec('FindAndGet','#table',M,__DK_BIS.M,,"J2<>null()",0) || __DK_BIS.IL2:=__DK_BIS.IL ?};
+         __DK_BIS.AFIFO:='';
+         {? _zerocw || __DK_BIS.CWAL:=0 ?};
+         {? __DK_BIS.PLUS<>TYPYDOK.P || __DK_BIS.PLUS:=TYPYDOK.P; _put:=1 ?};
+         {? __DK_BIS.PLUS='N' & -HELP.WDOST='n'
+         || __DK_BIS.RDK:=0; __DK_BIS.PRDK:=''; __DK_BIS.NDK:=''; __DK_BIS.DOST:=date(0,0,0);
+            __DK_BIS.C:=0; __DK_BIS.WAR:=0; _put:=1
+         |? __DK_BIS.PLUS='T'
+         || __DK_BIS.RDK:=0; __DK_BIS.PRDK:=''; __DK_BIS.NDK:=''; __DK_BIS.DOST:=date(0,0,0); _put:=1
+         ?};
+         {? _put || __DK_BIS.put(); _put:=0 ?};
+         __DK_BIS.next()
+      !}
+   ||
+        exec('add_kom','#message','Dokument: %1 - brak pozycji do kopiowania.'@[ND.SYM]
+         ,4,'Kopiowanie pozycji'@,__lp+=1)
+   ?};
+   TYPYDOK.cntx_pop()
+?};
+ND.cntx_pop();
+DK.cntx_pop();
+_ok
+
+
+\check_inw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [RA] [12.30]
+:: OPIS: sprawdza czy pozycje danego dokumentu istnieja w otwartej inwentaryzacji
+::   WE: _a - magazyn ref
+::       _b - ref dokumentu ND
+::   WY: 1 - jest otwarta inwentaryzacja i istnieją pozycje na dokumencie
+::       0 - nie istnieją pozycje wystepujace w inwentaryzacji
+::  OLD: \check_inw/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+_msk:=INN.name();
+OKR.cntx_psh();
+INN.cntx_psh();
+INP.cntx_psh();
+OKR.index('MC');
+OKR.prefix(REF.FIRMA,1);
+{? OKR.last()
+|| {!
+   |? INN.use((_msk-2)+form(OKR.ROK-2000,-2,0,'99'));
+      INP.use('inw_p'+(INN.name+3));
+      INN.index('INDP');
+      INN.prefix(_a,date(0,0,0));
+      {? INN.last
+      || {? INN.TYP='A'
+         || DK.cntx_psh();
+            ND.cntx_psh();
+            ND.prefix();
+            {? ND.seek(_b,)
+            || DK.index('DOKMAG');
+               DK.prefix(ND.ref());
+               {? DK.first()
+               || {!
+                  |? {? exec('FindInSet','#table','INP','KOD',DK.M,INN.ref)<>null
+                     || {? var_pres('__kom')>100 & var_pres('__lp')>0
+                        || exec('add_kom','#message','Pozycja dokumentu %1 o indeksie %2 istnieje w inwentaryzacji. '
+                            'Kopia niemożliwa.'@[ND.SYM,DK.M().KTM],4,'Kopiowanie pozycji'@,__lp+=1)
+                        || FUN.info('Pozycja dokumentu %1 o indeksie %2'
+                            ' istnieje w inwentaryzacji.\nKopia niemożliwa.'@[ND.SYM,DK.M().KTM])
+                        ?};
+                        _wyn:=1
+                     ?};
+                     DK.next()
+                  !}
+               ?}
+           || _wyn:=1
+           ?};
+           DK.cntx_pop();
+           ND.cntx_pop()
+         ?}
+      || _wyn:=0
+      ?};
+      _wyn=0 & OKR.prev
+   !}
+?};
+INN.use(_msk);
+INP.use('inw_p'+(INN.name+3));
+OKR.cntx_pop();
+INN.cntx_pop();
+INP.cntx_pop();
+_wyn
+
+
+\copyTab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Roman Firla [12.30]
+:: OPIS: Kopiuje zapisy z tabeli zrodlowej (_a) do tabeli docelowej (_b)
+::   WE: _a - uchwyt do tabeli zrodlowej
+::       _b - uchwyt do tabeli docelowej
+::       _c - akronim tabeli zrodlowej
+::       _d - akronim tabeli docelowej
+::       _e - funkcja do wykonania przed skopiowaniem rekordu
+::       _f - funkcja do wykonania po skopiowaniu rekordu
+::   WY: ~~
+::  OLD: \copyTab/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tabS:=_a;
+_tabD:=_b;
+_acrS:=_c;
+_acrD:=_d;
+_funPrz:=_e;
+_funPo:=_f;
+_licznik:=_procent:=old_proc:=0;
+_size:=_tabS.size();
+{? _tabS.first()
+|| {!
+   |? _old_proc:=_procent;
+      _procent:=ceil((_licznik/_size)*100);
+      {? _procent > _old_proc
+      || progress(_procent,'Dokument: %1. Postęp kopiowania pozycji %2%%.'@[DK.N().SYM,$_procent]
+          ,'Kopiowanie pozycji dokumentu'@)
+      ?};
+      _licznik+=1;
+      ($_funPrz)();
+      exec('copyRec','!lmg_mag_dkop',_tabS,_tabD,_acrS,_acrD);
+      ($_funPo)();
+      {? (1+DK.N().MAG().TYP)='D' & DK.PLUS='T' & (DK.STATS=null)
+      || DK.STATS:=exec('FindInSet','#table','MX','M_MG',DK.M,DK.N().MAG,"MX.DEFSTATS",,,DK.N().MAG().DEFSTATS);
+         DK.REO:=1;
+         _statsM:=exec('statsM','statexam',DK.M);
+         {? _statsM<>null() || DK.STATS:=_statsM ?};
+         DK.put()
+      ?};
+      exec('copy_dk_l','!lmg_mag_dkop',_tabS.REFERENC,DK.ref());
+      {? DK.N().TYP().P='N'
+      ||
+          {? exec('obl_wars','magdok_poz') || DK.put ?};
+          exec('obl_stan','magazyn_stan',DK.M,1,ST.MAG)
+      ?};
+      {? ST.TYPYDOK=TYPYDOK.ref() & exec('infdodchk','fakso','dokma')=1 & exec('get','#params',600602,2)='T'
+      || exec('copyinfdod','!lmg_mag_dkop','DK',_tabS.REFERENC,DK.ref())
+      || exec('inf_dod','fakso',0,'dokma')
+      ?};
+      _tabS.next()
+   !};
+   prgs_clr();
+   {? exec('check_inw','!lmg_mag_dkop',DK.N().MAG,#DK.N)=1
+   || undo();
+      return
+   ?};
+   {? exec('check_prze','!lmg_mag_dkop',DK.N().MAG,#DK.N)=1
+   || undo();
+      return
+   ?}
+?};
+~~
+
+
+\copyRec
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Roman Firla [12.30]
+:: OPIS: Kopiuje rekord tabeli zrodlowej (_a) do tabeli docelowej (_b)
+::   WE: _a - uchwyt do tabeli zrodlowej
+::       _b - uchwyt do tabeli docelowej
+::       _c - akronim tabeli zrodlowej
+::       _d - akronim tabeli docelowej
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+_tabS:=_a;
+_tabD:=_b;
+_acrS:=_c;
+_acrD:=_d;
+_iter:=_tabS.fld_num();
+_bit:=obj_new(@.CLASS.BIT);
+{! _ii:=1.._iter
+|! _acrFldS:=($(_acrS+'.fld_acr('+$_ii+')'))();
+   _acrFldD:=exec('findFldD','!lmg_mag_dkop',_tabD,_acrD,_acrFldS);
+   {? _acrFldD<>''
+   || {? type_of(($(_acrD+'.'+_acrFldD))())=7
+      || _val:=($(_acrS+'.'+_acrFldS))();
+         {? _val=''
+         || _val:=0
+         || _fName:=form(8+_val);
+            _acrT:=exec('findAcrT','!lmg_mag_dkop',_fName);
+            _ref:=_bit.sqlint(_val);
+            {| ($_acrT)()
+            |! cntx_psh();
+               use(_fName);
+               cntx_psh();
+               prefix();
+               _val:={? seek(_ref,_fName) || ref() ?};
+               cntx_pop();
+               cntx_pop()
+            |}
+         ?}
+      || _val:=($(_acrS+'.'+_acrFldS))()
+      ?};
+      ($(_acrD+'.'+_acrFldD))():=_val
+   ?}
+!};
+~~
+
+
+\copy_dk_l
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [12.30]
+:: OPIS: Kopiuje rekordy tabeli DK_L
+::   WE: _a - ref DK kopiowanego  , _b - ref DK docelowego
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__DK_L_BIS')>7 || obj_del(__DK_L_BIS) ?};
+{? exec('get','#params',600601,2)='T'
+|| _msk:=(ref_name(_a)+3);
+   _zmien:=_msk<>(DK_L.name()+3);
+   {? _zmien || DK_L.cntx_psh(); DK_L.use((DK_L.name()-3)+_msk) ?};
+   __DK_L_BIS:=sql('select * from DK_L where DK_L.DK=\':_a\'',_a);
+   {? _zmien || DK_L.cntx_pop() ?};
+   {? __DK_L_BIS.first()
+   ||
+      {!
+      |?
+         __DK_L_BIS.DK_LN:='';
+         __DK_L_BIS.Z:='N';
+         DK_L.blank(1);
+         exec('copyRec','!lmg_mag_dkop',__DK_L_BIS,DK_L,'__DK_L_BIS','DK_L');
+         DK_L.DK:=_b;
+         DK_L.IL:=fabs(DK_L.IL);
+         {? DK_L.DK().M().TWD>0
+         || {? DK_L.DK().M().SETW='W'
+            || {? DK_L.DK().PLUS='T' || DK_L.TW:=DK_L.DK().N().D+DK_L.DK().M().TWD ?}
+            || DK_L.TW:=DK_L.DK().TW
+            ?}
+         ?};
+         exec('reoIL2','magdok_wymiary');
+         exec('uzupIDkod','magdok_palety',DK_L);
+         {? DK_L.add() & DK_L.DK().PLUS='T'
+         || DK_L.SCSQL:=$DK_L.DK;
+            DK_L.put(1)
+         ?};
+         __DK_L_BIS.next()
+      !}
+   ?}
+?};
+~~
+
+
+\findFldD
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Roman Firla [12.30]
+:: OPIS: Szuka pola _c z tabeli zrodlowej w tabeli docelowej _b
+::   WE: _a - uchwyt do tabeli docelowej, _b - akronim tabeli docelowej, _c - akronim szukanego pola
+::   WY: _rr = akronim szukanego pola
+::           = '' wpp
+::  OLD: \findFldD/magdkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_rr:='';
+_tabD:=_a;
+_acrD:=_b;
+_acrFldS:=_c;
+_iter:=_tabD.fld_num();
+{! _ii:=1.._iter
+|! {? ($(_acrD+'.fld_acr('+$_ii+')'))()=_acrFldS
+   || _rr:=_acrFldS
+   ?}
+!};
+_rr
+
+
+\findAcrT
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Roman Firla [12.30]
+:: OPIS: Wyznacza akronim tabeli na podstawie przekazanej nazwy pliku (_a).
+::   WE:
+::   WY: = akronim tabeli w przypadku dopasowania nazwy pliku do nazwy z def'a
+::       = '' wpp
+::  OLD: \findAcrT/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_fName:=_a;
+{! _ii:=1..tab_num()
+|! _name:=($(tab_acr(_ii)+'.name(1)'))();
+   _isMaska:=_name*'?';
+   {? _isMaska & (+_fName)=(+_name)
+   || _isMaska-=1;
+      {? _isMaska+_name=_isMaska+_fName
+      || return(tab_acr(_ii))
+      ?}
+   || {? _name=_fName
+      || return(tab_acr(_ii))
+      ?}
+   ?}
+!};
+''
+
+
+\copyinfdod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [12.30]
+:: OPIS: Kopiuje rekordy tabeli FAKSO
+::   WE: _a - akronim tabeli _b - ref tabeli kopiowanej  , _c - ref tabeli docelowej
+::  OLD: \copyinfdod/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('__FAKSO_BIS')>7 || obj_del(__FAKSO_BIS) ?};
+{? exec('get','#params',600602,2)='T'
+||
+   __FAKSO_BIS:=sql('select * from @FAKSO where FAKSO.'+_a+'=\''+$_b+'\'');
+   {? __FAKSO_BIS.first()
+   ||
+      {!
+      |?
+         _maska:='';
+         {? _a='DK'
+         ||
+            _ref:='DK';
+            _maska:='fakto'+(DK.name+3)
+         |? _a='ND'
+         ||
+            _ref:='ND';
+            _maska:='fakto'+(ND.name+3)
+         ?};
+         FAKSO.cntx_psh();
+         FAKSO.use(_maska);
+         FAKSO.index(_ref);
+         FAKSO.prefix();
+         FAKSO.blank(1);
+         exec('copyRec','!lmg_mag_dkop',__FAKSO_BIS,FAKSO,'__FAKSO_BIS','FAKSO');
+         ($('FAKSO.'+_a))():= _c;
+         FAKSO.add();
+         FAKSO.cntx_pop();
+         __FAKSO_BIS.next()
+      !}
+   ?}
+?};
+~~
+
+
+\check_prze
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [RA] [12.30]
+:: OPIS: sprawdza czy pozycje danego dokumentu istnieja w otwartej przecenie
+::   WE: _a - magazyn ref
+::       _b - ref dokumentu ND
+::   WY: 1 - jest przecena i istnieją pozycje na dokumencie 0 - nie istnieją pozycje wystepujace w przecenie
+::  OLD: \check_prze/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+_msk:=INN.name();
+INN.cntx_psh();
+INP.cntx_psh();
+{? 'E'* (1+ST.MAG().TYP)
+||
+   INN.use('inw_nwyc');
+   INP.use('inw_pwyc');
+   INN.index('INN');
+   INN.prefix(ST.MAG);
+   {? INN.last
+   ||
+      DK.cntx_psh();
+      ND.cntx_psh();
+      ND.prefix();
+      {? ND.seek(_b,)
+      || DK.index('DOKMAG');
+         DK.prefix(ND.ref());
+         {!
+         |? {? DK.first()
+            || {!
+               |? {? INN.D=date(0,0,0) & ND.D<=INN.DI
+                  || {? exec('FindInSet','#table','INP','KOD',DK.M,INN.ref)<>null
+                     || {? var_pres('__kom')>100 & var_pres('__lp')>0
+                        || exec('add_kom','#message','Pozycja dokumentu %1 o indeksie %2 '
+                            'istnieje w otwartej przecenie.'@[ND.SYM,DK.M().KTM],4,'Kopiowanie pozycji'@,__lp+=1);
+                           exec('add_kom','#message','Kopia na dzień %1 niemożliwa.'@[$ND.D]
+                            ,4,'Kopiowanie pozycji'@,__lp+=1)
+                        || FUN.info('Pozycja dokumentu %1 o indeksie %2'
+                                    ' istnieje w zaakceptowanej przecenie.\nKopia niemożliwa.'@[ND.SYM,DK.M().KTM])
+                        ?};
+                        _wyn:=1
+                     ?}
+                  |? ND.D<INN.D
+                  || {? exec('FindInSet','#table','INP','KOD',DK.M,INN.ref)<>null
+                     || {? var_pres('__kom')>100 & var_pres('__lp')>0
+                        || exec('add_kom','#message','Pozycja dokumentu %1 o indeksie %2 istnieje '
+                            'w zaakceptowanej przecenie.'@[ND.SYM,DK.M().KTM],4,'Kopiowanie pozycji'@,__lp+=1);
+                           exec('add_kom','#message','Kopia na dzień %1 niemożliwa.'@[$ND.D]
+                            ,4,'Kopiowanie pozycji'@,__lp+=1)
+                        || FUN.info('Pozycja dokumentu %1 o indeksie %2'
+                                    ' istnieje w zaakceptowanej przecenie.\nKopia niemożliwa.'@[ND.SYM,DK.M().KTM])
+                        ?};
+                        _wyn:=1
+                     ?}
+                  ?};
+                  DK.next()
+               !}
+            ?};
+            INN.prev()
+         !}
+      || _wyn:=0
+      ?};
+      DK.cntx_pop();
+      ND.cntx_pop()
+   ?}
+?};
+INN.use(_msk);
+INP.use('inw_p'+(INN.name+3));
+INN.cntx_pop();
+INP.cntx_pop();
+_wyn
+
+
+\set_efld_opt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Zaznacza wymagalne pola w nagłówku dokumentu magazynowego
+::   WE: _a - akronim okna redakcji
+::  OLD: \wdost_b_s/magkop.fml
+::       \wdost_b_e/magkop.fml
+::       \pwhelpkh/magkop.fml
+::       \prhelpkh/magkop.fml
+::----------------------------------------------------------------------------------------------------------------------
+_win_red:='NDKOP';
+{? ~(ST.MAG().TYP*'DOST') | HELP.TYP=null() | HELP.TYP().P='T'
+ | (ST.MAG().TYP*'DOST' & HELP.TYP().P<>'T' & ((';FL'*HELP.TYP().AFIFO)>1))
+|| HELP.WDOST:='N';
+   HELP.efld_opt(_win_red,'enable=0',,'WDOST')
+|| HELP.efld_opt(_win_red,'enable=1',,'WDOST')
+?};
+{? HELP.TYP<>null() & ST.MAG().COS='T' & ST.MAG().DLAKH<>null() & HELP.TYP().Z='T'
+|| HELP.KH:=ST.MAG().DLAKH;
+   HELP.efld_opt(_win_red,'mark=1',,'KH');
+   HELP.efld_opt(_win_red,'enable=1',,'KH');
+   HELP.efld_opt(_win_red,'editable=0',,'KH')
+|? HELP.TYP=null | HELP.TYP().Z<>'T'
+|| HELP.KH:=null();
+   HELP.efld_opt(_win_red,'mark=0',,'KH');
+   HELP.efld_opt(_win_red,'enable=0',,'KH')
+|| HELP.efld_opt(_win_red,'mark=1',,'KH');
+   HELP.efld_opt(_win_red,'enable=1',,'KH');
+   HELP.efld_opt(_win_red,'editable=1',,'KH')
+?};
+~~
+
+
+\wybdost
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Wybór typu kopiowania dostaw
+::   WY: 'T'-tak 'N'-nie ~~ ESC
+::----------------------------------------------------------------------------------------------------------------------
+_opc:=FUN.choice('Kopiowanie dostaw?'@,,'Tak'@,'Nie'@);
+{? _opc=1 || 'T'
+|? _opc=2 || 'N'
+|| ~~
+?}
+
+:Sign Version 2.0 jowisz:1045 2023/10/12 13:49:00 6df53632a3804d135317a5a62bd6784c7468358a20934c5472e8fc88abf3a5743fe66701ef79e2c49d1fa3089e6955dfa91036e10acc031cdc109c2f1e07be3e185cf5342d091e045f97bc6b2386153f8313d825fbc9233a2e9d07ea86f6df37182bd3acf3d612f4afb6cf859f33ac7721dcb1e312b81e70af637a77f07a4a4d

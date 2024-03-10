@@ -1,0 +1,434 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: zamsiw_nag.fml
+:: Utworzony: 06.07.2015
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Obsługa zamówień sprzedaży/wewnętrznych - nagłówki zamówień
+::======================================================================================================================
+
+
+\po_zkndt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [areKc] [20.42]
+:: OPIS: po redakcji pola ZK_N.DT z ustaleniem wartości pola PL_DATA dla tabeli ZK_N na 5 dni wcześniej i terminem
+::       płatności na podstawie terminu realizacji
+::----------------------------------------------------------------------------------------------------------------------
+:: Ustalenie terminu realizacji.
+{? ZK_N.T().R='Z' & ZK_N.DT<>date(0,0,0)
+|| ZK_N.PL_DATA:=ZK_N.DT-exec('get_w','#params',999101,type_of(0))
+|| {? ZK_N.PL_DATA=date(0,0,0) | -menu_txt()<>'popraw'
+|| ZK_N.PL_DATA:=ZK_N.DT
+   ?}
+?};
+{? DPOZ.WPR_D<>fld() || exec('akt_tz','faktury_plat') ?};
+1
+
+
+\termreal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [2009]
+:: OPIS: poprawa terminu realizacji
+::  OLD: \termreal/zk2.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('zam_lock','zamsiw_nag') & ZK_N.r_lock(1,1,1)
+||
+   VAR_DEL.delete('__dtzkn');
+   __dtzkn:=ZK_N.DP;
+   _term:=ZK_N.DT;
+   _pl_data:=ZK_N.PL_DATA;
+   _winedit:=ZK_N.win_edit('?');
+   {? ZK_N.IDABSTOR<> 0  || ZK_N.memo_get(,'UW'); ZK_N.win_edit('RED_ABS') || ZK_N.win_edit('REDDT') ?};
+   {? ZK_N.edit("{? ZK_N.DT<__dtzkn
+                 || FUN.info('Termin realizacji powinien być większy lub równy od daty: %1.'@[form(__dtzkn)]);
+                    0
+                 |? ZK_N.PL_DATA<__dtzkn
+                 || FUN.info('Wewnętrzny termin realizacji powinien być większy lub równy od daty: %1'@[form(__dtzkn)]);
+                    0
+                 |? ZK_N.PL_DATA>ZK_N.DT
+                 || FUN.info('Wewnętrzny termin realizacji nie może być późniejszy niż planowany termin'
+                             ' realizacji zamówienia.\nNależy podać wcześniejszą datę.'@);
+                    'PL_DATA'
+                 |? ZK_N.IDABSTOR<>0 & (+gsub(ZK_N.memo_txt(,0,'UW'),'\n','<br>')>9000)
+                 || FUN.info('Za długi opis dodatkowy.'@);
+                    'UW'
+                 || exec('pl_force_chk','px_utils','ZK_N')
+
+                 ?}")
+   ||
+::    uzupelnia dane transportowe
+      ZK_N.RR:=ZK_N.DT~1;
+      ZK_N.RM:=ZK_N.DT~2;
+      ZK_N.RT:=exec('NumberOfWeek','#datetime',ZK_N.DT);
+      {? ZK_N.put(1)
+      ||
+::       poprawia terminy realizacji na pozycjach
+         ZK_P.cntx_psh();
+         ZK_P.index('NAG');
+         ZK_P.prefix(ZK_N.ref());
+         {? ZK_P.first()
+         ||
+:: NUCO - możliwość poprawienia pozycji zamówień mimo terminu wcześniejszego (JEŚLI NIE MA REZERWACJI)
+            _dalej:=1;
+            REZ.cntx_psh();
+            REZ.index('ZK_P');
+            _czy_pozniej:=0;
+            _czy_rezerw:=0;
+            {!
+            |? {? ZK_P.DT>ZK_N.DT & ~_czy_pozniej
+               || _czy_pozniej:=1
+               ?};
+               REZ.prefix(ZK_P.ref());
+               {? REZ.first() & ~_czy_rezerw
+               || _czy_rezerw:=1
+               ?};
+               ZK_P.next()
+            !};
+            REZ.cntx_pop();
+            ZK_P.first();
+            {? _czy_rezerw & _czy_pozniej
+            || _dalej:=0;
+               FUN.info('Zmiana terminu realizacji pozycji zamówienia na wcześniejszy nie jest możliwe\n'+
+                        'ze względu na istnienie rezerwacji. Terminy realizacji pozycji nie zostaną zmienione.')
+            |? _czy_pozniej
+            || {? ~FUN.ask('Następuje zmiana terminu realizacji na wcześniejszy,\n'+
+                          'czy nanieść zmieniony termin na pozycje zamówienia?')
+               || _dalej:=0
+               ?}
+            ?};
+
+            {!
+            |? _czyzm:=0;
+               _dodt:=ZK_P.DODT;
+               {? ZK_P.DT<ZK_N.DT | _dalej
+               || _czyzm:=1;
+                  _term:=ZK_P.DT;
+                  ZK_P.DT:=ZK_N.DT
+               ?};
+               {? ZK_P.PL_DATA<ZK_N.PL_DATA | (ZK_P.PL_DATA=ZK_N.PL_DATA & ZK_P.PL_TIME<ZK_N.PL_TIME) | _dalej
+               || ZK_P.PL_DATA:=ZK_N.PL_DATA;
+                  ZK_P.PL_TIME:=ZK_N.PL_TIME
+               ?};
+               ZK_P.put();
+               REZ.index('ZK_P');
+               REZ.prefix(ZK_P.ref());
+               {? _czyzm & REZ.first()
+               || {!
+                  |? {? (REZ.RODZ='B' | REZ.AUTO) & REZ.DODT=_term
+                     || REZ.DODT:=REZ.ZK_P().DT;
+                        _dodt:=REZ.DODT;
+                        REZ.put(1)
+                     ?};
+                     REZ.next()
+                  !}
+               ?};
+               {? _dodt<>ZK_P.DODT || ZK_P.DODT:=_dodt; ZK_P.put(1) ?};
+:: NUCO - aktualizacja zleceń jeśli istnieją do każdej zmienianej pozycji
+               {? _term<>ZK_N.DT | _pl_data<>ZK_N.PL_DATA
+               ||  exec('akt_plan_zl','qprodukcja',ZK_P.ref(),0)
+               ?};
+               ZK_P.next()
+            !}
+         ?};
+         ZK_P.cntx_pop();
+::       Produkcja - jesli dostepny modul planow strategicznyych to po udanej
+::       akceptacji zamowienia tworze obiekty planowania, lub uaktualniam stworzone wczesniej
+         {? exec('tpp_lic','tpp')='T'
+         || exec('zkn2obj','px_obj',ZK_N.ref())
+         ?}
+      ?};
+      {? ZK_N.IDABSTOR<> 0  || ZK_N.memo_put(,'UW') ?}
+   ?};
+   ZK_N.win_edit(_winedit);
+   VAR_DEL.delete('__dtzkn');
+   exec('aktznzkn','zamsiw_nag',ZK_N.ref(),1);
+   ZK_N.r_unlock()
+?};
+1
+
+
+\zknag_pop_po
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Obsługa popraw po zakończeniu edycji (ZK_N.edit)
+::   WE: _a - wynik działania edycji
+::       [_b] - 1-wg oferty 0-nie(domyslnie)
+::       [_c] - 0 - domyślnie działanie standardowe, 1 - nie zwracaj uwagi na status nagłówka - popraw
+::----------------------------------------------------------------------------------------------------------------------
+
+:: NUCO - działanie dla popraw na zaakceptowanym zamówieniu
+_force:={? _<3 || 0 || _c ?};
+
+{? _a=0 || return() ?};
+{? var_pres('_b')<>type_of(1) || _b:=0 ?};
+
+_var_zknagpop:=params_get().var_zknagpop;
+_ZK_N:=_var_zknagpop.ZK_N;
+_projekty:=_ZK_N.PROJEKTY;
+_kh:=_var_zknagpop.KH;
+_wal:=_var_zknagpop.WAL;
+_krs:=_var_zknagpop.KRS;
+_mg:=_var_zknagpop.MG;
+_pl:=_var_zknagpop.PL;
+_odb:=_var_zknagpop.ODB;
+_term:=_var_zknagpop.DT;
+_term_wew:=_var_zknagpop.PL_DATA;
+_data_wew:=_var_zknagpop.PL_TIME;
+_tran:=_var_zknagpop.TRN;
+_sam:=_var_zknagpop.SAM;
+_rab:=_var_zknagpop.RAB;
+_po_first:=_var_zknagpop.PO_FIRST;
+_han:=_var_zknagpop.HAN;
+_kraj_vat:=_var_zknagpop.KRAJ_VAT;
+_projekty:=_var_zknagpop.PROJEKTY;
+
+{? _po_first=1
+:: Dotyczy wywołania dla Dołącz - wtedy jako wartości przed ustawia zmienne z nagłówka
+|| _projekty:=ZK_N.PROJEKTY;
+   _kh:=ZK_N.KH;
+   _wal:=ZK_N.WAL;
+   _krs:=ZK_N.KRS;
+   _mg:=ZK_N.MG;
+   _pl:=ZK_N.PL;
+   _odb:=ZK_N.ODB;
+   _term:=ZK_N.DT;
+   _term_wew:=ZK_N.PL_DATA;
+   _data_wew:=ZK_N.PL_TIME;
+   _tran:=ZK_N.TRN;
+   _sam:=ZK_N.POJAZD;
+   _rab:=ZK_N.RAB;
+   _han:=ZK_N.HAN;
+   _kraj_vat:=ZK_N.KRAJ_VAT
+?};
+:: NUCO
+{? ZK_N.STAT_REJ='N' | _force
+||
+   ZK_N.cntx_psh();
+   ZK_N.clear();
+   {? _po_first || {? ZK_N.NR=0 || exec('fak_numer','numery','',0); exec('znak','numery','ZK_N') ?} ?};
+   {? ZK_N.put()
+         &
+      ZK_N.memo_put()
+         &
+      (
+         ZK_N.KH<>_kh | ZK_N.ODB<>_odb
+         | ZK_N.WAL<>_wal | ZK_N.KRS<>_krs
+         | ZK_N.PL<>_pl | ZK_N.DT<>_term
+         | ZK_N.MG<>_mg | ZK_N.TRN<>_tran
+         | ZK_N.PROJEKTY<>_projekty | ZK_N.HAN<>_han
+         | ZK_N.KRAJ_VAT<>_kraj_vat
+      )
+   ||
+::    aktualizacja cen
+      _ok:=1;
+      _ctrlCN:=exec('get','#params',800850,2);
+      ZK_P.index('NAG');
+      ZK_P.prefix(ZK_N.ref());
+::Usunięcie powiązanego cennika jeśli nie jest już aktualny
+      {? ZK_P.first & ZK_N.T().R='Z' & (_kh<>ZK_N.KH | _odb<>ZK_N.ODB | _wal<>ZK_N.WAL | _pl<>ZK_N.PL)
+      ||
+         {!|?
+            {? ZK_P.TAR_H<>null()
+            ||
+               ZK_P.cntx_psh();
+               _tar_h_tap:=$ZK_P.TAR_H().TAP;
+               ZK_P.CENA:=0;
+               ZK_P.CWAL:=0;
+               VAR_DEL.delete('__TAP_LIST');
+               exec('f3_ceny','zamsiw_poz',2);
+               exec('bezpkwce','zamsiw_poz',1);
+               {? var_pres('__TAP_LIST')=type_of('')
+               & ( __TAP_LIST*_tar_h_tap)=0
+               || ZK_P.cntx_pop();
+                  ZK_P.TAR_H:=null();
+                  ZK_P.TAR_TMS:=0;
+                  ZK_P.put()
+               || ZK_P.cntx_pop()
+               ?};
+               VAR_DEL.delete('__TAP_LIST')
+            ?};
+            ZK_P.next()
+         !}
+      ?};
+      {? ZK_P.first & ZK_N.T().R='Z' & (_kh<>ZK_N.KH | _odb<>ZK_N.ODB | _wal<>ZK_N.WAL | _pl<>ZK_N.PL)
+       & _ctrlCN<>'B' & (_ctrlCN='T' | exec('ceny_mat_dok','ceny_dok',2,,ZK_N,1))
+      ||
+         _ma_cennik:='N';
+         _choice:=2;
+         _result:=spli_str(exec('fap_czy_cennik','faktury_wspolne',_kh,_odb,_pl,_wal,ZK_P),' ');
+         _ma_cennik:=_result[1];
+         _choice:=#_result[2];
+
+         {? _ma_cennik='N' & _choice<>2 || _ok:=1
+         ||
+            {? _choice=0 ||
+               _choice:=FUN.choice('Zmieniły się kryteria cenników.\nNależy wyznaczyć ponownie ceny.'@,,
+                  'Wg &cenników'@,'Wg &dokumentu'@)
+            |? _ma_cennik='N' & _choice=2
+            || _msg:='Zmieniły się kryteria cenników.\nBrak cennika zgodnego z aktualnymi kryteriami.'@;
+               FUN.info(_msg)
+            ?};
+            _ok:=exec('ceny_mat_dok','ceny_dok',1,,ZK_N,1,,_choice=2,_wal<>ZK_N.WAL);
+            {? _ok || exec('plat_przel','faktury_plat',ZK_N.ref) ?}
+         ?}
+      ?};
+      MG.f_clear();
+      {? _ok
+      ||
+         (_rez:=exec('zknmgnag','zamsiw_nag',_mg,_b));
+         {? ~_rez || ZK_N.MG:=_mg ?}
+      ?};
+      {? _ok=0
+      || ~~
+      |? ZK_N.put()
+      || exec('aktznzkn','zamsiw_nag',ZK_N.ref(),1);
+         _new_zam:=ZK_N.ref();
+         ZK_N.memo_put(,'UW');
+         {? _wal<>#ZK_N.WAL | _krs<>ZK_N.KRS | _rab<>ZK_N.RAB
+         ||
+            BEER.ZK_N:=ZK_N.ref;
+            BEER.WG:=ZK_N.WG;
+            BEER.TYP:='Z';
+            BEER.MW:='Z';
+:: przeliczenie wartosci zamowienia wg nowego kursu i waluty
+            exec('obl_warz','zamsiw_nag',ZK_N.ref,1)
+         ?};
+
+:: aktualizacja terminow realizacji dla pozycji zamowienia
+         {? _term<>ZK_N.DT | _term_wew<>ZK_N.PL_DATA | _data_wew<>ZK_N.PL_TIME
+         || _yes:=0; _yes_wew:=0;
+            ZK_P.index('NAG');
+            ZK_P.prefix(ZK_N.ref());
+            {? ZK_P.first()
+            || {? _term>ZK_N.DT & (_term_wew>ZK_N.PL_DATA | (_term_wew=ZK_N.PL_DATA & _data_wew>ZK_N.PL_TIME))
+               || _yes:=_yes_wew:=FUN.ask(
+                     'Zmieniono termin realizacji i wewnętrzny termin realizacji na wcześniejszy.\n'
+                     'Czy zmienić terminy również na pozycjach zamówienia?'@)
+               |? _term>ZK_N.DT
+               || _yes:=FUN.ask(
+                     'Zmieniono termin realizacji na wcześniejszy.\n'
+                     'Czy zmienić termin również na pozycjach zamówienia?'@)
+               |? _term_wew>ZK_N.PL_DATA | (_term_wew=ZK_N.PL_DATA & _data_wew>ZK_N.PL_TIME)
+               || _yes_wew:=FUN.ask(
+                     'Zmieniono wewnętrzny termin realizacji na wcześniejszy.\n'
+                     'Czy zmienić termin również na pozycjach zamówienia?'@)
+               ?};
+
+               {!
+               |? _czyzm:=0;
+                  _termpoz:=ZK_P.DT;
+                  {? _yes | ZK_P.DT<ZK_P.N().DT
+                  || _czyzm:=1;
+                     ZK_P.DT:=ZK_P.N().DT
+                  ?};
+                  {? _yes_wew | ZK_P.PL_DATA<ZK_P.N().PL_DATA
+                   | (ZK_P.PL_DATA=ZK_P.N().PL_DATA & ZK_P.PL_TIME<ZK_P.N().PL_TIME)
+                  || ZK_P.PL_DATA:=ZK_P.N().PL_DATA;
+                     ZK_P.PL_TIME:=ZK_P.N().PL_TIME
+                  ?};
+                  {? _czyzm || ZK_P.DODT:=ZK_P.DT ?};
+                  ZK_P.put(1);
+                  REZ.index('ZK_P');
+                  REZ.prefix(ZK_P.ref());
+                  {? _czyzm & REZ.first()
+                  || {!
+                     |? {? (REZ.RODZ='B' | REZ.AUTO) & REZ.DODT=_termpoz
+                        || REZ.DODT:=REZ.ZK_P().DT;
+                           REZ.put(1)
+                        ?};
+                        REZ.next()
+                     !}
+                  ?};
+                  ZK_P.next()
+               !}
+            ?}
+         ?};
+
+::       aktualizacja magazynu na pozycjach zamowienia
+         {? _mg<>ZK_N.MG
+         || exec('aktstatzkp','zamsiw_wspolne',_rez)
+         ?};
+
+::       aktualizacja transportu
+         {? _tran<>ZK_N.TRN | _sam<>ZK_N.POJAZD
+         ||
+            _txt:='';
+            {? _tran<>ZK_N.TRN || _txt+=' znacznik transportu,'@ ?};
+            {? _sam<>ZK_N.POJAZD || _txt+=' samochód,'@ ?};
+            ZK_P.index('TYPN');
+            ZK_P.prefix('A','Z',ZK_N.ref(),1);
+            {? ZK_P.first() & FUN.ask('Zmienić%1\nw pozycjach zamówienia?'@[(_txt-1)])
+            ||
+               {!
+               |?
+                  {? ZK_P.M().RODZ='T'
+                  ||
+                     {? _tran<>ZK_N.TRN || ZK_P.TRN:=ZK_N.TRN ?};
+                     {? _sam<>ZK_N.POJAZD || ZK_P.POJAZD:=ZK_N.POJAZD ?};
+                     ZK_P.put()
+                  ?};
+                  ZK_P.next()
+               !}
+            ?}
+         ?};
+
+::       aktualizacja stawki VAT wg historii
+         ZK_P.index('TYPN');
+         ZK_P.prefix('A','Z',ZK_N.ref,1);
+         {? ZK_P.first
+         ||
+            _akt:=2;
+            {!
+            |?
+               _sv:=exec('m_vat','material',ZK_P.M,ZK_N.KH,,ZK_N.DP~1,ZK_N.DP~2,
+                  {? ZK_N.KRAJ_VAT<>_kraj_vat || null() || ZK_P.SV ?},2,,,ZK_N.KRAJ_VAT);
+               {? _sv<>ZK_P.SV
+               ||
+                  {? _akt=2
+                  ||
+                     _akt:=ZK_N.KRAJ_VAT<>_kraj_vat;
+                     {? ~_akt || _akt:=FUN.ask('Aktualizować stawkę VAT w pozycjach zamówienia?'@) ?}
+                  ?};
+                  {? _akt
+                  ||
+                     ZK_P.SV:=_sv;
+                     ZK_P.put
+                  ?}
+               ?};
+               _akt & ZK_P.next
+            !}
+         ?};
+
+::       aktualizacja projektów oraz kontrahenta i odbiorcy
+         {? ZK_N.PROJEKTY<>_projekty | ZK_N.KH<>_kh | ZK_N.ODB<>_odb | ZK_N.HAN<>_han
+         ||
+            ZK_P.index('TYPN');
+            ZK_P.prefix('A','Z',ZK_N.ref,1);
+            _loop:=ZK_P.first();
+            {!
+            |? _loop
+            |!
+               {? ZK_N.PROJEKTY<>_projekty || ZK_P.PROJEKTY:=ZK_N.PROJEKTY ?};
+               {? ZK_N.KH<>_kh || ZK_P.KH:=ZK_N.KH ?};
+               {? ZK_N.ODB<>_odb || ZK_P.KH_ODB:=ZK_N.ODB ?};
+               {? ZK_N.HAN<>_han || ZK_P.HAN:=ZK_N.HAN ?};
+               _loop:=ZK_P.put() & ZK_P.next()
+            !}
+         ?}
+      ?}
+   ?};
+
+   {? HELP.POP
+   || {? ZAKR.KH<>null & ZK_N.T().R='Z' & ZK_N.KH<>ZAKR.KH
+      || FUN.info('Aktualnie zredagowane zamówienie nie jest dostępne w ustawionym zakresie widoku zamówień.'@)
+      |? ZAKR.MAG<>null & ZK_N.MG<>ZAKR.MAG
+      || FUN.info('Aktualnie zredagowane zamówienie nie jest dostępne w ustawionym zakresie widoku zamówień.'@)
+      ?}
+   ?};
+
+   ZK_N.cntx_pop();
+   ZK_N.get()
+?}
+
+

@@ -1,0 +1,859 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2137_02.fml
+:: Utworzony: 03.12.2021
+:: Autor: DG
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 21.14 na 21.37
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Główna formuła aktualizacji 21.37
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania automatyczne, wykonywane raz dla całego systemu
+__UPG.add_task('upgrade_act',,,'ZPR',1,,,,'T');
+__UPG.add_task('RU',,,'PPL',,,,,'T');
+__UPG.add_task('stalesys_ini',,,'ZWS',,,,,'T');
+__UPG.add_task('kst_pl',,,'PPL',3,,,,'T');
+__UPG.add_task('wn_podat',,,'PPL',,,,,'T');
+__UPG.add_task('rubryki_placowe',,,'PPL',8,,,,'T');
+__UPG.add_task('zalacz',,,'PPL',1,,,,'T');
+:: Zadania automatyczne, wykonywane dla każdej firmy
+__UPG.add_task('f_zatra_add',,'N','ZWS',,,,1,'T');
+__UPG.add_task('role_personel',,'N','ZWS',,,,1,'T');
+__UPG.add_task('OS_ZWSLO',,'N','PPL',,,,1,'T');
+__UPG.add_task('OS_ZWPOD',,'N','PPL',,,,1,'T');
+:: Zadania manualne, wykonywane raz dla całego systemu
+:: Zadania manualne, wykonywane dla każdej firmy
+__UPG.add_task('formuly_placowe_Polski_Lad','N','N','PPL',,,,1,'T');
+__UPG.add_task('nieobecnosci_2022','N','N','PKD',,,,1,'T');
+~~
+
+
+\upgrade_act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [DG] [21.37]
+:: OPIS: Aktualizacja typów danych oraz czynności dla wskazanych obszarów
+::----------------------------------------------------------------------------------------------------------------------
+_res:=1;
+:: Poniżej wpisać domeny, których dotyczą nowe lub aktualizowane czynności
+::_dom:=spli_str('LMG.LSP.LZK.LUM.LOD.PKD.POR.PPK.PKW.PPL.TPP.TTE.TRE.WYP.ZWS.FST.FKS.KON.OBE.OBG.PBA','.');
+_dom:=spli_str('PPL','.');
+_len:=obj_len(_dom);
+
+{? _len & _dom[1]<>''
+|| FUN.prg_start(_len+2,'Aktualizacja czynności.',,,1);
+
+:: Uzupełnienie domen (zawsze)
+   FUN.prg_next();
+   exec('add_domain','#b_action');
+   __UPG.msg('Zaktualizowano dziedziny.');
+
+:: Uzupełnienie typów (zawsze)
+   FUN.prg_next();
+   exec('fill_tab','#b_type',0);
+   __UPG.msg('Zaktualizowano typy danych.');
+
+   {! _i.._len
+   |! FUN.prg_next();
+      _domain:=exec('FindInSet','#table','B_DOMAIN','SYMBOL',_dom[_i]);
+      {? _domain<>null()
+      || exec('import_needed_dom','#b_design',_domain,0);
+         __UPG.msg('Zaktualizowano czynności dziedziny: %1.'[_dom[_i]])
+      ?}
+   !};
+   FUN.prg_stop()
+?};
+obj_del(_dom);
+_res
+
+
+\upgrade_act_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [21.37]
+:: OPIS: Aktualizacja typy danych oraz czynności dla wskazanych obszarów - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja typów danych oraz czynności dla modelera'
+
+
+\RU
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Uzupełnienie nowego pola w tabeli RU.
+::----------------------------------------------------------------------------------------------------------------------
+_cnt:=0;
+_err:=0;
+
+RU.cntx_psh();
+RU.clear();
+_size:=RU.size();
+{? var_pres('BEZPOD',RU)>0
+|| _loop:=RU.first();
+   {!
+   |? _loop
+   |! {? RU.BEZPOD=''
+      || {? RU.K='1' | RU.K='2' | RU.K='4' | RU.K='5' | RU.K='6' | RU.K='v' | RU.K='y'
+         || RU.BEZPOD:='T'
+         || RU.BEZPOD:='N'
+         ?};
+         {? RU.put()
+         || _cnt+=1
+         || _err+=1
+         ?}
+      ?};
+      _loop:=RU.next()
+   !}
+?};
+RU.cntx_pop();
+
+__UPG.msg('Liczba wszystkich wierszy: %1.'[$_size]);
+__UPG.msg('Liczba zaktualizowanych wierszy: %1.'[$_cnt]);
+__UPG.msg('Błędy aktualizacji wierszy: %1.'[$_err]);
+
+{? _err>0 || -1 || 1 ?}
+
+
+\RU_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Uzupełnienie nowego pola w tabeli RU - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie nowego pola w tabeli RU.'
+
+
+\OS_ZWPOD
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Uzupełnienie nowych pól w tabeli OS_ZWPOD.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('OS_ZWSLO')=type_of(SYSLOG)
+|| OS_ZWSLO.cntx_psh();
+   OS_ZWSLO.index('KOD');
+   OS_ZWSLO.prefix(exec('ref_firma','ustawienia'));
+   _ref:={? OS_ZWSLO.find_key('ZWPOD',) || OS_ZWSLO.ref() || null ?};
+   OS_ZWSLO.cntx_pop();
+   OS_ZWPOD.cntx_psh();
+   OS_ZWPOD.index('OS_ZWPOD');
+   OS_ZWPOD.prefix(exec('ref_firma','ustawienia'));
+   {? OS_ZWPOD.first()
+   || OS_ZWPOZ.cntx_psh();
+      OS_ZWPOZ.prefix();
+      {!
+      |? {? OS_ZWPOD.OS_ZWSLO=null
+         || OS_ZWPOD.OS_ZWSLO:=_ref;
+            {? OS_ZWPOD.D_OW~1=OS_ZWPOD.ROK
+            || OS_ZWPOD.ROK_Z:=OS_ZWPOD.D_OW~1
+            || OS_ZWPOD.ROK_Z:=OS_ZWPOD.ROK;
+               OS_ZWPOD.D_OW:=date(OS_ZWPOD.ROK,12,0)
+            ?};
+            OS_ZWPOD.AKTYWNY:='N';
+            OS_ZWPOD.put();
+
+::          Przeniesienie danych dotyczących zwolnionego przychodu z OS_ZWPOD (PRZYCHOD) do P_IPOD (ZW_PRZ)
+            {? OS_ZWPOD.PRZYCHOD>0
+            || OS_ZWPOZ.blank();
+               OS_ZWPOZ.OSOBA:=OS_ZWPOD.OSOBA;
+               OS_ZWPOZ.OS_ZWSLO:=_ref;
+               OS_ZWPOZ.ROK:=OS_ZWPOD.ROK;
+               OS_ZWPOZ.MC:=0;
+               OS_ZWPOZ.WYK_PRZ:='T';
+               OS_ZWPOZ.WYK_KW:=OS_ZWPOD.PRZYCHOD;
+               OS_ZWPOZ.add(1)
+            ?}
+         ?};
+         OS_ZWPOD.next()
+      !};
+      OS_ZWPOZ.cntx_pop()
+   ?};
+   OS_ZWPOD.cntx_pop()
+?};
+__UPG.msg('Zakończono uzupełnianie nowych pól dla tabeli oświadczeń zwolnionego przychodu od opodatkowania.');
+1
+
+
+\OS_ZWPOD_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Uzupełnienie nowych pól w tabeli OS_ZWPOD - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie nowych pól w tabeli OS_ZWPOD.'
+
+
+\f_zatra_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Nadanie czynnościom uprawnień do form współpracy.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Lista czynności, dla których przypisane zostaną formy współpracy. Założenia:
+:: 1. Czynności są oddzielone przecinkami.
+:: 2. W ramach czynności przekazywana jest również informacja o kodach form współpracy (oddzielonych znakiem dwukropka).
+::    Zakładamy, że duże litery dotyczą form docelowych.
+_lista:=spli_str(
+   'PPL_PLL_PRZP:P:Z:K:R:T,'
+   'PPL_PLL_RRZP:P:Z:K:R:T',
+   ','
+);
+
+_ret:=1;
+B_ACTION.cntx_psh();
+B_ACTION.f_clear();
+B_ACTION.index('UNIK');
+B_ACTION.prefix();
+_lenl:=obj_len(_lista);
+{! _lp:=1 .. _lenl
+|! _acz:=spli_str(_lista[_lp],':');
+   _uid:=_acz[1];
+   {? B_ACTION.find_key(_uid,)
+   || _lena:=obj_len(_acz);
+      {! _lf:=2 .. _lena
+      |! _fz:=_acz[_lf];
+         __UPG.msg('Forma współpracy: %1 | Czynność: %2 - %3' [_fz,_uid,B_ACTION.NAME]);
+         _add:=exec('f_zatra_add','f_zatr',{? -_fz=_fz || 'N' || 'T' ?},_fz,_uid);
+         {? _add=''
+         || __UPG.msg(' - uprawnienia nadane')
+         || __UPG.msg(_add);
+            _ret:=-1
+         ?}
+      !}
+   || __UPG.msg('"%1" - nieprawidłowy kod czynności.' [_uid]);
+      _ret:=-1
+   ?};
+   obj_del(_acz)
+!};
+B_ACTION.cntx_pop();
+_ret
+
+
+\f_zatra_add_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Nadanie czynnościom uprawnień do form współpracy - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Nadanie czynnościom uprawnień do form współpracy'
+
+
+\role_personel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami personelowymi.
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('roleActions','upgrade',
+      'Specjallista ds. zleceniobiorców,'
+      'Specjalista ds. płac',
+      'PPL_PLL_RRZP'
+   ) &
+   exec('roleActions','upgrade',
+      'Przeglądający Zleceniobiorców,'
+      'Przeglądający Płace,'
+      'Dyrektor HR,'
+      'Kierownik ds płac',
+      'PPL_PLL_PRZP'
+   )
+
+|| 1
+|| -1
+?}
+
+
+\role_personel_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Aktualizacja ról/uprawnień związana z czynnościami personelowymi
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja ról/uprawnień związana z czynnościami personelowymi.'
+
+
+\kst_pl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Dodanie pól do KST związanych z Polskim Ładem (zwolnienia przychodu od podatku i ulgi dla klasy średniej
+::----------------------------------------------------------------------------------------------------------------------
+:: Dodanie pól związanych ze zwolnieniem od podatku art.21 ust.1 pkt 152-154.
+{? var_pres('ZWPODE',KST)>0 & var_pres('ZWPODD',KST)>0 & var_pres('ZWPODP',KST)>0
+|| exec('add_acr','#stalesys','ZWPODE','Zwolnienie od podatku - emeryci','T','T','T','KST','PPL');
+   _dodano:=exec('kst_war_add','#stalesys','KST.ZWPODE','0.00',date(0,0,0));
+   _dodano+=exec('kst_war_add','#stalesys','KST.ZWPODE','85528',date(2022,1,1));
+   {? _dodano
+   || __UPG.msg('Dodano informacje o zwolnieniu od podatku dla emerytów.')
+   ?};
+   exec('add_acr','#stalesys','ZWPODD','Zwolnienie od podatku - dla rodzin wielodzietnych','T','T','T','KST','PPL');
+   _dodano:=exec('kst_war_add','#stalesys','KST.ZWPODD','0.00',date(0,0,0));
+   _dodano+=exec('kst_war_add','#stalesys','KST.ZWPODD','85528',date(2022,1,1));
+   {? _dodano
+   || __UPG.msg('Dodano informacje o zwolnieniu od podatku dla rodzin wielodzietnych.')
+   ?};
+   exec('add_acr','#stalesys','ZWPODP','Zwolnienie od podatku - powracający z zagranicy','T','T','T','KST','PPL');
+   _dodano:=exec('kst_war_add','#stalesys','KST.ZWPODP','0.00',date(0,0,0));
+   _dodano+=exec('kst_war_add','#stalesys','KST.ZWPODP','85528',date(2022,1,1));
+   {? _dodano
+   || __UPG.msg('Dodano informacje o zwolnieniu od podatku dla powracających z zagranicy.')
+   ?}
+?};
+
+:: Dodanie pól związanych z ulgą dla klasy średniej.
+{? var_pres('ULGA_KS1',KST)>0 & var_pres('ULGA_KS2',KST)>0 & var_pres('ULGA_KS3',KST)>0
+|| exec('add_acr','#stalesys','ULGA_KS1','Pierwszy próg naliczenia ulgi dla klasy średniej','T','T','T','KST','PPL');
+   _dodano:=exec('kst_war_add','#stalesys','KST.ULGA_KS1','0.00',date(0,0,0));
+   _dodano+=exec('kst_war_add','#stalesys','KST.ULGA_KS1','5701.00',date(2022,1,1));
+   {? _dodano
+   || __UPG.msg('Dodano informacje o pierwszym progu naliczenia ulgi dla klasy średniej.')
+   ?};
+   exec('add_acr','#stalesys','ULGA_KS2','Drugi próg naliczenia ulgi dla klasy średniej','T','T','T','KST','PPL');
+   _dodano:=exec('kst_war_add','#stalesys','KST.ULGA_KS2','0.00',date(0,0,0));
+   _dodano+=exec('kst_war_add','#stalesys','KST.ULGA_KS2','8549.00',date(2022,1,1));
+   {? _dodano
+   || __UPG.msg('Dodano informacje o drugim progu naliczenia ulgi dla klasy średniej.')
+   ?};
+   exec('add_acr','#stalesys','ULGA_KS3','Trzeci próg naliczenia ulgi dla klasy średniej','T','T','T','KST','PPL');
+   _dodano:=exec('kst_war_add','#stalesys','KST.ULGA_KS3','0.00',date(0,0,0));
+   _dodano+=exec('kst_war_add','#stalesys','KST.ULGA_KS3','11141.00',date(2022,1,1));
+   {? _dodano
+   || __UPG.msg('Dodano informacje o trzecim progu naliczenia ulgi dla klasy średniej.')
+   ?}
+?};
+
+:: Dodanie pola określającego ilość dni zasiłkowych po ustaniu zatrudnienia.
+{? var_pres('LIMPUU',KST_PAR)>0
+|| exec('add_acr','#stalesys','LIMPUU','Limit po ustaniu ubezpieczenia','T','T','T','KST_PAR','PKD,PPL');
+   _dodano:=exec('kst_war_add','#stalesys','KST_PAR.LIMPUU','0',date(0,0,0));
+   _dodano+=exec('kst_war_add','#stalesys','KST_PAR.LIMPUU','91',date(2022,1,1));
+   {? _dodano
+   || __UPG.msg('Dodano informacje o ilości dni zasiłkowych po ustaniu zatrudnienia.')
+   ?}
+?};
+
+:: Aktualizacja pola związanego z ulgą podatkową.
+{? exec('kst_war_add','#stalesys','KST.UL','425.00',date(2022,1,1)) &
+   exec('kst_war_add','#stalesys','KST.UL_ROK','5100.00',date(2022,1,1))
+|| __UPG.msg('Zaktualizowano informacje o uldze podatkowej.')
+?};
+
+:: Aktualizacja pola określającego kwotę ograniczenia 50% kosztów uzyskania.
+{? exec('kst_war_add','#stalesys','KST.KU_L50','120000.00',date(2022,1,1))
+|| __UPG.msg('Zaktualizowano informacje o kwocie ograniczenia 50% kosztów uzyskania.')
+?};
+
+1
+
+
+\kst_pl_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Opis funkcji aktualizacji stałych systemu zwiazanych z Polskim Ładem
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja stałych systemu - zwolnienia przychodu z opodatkowania i ulgi dla klasy średniej.'
+
+
+\wn_podat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Dodanie słowników dla wniosków dotyczących podatków.
+::----------------------------------------------------------------------------------------------------------------------
+SLO_TYP.cntx_psh();
+SLO_KOD.cntx_psh();
+_slo_typ:=exec('slo_typ','ext_slo','WN_PODAT');
+
+:: Niepobieranie zaliczek na podatek dochodowy
+exec('kod_ref','ext_slo',_slo_typ,'UZ_POD','Wniosek o niepobieranie zaliczek na podatek dochodowy',1);
+:: Zaprzestanie stosowania ulgi dla klasy średniej
+exec('kod_ref','ext_slo',_slo_typ,'KL_SRED','Wniosek o zaprzestanie stosowania ulgi dla klasy średniej',1);
+
+SLO_KOD.cntx_pop();
+SLO_TYP.cntx_pop();
+
+__UPG.msg('Dodano nowe typy słowników dla wniosków dotyczących podatków.');
+
+1
+
+
+\wn_podat_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Dodanie słowników dla wniosków dotyczących podatków - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie słowników dla wniosków dotyczących podatków.'
+
+
+\OS_ZWSLO
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Dodanie słownika dla rodzajów zwolnionego przychodu od podatku.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('OS_ZWSLO')=type_of(SYSLOG)
+|| _cnt:=0;
+   OS_ZWSLO.cntx_psh();
+   OS_ZWSLO.index('KOD');
+   OS_ZWSLO.prefix(exec('ref_firma','ustawienia'));
+   {? ~OS_ZWSLO.first()
+   || OS_ZWSLO.blank();
+      OS_ZWSLO.KOD:='ZWPOD';
+      OS_ZWSLO.RODZAJ:='Młody pracownik (art. 21 ust. 1 pkt 148)';
+      OS_ZWSLO.ROCZNE:='T';
+      OS_ZWSLO.ZDR:='T';
+      _cnt+=OS_ZWSLO.add(1);
+      OS_ZWSLO.KOD:='ZWPODE';
+      OS_ZWSLO.RODZAJ:='Emeryt (art. 21 ust. 1 pkt 154)';
+      OS_ZWSLO.ROCZNE:='T';
+      OS_ZWSLO.ZDR:='T';
+      _cnt+=OS_ZWSLO.add(1);
+      OS_ZWSLO.KOD:='ZWPODD';
+      OS_ZWSLO.RODZAJ:='Wielodzietność (art. 21 ust. 1 pkt 153)';
+      OS_ZWSLO.ROCZNE:='T';
+      OS_ZWSLO.ZDR:='T';
+      _cnt+=OS_ZWSLO.add(1);
+      OS_ZWSLO.KOD:='ZWPODP';
+      OS_ZWSLO.RODZAJ:='Powrót z zagranicy (art. 21 ust. 1 pkt 152)';
+      OS_ZWSLO.ROCZNE:='N';
+      OS_ZWSLO.ZDR:='T';
+      _cnt+=OS_ZWSLO.add(1)
+   ?};
+   OS_ZWSLO.cntx_pop();
+   {? _cnt>0
+   || __UPG.msg('Dodano nowy słownik dla rodzajów zwolnionego przychodu od podatku.')
+   ?}
+?};
+
+1
+
+
+\OS_ZWSLO_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Dodanie słownika dla rodzajów zwolnionego przychodu od podatku - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie słowników dla rodzajów zwolnionego przychodu od podatku.'
+
+
+\rubryki_placowe
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [21.37]
+:: OPIS: Dodanie rubryk i atrybutów płacowych.
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_txt:='';
+exec('__RUB','object');
+__RUB.fill();
+
+{? +exec('import','rubryki','g','7140,7141,7142,7143,7144,7145,7146,7147,7148',1,0)
+|| _txt:='Dodanie nowych rubryk zakończyło się niepowodzeniem';
+   _result:=-1
+|| _txt:='Dodanie nowych rubryk zakończone powodzeniem'
+?};
+__UPG.msg(_txt);
+{? _result=-1 || return(_result) ?};
+
+__RUB.fill();
+
+:: Aktualizacja atrybutów rubryk.
+:: Przychód dla ulgi z dochodu średniozarabiających
+   exec('add_attr','rubatr',9,905,'UKŚ: Ulga z dochodu - dla klasy średniej',1);
+      exec('add_attr','rubatr',905,9051,'UKŚ: Przychód do wyliczenia ulgi',1,
+         'Przychód podlegający specjalnej uldze z dochodu dla klasy średniej',,7140);
+      exec('add_attr','rubatr',905,9052,'UKŚ: Ulga z dochodu',1,
+         'Ulga z dochodu dla średniozarabiających',,7141,7142);
+         exec('add_attr','rubatr',9052,90521,'UKŚ: Ulga z dochodu',1,
+            'Ulga z dochodu dla średniozarabiających',,7141);
+         exec('add_attr','rubatr',9052,90522,'UKŚ: korekta ulgi z dochodu',1,
+            'Korekta ulgi z dochodu dla średniozarabiających',,7142);
+      exec('add_attr','rubatr',905,9053,'UKŚ: Rubryki niestanowiące przychodu dla ulgi',1,
+         'Rubryki niestanowiące przychodu dla ulgi z dochodu',,
+         510,511,512,513,514,515,516,517,523,524,529,530,531,532,537,7017);
+
+:: Wyliczenie składki zdrowotnej w oparciu o zasady z 31.12.2021
+   exec('add_attr','rubatr',9,906,'ZDR: składka zdrowotna - informacje podatkowe',1,
+      'ZDR: składka zdrowotna - informacje podatkowe',,7143,7144,7145,7146);
+      exec('add_attr','rubatr',906,9061,'ZDR: nominalna podstawa opodatkowania',1,
+         'ZDR: Informacje podatkowe - nominalna ulga podatkowa',,7145);
+      exec('add_attr','rubatr',906,9062,'ZDR: nominalna ulga podatkowa',1,
+         'ZDR: Informacje podatkowe - nominalna ulga podatkowa',,7144);
+      exec('add_attr','rubatr',906,9063,'ZDR: nominalne koszty uzyskania',1,
+         'ZDR: Informacje podatkowe - nominalne koszty uzyskania',,7143);
+      exec('add_attr','rubatr',906,9064,'ZDR: nominalna zaliczka na podatek',1,
+         'ZDR: Informacje podatkowe - składka zdrowotna',,7146);
+      exec('add_attr','rubatr',906,9065,'ZDR: Dochód I próg',1,
+         'ZDR: Część dochodu przypadająca na I próg podatkowy.',,7147);
+      exec('add_attr','rubatr',906,9066,'ZDR: Dochód II próg',1,
+         'ZDR: Część dochodu przypadająca na II próg podatkowy.',,7148);
+
+:: Zmiany dla zwolnienia ZP
+   exec('add_attr','rubatr',902,9028,'ZP: brak zwolnienia przychodu art.21 ust.1 pkt 152 ',1,
+      'Składniki płacowe niebędące przychodem podlegającym zwolnieniu od podatku zgodnie z art.21 ust.1 pkt 152 ustawy',
+      ,510,511,512,513,514,515,516,517,523,524,529,530,531,532,537,7017);
+   exec('add_attr','rubatr',902,9029,'ZP: brak zwolnienia przychodu art.21 ust.1 pkt 153 ',1,
+      'Składniki płacowe niebędące przychodem podlegającym zwolnieniu od podatku zgodnie z art.21 ust.1 pkt 153 ustawy',
+      ,510,511,512,513,514,515,516,517,523,524,529,530,531,532,537,7017);
+   exec('add_attr','rubatr',902,90201,'ZP: brak zwolnienia przychodu art.21 ust.1 pkt 154 ',1,
+      'Składniki płacowe niebędące przychodem podlegającym zwolnieniu od podatku zgodnie z art.21 ust.1 pkt 154 ustawy',
+      ,510,511,512,513,514,515,516,517,523,524,529,530,531,532,537,7017);
+   exec('add_attr','rubatr',902,90202,'ZP: Informacje istotne dla rozliczenia rocznego',1,
+      'ZP: Informacje istotne dla rozliczenia rocznego - informacje podatkowe PIT',,
+      7094,7098);
+
+__UPG.msg('Zakończono aktualizację atrybutów składników płacowych.');
+
+_result
+
+
+\rubryki_placowe_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [21.37]
+:: OPIS: Dodanie rubryk i atrybutów płacowych - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie rubryk i atrybutów płacowych.'
+
+
+\formuly_placowe_Polski_Lad
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [21.37]
+:: OPIS: Dodanie formuł płacowych.
+::----------------------------------------------------------------------------------------------------------------------
+exec('__RUB','object');
+
+_rs:='794,795,797,7094,7108,7140,7143,7145,7146';
+_rn:=spli_str(_rs,',');
+{! _ii:=1..obj_len(_rn)
+|! {? __RUB.ref(#_rn[_ii])=null()
+   || __UPG.msg('Aktualizacja została wstrzymana. Wymagane istnienie rubryk: %1'[_rs]);
+      return(-1)
+   ?}
+!};
+_tp:=spli_str('U,F,R,D,W,%1'[%255],',');
+_err:=exec('formuly_import','rubryki',_tp,_rn,'formuly_txt',form_stack(0).file);
+
+{? _err.TAB.first()
+|| {!
+   |? __UPG.msg(_err.TAB.MSG);
+      _err.TAB.next()
+   !}
+?};
+
+{? _err.counter>0
+|| __UPG.msg('Podczas aktualizacji formuł wystąpiło %1 błędów.'[$_err.counter]);
+   -1
+|| 1
+?}
+
+
+\formuly_placowe_Polski_Lad_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PK [21.37]
+:: OPIS: Dodanie formuł płacowych - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie formuł płacowych dla zmian: Polski Ład'
+
+
+\formuly_txt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.37]
+:: OPIS: Formuła wewnętrzna zwracająca treść formuły płacowej.
+::       Formuła wykorzystywana przez \formuly_placowe (patrz wyżej).
+::   WE: _a [STRING]  - Typ formuły.
+::       _b [INTEGER] - Numer rubryki.
+::   WY: Treść formuły.
+::----------------------------------------------------------------------------------------------------------------------
+_tp:=_a;
+_rn:=_b;
+
+:: Formuły typu 'r' - zleceniobiorcy
+{? _tp='R'
+||
+:: ==================
+   {? _rn=795
+   || "
+{? RH.DWY~1>2021 & var_pres('__ZW_PRZ')>100 & __ZW_PRZ.JEST_PL
+|| {? exec('wn_podat_exist','lista_licz',RH.ZLE().OSOBA,'UZ_POD',RH.DWY)
+   || return(0)
+   ?}
+?};
+_pod:=FUNKCJE.Z(790)-FUNKCJE.Z(793);
+_zanpod:=DoList.p[1]-DoList.p[2];
+{? _zanpod<=0
+  || 0
+|? _pod>_zanpod
+  || _zanpod
+  || _pod
+?}$(RH.DWY~1<2006)"
+
+:: ==================
+   |? _rn=797
+   || "
+{? RH.DWY~1>2021 & var_pres('__ZW_PRZ')>100 & __ZW_PRZ.JEST_PL
+|| {? exec('wn_podat_exist','lista_licz',RH.ZLE().OSOBA,'UZ_POD',RH.DWY)
+   || return(0)
+   ?}
+?};
+{? RH.DWY~1>2021
+|| _kw:=FUNKCJE.Z(790)-FUNKCJE.Z(795)
+|| _kw:=FUNKCJE.Z(790)-FUNKCJE.Z(793,795)
+?};
+{? _kw<0 || 0 || _kw ?}$(RH.DWY~1<2006)"
+
+:: ==================
+   |? _rn=7094
+   || "
+{? var_pres('__ZW_PRZ')>100 & __ZW_PRZ.JEST_PL  || __ZW_PRZ.create() ?};
+exec('przychod_U26','zlec_rh')"
+
+:: ==================
+   |? _rn=7108
+   || "
+{? var_pres('__ZW_PRZ')>100 & __ZW_PRZ.JEST_PL  || __ZW_PRZ.add() ?};
+DoList.z[11]"
+
+:: ==================
+   |? _rn=7145
+   || "
+exec('ZDR_przychod','zlec_rh')"
+   || ""
+   ?}
+:: pozostałe typy formuł
+
+||
+:: ==================
+   {? _rn=794 & _tp<>'W' & _tp<>'D'
+   || "
+{? O.RP>2021 || return(0) ?};
+_pod:=exec('nadplata_kor_zus','!ppl_pll_nals','P',792);
+_kc:=(_pod*KST.PRKO*0.01)$2;
+{? DoList.p[1]*_kc
+|| {? DoList.p[1]-_kc<0 || _kc:=DoList.p[1] ?}
+?};
+_kc"
+
+:: ==================
+   |? _rn=797
+   || "
+{? O.RP>2021 & var_pres('__ZW_PRZ')>100 & __ZW_PRZ.JEST_PL  & __ZW_PRZ.KOD<>'' || __ZW_PRZ.add() ?};
+_kw:=FUNKCJE.L(790);
+{? _kw>0
+||  _kw+=FUNKCJE.LP(790);
+   _kw-=(FUNKCJE.L(793,795)+FUNKCJE.LP(793,795)+FUNKCJE.LP(797));
+   _kw:=_kw$(O.RP<2006);
+   {? _kw<0
+   || {? DoList.p[1]<=_kw || _kw
+      |? DoList.p[5] || 0
+      || DoList.p[1]$(O.RP<2006)
+      ?}
+   || _kw
+   ?}
+?}"
+
+:: ==================
+   |? _rn=7140
+   || "exec('UKS_ulga','lista_licz')"
+
+:: ==================
+   |? _rn=7143
+   || "exec('ZDR_KU','lista_licz')"
+
+:: ==================
+   |? _rn=7145
+   || "exec('ZDR_przychod','lista_licz')"
+
+:: ==================
+   |? _rn=7146
+   || "exec('oblicz_U26','lista_licz',1)"
+   || ""
+   ?}
+?}
+
+\zalacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Utworzenie struktury dla załączników do wniosków dotyczących podatków.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_result:=-1;
+_txt:='Nie udało się utworzyć struktury do załączników do wniosków dotyczących podatków.';
+_typ:=exec('slo_naz','ext_slo','ZAL','Wnioski dotyczące podatków');
+{? _typ
+|| ZAOTM.cntx_psh();
+   ZAOTM.index('MIEJSCER');
+   {? SLO_NAZ.seek(_typ,,1)
+   || _msc:='OS_ZWZAL';
+      ZAOTM.prefix(_msc,SLO_NAZ.ref());
+      {? ZAOTM.first()
+      || _result:=1
+      || ZAOTM.blank();
+         ZAOTM.MIEJSCE:=_msc;
+         ZAOTM.SLO_NAZ:=SLO_NAZ.ref();
+         {? ZAOTM.add()
+         || _result:=1
+         ?}
+      ?};
+      {? _result=1
+      || _txt:='Typ załącznika (%1) powiązano z miejscem użycia.' [SLO_NAZ.NAZWA]
+      ?}
+   ?};
+   ZAOTM.cntx_pop()
+?};
+__UPG.msg(_txt);
+
+_result
+
+
+\zalacz_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [21.37]
+:: OPIS: Utworzenie struktury dla załączników do wniosków dotyczących podatków - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Utworzenie struktury dla załączników do wniosków dotyczących podatków'
+
+
+\stalesys_ini
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Aktualizacja stałych systemu
+::----------------------------------------------------------------------------------------------------------------------
+exec('init_wer','#stalesys');
+__UPG.msg('Zaktualizowano stałe systemu.');
+1
+
+
+\stalesys_ini_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [18.42]
+:: OPIS: Aktualizacja stałych systemu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja stałych systemu'
+
+
+\nieobecnosci_2022
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Aktualizacja nieobecności o kodzie 4 wprowadzonych po 1.1.2022
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+:: Aktualizacja wprowadzonych nieobecności o kodzie 4 po 2022.1.1
+exec('init','pkd');
+__RUB.fill();
+Cntx.psh(N,O);
+Cntx.clr(N,O);
+N.f_clear();
+O.index('LISTYPZN');
+O.prefix(exec('firma','ustawienia'));
+_dt:=date(2022,1,1);
+_txt:='Nastąpi zmiana kodów nieobecności z %1 na %2 wprowadzonych po %3.\n'
+   'Po zmianie kodu nieobecności z wpisanym znakiem listy, listy należy przeliczyć ponownie.\n'
+   'Czy uwzględniać nieobecności rozliczone na listach?'@['4','30',_dt$6];
+_wybor:=FUN.choice(_txt,,
+      'Tak, również na zamkniętych'@,
+      'Ta&k, również na otwartych'@,
+      'Nie, wyłącznie bez znaku listy'@
+   );
+{? _wybor
+|| _sql:={? _wybor>2 || ' and N.LT=\'\'' || '' ?};
+   N.f_set(,,'N.NB=:_a and N.FIRMA=:_b and N.KOR=\'N\' and N.OD>=to_date(:_c) and N.OS_N is null'+_sql,
+      __RUB.ref(4),
+      exec('firma','ustawienia'),
+      _dt
+   );
+   _licz:=0;
+   {? N.f_first() & __RUB.ref(30)
+   || FUN.prg_start(N.f_size(),'Aktualizacja nieobecności'@);
+      {!
+      |? {? (+|N.LT & _wybor=2 & O.find_key(-N.LT,) & O.Z='N') | _wybor=1 | +|N.LT=0
+         || N.NB:=__RUB.ref(30);
+            N.PROC:=exec('procent','nieobecnosc',N.NB);
+            {? ~N.put(1) || _ret:=-1 || _licz+=1 ?};
+            N.P().ref();
+            _prze:=
+               {? +|N.LT & O.find_key(-N.LT,)
+               || ', '+'przelicz ponownie listę %1 '@[N.LT]
+               || ''
+               ?};
+            __UPG.msg(exec('P','#to_string')+', '+'nieobecność od %1'@[N.OD$1]+_prze)
+         ?};
+         FUN.prg_next();
+         _ret=1 & N.f_next()
+      !};
+      FUN.prg_stop()
+   |? ~__RUB.ref(30)
+   || _ret:=0
+   ?};
+   __UPG.msg('Ilość zmian nieobecności: %1.'@[$_licz])
+?};
+N.f_clear();
+Cntx.pop(N,O);
+
+_ret
+
+
+\nieobecnosci_2022_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MicKoc [21.37]
+:: OPIS: Aktualizacja nieobecności o kodzie 4 wprowadzonych po 1.1.2022
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja nieobecności o kodzie 4 wprowadzonych po 1.1.2022.'
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:25 298f67b299189511d1bbe2284708b74d53ab5827b9d65affafe16bb9fba4e754a197e6c5cdc68f4e4f57ac35ed29ae1cf752ac6f267fb84eb3b05b2f564474e064cd2e05a8623a1eff9e051e6f613288cb678a188fa67f38d91932baa1a4c8b25935d9964082a65deacd1c58231776c2b3c3107ac8e2789ed9a7335029017270

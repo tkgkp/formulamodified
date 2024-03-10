@@ -1,0 +1,420 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !lsp_fak_drfp.fml
+:: Utworzony: 30.03.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Obsługa dokumentu sprzedaży pozostałego
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła główna czynności
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ,LSP,TARS
+::# parses=exec('parses','!lsp_fak_drfp')
+::# kind=WE,   symbol=TYPYSP,    type=_TYPYSP,  name=Typ dokumentu sprzedaży,       required=N, fml_val="exec('typysp','!lsp_fak_drfp')", fml_exp="exec('typysp_export','typysp',_a)"
+::# kind=WE,   symbol=ZLF,       type=STRING,   name=Dotyczy zlecenia fakturowania, required=N, fml_val="exec('zlf','faktury_wspolne')"
+::# kind=WE,   symbol=FAKZ,      type=_FAKZ,    name=Zlecenie fakturowania,         required=N
+::# kind=WE,   symbol=EDOKUM,    type=_EDOKUM,  name=Dokument w obiegu,             required=N
+::# kind=WE,   symbol=FAKS,      type=_FAKS,    name=Dokument sprzedaży,            required=N, keyref=T
+::# kind=WE,   symbol=ZLP,       type=_ZLP,     name=Zgłoszenie jednorazowe,        required=N, keyref=T
+::# kind=WY,   symbol=FAKS,      type=_FAKS,    name=Dokument sprzedaży,            required=N
+
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+exec('init_fak','lsp');
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_area_lsp_fak:=_mp.pathArea('LSP_FAK') | _mp.pathArea('LSS_POS') | _mp.pathArea('LUM_FAK');
+_area_lum_zgl:=_mp.pathArea('LUM_ZGL');
+_area:=_akcja<>'' & (_area_lsp_fak | _area_lum_zgl);
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | _mp.pathArea() & ~_area;
+_grupa:=_mp.isGroup();
+_autoakc:=exec('autoAkc','#b__box',_mp,300080,'LSP_FAK_EASP');
+
+:: zapisanie na wyjściu faktury do rejestracji podanej na wejściu
+{? var_pres('FAKS',_in)=type_of(null()) & _in.FAKS
+      &
+   (var_pres('FAKS',_out)<> type_of(null()) | _out.FAKS=null())
+||
+   _out.FAKS:=_in.FAKS;
+   _mp.save(,_out)
+?};
+
+{? _todo
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('FAKS',_out)=type_of(null()) & _out.FAKS
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego FAKS.'@);
+      return()
+   ?}
+?};
+
+:: Sprawdzenie uprawnień
+{? params_exec('permissions_chk','lsp','!lsp_fak_drfp')=0 || return() ?};
+
+:: Wyzwalacz, który po dodaniu nagłówka dokumentu:
+:: - add: dodaje rekord kluczowy nagłówka dokumentu
+::   del: usuwa rekord kluczowy nagłówka dokumentu
+:: - add: zapisuje parametr wyjściowy FAKS = wskazanie na nagłówek korekty
+::   del: zapisuje parametr wyjściowy FAKS = null
+_mp.trigRef('FAKS',,1,,exec('kind_out','#b_port'),'FAKS');
+
+_typysp_t:={? var_pres('TYPYSP',_in)=type_of(null())
+           || exec('FindAndGet','#table',TYPYSP,_in.TYPYSP,,"TYPYSP.T")
+           || ''
+           ?};
+_edokum:={? var_pres('EDOKUM',_in)=type_of(null()) || _in.EDOKUM || null() ?};
+_zafakt:=var_pres('FAKS',_out)=type_of(null()) & _out.FAKS;
+
+{? _akcja='DołączMWA'
+|| FAKS.cntx_psh(); FAP.cntx_psh();
+   _wsenv:=exec('wsenv','#mwapi');
+   _buffers:=_context.BUFFERS;
+   _faks:=exec('addnag_mwa','faktury_nag',_buffers.FAKS);
+   {? _faks<>null()
+   || {? exec('addpoz_mwa','faktury_poz',_buffers.POZ)
+      || FAKS.prefix();
+         {? FAKS.seek(_faks)
+         || exec('sumfak','faktury_wspolne');
+            exec('plat_przel','faktury_plat',_faks);
+            BPMN.END:=2;
+             _zak:=exec('faks_zakoncz','faktury_nag',0,_autoakc);
+            {? ~_zak || _wsenv.add_info('Nie udało się zakończyć faktury : %1'@[FAKS.SYM]) ?};
+            _mp.save('OUT','FAKS',FAKS.ref());
+            _mp.done();
+            _wsenv.IDADD:=FAKS.IDADD
+         ?}
+      ?}
+   ?};
+   FAKS.cntx_pop(); FAP.cntx_pop()
+
+|? _akcja='UsuńMWA'
+|| FAKS.cntx_psh(); FAP.cntx_psh();
+   _wsenv:=exec('wsenv','#mwapi');
+   {? FAKS.STAT_REJ='N'
+   || _context.RESULT:=1
+   |? FAKS.STAT_REJ='T'
+   || _wsenv.add_error('Dokument %1 jest zaakceptowany.'@[FAKS.SYM])
+   || exec('fak_wyc','faktury_nag',,1,0);
+      _context.RESULT:=1
+   ?};
+   {? _context.RESULT>0
+   || _context.RESULT:=exec('usun_fak','faktury_nag',0)
+   ?};
+   FAKS.cntx_pop(); FAP.cntx_pop()
+
+|? ~_zafakt & _edokum<>null()
+|| _ctrl:=exec('ctrlEDOKUM','faktury_nag',_edokum,'S','F');
+   {? ~_ctrl
+   || _mp.error('Niepoprawny parametr EDOKUM - typ dokumentu w obiegu niezgodny z czynnością.'@@)
+   |? _ctrl=-1
+   || _mp.done()
+   |? _ctrl=2
+   || FUN.info('Dokument w obiegu nie został zaakceptowany.'@);
+      _mp.cancel()
+   || params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      _faks:=params_exec('GenWgEDOKUM','faktury_nag',_edokum,'S','F',_typysp_t)
+   ?}
+
+|? _akcja='Dołącz'
+   | _proc
+   | _akcja='START_TODO'
+||
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+   _typysp_t:=
+      {? var_pres('TYPYSP',_in)=type_of(null())
+      || exec('FindAndGet','#table',TYPYSP,_in.TYPYSP,,"TYPYSP.T")
+      || ''
+      ?};
+   BEER.WYSTFAKS:=null;
+   HELP.WMAG:=0;
+
+:: Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+   params_set('in',_in,'out',_out,'mp',_mp,'akcja',_akcja,'context',_context);
+   {? var_pres('ZLP',_in)=type_of(null())
+   ||
+      exec('zlp_fakr','umowy_zlecenia',_in.ZLP,_typysp_t)
+   ||
+      exec('wystinne','faktury_nag','P',,,,,,,,,_typysp_t)
+   ?};
+
+:: Podczytanie parametrów wyjściowych
+   _outa:=_mp.load(exec('kind_out','#b_port'));
+   {? var_pres('FAKS',_outa)<>type_of(~~) & _outa.FAKS
+:: Dodano dokument
+   ||
+::    Ustawienie się na dodanym dokumencie w widoku obszaru
+      params_exec('seek_dok','faktury_wspolne',_area_lsp_fak,_outa.FAKS)
+:: Wycofanie czynności bo nie dodano dokumentu
+   || _mp.cancel()
+   ?}
+
+|? _akcja = 'POS'
+||
+
+   HELP.WHERE:='P';
+   BEER.SZ:='S';
+
+   {? _context.TYPYSP<>null & type_of(_context.TYPYSP)=7
+   ||
+      _wy:=exec('add','faktury_nag',_context.TYPYSP,date(),,_context.KH,,,,,'T',,,'N',,,,,,,,,,_context.HAN);
+      {? _wy = 1
+      ||
+         _context.FAKS:=FAKS.ref()
+      ||
+         _mp.cancel()
+      ?}
+   ||
+      FUN.info('Nie uzupełniono typu dokumentu sprzedaży w procesie wybranej czynności'@);
+      _mp.cancel()
+   ?}
+
+|? _akcja='Kopiuj'
+|| params_set(params_get());
+   exec('kopiuj','faktury_nag1');
+
+:: Podczytanie parametrów wyjściowych
+   _outa:=_mp.load(exec('kind_out','#b_port'));
+   {? var_pres('FAKS',_outa)<>type_of(~~) & _outa.FAKS
+:: Dodano dokument
+   || ~~
+:: Wycofanie czynności bo nie dodano dokumentu
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Popraw'
+   | _todo
+|| {? var_pres('FAKS',_out)=type_of(null())
+:: Uruchomione w procesie
+   || FAKS.cntx_psh();
+      FAKS.prefix();
+      {? FAKS.seek(_out.FAKS)
+      || exec('faks_win_edit_set','faktury_nag');
+
+         params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('fak_pop','faktury_nag');
+
+         _mp.descTodo()
+      ?};
+      FAKS.cntx_pop()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   || {? ~_todo
+      || params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         exec('fak_pop','faktury_nag')
+      |? _akcja='Zakończ_wer'
+      || {? exec('faks_zakoncz','faktury_nag',,_autoakc) || _mp.done() ?}
+      || _mp.cancel()
+      ?}
+   |? _todo
+:: Uruchomione zadanie z listy todo i brak _out.FAKS wtedy zadanie wycofujemy
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Usuń'
+||
+   {? var_pres('FAKS',_out)=type_of(null())
+:: Uruchomione w procesie
+   ||
+      _faks:=null();
+      FAKS.cntx_psh();
+      {? ~_area_lsp_fak || FAKS.prefix() ?};
+      {? FAKS.seek(_out.FAKS)
+      ||
+         exec('usun_fak','faktury_nag',{? _grupa || 2 || 1 ?});
+         {? ~FAKS.seek(_out.FAKS)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         ||
+            _mp.cancel();
+            {? var_press('_context')>0 & var_press('POS',_context)=type_of("")
+            ||
+               _context.POS(_context.ENV)
+            ?}
+         ?};
+         _faks:=FAKS.ref()
+      ?};
+      FAKS.cntx_pop();
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+      {? _area_lsp_fak || {? _faks || FAKS.seek(_faks) ?} ?}
+
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('usun_fak','faktury_nag',{? _grupa || 2 || 1 ?});
+      {? var_press('_context')>0 & var_press('POS',_context)=type_of("")
+      ||
+         _context.POS(_context.ENV)
+      ?};
+      _mp.done()
+   ?}
+
+|? _akcja='Zakończ_wer' & (_area_lsp_fak | _area_lum_zgl)
+||
+   {? exec('faks_zakoncz','faktury_nag',_grupa,_autoakc) || _mp.done() ?}
+||
+   _mp.error('Nieobsługiwana ścieżka.'@)
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? var_pres('FAKS',_out)=type_of(null()) & _out.FAKS
+|| 'Zakończ rejestrację dokumentu sprzedaży: %1'@@ [exec('record','#to_string',_out.FAKS)]
+|| _in:=_mp.load(exec('kind_in','#b_port'));
+   {? var_pres('FAKS',_in)=type_of(null()) & _in.FAKS
+   || 'Zakończ rejestrację dokumentu sprzedaży: %1'@@ [exec('record','#to_string',_in.FAKS)]
+   |? var_pres('FAKZ',_in)=type_of(null()) & _in.FAKZ
+   || 'Zarejestruj dokument sprzedaży wg zlecenia fakturowania: %1'@@ [exec('record','#to_string',_in.FAKZ)]
+   |? var_pres('EDOKUM',_in)=type_of(null()) & _in.EDOKUM
+   || 'Zarejestruj dokument sprzedaży wg dokumentu w obiegu: %1'@@ [exec('record','#to_string',_in.EDOKUM)]
+   || 'Zarejestruj dokument sprzedaży'@@
+   ?}
+?}
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+
+_wyn:=1;
+
+:: Sprawdzenie uprawnień do typu dokumentu
+{? _wyn & var_pres('TYPYSP',_in)=type_of(null()) & _in.TYPYSP
+|| _typysp_t:=exec('FindAndGet','#table',TYPYSP,$_in.TYPYSP,,"TYPYSP.T",'');
+   _wyn:=
+      {? _typysp_t<>''
+      || {? exec('FindInSet','#table','T2STS','UNIK',ST.STS)<>null()
+         || exec('FindInSet','#table','T2STS','UNIK',_in.TYPYSP,ST.STS)<>null()
+         || _where:=exec('tsp_where','typysp','P',,,,_typysp_t);
+            exec('tsp_upr','typysp',_where,,0,,1,,_user)<>null()
+         ?}
+      || 1
+      ?}
+?};
+
+_wyn
+
+
+\faks_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Faktura pozostała - Dołącz
+::       Obsługa w formule main
+::----------------------------------------------------------------------------------------------------------------------
+exec('faks_dolacz','faktury_nag','LSP_FAK_DRFP')
+
+
+\typysp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [17.00]
+:: OPIS: Formuła na wartość parametru TYPYSP
+::   WY: TYPYSP.ref()
+::----------------------------------------------------------------------------------------------------------------------
+BEER.SZ:='S';
+exec('tsp_fak','typysp','P')
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.28]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_context:=params_get().context;
+
+{? var_pres('FAKZ',_in)=type_of(null()) & _in.FAKZ
+|| FAKZ.cntx_psh();
+   FAKZ.use(ref_name(_in.FAKZ));
+   FAKZ.prefix();
+   {? FAKZ.seek(_in.FAKZ)
+   || __PARSES.setVal('OddzialLogProd',FAKZ.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LSP';
+      _args.AR:=FAKZ.AR;
+      _args.AM:=FAKZ.AM;
+      __PARSES.setVal('OkresRok',_args)
+   ?};
+   FAKZ.cntx_pop()
+|? var_pres('EDOKUM',_in)=type_of(null()) & _in.EDOKUM
+|| EDOKUM.cntx_psh();
+   EDOKUM.use(ref_name(_in.EDOKUM));
+   EDOKUM.prefix();
+   {? EDOKUM.seek(_in.EDOKUM)
+   ||
+::      __PARSES.setVal('OddzialLogProd',FAKZ.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LSP';
+      _args.AR:=EDOKUM.DW~1;
+      _args.AM:=EDOKUM.DW~2;
+      __PARSES.setVal('OkresRok',_args)
+   ?};
+   EDOKUM.cntx_pop()
+|? var_pres('_context')=type_of(obj_new('obj')) & var_pres('DATE',_context)>0
+|| _date:=_context.DATE;
+   _faks:=_context.IN_FAKS;
+   __PARSES.setVal('OddzialLogProd',exec('FindAndGet','#table',FAKS,_faks,,"FAKS.ODDZ",''));
+   _args:=__PARSES.args('OkresRok');
+   _args.OBSZAR:='LSP';
+   _args.AR:=_date~1;
+   _args.AM:=_date~2;
+   __PARSES.setVal('OkresRok',_args)
+||
+   _out:=params_get().out;
+   {? var_pres('FAKS',_out)=type_of(null()) & _out.FAKS
+   ||
+      exec('FindAndGet','#table',FAKS,_out.FAKS,,"
+         __PARSES.setVal('OddzialLogProd',FAKS.ODDZ);
+         _args:=__PARSES.args('OkresRok');
+         _args.OBSZAR:='LSP';
+         _args.AR:=FAKS.AR;
+         _args.AM:=FAKS.AM;
+         __PARSES.setVal('OkresRok',_args)
+      ")
+   ?}
+?};
+
+1
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:38 0dd22e1bb2dc7a400a5d31bacb87fe7209d4f11c74d72521ebb18cef299ccb39ab6bcd934d04400427ae993caa04d87c7ab54c00d894a8eef1e9e421727120513706345c67b57eaa3e3a8886a7691d0b4bd1438afd151ade86689a4d473da6fbfb243c5d356ec5c61cdae3154fd385fdcb9d3f7091172c8c124bf3f7865d7e93

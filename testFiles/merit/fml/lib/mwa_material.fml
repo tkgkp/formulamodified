@@ -1,0 +1,577 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: mwa_material.fml
+:: Utworzony: 18.10.2018
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi materiałów przez MacroWebAPI
+::======================================================================================================================
+
+
+\serialize_material
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.02]
+:: OPIS: Formuła pomocnicza do serializacji materiałów do XML
+::       Kontekst wywołania: ustawiona dziedzina lub bufor tabeli M
+::   WE: _a - buffer - czy wywołanie dla bufora tabeli (1), czy dla całej dziedziny (0)
+::       [_b] - JSON z błędami/informacjami dodatkowymi
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_args:=params_get();
+_lib:=exec('lib','__mwa');
+::_response:=_lib.Response.open('c:\\!\\response.xml');
+_response:=_lib.Response.open();
+_lib.Response.begin(_response);
+
+:: status:
+_response.fwrite('\n<%1:status>OK</%1:status>\n'[_args.OUTPREF]);
+
+:: data: z tabeli materiałów
+_lib.Response.getTableType.asString(_response,'data','M',,_a);
+
+:: result: z JSON do XML
+{? var_pres('_b')=type_of('') || _json:=_b || _json:='{}' ?};
+json_tparse(_json).json_tconvert(_response,,,,'result',_args.OUTPREF,,'noheader=1,nodata=1,indentation=1');
+
+_lib.Response.end(_response);
+_response
+
+
+\read_material
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.02]
+:: OPIS: Odczytuje wszystkie aktywne materiały/usługi - impementacja metody 'List'
+::       Uwaga: parametr Rodzaj jest wymagany w definicji serwisu i przyjmuje wartości: T,U
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_par:=params_get();
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? exec('authorized','mwa_material')
+|| _rodzaj:=exec('get_option','mwapi',_par,'Rodzaj').value;
+
+   M.cntx_psh();
+   M.index('ARODZ');
+   M.prefix('T',_rodzaj,);
+   _result:=exec('serialize_material','mwa_material',0);
+   M.cntx_pop();
+
+   _result
+
+|| _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp);
+   _result
+?}
+
+
+\read_material_ktm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Odczytuje jeden materiał wg KTM - implementacja metody 'Get'
+::       Uwaga: wymagany parametr Ktm
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_par:=params_get();
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? exec('authorized','mwa_material')
+|| _ktm:=exec('get_option','mwapi',_par,'Ktm').value;
+
+   M.cntx_psh();
+   M.index('MATKTM');
+   M.prefix(_ktm,);
+   {? M.first()
+   || _result:=exec('serialize_material','mwa_material',0)
+   || _msg:='Brak materiału o indeksie \'%1\'.'@[_ktm];
+      mwa_status(204,_msg);
+      _wsenv.add_error(_msg);
+      _resp:=_wsenv.to_json();
+      _result:=exec('serialize_res','mwapi',_par,_resp)
+   ?};
+   M.cntx_pop();
+
+   _result
+
+|| _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp);
+   _result
+?}
+
+
+\create_material
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Dodaje materiał w oparciu o przekazane parametry - implementacja metody 'Add'
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+
+M.cntx_psh();
+M.prefix();
+M.blank();
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+_firma:=exec('get_option','mwapi',_par,'Firma').value;
+
+:: Ustala zawartość pól materiału (zapis do tablicy buforowej)
+_buffers:=exec('set_buffers','mwa_material',_par.DATA,_par.METHOD,0);
+_buffers.M.ABC:=gsub(_buffers.M.ABC,' ','');
+_buffers.M.XYZ:=gsub(_buffers.M.XYZ,' ','');
+_abc:=_buffers.M.ABC;
+_xyz:=_buffers.M.XYZ;
+
+:: Uzupełnia pola w tablicy buforowej
+exec('update_buffers','mwa_material',_buffers,_firma);
+
+:: Uruchomienie dołączania jako czynność w trybie "cichym", wynikowy rekord umieszczony jest w _wsenv.IDADD
+{? ~_wsenv.has_errors()
+|| _args:=exec('mp_run_a','#b__box');
+   _args.ACT_UID:='ZWS_PAR_KMTR';
+   _args.AKCJA:='DołączMWA';
+   _args.PROC_START:='T';
+   _args.QUIET:='T';
+   _args.CONTEXT:=obj_new('BUFFERS'); _args.CONTEXT.BUFFERS:=_buffers;
+   exec('mp_run','#b__box',_args)
+?};
+{? _firma='T' & ~_wsenv.has_errors() & _wsenv.IDADD<>'' & (_abc<>'' | _xyz<>'')
+|| M.index('IDADD');
+   M.prefix(_wsenv.IDADD);
+   {? M.first()
+   || exec('abcxyz_m_dod','!zws_par_kmtr',M.ref(),_abc,_xyz)
+   || _wsenv.add_info('Nie zaktualizowano firmowych wskaźników ABC/XYZ'@)
+   ?}
+?};
+
+{? ~_wsenv.has_errors() & _wsenv.IDADD<>''
+|| M.index('IDADD');
+   M.prefix(_wsenv.IDADD);
+   mwa_status(201);
+   _resp:=_wsenv.to_json();
+   _result:=params_exec('serialize_material','mwa_material',0,_resp)
+|| mwa_status(400);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+M.cntx_pop();
+
+_result
+
+
+\update_material
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Modyfikuje dany materiał/usługę - implementacja metody 'Put'
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+
+_ktm:=exec('get_option','mwapi',_par,'Material.KTM').value;
+_firma:=exec('get_option','mwapi',_par,'Firma').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+M.cntx_psh();
+M.index('MATKTM');
+M.prefix(_ktm,);
+
+{? M.first()
+||
+:: Ustala zawartość pól materiału (zapis do tablicy buforowej)
+   _buffers:=exec('set_buffers','mwa_material',_par.DATA,_par.METHOD,1);
+   _buffers.M.ABC:=gsub(_buffers.M.ABC,' ','');
+   _buffers.M.XYZ:=gsub(_buffers.M.XYZ,' ','');
+   _abc:=_buffers.M.ABC;
+   _xyz:=_buffers.M.XYZ;
+::   _log:=fopen('c:\\!\\in.xml','uw',,1,1);
+::   {!
+::   |? _line:=_par.DATA.fread();
+::      _line<>'\n'
+::   |! _log.fwrite(_line)
+::   !};
+
+:: Uzupełnia pola w tablicy buforowej
+   exec('update_buffers','mwa_material',_buffers,_firma);
+
+:: Uruchomienie dołączania jako czynność w trybie "cichym", wynikowy rekord umieszczony jest w _wsenv.IDADD
+   {? ~_wsenv.has_errors()
+   || _args:=exec('mp_run_a','#b__box');
+      _args.ACT_UID:='ZWS_PAR_KMTR';
+      _args.AKCJA:='PoprawMWA';
+      _args.QUIET:='T';
+      _args.CONTEXT:=obj_new('BUFFERS'); _args.CONTEXT.BUFFERS:=_buffers;
+      exec('mp_run','#b__box',_args)
+   ?}
+
+|| _wsenv.add_error('Nie znaleziono materiału %1.'@[_ktm])
+?};
+
+{? _firma='T' & ~_wsenv.has_errors() & _wsenv.IDADD<>''
+|| M.index('IDADD');
+   M.prefix(_wsenv.IDADD);
+   {? M.first()
+   || exec('abcxyz_m_dod','!zws_par_kmtr',M.ref(),_abc,_xyz)
+   || _wsenv.add_info('Nie zaktualizowano firmowych wskaźników ABC/XYZ'@)
+   ?}
+?};
+
+{? ~_wsenv.has_errors() & _wsenv.IDADD<>''
+|| M.index('IDADD');
+   M.prefix(_wsenv.IDADD);
+   _resp:=_wsenv.to_json();
+   _result:=params_exec('serialize_material','mwa_material',0,_resp)
+|| mwa_status(400);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+M.cntx_pop();
+_result
+
+
+\set_buffers
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Ustala zawartość bufora materiału (funkcja dedykowana)
+::   WE: _a - [FILE] lub [TEXT] zawiera analizowany XML
+::       _b - request method
+::       _c - czy pobrać zawartość z bufora: 1-pobiera zawartość z rekordu tabeli get(), 0-robi blank() bufora
+::   WY: obj_new('M') - bufor materiału z dodatkowymi polami
+::----------------------------------------------------------------------------------------------------------------------
+_xml:=_a;
+_method:=_b;
+_buffers:=obj_new('M');
+:: Bufor tabeli M z dodatkowymi polami
+_buffers.M:=exec('M','buffer1',"'J_KOD','Vat_KOD','Mgr_KOD','M_atr_SYM','M_atr_b_SYM'");
+{? _c || _buffers.M.get() || _buffers.M.blank() ?};
+_buffers.M.J_KOD:=_buffers.M.Vat_KOD:=_buffers.M.Mgr_KOD:=_buffers.M.M_atr_SYM:=_buffers.M.M_atr_b_SYM:=~~;
+
+:: space_preserve włączone ze względu na występowanie spacji wiodącej w słowniku stawek VAT
+_tab:=xml_tparse(_xml,,,,1);
+
+:: Podgląd drzewka - do włączenia dla debugowania
+::_wer:=_tab.mk_sel(,'P',1,'qwerty',,,,1);
+::_tab.win_sel(_wer);
+::_tab.select();
+
+{? _tab.find_tab(,'NAME',,'=',_method+'Request')
+||
+:: Pętla po zawartości parametru 'Material'
+   {? _tab.find_tab(,'NAME',,'=','Material')
+   || _tab.prefix(_tab.ref());
+      {? _tab.first()
+      || {!
+         |?
+::          Pola tabeli M (materiał)
+            exec('set_field','mwapi',_tab,M,_buffers.M);
+            _tab.next()
+         !}
+      ?}
+   ?}
+?};
+_buffers
+
+
+\update_buffers
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Uzupełnia pola w tablicy buforowej
+::   WE: _a - _buffers
+::       _b - T/N czy wskaźniki ABC/XYZ mają być dla firmy
+::----------------------------------------------------------------------------------------------------------------------
+_buffers:=_a;
+_firma:={? var_pres('_b')=type_of('') || _b || 'N' ?};
+_wsenv:=exec('wsenv','#mwapi');
+
+:: Uzupełnienie danych w tablicy buforowej
+:: - zawsze aktywny
+_buffers.M.A:='T';
+:: - jednostka miary
+{? type_of(_buffers.M.J_KOD)=type_of('') & _buffers.M.J_KOD<>''
+|| _buffers.M.J:=exec('FindInSet','#table','JM','KOD',_buffers.M.J_KOD,,,1);
+   {? _buffers.M.J=null()
+   || _wsenv.add_error('Nie znaleziono zapisu \'%1\' w słowniku jednostek miary.'@[_buffers.J_KOD])
+   ?}
+?};
+:: - grupa materiałowa
+{? type_of(_buffers.M.Mgr_KOD)=type_of('') & _buffers.M.Mgr_KOD<>''
+|| _buffers.M.MGR:=exec('FindInSet','#table','MGR','MGR',_buffers.M.Mgr_KOD,,,1);
+   {? _buffers.M.MGR=null()
+   || _wsenv.add_error('Nie znaleziono zapisu \'%1\' w słowniku grup materiałowych.'@[_buffers.M.Mgr_KOD])
+   |? _buffers.M.RODZ<>exec('FindAndGet','#table',MGR,_buffers.M.MGR,,"RODZ",'')
+   || {? _buffers.M.RODZ='T'
+      || _wsenv.add_error('Grupa \'%1\' nie dotyczy materiałów.'@[_buffers.M.Mgr_KOD])
+      || _wsenv.add_error('Grupa \'%1\' nie dotyczy usług.'@[_buffers.M.Mgr_KOD])
+      ?}
+   ?}
+?};
+:: - stawka VAT
+{? type_of(_buffers.M.Vat_KOD)=type_of('') & _buffers.M.Vat_KOD<>''
+|| exec('jakislsv','ustawienia',1);
+   _buffers.M.VAT:=exec('FindInSet','#table','SLO','SL',_buffers.M.Vat_KOD,SLU.ref(),,1);
+   {? _buffers.M.VAT=null()
+   || _wsenv.add_error('Nie znaleziono zapisu \'%1\' w słowniku stawek VAT.'@[_buffers.M.Vat_KOD])
+   ?}
+?};
+:: - M_ATR
+{? type_of(_buffers.M.M_atr_SYM)=type_of('')
+|| _buffers.M.M_ATR:=exec('FindInSet','#table','M_ATR','SYM',_buffers.M_atr_SYM,,,1)
+?};
+:: - M_ATR_B
+{? type_of(_buffers.M.M_atr_b_SYM)=type_of('')
+|| _buffers.M.M_ATR_B:=exec('FindInSet','#table','M_ATR','SYM',_buffers.M_atr_b_SYM,,,1);
+:: Tutaj ewentualna formuła wrożeniowa dekodująca _buffers.M.KTM do _buffers.M.WAR01 .. _buffers.M.WAR10
+   ~~
+?};
+
+{? _buffers.M.ABC<>'A' & _buffers.M.ABC<>'B' & _buffers.M.ABC <>'C' & _buffers.M.ABC<>''
+|| _wsenv.add_error('Nieprawidłowa wartość wskaźnika ABC.'@)
+?};
+{? _buffers.M.XYZ<>'X' & _buffers.M.XYZ<>'Y' & _buffers.M.XYZ <>'Z' & _buffers.M.XYZ<>''
+|| _wsenv.add_error('Nieprawidłowa wartość wskaźnika XYZ.'@)
+?};
+{? _firma='T' ||  _buffers.M.ABC:=M.ABC;_buffers.M.XYZ:=M.XYZ ?};
+
+:: --- Komunikaty kontrolne - można włączyć do debugowania
+::_wsenv.add_info('KTM:'+_buffers.M.KTM);
+::_wsenv.add_info('N:'+_buffers.M.N);
+::_wsenv.add_info('J_KOD:'+_buffers.M.J_KOD);
+::_wsenv.add_info('J:'+$_buffers.M.J);
+::_wsenv.add_info('Vat_KOD:'+_buffers.M.Vat_KOD);
+::_wsenv.add_info('VAT:'+$_buffers.M.VAT);
+::_wsenv.add_info('RODZ:'+_buffers.M.RODZ);
+::_wsenv.add_info('R:'+_buffers.M.R);
+::_wsenv.add_info('Mgr_KOD:'+_buffers.M.Mgr_KOD);
+::_wsenv.add_info('MGR:'+$_buffers.M.MGR);
+:: ---
+~~
+
+
+\serialize_jm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.02]
+:: OPIS: Formuła pomocnicza do serializacji jednostek miary do XML
+::       Kontekst wywołania: ustawiona dziedzina tabeli JM
+::   WE: _a - obiekt???
+::----------------------------------------------------------------------------------------------------------------------
+_resp:=fopen(null(),'Uw',,1,1);
+
+_data:="
+   JM.xml_records(,,'data','p',,'noheader=1,norecord=0,nodata=1,indentation=1'
+      ,'REFERENCE',,'IDADD',
+      ,'KOD',,'NAZ',
+   )
+";
+_tab:=tab_tmp(,'STATUS','STRING[20]','');
+_tab.STATUS:='OK'; _tab.add();
+_tab.xml_records(_resp,_a.METHOD+'Response',,'p',_a.OUTNSPC,'norecord=1'
+   ,'STATUS:status',
+   ,'',_data
+);
+
+_resp
+
+
+\read_jm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.02]
+:: OPIS: Odczytuje wszystkie jednostki miary
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_rodzaj:=exec('get_option','mwapi',_par,'rodzaj').value;
+
+JM.index('KOD');
+JM.prefix();
+_result:=exec('serialize_jm','mwa_material',_par);
+
+_result
+
+
+\prolog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Formuła startowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+exec('prolog','mwapi',_par);
+~~
+
+
+\epilog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Fomuła końcowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+exec('epilog','mwapi');
+~~
+
+
+\authorized
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [20.14]
+:: OPIS: Sprawdza uprawnienia do odglądania materiałów (w kontekście aktualnego OPERATOR.USER)
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('authorized','#b__box','ZWS_MAT','ZWS')
+|| 1
+|| _msg:='Brak uprawnień do przeglądania materiałów/usług.'@;
+   mwa_status(401,_msg);
+   _wsenv:=exec('wsenv','#mwapi');
+   _wsenv.add_error(_msg);
+   0
+?}
+
+
+\abc_value
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [23.25]
+:: OPIS: Zwrot wartości dla pola M.ABC/M_DOD.ABC
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_par:=params_get();
+_firma:=exec('get_option','mwapi',_par,'Firma').value;
+{? _firma='T'
+|| M_DOD.cntx_psh();
+   M_DOD.index('M_DOD');
+   M_DOD.prefix(REF.FIRMA,M.ref());
+   _wyn:={? M_DOD.first() || M_DOD.ABC || '' ?};
+   M_DOD.cntx_pop()
+|| _wyn:=M.ABC
+?};
+_wyn
+
+
+\xyz_value
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [23.25]
+:: OPIS: Zwrot wartości dla pola M.XYZ/M_DOD.XYZ
+::----------------------------------------------------------------------------------------------------------------------
+params_set(params_get());
+_par:=params_get();
+_firma:=exec('get_option','mwapi',_par,'Firma').value;
+{? _firma='T'
+|| M_DOD.cntx_psh();
+   M_DOD.index('M_DOD');
+   M_DOD.prefix(REF.FIRMA,M.ref());
+   _wyn:={? M_DOD.first() || M_DOD.XYZ || '' ?};
+   M_DOD.cntx_pop()
+|| _wyn:=M.XYZ
+?};
+_wyn
+
+
+\update_material_grp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [23.25]
+:: OPIS: Modyfikuje grupę materiałów poprzez wywołanie POST(nie możemy tu wykorzystać PUT)
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+
+_firma:=exec('get_option','mwapi',_par,'Firma').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+M.cntx_psh();
+{? M.lock(1)
+||
+   {? var_pres('_buffers')>100 || obj_del(_buffers) ?};
+   _buffers:=obj_new('M');
+:: Bufor tabeli M z dodatkowymi polami
+   _buffers.M:=exec('M','buffer1',"'J_KOD','Vat_KOD','Mgr_KOD','M_atr_SYM','M_atr_b_SYM'");
+   _buffers.M.J_KOD:=_buffers.M.Vat_KOD:=_buffers.M.Mgr_KOD:=_buffers.M.M_atr_SYM:=_buffers.M.M_atr_b_SYM:=~~;
+
+:: space_preserve włączone ze względu na występowanie spacji wiodącej w słowniku stawek VAT
+   _tab:=xml_tparse(_par.DATA,,,,1);
+
+   {? _tab.find_tab(,'NAME',,'=',_par.METHOD+'Request')
+   ||
+:: Pętla po zawartości parametru 'Material'
+      {? _tab.find_tab('first','NAME',,'=','Material')
+      || {!|?
+            _tab.cntx_psh();
+            _tab.prefix(_tab.ref());
+            {? _tab.find_tab('first','NAME',,'=','KTM')
+            ||
+               M.index('MATKTM');
+               M.prefix(_tab.VAL,);
+               {? M.first()
+               ||
+                  _buffers.M.get();
+                  _buffers.M.J_KOD:=_buffers.M.Vat_KOD:=_buffers.M.Mgr_KOD:=_buffers.M.M_atr_SYM:=_buffers.M.M_atr_b_SYM:=~~;
+                  {? _tab.first()
+                  || {!
+                     |?
+                        {? _tab.NAME='ABC' | _tab.NAME='XYZ' || exec('set_field','mwapi',_tab,M,_buffers.M) ?};
+                        _tab.next()
+                     !}
+                  ?};
+                  _buffers.M.ABC:=gsub(_buffers.M.ABC,' ','');
+                  _buffers.M.XYZ:=gsub(_buffers.M.XYZ,' ','');
+                  _abc:=_buffers.M.ABC;
+                  _xyz:=_buffers.M.XYZ;
+
+:: Uzupełnia pola w tablicy buforowej
+                  _abcxyz:=1;
+                  {? _buffers.M.ABC<>'A' & _buffers.M.ABC<>'B' & _buffers.M.ABC <>'C' & _buffers.M.ABC<>''
+                  || _wsenv.add_error('Nieprawidłowa wartość wskaźnika ABC materiału %1.'@[M.KTM]);
+                     _abcxyz:=0
+                  ?};
+                  {? _buffers.M.XYZ<>'X' & _buffers.M.XYZ<>'Y' & _buffers.M.XYZ <>'Z' & _buffers.M.XYZ<>''
+                  || _wsenv.add_info('Nieprawidłowa wartość wskaźnika XYZ materiału %1.'@[M.KTM]);
+                     _abcxyz:=0
+                  ?};
+                  {? _firma='T' ||  _buffers.M.ABC:=M.ABC;_buffers.M.XYZ:=M.XYZ ?};
+
+:: Uruchomienie dołączania jako czynność w trybie "cichym", wynikowy rekord umieszczony jest w _wsenv.IDADD
+                  {? ~_wsenv.has_errors() & _abcxyz
+                  || {? var_pres('_args')>100 || obj_del(_args) ?};
+                     _args:=exec('mp_run_a','#b__box');
+                     _args.ACT_UID:='ZWS_PAR_KMTR';
+                     _args.AKCJA:='PoprawMWA';
+                     _args.QUIET:='T';
+                     _args.CONTEXT:=obj_new('BUFFERS'); _args.CONTEXT.BUFFERS:=_buffers;
+                     exec('mp_run','#b__box',_args)
+                  ?};
+                  {? _firma='T' & ~_wsenv.has_errors() & _wsenv.IDADD<>'' & _abcxyz
+                  || M.index('IDADD');
+                     M.prefix(_wsenv.IDADD);
+                     {? M.first()
+                     || exec('abcxyz_m_dod','!zws_par_kmtr',M.ref(),_abc,_xyz);
+                        _wsenv.add_info('Zaktualizowano firmowe wskaźniki ABC/XYZ materiału %1.'@[M.KTM])
+                     || _wsenv.add_info('Nie zaktualizowano firmowych wskaźników ABC/XYZ materiału %1.'@[M.KTM])
+                     ?}
+                  |? ~_wsenv.has_errors() & _wsenv.IDADD<>'' & _abcxyz
+                  || _wsenv.add_info('Zaktualizowano wskaźniki ABC/XYZ materiału %1.'@[M.KTM])
+                  || _wsenv.add_info('Nie zaktualizowano wskaźników ABC/XYZ materiału %1.'@[M.KTM])
+                  ?}
+               || _wsenv.add_info('Nie znaleziono materiału %1.'@[_tab.VAL])
+               ?}
+            ?};
+            _tab.cntx_pop();
+            _wsenv.IDADD:='';
+
+            _tab.find_tab('next','NAME',,'=','Material') & ~_wsenv.has_errors()
+         !}
+      ?}
+   ?}
+|| _wsenv.add_error('Tabela materiałów jest zablokowana.'@)
+?};
+
+{? ~_wsenv.has_errors()
+||  mwa_status(201);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp,1)
+|| mwa_status(400);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+M.unlock();
+M.cntx_pop();
+_result
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:39 ca1c10c43d9f3f45a700df4aa4b4a6fed02faaf5ea44f911feecaf2cd256e1a8a8ba98c677696ecb622506eb234f472aba2984c327ade6ced54d51fb50343a6c7cfd87bbc0952e0e8b97eba67e77352d03ff05147a4bd83fe3c1361d9b2dbc730279d2cdab03d02423357647613c7340e07f8277398a62a5537435fb10c139da

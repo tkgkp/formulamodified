@@ -1,0 +1,566 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: analizy_bi.fml
+:: Utworzony: 02.07.2020
+:: Autor: achol
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Formuły obsługujące wywołania analiz BI.
+::======================================================================================================================
+
+
+\invoke
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [20.42]
+:: OPIS: Wywołuje analizę BI dla podanej poprzez argument uid czynności.
+::   WE: _a [STRING] - uid czynności
+::   WY: Zakładka z przeglądarką z wywołaną analizą BI lub komunikat informujący o braku wypełnienia wymaganych danych.
+:: ~OST: INFORK
+::----------------------------------------------------------------------------------------------------------------------
+_err:="FUN.emsg('Nie podano czynności, dla której należy wywołać analizę BI.'@)";
+_actUid:={? var_pres('_a')=type_of('') & +_a || _a || _err(); return() ?};
+_isUrlAssigned:=0;
+_constAvail:=(var_pres('XINFO')>0 & var_pres('ANBI_AM',XINFO)>0 & var_pres('ANBI_URL',XINFO)>0
+   & var_pres('ANBI_QUD',XINFO)>0 & var_pres('ANBI_CER',XINFO)>0 & var_pres('ANBI_PSW',XINFO)>0);
+
+{? _constAvail
+||
+   exec('czytaj','#stalesys',,XINFO,'ANBI_AM','ANBI_URL','ANBI_QUD','ANBI_CER','ANBI_PSW');
+:: odczytanie informacji czy autentykacja meritowa w czasie wywołania analiz BI
+   _meritAuth:={? +XINFO.ANBI_AM & XINFO.ANBI_AM='T' || 1 || 0 ?};
+   _qlikTicket:='';
+   _ok:=1;
+   B_ACTION.cntx_psh();
+   B_ACTION.index('UNIK');
+   B_ACTION.prefix(_actUid);
+   {? B_ACTION.first()
+   ||
+::    pobieramy adres URL z pola SYS_MEMO czynności
+      _memo_txt:=B_ACTION.memo_txt(,1,'MEMO');
+      _isUrlAssigned:={? +_memo_txt || {?_wsk:=_memo_txt*'\n'||_urlAddress:=(_wsk-1)+_memo_txt||_urlAddress:=_memo_txt?}; 1 || 0 ?};
+      {? _meritAuth
+      ||
+         _unfillVal:=''; _isUrlAssigned:=1;
+::       wartości, które powinny być uzupełnione dla logowania z wykorzystaniem autentykacji meritowej
+         _ufUrl:='adres URL serwera Qlik';
+         _ufQud:='nazwa Qlik User Directory';
+         _ufCer:='ścieżka do certyfikatu dla serwera Qlik';
+         _ufPsw:='hasło do certyfikatu dla serwera Qlik';
+         _ufLog:=0;
+         _ufPfx:=0;
+         _ok*={? +XINFO.ANBI_URL || 1 || _unfillVal+=_ufUrl; _ufLog:=1; 0 ?}
+            *{? +XINFO.ANBI_QUD
+              || 1
+              || _ufLog:=1;
+                 {? +_unfillVal || _unfillVal+=', '+_ufQud; 0 || _unfillVal+=_ufQud; 0 ?}
+              ?}
+            *{? +XINFO.ANBI_CER
+              || 1
+              || _ufPfx:=1;
+                 {? +_unfillVal || _unfillVal+=', '+_ufCer; 0 || _unfillVal+=_ufCer; 0 ?}
+              ?}
+            *{? +XINFO.ANBI_PSW
+              || 1
+              || _ufPfx:=1;
+                 {? +_unfillVal || _unfillVal+=', '+_ufPsw; 0 || _unfillVal+=_ufPsw; 0 ?}
+              ?};
+         {? _ok
+::       pobieramy Qlik ticket dla zalogowanego użytkownika
+         || _qlikTicket:=exec('get_ticket','analizy_bi',XINFO.ANBI_URL,XINFO.ANBI_QUD,XINFO.ANBI_CER,XINFO.ANBI_PSW);
+            _memo_txt:=B_ACTION.memo_txt(,1,'MEMO');
+            _urlAddress+='/?'+_qlikTicket
+::       brak wypełnienia wymaganych danych - komunikat
+         || _info:={? _ufLog & _ufPfx
+                   || 'Ustawienia logowania oraz Ustawienia certyfikatu'
+                   |? _ufLog
+                   || 'Ustawienia logowania'
+                   || 'Ustawienia certyfikatu'
+                   ?};
+            FUN.info('Brak danych: %1 .\n\n'
+               'Należy otworzyć (Ustawienia i parametryzacja -> Wspólne -> Analizy BI -> %2) '
+               'i uzupełnić wymagane informacje.'@[_unfillVal,_info])
+         ?}
+      ?}
+   ?};
+   B_ACTION.cntx_pop();
+
+   {? _isUrlAssigned & _ok
+   ||
+::      sprawdzenie wersji Runtime - otwieranie w nowej zakładce w okienku do 20.14,
+::      od wyższych wersji - kontrolka bez okienka
+        _runTime:=user(11);
+        _runVerObj:=spli_str(_runTime,'.');
+        _runYear:=#_runVerObj[1];
+        _runWeek:=_runVer:=#_runVerObj[2];
+        {? (_runYear<>0 & ((_runYear=20 & _runWeek>14) | _runYear>20)) |
+           (%_runVerObj[1]>=%'P' | (_runVerObj[1]='P' & _runVer>60))
+        || ctr_set('!application',,'openWebBrowser', _urlAddress)
+        || fork(,'web_open','analizy_bi',_urlAddress)
+        ?}
+   |? ~_isUrlAssigned
+   || FUN.info('Nie przypisano adresu URL, który ma zostać otworzony w czasie wywołania analiz BI.\n\n'
+               'Należy otworzyć (Obsługa procesów -> Dostępne czynności -> %1 -> Parametry)\n'
+               'i w wywołane okienko wkleić odpowiedni adres.'@[_actUid])
+   ?}
+?}
+
+
+\web_open
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [20.42]
+:: OPIS: Otwiera wywołaną analizę BI w nowej zakładce programu Merit.
+::   WE: _a [STRING] - adres URL wywoływanej analizy BI
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+{? ~(var_pres('VAR_DEL')>0) || exec('VAR_DEL','#object') ?};
+VAR_DEL.delete('urlAddress');
+urlAddress:={? var_pres('_a')=type_of('') || _a || '' ?};
+_win_bi:=SYSLOG.mk_ctr('Analizy BI'@,'anbi_webbrowser'@,,,,,'maximized');
+SYSLOG.win_ctr(_win_bi);
+SYSLOG.win_cctr(_win_bi, 'ctr_anbi','@webframe');
+SYSLOG.control('biq_per',,"
+         ctr_set(,'ctr_anbi', 'navigate', urlAddress)
+      ");
+VAR_DEL.delete('urlAddress');
+~~
+
+
+\get_ticket
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [20.42]
+:: OPIS: Zwaraca Qlik ticket dla zalogowanego usera na potrzeby analiz BI
+::   WE: _a [STRING] - adres serwera
+::       _b [STRING] - Qlik User Directory
+::       _c [STRING] - ścieżka do pliku z certyfikatem
+::       _d [STRING] - hasło do certyfikatu
+::       [_e] [STRING] - virtual proxy
+::   WY: Qlik ticket dla zalogowanego użytkownika lub ''
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_e')=2|| _e || _e:='' ?};
+_wynik:='';
+_xrfkey:=exec('get_random_str','analizy_bi',16);
+_http:=inet_get('https://'+_a+':4243/qps'+_e+'/ticket?xrfkey='+_xrfkey);
+
+_http.append_header('X-Qlik-xrfkey:'+_xrfkey);
+_http.append_header('X-Qlik-User:UserDirectory=internal;UserId=sa_repository');
+_http.append_header('Content-Type:application/json');
+_http.append_header('Accept:application/json');
+
+_http.set_opt('SSL_VERIFYPEER',0);
+_http.set_opt('SSL_CERT',_c);
+_http.set_opt('SSL_KEYPASSWD',pass_get(_d));
+
+_body:='{\"UserDirectory\":\"'+_b+'\",\"UserId\":\"'+app_info('app_user')+'\",\"Attributes\":[]}';
+
+_http_odp:=_http.http_post(,_body);
+
+{? _http_odp = 201 ||
+  _tab:=json_parse(_http.get_data());
+  _wynik:='QlikTicket='+_tab.Ticket
+?};
+_wynik
+
+
+\get_random_str
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [20.42]
+:: OPIS: Zwaraca losowy ciąg znaków
+::   WE: _a [INTEGER] - liczba określająca długość ciągu
+::----------------------------------------------------------------------------------------------------------------------
+_wynik:='';
+_tmp:='abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNOPQRSTUVWXYZ0123456789';
+{! _a:=1.._a |!
+   _wynik+=(1+int(60*rand)+_tmp+1)
+!};
+_wynik
+
+
+\anbi_psw_edit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: achol [20.42]
+:: OPIS: Edycja hasła do certyfikatu wykorzystywanego przy wywołaniu analiz z wykorzystaniem atentykacji meritowej.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+undefine;
+:: sprawdzenie dostępności zmiennej
+_constAvail:=(var_pres('XINFO')>0 & var_pres('ANBI_PSW',XINFO)>0);
+{? _constAvail || exec('czytaj','#stalesys',,XINFO,'ANBI_PSW') || return('') ?};
+:: edycja wartości zmiennej
+define('PASSWORD','','Nowe hasło do certyfikatu'@,,50,50);
+def_btn('text=%1,icon=xwin16.png:13'['OK'@],"'key:F2'");
+def_btn('text=%1,icon=xwin16.png:14'['Anuluj'@],"'key:Esc'");
+{? def_edit("chk_rec",'Zmień hasło'@)
+|| XINFO.ANBI_PSW:=pass_crypt(DEFINE.PASSWORD,'cert');
+   exec('zapisz','#stalesys',1,XINFO,'ANBI_PSW')
+?};
+undefine;
+''
+
+
+\qticket_exists
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [20.42]
+:: OPIS: Sprawdza czy jakiś inny proces nie zdobył już w ciągu ostatnich kilku sekund ticektu QLIK
+::   WE:
+::   WY: Zwraca 1 jeżeli w ciągu ostatnich 6 sekund został uzyskany ticket Qlik. W p.p. 0.
+:: ~OST: INENVGET
+::----------------------------------------------------------------------------------------------------------------------
+_wynik:=0;
+{? cli_ver('Client')='interm'
+||
+  _qtick:=ctr_call('!application',,'getSessionData','qtick');
+  {? _qtick<>''
+  ||
+    _a:=json_parse(_qtick);
+    {?$date()=_a.LastQlikTicketD & *time()-_a.LastQlikTicketT<=0.1||_wynik:=1?}
+  ?}
+||
+  delay(,int(1000*rand));
+  _file:='@'+envget('@APPDATA')+'/MacroBASE/'+'dane_dla_'+app_info('app_user');
+  _ffile:=fopen(_file, 'r');
+  _exists:={? _ffile || fclose(_ffile);1||0 ?};
+  {? _exists
+  ||
+     _a:=json_parse(fopen(_file, 'ur',,,1));
+    {?$date()=_a.LastQlikTicketD & *time()-_a.LastQlikTicketT<=0.1||_wynik:=1?}
+  ?};
+  _plik:=fopen(_file+$#date(), 'a'); fwrite(_plik, $time()+'-'+$_wynik); fclose(_plik)
+?};
+_wynik
+
+
+\qticket_set_info
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [20.42]
+:: OPIS: Ustawia w pliku zewnętrznym informację o czasie uzyskania tokena Qlik
+::   WE:
+::   WY:
+:: ~OST: INENVGET
+::----------------------------------------------------------------------------------------------------------------------
+_a:=obj_new('LastQlikTicketD','LastQlikTicketT');
+_a.LastQlikTicketD:=$date();
+_a.LastQlikTicketT:=*time();
+{? cli_ver('Client')='interm'
+||
+  ctr_call('!application',,'putSessionData','qtick',json_obj(_a))
+||
+  _file:='@'+envget('@APPDATA')+'/MacroBASE/'+'dane_dla_'+app_info('app_user');
+  json_obj(_a,fopen(_file, 'uw',,,1))
+?}
+
+
+\qpulpit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [20.42]
+:: OPIS: Formuła główna czynności QLik
+::   WE: _a [STRING] - symbol czynności np. BIQ_FKS_RAPA
+::   WY: Tekst z linkami danej czynności
+::----------------------------------------------------------------------------------------------------------------------
+_result:=obj_new('URL','DSK_URL');
+_result.URL:=_result.DSK_URL:='';
+
+B_ACTION.cntx_psh();
+B_ACTION.index('UNIK');
+B_ACTION.prefix(_a);
+{? B_ACTION.first()
+|| _memo_txt:=B_ACTION.memo_txt(,1,'MEMO');
+   {? +_memo_txt
+   ||
+      _sep:='';
+      _first:=1;
+      {!
+      |? _wsk:=_memo_txt*'\n'
+      |!
+         _txt:=(_wsk-1)+_memo_txt; _memo_txt:=_wsk-_memo_txt;
+         {? _first
+         || _result.URL:=_txt+{?REF.FIRMA().SYMBOL='000'||''||'/select/Firma/F'+REF.FIRMA().SYMBOL?}; _first:=0
+         || _result.DSK_URL+=_sep+_txt+'&select='+{?REF.FIRMA().SYMBOL='000'||'clearall'||'Firma,F'+REF.FIRMA().SYMBOL?}; _sep:='\n'
+         ?}
+      !};
+      _txt:=_memo_txt;
+      {? _first
+      || _result.URL:=_txt+{?REF.FIRMA().SYMBOL='000'||''||'/select/Firma/F'+REF.FIRMA().SYMBOL?}
+      || _result.DSK_URL+=_sep+_txt+'&select='+{?REF.FIRMA().SYMBOL='000'||'clearall'||'Firma,F'+REF.FIRMA().SYMBOL?}
+      ?}
+   ?}
+?};
+B_ACTION.cntx_pop();
+_result
+
+\runJQlik2Img
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Uruchomienie usługi Qlik2Img
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_port:=exec('getPortQlik2Img','analizy_bi');
+{? _port>0
+|| _sep:=exec('sep','#file',1);
+   {? sys_name(1)*'U_'>0
+      || _tmp_dir:='/tmp/jQlik2Img'+cfg_info('synchr_num');
+      {? fexists(_tmp_dir)=0
+         ||fmkdir('/tmp', 'jQlik2Img'+cfg_info('synchr_num'))
+      ?}
+   || _tmp_dir:=envget('tmp')+_sep+'jQlik2Img';
+      {? fexists(_tmp_dir)=0
+      ||fmkdir(envget('tmp'), 'jQlik2Img')
+      ?}
+   ?};
+   fcopy(pth_dir('qlikToPng.jar')+_sep+'bi'+_sep+'jQlik2Img.jar',_tmp_dir+_sep+'jQlik2Img.jar',0,0,1);
+   fcopy(pth_dir('qlikToPng.jar')+_sep+'bi'+_sep+'lib'+_sep+'commons-io.jar',_tmp_dir+_sep+'commons-io.jar',0,0,1);
+   fcopy(pth_dir('qlikToPng.jar')+_sep+'bi'+_sep+'lib'+_sep+'json.jar',_tmp_dir+_sep+'json.jar',0,0,1);
+   fcopy(exe_dir(1)+_sep+'lib'+_sep+'wbrowser.jar',_tmp_dir+_sep+'wbrowser.jar',0,0,1);
+   fcopy(exe_dir(1)+_sep+'lib'+_sep+'jxbrowser'+_sep+'jxbrowser.jar',_tmp_dir+_sep+'jxbrowser.jar',0,0,1);
+   fcopy(exe_dir(1)+_sep+'lib'+_sep+'jxbrowser'+_sep+'jxbrowser-swing.jar',_tmp_dir+_sep+'jxbrowser-swing.jar',0,0,1);
+   fcopy(exe_dir(1)+_sep+'lib'+_sep+'jxbrowser'+_sep+'jxbrowser-win64.jar',_tmp_dir+_sep+'jxbrowser-win64.jar',0,0,1);
+   fcopy(exe_dir(1)+_sep+'lib'+_sep+'jxbrowser'+_sep+'jxbrowser-linux64.jar',_tmp_dir+_sep+'jxbrowser-linux64.jar',0,0,1);
+   jexec(_tmp_dir,
+   'runOnAppServer=1, stdout='+pth_dir('qlik2img.json')+_sep+'log'+_sep+'qlik2img'+gsub($date(),'/')+'_'+gsub($time(),':')+'.log, stderr='+pth_dir('qlik2img.json')+_sep+'log'+_sep+'qlik2img_err'+gsub($date(),'/')+'_'+gsub($time(),':')+'.log',
+   '-cp','./*','pl.macrologic.bi.jQlik2Img.jQlik2Img',
+   '-p'+pth_dir('qlik2img.json')+_sep+'qlik2img.json',
+        '-i'+exec('getParentProcessId','analizy_bi')
+   )
+
+?};
+~~
+
+\refreshSheet
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Odświeża arkusz we wbudowanym oknie (Kontrahent, Materiał/Usługa, Projekt, Pracownik)
+::   WE: _a [STRING] - Uid czynności
+::       _b [STRING] - Identyfikator okna.
+::       _c [STRING] - Identyfikator kontrolki.
+::   WY: tekst wpisany w oknie Parametry danej czynności
+::----------------------------------------------------------------------------------------------------------------------
+_ig:=inet_get('http://encode');
+REF.FIRMA:=exec('firma_ref','#firma',app_info('app_ident'));
+{? _a='BIQ_EZK_DISP'||_filtr:='~FIRMREFP,'+_ig.url_encode($P.ref+REF.FIRMA().SYMBOL)+'&select=Firma,F'+REF.FIRMA().SYMBOL+'&FOLDER=~FIRMREFP'; {?+$P.ref>0 & (var_pres('BI_SET')<=0 | BI_SET<>$P.ref+REF.FIRMA().SYMBOL)||BI_SET:=$P.ref+REF.FIRMA().SYMBOL||return()?}
+|? _a='BIQ_KHR_DISP'||_filtr:='Skr%C3%B3t%20kontrahenta,'+_ig.url_encode(KH.SKR)+'&select=Firma,F'+REF.FIRMA().SYMBOL+'&FOLDER=Skr%C3%B3t%20kontrahenta'; {?+KH.SKR>0 & (var_pres('BI_SET')<=0 | BI_SET<>KH.SKR)||BI_SET:=KH.SKR||return()?}
+|? _a='BIQ_MAT_DISM'||_filtr:='Kod%20towaru,'+_ig.url_encode(M.KTM)+'&select=Firma,F'+REF.FIRMA().SYMBOL+'&FOLDER=Kod%20towaru'; {?+M.KTM>0 & (var_pres('BI_SET')<=0 | BI_SET<>M.KTM)||BI_SET:=M.KTM||return()?}
+|? _a='BIQ_MAT_DISU'||_filtr:='Kod%20towaru,'+_ig.url_encode(M.KTM)+'&select=Firma,F'+REF.FIRMA().SYMBOL+'&FOLDER=Kod%20towaru'; {?+M.KTM>0 & (var_pres('BI_SET')<=0 | BI_SET<>M.KTM)||BI_SET:=M.KTM||return()?}
+|? _a='BIQ_MAT_DISG'||_filtr:='RodzajGrSel,'+MGR.RODZ+'&select=Grupa%20towaru%20KOD,'+_ig.url_encode(MGR.KOD)+'&select=Firma,F'+REF.FIRMA().SYMBOL+'&FOLDER=Grupa%20towaru%20KOD'; {?+MGR.KOD>0 & (var_pres('BI_SET')<=0 | BI_SET<>MGR.KOD)||BI_SET:=MGR.KOD||return()?}
+|? _a='BIQ_PRJ_DISP'||_filtr:='Symbol%20projektu,'+_ig.url_encode(PROJEKTY.SYM)+'&select=Firma,F'+REF.FIRMA().SYMBOL+'&FOLDER=Symbol%20projektu'; {?+PROJEKTY.SYM>0 & (var_pres('BI_SET')<=0 | BI_SET<>PROJEKTY.SYM)||BI_SET:=PROJEKTY.SYM||return()?}
+?};
+
+:: Ustawienie w zmiennej globalnej informacji czy user ma licencje Qlik
+{?var_pres('BI_LIC')<=0||
+  BI_LIC:=exec('chkLic','abi')
+?};
+_biUrl:=exec('getParam','analizy_bi',_a,1);
+{?_biUrl*'localhost:4848'>0 ||
+:: dane DEMO
+  ctr_call(_b,_c,'navigate', _biUrl+'&select='+_filtr)
+||
+  _port:=exec('getPortQlik2Img','analizy_bi');
+:: Jeżeli ma licencje lub nie ma skonfigurowanego generatora obrazów, próba otworzenia linka
+  {?BI_LIC | _port=0 ||
+:: URL serwera Qlik. Pobranie ticketu jeżeli potrzeba i wyświetlenie strony
+    exec('czytaj','#stalesys',,XINFO,'ANBI_AM','ANBI_URL','ANBI_QUD','ANBI_CER','ANBI_PSW');
+:: odczytanie informacji czy autentykacja meritowa w czasie wywołania analiz BI
+    _meritAuth:={? +XINFO.ANBI_AM & XINFO.ANBI_AM='T' || 1 || 0 ?};
+    _qlikTicket:='';
+    {? _meritAuth
+      ||_qlikTicket:='&'+exec('get_ticket','analizy_bi',XINFO.ANBI_URL,XINFO.ANBI_QUD,XINFO.ANBI_CER,XINFO.ANBI_PSW,exec('getProxy','analizy_bi',_biUrl))
+    ?};
+    ctr_call(_b,_c,'navigate', _biUrl+'&select='+_filtr+_qlikTicket)
+  ||
+::User nie ma licencji i jest skonfigurowany generator. Generujemy obraz
+    ctr_call(_b,_c,'setHTMLContent', exec('html_wait','analizy_bi'));
+    _biUrl2:=exec('getParam','analizy_bi',_a,2);
+    {?+_biUrl2>0||_biUrl:=_biUrl2?};
+    _http:=inet_get('http://localhost:'+$_port+'/'+_biUrl+'&select='+_filtr);
+    _msg:=no_msg(1);
+    _result:=_http.http_get();
+    {? _result=200
+    || ctr_call(_b,_c,'setHTMLContent', _http.get_data())
+    || exec('runJQlik2Img','analizy_bi');
+       delay(5);
+       _result:=_http.http_get();
+       {? _result=200
+       || ctr_call(_b,_c,'setHTMLContent', _http.get_data())
+       || ctr_call(_b,_c,'setHTMLContent', '<html>BRAK KONTAKTU Z SERWEREM ANALIZ!</html>')
+       ?}
+    ?};
+    no_msg(_msg)
+  ?}
+?};
+~~
+
+\getPortQlik2Img
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Zwraca port usługi Qlik2Img z pliku konfiguracyjnego qlik2img.json
+::   WE:
+::   WY: numer portu usługi Qlik2Img
+::----------------------------------------------------------------------------------------------------------------------
+_port:=0;
+{? fexists('qlik2img.json',1)
+|| _param:=fopen('qlik2img.json', 'r', 1,,1);
+   _tab:=json_parse(_param);
+   {?+_tab[1].PORT>0||
+     _port:=#_tab[1].PORT
+   ?}
+?};
+_port
+
+\getStatusQlik2Img
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Sprawdza status usługi Qlik2Img
+::   WE:
+::   WY: tekst w formacie JSON określający szczegółowy status usługi
+::----------------------------------------------------------------------------------------------------------------------
+_port:=exec('getPortQlik2Img','analizy_bi');
+{?_port>0||
+  _url:='http://localhost:'+$_port+'/status';
+  _http:=inet_get(_url);
+  _http_odp:=_http.http_get();
+  {? _http_odp = 200 ||
+    _wynik:=_http.get_data()
+  ||
+    _wynik:='Błąd połączenie - '+_url
+  ?}
+||
+  _wynik:='Problem z określeniem portu w parametrach'
+?};
+_wynik
+
+\stopQlik2Img
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Zatrzymuje usługę Qlik2Img
+::   WE:
+::   WY: tekst informujący o zatrzymaniu usługi lub problemie
+::----------------------------------------------------------------------------------------------------------------------
+_port:=exec('getPortQlik2Img','analizy_bi');
+{?_port>0||
+:: Kontrola czy serwer działa
+  _http_stat:=inet_get('http://localhost:'+$_port+'/status');
+  _msg:=no_msg(1);
+  _http_stat.set_opt('CONNECTTIMEOUT', 5);
+  _result:=_http_stat.http_get();
+  no_msg(_msg);
+  {? _result = 200 ||
+    _url:='http://localhost:'+$_port+'/stop';
+    _http:=inet_get(_url);
+    _http_odp:=_http.http_get();
+    {? _http_odp = 200 ||
+      _wynik:=_http.get_data()
+    ||
+      _wynik:='Błąd połączenie - '+_url
+    ?}
+  ||
+     _wynik:='Serwer nie odpowiada.'
+  ?}
+||
+  _wynik:='Problem z określeniem portu w parametrach.'
+?};
+_wynik
+
+\restartQlik2Img
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Restartuje usługę Qlik2Img
+::   WE:
+::   WY: tekst informujący o udanym restarcie usługi lub problemie
+::----------------------------------------------------------------------------------------------------------------------
+_port:=exec('getPortQlik2Img','analizy_bi');
+{?_port>0||
+  _url:='http://localhost:'+$_port+'/restart';
+  _http:=inet_get(_url);
+  _http_odp:=_http.http_get();
+  {? _http_odp = 200 ||
+    _wynik:=_http.get_data()
+  ||
+    _wynik:='Błąd połączenie - '+_url
+  ?}
+||
+  _wynik:='Problem z określeniem portu w parametrach'
+?};
+_wynik
+
+\startQlik2Img
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Startuje usługę Qlik2Img
+::   WE:
+::   WY: tekst informujący o udanym restarcie usługi lub problemie
+::----------------------------------------------------------------------------------------------------------------------
+exec('runJQlik2Img','analizy_bi');
+delay(10);
+exec('getStatusQlik2Img','analizy_bi')
+
+\setParentProcessId
+_sep:=exec('sep','#file',1);
+_filePath:=pth_dir('qlik2img.json')+_sep+'parentProcesID';
+_file:=fopen(_filePath, 'w');
+fwrite(_file, 11-username());
+fclose(_file);
+~~
+
+\getParentProcessId
+_sep:=exec('sep','#file',1);
+_filePath:=pth_dir('qlik2img.json')+_sep+'parentProcesID';
+_file:=fopen(_filePath, 'r');
+_wynik:=fread(_file);
+fclose(_file);
+_wynik
+
+\getProxy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: zwraca virtual proxy z adresu
+::   WE: _a [STRING] - adres url arkusza lub elementu "single"
+::   WY: nazwa wirtual proxy
+::----------------------------------------------------------------------------------------------------------------------
+STR.split(_a,'/');
+STR.get_word();
+STR.get_word();
+_wynik:=STR.get_word();
+{?_wynik='single'|_wynik='sense'||_wynik:=''||_wynik:='/'+_wynik?};
+_wynik
+
+\getParam
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Zwraca tekst wpisany w Parametry zadanej czynności
+::   WE: _a [STRING] - uid czynności
+::       _b [INTEGER] - Którą linię parametrów zwracać. Jeżlei 0 lub brak to wszystkie
+::   WY: tekst wpisany w oknie Parametry danej czynności
+::----------------------------------------------------------------------------------------------------------------------
+_urlAddress:='';
+_actUid:={? var_pres('_a')=type_of('') & +_a || _a || _err(); return('') ?};
+{? var_pres('_b')<>type_of(1) || _b:=0 ?};
+B_ACTION.cntx_psh();
+B_ACTION.index('UNIK');
+B_ACTION.prefix(_actUid);
+{? B_ACTION.first()
+||
+::    pobieramy adres URL z pola SYS_MEMO czynności
+   _memo_txt:=B_ACTION.memo_txt(,1,'MEMO');
+   {? +_memo_txt
+   || {?_b>0
+      || _param_tab:=spli_str(_memo_txt,'\n');
+    {? _b<=obj_len(_param_tab)
+    || _urlAddress:=_param_tab[_b]
+    || _urlAddress:=_param_tab[obj_len(_param_tab)]
+    ?}
+      || _urlAddress:=_memo_txt
+      ?}
+   ?}
+?};
+B_ACTION.cntx_pop();
+_urlAddress
+
+\html_wait
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BF [23.25]
+:: OPIS: Zwraca tekst strony z animowanym gifem oznaczjącym oczekiwanie
+::----------------------------------------------------------------------------------------------------------------------
+'<!DOCTYPE html><html><head><style>.classImage {max-width: 100%;max-height: 100%;bottom: 0;left: 0;margin: auto;overflow: auto;position: fixed;right: 0;top: 0;-o-object-fit: contain;object-fit: contain;}</style></head><body><div><img class="classImage" src="data:image/gif;base64,R0lGODlhRAE2AaIFAGZmZpmZmczMzDMzM////7q6ugAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh/wtYTVAgRGF0YVhNUDw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMC1jMDYwIDYxLjEzNDc3NywgMjAxMC8wMi8xMi0xNzozMjowMCAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiIHhtcDpDcmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIENTNSBXaW5kb3dzIiB4bXBNTTpJbnN0YW5jZUlEPSJ4bXAuaWlkOjYxMTk4Rjk3QjBDNjExRTJCOTcyOEYxNjYwRjI4QTVDIiB4bXBNTTpEb2N1bWVudElEPSJ4bXAuZGlkOjYxMTk4Rjk4QjBDNjExRTJCOTcyOEYxNjYwRjI4QTVDIj4gPHhtcE1NOkRlcml2ZWRGcm9tIHN0UmVmOmluc3RhbmNlSUQ9InhtcC5paWQ6NjExOThGOTVCMEM2MTFFMkI5NzI4RjE2NjBGMjhBNUMiIHN0UmVmOmRvY3VtZW50SUQ9InhtcC5kaWQ6NjExOThGOTZCMEM2MTFFMkI5NzI4RjE2NjBGMjhBNUMiLz4gPC9yZGY6RGVzY3JpcHRpb24+IDwvcmRmOlJERj4gPC94OnhtcG1ldGE+IDw/eHBhY2tldCBlbmQ9InIiPz4B//79/Pv6+fj39vX08/Lx8O/u7ezr6uno5+bl5OPi4eDf3t3c29rZ2NfW1dTT0tHQz87N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" alt="Obraz"/></div></body></html>'
+
+:Sign Version 2.0 jowisz:1045 2023/08/17 16:30:23 5e09d43c0034db218e791ed2f64598f2374420b70ede52c4ad9bcbc023458bcc565f812c9f76244df14e693486a8af64d64a5efe9cd2d1e13ab7188e93b16dd87454e4b057370c4f161f40ea9bedbe9d1eef878a2895816d759a5442e806d4d7e70d8ff4352bee710d43513e4eb660b6464c463d01a0544bd32edc1bd02271b2

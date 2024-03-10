@@ -1,0 +1,1045 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: magdok_partie.fml
+:: Utworzony: 23.07.2015
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi tabeli ZPARS - powiązania partii z wydaniami surowców
+::======================================================================================================================
+
+
+\creator_run
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PUBLIC
+::  UTW: WH [12.30]
+:: OPIS: Dla dokumentu magazynowego/zlecenia uruchamia mechanizm przyporzadkowujacy pobrania surowcow (RW)
+::       do partii na zleceniu. Mechanizm wywolywany podczas akceptacji dokumentu klasy RP, podczas zamykania zlecenia
+::   WE: [_a] - ND.ref()
+::       [_b] - ZL.ref()
+::       [_c] - INTEGER - tryb pracy kreatora -  0 - pokazywac okno tylko jezeli automatyczne przypisanie nie uda sie
+::                                              [1] - zawsze pokazywac okno
+::       [_d] - INTEGER - tryb akceptacji - 0 - podczas akceptacji nie sprawdzac nic
+::                                          [1] - podczas akceptacji sprawdzac rozliczenie partii
+::                                          2 - podczas akceptacji sprawdzac rozliczenie partii i rozchodow
+::       [_e] - tab_tmp - tabela z refami dokumentow RW ktore dodac do kreatora, oprocz normalnie ladowanych
+::                        normalnie sa ladowane dokumenty tylko zaakceptowane, a tutaj wchodza np dokumenty
+::                        RW surowcow nielimitowanych automatycznie tworzone podczas akceptacji RP.
+::                        Tabela jest deklarowana funkcja exec('rw_additional','magdok_partie')
+::   WY: 0 - porazka
+::       1 - sukces
+::  OLD: \creator_run/zpars.fml
+::----------------------------------------------------------------------------------------------------------------------
+_nd:=null();
+_mode_view:='';
+_rp:=~~;
+_zw:=~~;
+{? var_pres('_a')=type_of(ND.ref())
+|| _nd:=_a;
+   {? exec('nd_is_rp','magdok_wspolne',_nd)>0
+   || _mode_view:='RP';
+      _rp:=_nd
+   |? exec('nd_is_zw','magdok_wspolne',_nd)>0
+   || _mode_view:='ZW';
+      _zw:=_nd
+   ?}
+?};
+
+_zl:=null();
+{? var_pres('_b')=type_of(ZL.ref())
+|| _zl:=_b;
+   _mode_view:='ZL'
+?};
+
+_mode:=1;
+{? var_pres('_c')=type_of(0)
+|| _mode:=_c
+?};
+
+_chk_mode:=1;
+{? var_pres('_d')=type_of(0)
+|| _chk_mode:=_d
+?};
+
+_rw_additional:=~~;
+{? var_pres('_e')>100
+|| _rw_additional:=_e
+?};
+
+_result:=0;
+
+_cr_env:=exec('cr_env','magdok_partie');
+VAR_DEL.delete('CR_ENV');
+CR_ENV:=_cr_env;
+
+_cr_env.CHK_MODE:=_chk_mode;
+_cr_env.MODE:=_mode_view;
+
+{? _mode_view='ZW'
+|| _cr_env.TIE_MODE:='ZW'
+?};
+
+_cr_env.load(_rp,_zl,_zw);
+
+{? type_of(_rw_additional)>100
+|| _cr_env.rwinject(_rw_additional)
+?};
+
+:: Uruchamiam automat FIFO/LIFO
+_can_continue:=0;
+_auto_mode:=exec('get','#params',500760,2);
+
+{? _auto_mode=exec('mode_fifo','magdok_partie')
+|| _can_continue:=exec('auto_zpars','magdok_partie',_cr_env,'FIFO',0)
+|? _auto_mode=exec('mode_lifo','magdok_partie')
+|| _can_continue:=exec('auto_zpars','magdok_partie',_cr_env,'LIFO',0)
+?};
+:: Jesli nie bylo zadnych rozchodow i zwrotow to wlaczam przycisk silowej akceptacji
+_rw_present:=0;
+_zw_present:=0;
+{? var_pres('TAB_RW',_cr_env)>100
+||
+   {? _cr_env.TAB_RW.size()>0
+   || _rw_present:=1
+   ?}
+?};
+{? var_pres('TAB_ZW',_cr_env)>100
+||
+   {? _cr_env.TAB_ZW.size()>0
+   || _zw_present:=1
+   ?}
+?};
+{? _rw_present=0 & _zw_present=0
+|| _cr_env.FORCE:=1
+?};
+
+_zpars:=0;
+_zpazs:=0;
+{? var_pres('TAB_ZPAR',_cr_env)>100
+|| _zpars:=_cr_env.TAB_ZPAR.size()
+?};
+
+{? var_pres('TAB_ZPAZ',_cr_env)>100
+|| _zpazs:=_cr_env.TAB_ZPAZ.size()
+?};
+
+{? _zpars=0 & _zpazs=0
+|| _cr_env.FORCE:=1
+?};
+
+{? _mode=1
+|| _cr_env.select()
+||
+:: Uruchamiam akceptacje
+:: NUCO - zmian sposobu uruchamiania creatora w zależności od konieczności wyświetlania bądź nie okienka.
+   _can_continue:=exec('accept','magdok_partie',_cr_env, _mode);
+
+:: Jesli sie nie udalo zaakceptowac to pokazuje okno
+   {? _can_continue<=0
+   || _cr_env.select()
+   ?}
+?};
+{? _cr_env.ACCEPTED='T'
+|| _result:=1
+?};
+
+VAR_DEL.delete('CR_ENV');
+_result
+
+
+\accept
+::----------------------------------------------------------------------------------------------------------------------
+:: DOST: PRIVATE
+::  UTW: WH [12.30]
+:: OPIS: Akceptuje kreatora zparsow - sprawdza czy wszystkie partie zostaly prawidlowo powiazane z rozchodami,
+::       niezaakceptowane rekordy z tymczasowej tabeli .TAB_ZPAR staja sie prawdziwymi rekordami w tabeli ZPARS
+::   WE: _a - cr_env - srodowisko kreatora exec('cr_env','magdok_partie')
+::       [_b] - INTEGER - [1] - po udanej akceptacji robic sel_exit
+::                         0 - po udanej akceptacji nie robic sel_exit (bo np. nie ma okna)
+::       [_c] - INTEGER -  1 - akceptowac mimo niezgodnosci
+::                        [0] - jesli sa niezgodnosci to nie akceptowac
+::       [_d] - INTEGER - 0/[1] - inicjowac i wyswietlac KOMM
+::       [_e] - INTEGER - [1]/2 - sposób agregacji komunikatów: 1 - płaski
+::                                                              2 - Błąd -> zlecenie -> komunikat
+::       [_f] - INTEGER - 0/[1] - czy wyświetlać dialogi
+::   WY: 0 - porazka
+::       1 - sukces
+::  OLD: \accept/zpars.fml
+::----------------------------------------------------------------------------------------------------------------------
+_cr_env:=_a;
+
+_sel_exit:=1;
+{? var_pres('_b')=type_of(0)
+|| _sel_exit:=_b
+?};
+_force:=0;
+{? var_pres('_c')=type_of(0)
+|| _force:=_c
+?};
+_komm:=1;
+{? var_pres('_d')=type_of(0)
+|| _komm:=_d
+?};
+_kom_agr:=1;
+{? var_pres('_e')=type_of(0)
+|| _kom_agr:=_e
+?};
+
+_dialog:=1;
+{? var_pres('_f')=type_of(0)
+|| _dialog:=_f
+?};
+
+{? _force>0
+|| _kom_agr:=0
+?};
+
+_result:=0;
+_can_continue:=1;
+
+{? _komm>0
+||
+:: deklaracje obiektow dla komentarzy
+   {? var_pres('KOMM2')<100
+   || exec('JCQ_decl','#message');
+      KOMM2:=obj_new(@.CLASS.JCQ)
+   ?};
+   KOMM2.init(200,,'Kontrola rozliczenia partii'@,'')
+|| {? var_pres('KOMM2')>100
+   || obj_del(KOMM2)
+   ?};
+   KOMM2:=~~
+?};
+
+_chk_part:=1;
+{? _cr_env.CHK_MODE=1 | _cr_env.CHK_MODE=2
+||
+:: 1. Sprawdzam czy partie zostaly poprawnie rozliczone
+   _chk_part:=exec('chk_part','magdok_partie',_cr_env,_kom_agr,KOMM2)
+?};
+:: 2. Sprawdzam czy rozchody zostaly poprawnie przypisane partiom
+_chk_dk:=1;
+{? (_cr_env.CHK_MODE=2 | _cr_env.CHK_MODE=3) & var_pres('TAB_RW',_cr_env)>100
+|| _chk_dk:=exec('chk_rw','magdok_partie',_cr_env,_cr_env.TAB_RW,_cr_env.IN_RW2,_kom_agr,KOMM2)
+?};
+{? _chk_dk>0
+||
+   {? (_cr_env.CHK_MODE=2 | _cr_env.CHK_MODE=3) & var_pres('TAB_ZW',_cr_env)>100
+   || _chk_dk:=exec('chk_rw','magdok_partie',_cr_env,_cr_env.TAB_ZW,_cr_env.IN_ZW2,_kom_agr,KOMM2)
+   ?}
+?};
+
+:: NUCO - zmiana kolejności - jedno okienko mniej ;)
+::{? _komm>0 & var_pres('KOMM2')>0
+::|| KOMM2.select()
+::?};
+
+{? _chk_part<=0 | _chk_dk<=0
+|| _can_continue:=0;
+   {? _dialog>0
+   || _can_continue:=FUN.ask('Podczas rozliczenia partii zostały wykryte problemy. Kontynuować?'@)
+   ?}
+?};
+
+:: NUCO - zmiana kolejności - jedno okienko mniej ;)
+{? _komm>0 & var_pres('KOMM2')>0 & _can_continue=0
+|| KOMM2.select()
+?};
+
+
+ZPARS.cntx_psh();
+
+{? _can_continue>0
+|| {? var_pres('TAB_ZPAR',_cr_env)>100
+   ||
+::    Przeksztalcam niezaakceptowane rekordy tymczasowej tabeli TAB_ZPAR w rekordy ZPARS
+      _can_continue:=exec('tmp_convert','magdok_partie',_cr_env,_cr_env.TAB_ZPAR,_cr_env.IN_ZPAR2)
+   ?};
+   {? var_pres('TAB_ZPAZ',_cr_env)>100
+   ||
+::    Przeksztalcam niezaakceptowane rekordy tymczasowej tabeli TAB_ZPAR w rekordy ZPARS
+      _can_continue:=exec('tmp_convert','magdok_partie',_cr_env,_cr_env.TAB_ZPAZ,_cr_env.IN_ZPAZ2)
+   ?}
+?};
+
+{? _can_continue>0
+|| _result:=1;
+   _cr_env.ACCEPTED:='T';
+   {? _sel_exit>0
+   || sel_exit()
+   ?}
+?};
+ZPARS.cntx_pop();
+_result
+
+
+\par_sel
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MLAK [2009]
+:: OPIS: Selekcja partii dla produktu w podziale na lata
+::----------------------------------------------------------------------------------------------------------------------
+{? M.R='S'
+|| exec('p4m','magdok_partie',SM.M)
+|? M.R='W' | M.R='P'
+|| ZPARS.cntx_psh();
+   ZPARN.cntx_psh();
+   ZLGD.cntx_psh();
+   ZLGD.clear();
+   ZLGD.actions('WER','dPUAMO');
+   DK.cntx_psh();
+   ND.cntx_psh();
+   ZPARS.index('PARTIA');
+   ZPARN.index('PARTIA');
+   BEER.M:=M.ref();
+   VAR_DEL.delete('__PART','__WPART');
+:: NUCO - dodanie dodatkowych pól do analizy
+   __PART:=tab_tmp(1
+      ,'ROK','INTEGER','Rok'@
+      ,'DATA','DATE','Data'@
+      ,'SYM','STRING[25]','Dokument'@
+      ,'KOD_DOS','STRING[30]','Id_dostawy'@
+      ,'POZ','INTEGER','Pozycja'@
+      ,'ILOSC','REAL','Ilość'@
+      ,'PARTIA','STRING[20]','Partia'@
+      ,'ZLECENIE','STRING[20]','Zlecenie'@
+      ,'OPIS','STRING[25]','Opis'@
+      ,'ND','STRING[16]','$ND.ref()'
+      ,'ZPARN','STRING[16]','$ZPARN.ref()'
+      ,'PRDK','STRING[16]','PRDK'
+      ,'DK','STRING[16]','$DK.ref()'
+   );
+   _wer:=__WPART:=__PART.mk_sel('Partie'@,'P',0,'#par_sel_01');
+   __PART.win_fld(_wer,,'DATA');
+   __PART.win_fld(_wer,,'SYM',);
+:: NUCO - dodanie dodatkowych pól do analizy
+   __PART.win_fld(_wer,,'KOD_DOS',);
+   __PART.win_fld(_wer,,'POZ',,,-5);
+   __PART.win_fld(_wer,,'ILOSC',,,15,2);
+   __PART.win_fld(_wer,,'PARTIA',,,23);
+   __PART.win_fld(_wer,,'ZLECENIE',,,24);
+   _wer1:=__PART.grp_make('Partie w podziale na lata'@,,'#pargrsel');
+   OKR.cntx_psh();
+   _ok:=0;
+   {? OKR.last()
+   || {!
+      |? {? OKR.MC=1
+         || ND.use('nagdo'+ST.ODDZ+(form(form(OKR.ROK,,,'99'),-4)+2));
+            DK.use('dokma'+ST.ODDZ+(form(form(OKR.ROK,,,'99'),-4)+2));
+            DK.index('DOKPLUS');
+            DK.prefix(ST.MAG,BEER.M,'T','T');
+            {? DK.first()
+            || {!
+               |? {? exec('dk_is_rp','magdok_wspolne',DK.ref())
+                  || {? $DK.ref=DK.PRDK
+                     || {? DK.DK_C<>null & DK.DK_C().ZPARN<>null()
+                        || _ok:=1;
+                           __PART.ROK:=DK.N().D~1;
+                           __PART.DATA:=DK.N().D;
+                           __PART.SYM:=DK.N().SYM;
+:: NUCO - dodanie dodatkowych pól do analizy
+                           __PART.KOD_DOS:=DK.SCEAN;
+                           __PART.POZ:=DK.P;
+                           __PART.ILOSC:=DK.IL;
+                           __PART.PARTIA:=DK.DK_C().ZPARN().SYM;
+                           __PART.OPIS:=DK.DK_C().ZPARN().OPIS;
+                           __PART.ZLECENIE:=DK.ZL().SYM;
+                           __PART.ND:=$DK.N;
+                           __PART.ZPARN:=$DK.DK_C().ZPARN;
+                           __PART.PRDK:=DK.PRDK;
+                           __PART.DK:=$DK.ref();
+                           __PART.add()
+                        ?}
+                     ?}
+                  ?};
+                  DK.next()
+               !}
+            ?}
+         ?};
+         OKR.prev()
+      !}
+   ?};
+   OKR.cntx_pop();
+   __PART.win_sel(_wer1);
+   {? _ok
+   || exec('par_tree','magdok_partie')
+   || FUN.info('Brak partii produkcyjnych dla produktu.'@)
+   ?};
+   VAR_DEL.delete('__PART','__WPART');
+   DK.cntx_pop();
+   ND.cntx_pop();
+   ZLGD.f_clear();
+   ZLGD.actions('WER','');
+   ZLGD.cntx_pop();
+   ZPARS.cntx_pop();
+   ZPARN.cntx_pop()
+|| FUN.info('Partie produkcyjne mogą być przypisane tylko do wyrobu gotowego, półproduktu lub surowca.'@)
+?};
+~~
+
+
+\p4m
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Partie materialu
+::   WE: _a - M.ref()
+::  OLD: \p4m/partie.fml
+::----------------------------------------------------------------------------------------------------------------------
+_mat:=_a;
+
+:: sprzatanie
+_czysc:="VAR_DEL.delete('__D_p4m')";
+_czysc();
+
+:: srodowisko
+__D_p4m:=obj_new('INF','NAV');
+__D_p4m.INF:=obj_new('TAB','WER');
+__D_p4m.NAV:=obj_new('TAB','WER');
+
+:: informacje o partiach materialu
+:: NUCO - dodanie dodatkowych pól do analizy
+_query:='
+   select distinct
+      ZPARN.SYM   P_SYM,
+      DK_DOK.PRDK PRDK,
+      ND_DOS.SYM  DOS,
+      TYPY_DOS.T DOS_T,
+      DK_DOS.SCEAN DOS_ID,
+      DK_C_DOS.WAR02 DOS_PD,
+      ND_DOK.SYM  DOK,
+      TYPY_DOK.T DOK_T,
+      M.KTM       M_KTM,
+      M.N         M_N,
+      DK_C_DOK.WAR02 DOK_PD,
+      M.REFERENCE M_REF,
+      ZL.SYM      ZL_SYM,
+      DK_DOS.P    DOS_P,
+      DK_DOK.P    DOK_P,
+      DK_DOK.IL   DOK_IL,
+      JM.KOD      JM,
+      TYPY_DOK.WYR TD_WYR
+   from
+      @DK as DK_DOK
+      join ZPARN using(DK_DOK.PARTIA,ZPARN.REFERENCE)
+      join @ND as ND_DOK using(DK_DOK.N,ND_DOK.REFERENCE)
+      join @DK as DK_DOS using(DK_DOK.PRDK,DK_DOS.REFERENCE)
+      join @DK_C as DK_C_DOS using(DK_DOS.DK_C,DK_C_DOS.REFERENCE)
+      join @DK_C as DK_C_DOK using(DK_DOK.DK_C,DK_C_DOK.REFERENCE)
+      join @ND as ND_DOS using(DK_DOS.N,ND_DOS.REFERENCE)
+      join M using(DK_DOK.M,M.REFERENCE)
+      join ZL using(ZPARN.ZL,ZL.REFERENCE)
+      join TYPYDOK TYPY_DOS using(ND_DOS.TYP,TYPY_DOS.REFERENCE)
+      join TYPYDOK TYPY_DOK using(ND_DOK.TYP,TYPY_DOK.REFERENCE)
+      join JM using(M.J,JM.REFERENCE)
+   where
+      TYPY_DOK.WYR=\'T\'
+      and
+      DK_DOK.PARTIA in
+         (
+            select distinct
+               ZPARS.PARTIA
+            from
+               @ZPARS
+            where
+               ZPARS.KTM=:_a
+         )
+union all
+   select distinct
+      ZPARN.SYM   P_SYM,
+      DK_DOK.PRDK PRDK,
+      ND_DOS.SYM  DOS,
+      TYPY_DOS.T DOS_T,
+      DK_DOS.SCEAN DOS_ID,
+      DK_C_DOS.WAR02 DOS_PD,
+      ND_DOK.SYM  DOK,
+      TYPY_DOK.T DOK_T,
+      M.KTM       M_KTM,
+      M.N         M_N,
+      DK_C_DOK.WAR02 DOK_PD,
+      M.REFERENCE M_REF,
+      ZL.SYM      ZL_SYM,
+      DK_DOS.P    DOS_P,
+      DK_DOK.P    DOK_P,
+      DK_DOK.IL   DOK_IL,
+      JM.KOD      JM,
+      TYPY_DOK.WYR TD_WYR
+   from
+      @ZPARS
+      join @DK as DK_DOK using(ZPARS.SQLDOK,DK_DOK.REFERENCE)
+      join ZPARN using(ZPARS.PARTIA,ZPARN.REFERENCE)
+      join @ND as ND_DOK using(DK_DOK.N,ND_DOK.REFERENCE)
+      join @DK as DK_DOS using(ZPARS.PRDK,DK_DOS.REFERENCE)
+      join @DK_C as DK_C_DOS using(DK_DOS.DK_C,DK_C_DOS.REFERENCE)
+      join @DK_C as DK_C_DOK using(DK_DOK.DK_C,DK_C_DOK.REFERENCE)
+      join @ND as ND_DOS using(DK_DOS.N,ND_DOS.REFERENCE)
+      join M using(DK_DOK.M,M.REFERENCE)
+      join ZL using(ZPARN.ZL,ZL.REFERENCE)
+      join TYPYDOK TYPY_DOS using(ND_DOS.TYP,TYPY_DOS.REFERENCE)
+      join TYPYDOK TYPY_DOK using(ND_DOK.TYP,TYPY_DOK.REFERENCE)
+      join JM using(M.J,JM.REFERENCE)
+   where
+      ZPARS.KTM=:_a
+   order by
+      1,3,4,5
+';
+__D_p4m.INF.TAB:=sql(_query,_mat);
+_Inf:=__D_p4m.INF.TAB;
+
+{? ~_Inf.first() || FUN.info('Brak informacji o partiach.'@); return() ?};
+
+:: drzewko nawigacji
+__D_p4m.NAV.TAB:=tab_tmp(2
+   ,'TREE'  ,'TREE_REF'    ,''
+   ,'O'     ,'STRING[50]'  ,'Wszystkie\Partia\Indeks'
+   ,'S'     ,'STRING[100]' ,'Zlecenie\Nazwa indeksu'
+   ,'WHERE' ,'STRING[100]' ,'Where'
+   ,'TYP'   ,'STRING[1]'   ,'Typ zapisu [L]iść');
+
+_Nav:=__D_p4m.NAV.TAB;
+
+_Nav.blank();
+_Nav.O:='Wszystkie';
+_all:={? _Nav.add() || _Nav.ref() ?};
+
+_loop:=_Inf.first();
+{!
+|? _loop
+|!
+   {? _Inf.M_REF=$_mat
+   || _dost:=
+         {? _Nav.find_key(_all,_Inf.DOS)
+         || _where:=_Nav.WHERE;
+            _Nav.ref()
+         || _Nav.blank();
+            _Nav.TREE:=_all;
+            _Nav.O:=_Inf.DOS;
+            _Nav.WHERE:=_where:='DOS=\''+_Inf.DOS+'\'';
+            {? _Nav.add() || _Nav.ref() ?}
+         ?};
+      _partia:=
+         {? _Nav.find_key(_dost,_Inf.P_SYM)
+         || _where:=_Nav.WHERE;
+            _Nav.ref()
+         || _Nav.blank();
+            _Nav.TREE:=_dost;
+            _Nav.O:=_Inf.P_SYM;
+            _Nav.S:=_Inf.ZL_SYM;
+            _Nav.TYP:='L';
+            _Nav.WHERE:=_where:='P_SYM=\''+_Inf.P_SYM+'\'';
+            {? _Nav.add() || _Nav.ref() ?}
+         ?}
+   ?};
+   _loop:=_Inf.next()
+!};
+_Nav.first();
+
+:: okno partii materialu
+__D_p4m.INF.WER:=_wer1:=_Inf.mk_sel('Power partie'@,'P',,'adfejfinapwoejv',,,,,'U');
+_Inf.win_fld(_wer1,,'P_SYM',,,25,,,'Partia'@);
+:: NUCO - dodanie dodatkowych pól do analizy
+_Inf.win_fld(_wer1,,'ZL_SYM',,,25,,,'Zlecenie'@);
+_Inf.win_fld(_wer1,,'DOS',,,20,,,'Dostawa pierwotna'@);
+_Inf.win_fld(_wer1,,'DOS_P',,,4,,,'Poz.'@);
+_Inf.win_fld(_wer1,,'DOK',,,20,,,'Dokument'@);
+_Inf.win_fld(_wer1,,'DOK_P',,,4,,,'Poz.'@);
+_Inf.win_fld(_wer1,,'M_KTM',,,20,,,'Indeks'@);
+:: NUCO - dodanie dodatkowych pól do analizy
+_Inf.win_fld(_wer1,,'M_N',,,20,,,'Nazwa indeksu'@);
+_Inf.win_fld(_wer1,,'DOK_IL',,,10,ST.DOKL,,'Ilość'@);
+_Inf.win_fld(_wer1,,'JM',,,3,,,'jm'@);
+_fb:="exec('p4mHisDost','magdok_partie',cur_tab(1,1).PRDK)";
+_Inf.win_act(_wer1,,'Formuła','Historia dostawy'@@,,,_fb,,1);
+_Inf.win_act(_wer1,,'Szukaj');
+
+:: okno drzewka nawigacji
+__D_p4m.NAV.WER:=_wer2:=_Nav.mk_sel('Nawigacja'@,'P',,'avjkwejopjcvbdf',,,,1);
+_Nav.win_fld(_wer2,,'O',,,35,,,'Wszystkie'@+'\\'+'Dostawa'@+'\\'+'Partia'@);
+_Nav.win_fld(_wer2,,'S',,,35,,,'--\\--\\'+'Zlecenie'@);
+_fa:="exec('zwrw_all','#tree',__D_p4m.NAV.TAB,'TREE',__D_p4m.NAV.WER)";
+_Nav.win_act(_wer2,,'Formuła','Zwiń/rozwiń'@@,,,,_fa);
+_Nav.win_act(_wer2,,'Szukaj');
+_ff:="
+   _Nav:=__D_p4m.NAV.TAB;
+   {? _Nav.TYP='L'
+   || 'xwin16.png:28'
+   || {? _Nav.tr_state()=1
+      || 'xwin16.png:75'
+      || 'xwin16.png:74'
+      ?}
+   ?}
+";
+_Nav.win_fml(_wer2,,'O',,'ICON_BEFORE',_ff);
+
+:: okno grupowe
+_fb:="
+   _Inf:=__D_p4m.INF.TAB;
+   _Nav:=__D_p4m.NAV.TAB;
+   grp_disp(_Nav,__D_p4m.NAV.WER);
+   _Inf.prefix();
+   _Inf.f_clear();
+   _Inf.f_set(,,_Nav.WHERE)
+   ";
+_wergr:=_Inf.grp_make('Indeks: %1'@[exec('FindAndGet','#table',M,_mat,,"M.KTM",'')],_fb,'#fjaadkwoeunvsj');
+_Inf.grp_sel(_wergr,,_wer1,,,,,,,,,,'maximized');
+_Inf.grp_splt(_wergr,,'vertical','nawig');
+_far:="
+   _Inf:=__D_p4m.INF.TAB;
+   _Nav:=__D_p4m.NAV.TAB;
+   _Inf.prefix();
+   _Inf.f_clear();
+   _Inf.f_set(,,_Nav.WHERE);
+   grp_disp(__D_p4m.INF.TAB,__D_p4m.INF.WER)
+";
+_Inf.grp_sel(_wergr,_Nav,_wer2,,_far,,,,,,,,'maximized');
+
+:: select
+_Inf.win_sel(_wergr);
+_Inf.select;
+
+:: sprzatanie
+_czysc()
+
+
+\par_tree
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [2011]
+:: OPIS: Utworzenie i wyświetlenie okna - drzewa
+::   WE: [_a] - czy wypełniać tabelę danymi
+::  OLD: \par_tree/partie.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _<1 || _a:=0 ?};
+
+VAR_DEL.delete('__PARTREE');
+
+:: NUCO - dodanie dodatkowych pól do analizy
+__PARTREE:=tab_tmp(3
+   ,'PARENT','TREE_REF','Wskazanie na element nadrzędny'
+   ,'LABEL1','STRING[50]','Partia/Kod materiału/Nazwisko'
+   ,'LABEL2','STRING[100]','Zlecenie/Nazwa materiału/Imię'
+   ,'DOK','STRING[100]','Dokument/Operacja'
+   ,'KOD_DOS','STRING[30]','Kod identyfikujacy dostawę'
+   ,'POZ','STRING[1]','Pozycja/Zmiana'
+   ,'DATA','DATE','Data'
+   ,'ILOSC','REAL','Ilość'
+   ,'PAR_REF','STRING[16]','$__PART.ref() / $ZPARS.ref() / $ZLGD_ref()'
+   ,'ZNACZNIK','STRING[1]',''
+   ,'PRDK','STRING[16]',''
+   ,'MAIN','STRING[1]','Czy główna operacja'
+   ,'DKREF','STRING[16]','ref DK'
+);
+:__PARTREE.fld_attr(,2);
+
+{? ~_a || exec('tr_refresh','magdok_partie') ?};
+
+_wer:=__PARTREE.mk_sel('Partie produktu: %1'@[M.KTM],'P',0,'#obcstat',,,,1);
+__PARTREE.win_fld(_wer,,'LABEL1',,,10,,,'Partia/Kod materiału/Pracownik'@,,'Dane partii / Kod materiału / Nazwisko pracownika'@);
+__PARTREE.win_fld(_wer,,'LABEL2',,,20,,,'Zlecenie/Nazwa materiału/Imię'@,,'Symbol zlecenia / Nazwa materiału / Imię pracownika'@);
+__PARTREE.win_fld(_wer,,'DOK',,,15,,,'Dokument/Operacja'@,,'Symbol dokumentu/Operacja do której zarejestrowano akord'@);
+:: NUCO - dodanie dodatkowych pól do analizy
+__PARTREE.win_fld(_wer,,'KOD_DOS',,,15,,,'Kod identyfikujacy dostawę'@,,'Id dostawy'@);
+__PARTREE.win_fld(_wer,,'POZ',,,-5,,,'Pozycja/Zmiana'@,,'Pozycja'@);
+__PARTREE.win_fld(_wer,,'DATA',,,15,4,,'Data'@,,'Data'@);
+__PARTREE.win_fld(_wer,,'ILOSC',,,15,4,,'Ilość'@,,'Ilość'@);
+
+__PARTREE.win_act(_wer,,'Kolejność');
+
+_fb:="
+   {? __PARTREE.PRDK<>''
+   || M.cntx_psh();
+      SM.cntx_psh();
+      ND.cntx_psh();
+      DK.cntx_psh();
+      _akt:=ND.name()+3;
+      _msk:=form(8+__PARTREE.PRDK)+3;
+      exec('mag_open','open_tab',1+_msk,_msk+2);
+      DK.clear();
+      {? DK.seek(__PARTREE.PRDK)
+      || exec('his_dost','magdok_wspolne',,,__PARTREE.DKREF)
+      ?};
+      exec('mag_open','open_tab',1+_akt,_akt+2);
+      M.cntx_pop();
+      SM.cntx_pop();
+      ND.cntx_pop();
+      DK.cntx_pop()
+   ?};
+   ~~
+";
+__PARTREE.win_act(_wer,0,'Formuła','Historia dostawy'@@,,,_fb);
+__PARTREE.win_act(_wer,,'Formuła','Zwiń/rozwiń'@@,,'Zwiń/rozwiń wszystkie rekordy'@,
+   "exec('zwrw_all','#tree','__PARTREE','PARENT')"
+);
+__PARTREE.win_act(_wer,,'Formuła','Legenda'@@,,,
+   "exec('legenda','color','#__PARTREE#01','$'+'Dane zarejestrowane do innej partii przed podziałem'@)"
+);
+_formula:="
+   _tab:=cur_tab(1,1);
+   {? _tab.PAR_REF<>'' & ref_tab(_tab.PAR_REF)=ZLGD
+   || exec('FindAndGet','#table',ZLGD,_tab.PAR_REF,,\"exec('zlgd_display','zl_wyk')\")
+   ?};
+   ~~
+";
+__PARTREE.win_act(_wer,,'Wyświetl',,,,_formula);
+_formula:="
+   {? _a
+   || {? __PARTREE.ZNACZNIK='W' | __PARTREE.ZNACZNIK='S'
+      || __PARTREE.actions_grayed(cur_win(1,1),'')
+      || __PARTREE.actions_grayed(cur_win(1,1),'H')
+      ?}
+   ?};
+   _result:='';
+   {? __PARTREE.MAIN='N'
+   || _result:=exec('findtmp','#color')
+   ?};
+   _result
+";
+__PARTREE.win_act(_wer,,'Rekord',,,,_formula);
+
+_formula:="
+   {? __PARTREE.ZNACZNIK='W'
+   || 'xwin16.png:28'
+   |? __PARTREE.ZNACZNIK='S'
+   || 'xwin16.png:27'
+   |? __PARTREE.ZNACZNIK='P'
+   || 'xwin16.png:31'
+   || {? __PARTREE.tr_state()=1
+      || 'xwin16.png:75'
+      || 'xwin16.png:74'
+      ?}
+   ?}
+";
+__PARTREE.win_fml(_wer,,'LABEL1',,'ICON_BEFORE',_formula);
+
+__PARTREE.win_sel(_wer);
+
+{? ~_a
+|| __PARTREE.select();
+   VAR_DEL.delete('__PARTREE')
+?};
+~~
+
+
+\tr_refresh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GZ [2011]
+:: OPIS: Wyczyszczenie i wypełnienie danymi tabeli __PARTREE
+::  OLD: \tr_refresh/partie.fml
+::----------------------------------------------------------------------------------------------------------------------
+_args:=obj_new('parent','main','czy_zlgd');
+_args.parent:=0;
+_args.main:=null();
+_args.czy_zlgd:=1;
+
+M.cntx_psh();
+__PARTREE.clear();
+{? __PARTREE.first() || {! |? __PARTREE.del() !} ?};
+:: Wpisujemy partie do drzewa
+{? __PART.first()
+|| {!
+   |?
+::    Dane samej partii
+      __PARTREE.LABEL1:=__PART.PARTIA;
+      __PARTREE.LABEL2:=__PART.ZLECENIE;
+      __PARTREE.DOK:=__PART.SYM;
+:: NUCO - dodanie dodatkowych pól do analizy
+      __PARTREE.KOD_DOS:=__PART.KOD_DOS;
+      __PARTREE.POZ:=$__PART.POZ;
+      __PARTREE.DATA:=__PART.DATA;
+      __PARTREE.ILOSC:=__PART.ILOSC;
+      __PARTREE.PAR_REF:=$__PART.ref;
+      __PARTREE.ZNACZNIK:='W';
+      __PARTREE.PARENT:=0;
+      __PARTREE.PRDK:=__PART.PRDK;
+      __PARTREE.MAIN:='T';
+      __PARTREE.DKREF:=__PART.DK;
+      __PARTREE.add();
+
+      _par2:=#__PARTREE.ref();
+
+      __PARTREE.PARENT:=_par2;
+      __PARTREE.LABEL1:='SKŁADOWE PARTII'@;
+      __PARTREE.LABEL2:='';
+      __PARTREE.DOK:='';
+:: NUCO - dodanie dodatkowych pól do analizy
+      __PARTREE.KOD_DOS:='';
+      __PARTREE.POZ:='';
+      __PARTREE.DATA:=date(0,0,0);
+      __PARTREE.ILOSC:=0;
+      __PARTREE.PAR_REF:='';
+      __PARTREE.ZNACZNIK:='Z';
+      __PARTREE.PRDK:='';
+      __PARTREE.MAIN:='T';
+      __PARTREE.DKREF:='';
+      __PARTREE.add();
+      _parent:=#__PARTREE.ref();
+
+::    Tabela z listą refów partii, które zostały już rozpisane w danej gałęzi (blokada przed rekurencją)
+      {? var_pres('_reftab')>100 || obj_del(_reftab) ?};
+      _reftab:=tab_tmp(,'REF','STRING[16]','$ZPARN.ref())');
+
+::    Teraz dane surowców
+      ZPARN.cntx_psh();
+      ZPARN.index('PARTIA');
+      ZPARN.prefix(__PART.PARTIA);
+      {? ZPARN.first()
+      || _reftab.REF:=$ZPARN.ref();
+         _reftab.add();
+         exec('openmask','zl_common',ZPARN.ZL);
+         OKR.cntx_psh();
+         OKR.index('MC');
+         OKR.prefix(REF.FIRMA,1);
+         {? OKR.first()
+         || {!
+            |? ZPARS.use('zpars'+ST.ODDZ+form(OKR.ROK-2000,-2,0,'99'));
+               ZPARS.index('PARTIA');
+               ZPARS.prefix(ZPARN.ref());
+               {? ZPARS.first()
+               || {!
+                  |? __PARTREE.PARENT:=_parent;
+                     __PARTREE.LABEL1:=ZPARS.KTM().KTM;
+                     __PARTREE.LABEL2:=ZPARS.KTM().N;
+                     __PARTREE.ILOSC:=ZPARS.IL;
+                     __PARTREE.PAR_REF:=$ZPARS.ref();
+                     __PARTREE.ZNACZNIK:='S';
+                     {? ZPARS.SQLDOK<>''
+                     || ND.cntx_psh();
+                        DK.cntx_psh();
+                        ND.use('nagdo'+(form(8+ZPARS.SQLDOK)+3));
+                        DK.use(form(8+ZPARS.SQLDOK));
+                        DK.clear();
+                        {? DK.seek(ZPARS.SQLDOK)
+                        || __PARTREE.DOK:=DK.N().SYM;
+:: NUCO - dodanie dodatkowych pól do analizy
+                           __PARTREE.KOD_DOS:=DK.SCEAN;
+                           __PARTREE.POZ:=$DK.P;
+                           __PARTREE.PRDK:=DK.PRDK;
+                           __PARTREE.DATA:=DK.N().D;
+                           __PARTREE.DKREF:=$DK.ref()
+                        ?};
+                        ND.cntx_pop();
+                        DK.cntx_pop()
+                     ?};
+                     __PARTREE.MAIN:='T';
+                     __PARTREE.add();
+                     exec('drill_part','magdok_partie',#__PARTREE.ref(),_reftab);
+                     ZPARS.next()
+                  !}
+               ?};
+               OKR.next()
+            !}
+         ?};
+         OKR.cntx_pop()
+      ?};
+
+      __PARTREE.PARENT:=_par2;
+      __PARTREE.LABEL1:='ZAREJESTROWANE WYKONANIA'@;
+      __PARTREE.LABEL2:='';
+      __PARTREE.DOK:='';
+:: NUCO - dodanie dodatkowych pól do analizy
+      __PARTREE.KOD_DOS:='';
+      __PARTREE.POZ:='';
+      __PARTREE.DATA:=date(0,0,0);
+      __PARTREE.ILOSC:=0;
+      __PARTREE.PAR_REF:='';
+      __PARTREE.ZNACZNIK:='Z';
+      __PARTREE.MAIN:='T';
+      __PARTREE.add();
+      _parent:=#__PARTREE.ref();
+
+::    Teraz dane robocizny
+      _formula:="
+         _args:=_b;
+         {? _args.czy_zlgd=0
+         || @.ZLGD.cntx_psh();
+            _mask:=(5+@.ZLGD.name())+(ZL_WYRGD.name()+3);
+            {? @.ZLGD.name()<>_mask
+            || @.ZLGD.use(_mask);
+               @.ZLGD.prefix()
+            ?};
+            ZL_WYRGD.ZLGD()
+         ?};
+         {? ~(__PARTREE.find_tab(,'PAR_REF',,'=',$@.ZLGD.ref(),'PARENT',,'=',_args.parent))
+         || __PARTREE.blank();
+            __PARTREE.PARENT:=_args.parent;
+            {? @.ZLGD.KOOP='T'
+            || __PARTREE.LABEL1:='Kooperacja'@;
+               {? @.ZLGD.ZGP().KONTRAH<>null()
+               || __PARTREE.LABEL2:='Kontrahent: %1'@[@.ZLGD.ZGP().KONTRAH().KOD]
+               || __PARTREE.LABEL2:='<'+'brak kontrahenta na poz. przewodnika'@+'>'
+               ?}
+            |? @.ZLGD.ZGP().NTIME=0
+            || {? @.ZLGD.ZGP().GRUPA<>null()
+               || __PARTREE.LABEL1:='Gniazdo'@;
+                  __PARTREE.LABEL2:=@.ZLGD.ZGP().GRUPA().SYMBOL
+               || __PARTREE.LABEL1:='Stanowisko'@;
+                  __PARTREE.LABEL2:=@.ZLGD.ZGP().PLACE().KOD
+               ?}
+            |? @.ZLGD.BP='P'
+            || __PARTREE.LABEL2:=@.ZLGD.P().OSOBA().PIERWSZE;
+               __PARTREE.LABEL1:=@.ZLGD.P().OSOBA().NAZWISKO
+            |? @.ZLGD.BP='B'
+            || __PARTREE.LABEL1:=@.ZLGD.B().KOD;
+               __PARTREE.LABEL2:=@.ZLGD.B().NAZ
+            ?};
+            __PARTREE.DOK:='Operacja: %1 %2'@[$@.ZLGD.ZGP().NRP,@.ZLGD.ZGP().OPIS];
+            __PARTREE.POZ:=@.ZLGD.ZMIANA;
+            __PARTREE.DATA:=@.ZLGD.DT;
+:: NUCO - dodanie dodatkowych pól do analizy
+            __PARTREE.KOD_DOS:='';
+            {? _args.czy_zlgd>0
+            || __PARTREE.ILOSC:=ZLGD.IL
+            || __PARTREE.ILOSC:=ZL_WYRGD.IL
+            ?};
+            __PARTREE.PAR_REF:=$@.ZLGD.ref();
+            __PARTREE.ZNACZNIK:='P';
+            __PARTREE.MAIN:={? @.ZLGD.ref()=_args.main || 'T' || 'N' ?};
+            __PARTREE.add()
+         ?};
+         {? _args.czy_zlgd=0
+         || @.ZLGD.cntx_pop()
+         ?}
+      ";
+
+      ZLGD.cntx_psh();
+      ZL_WYRGD.cntx_psh();
+      ZGP.cntx_psh();
+      TWRKPLC.cntx_psh();
+      TWRKZBR.cntx_psh();
+      ZPARN.index('PARTIA');
+      ZPARN.prefix(__PART.PARTIA);
+      {? ZPARN.first()
+      || OKR.cntx_psh();
+         OKR.index('MC');
+         OKR.prefix(REF.FIRMA,1);
+
+         {? OKR.first()
+         || {!
+            |? _mask:=5+ZLGD.name();
+               _mask+=ST.ODDZ+form(OKR.ROK-2000,-2,0,'99');
+               ZLGD.use(_mask);
+               ZLGD.index('ZPARN');
+               ZLGD.prefix(ZPARN.ref());
+               {? ZLGD.first()
+               || {!
+                  |? _zlgd:=exec('ref_table','#table');
+                     _zlgd.add(ZLGD.ref());
+                     exec('add_prev_zlgd_2reftable','magdok_partie',ZLGD.ZGP,$ZLGD.ZPARN,_zlgd);
+                     {? _zlgd.tab.first()
+                     || {!
+                        |? _args.parent:=_parent;
+                           _args.main:=ZLGD.ref();
+                           _args.czy_zlgd:=1;
+                           exec('FindAndGet','#table',ZLGD,_zlgd.tab.SQL,,_formula,,_args);
+                           _zlgd.tab.next()
+                        !}
+                     ?};
+                     obj_del(_zlgd);
+                     ZLGD.next()
+                  !}
+               ?};
+::             Sprawdzenie robocizny w rozbiciu na wyroby
+               _mask:=5+ZL_WYRGD.name();
+               _mask+=ST.ODDZ+form(OKR.ROK-2000,-2,0,'99');
+               ZL_WYRGD.use(_mask);
+               ZL_WYRGD.index('ZPARN');
+               ZL_WYRGD.prefix(ZPARN.ref());
+               {? ZL_WYRGD.first()
+               || {!
+                  |? _zlgd:=exec('ref_table','#table');
+                     _zlgd.add(ZL_WYRGD.ref());
+                     _zgp:=exec('FindAndGet','#table',ZLGD,ZL_WYRGD.ZLGD,,"ZLGD.ZGP",null());
+                     exec('add_prev_zlgd_2reftable','magdok_partie',_zgp,$ZL_WYRGD.ZPARN,_zlgd,0);
+                     {? _zlgd.tab.first()
+                     || {!
+                        |? _args.parent:=_parent;
+                           _args.main:=ZL_WYRGD.ZLGD;
+                           _args.czy_zlgd:=0;
+                           exec('FindAndGet','#table',ZL_WYRGD,_zlgd.tab.SQL,,_formula,,_args);
+                           _zlgd.tab.next()
+                        !}
+                     ?};
+                     obj_del(_zlgd);
+                     ZL_WYRGD.next()
+                  !}
+               ?};
+               OKR.next()
+            !}
+         ?};
+
+::       Jeśli brak zapisów, oznacza to, że brak robocizny zarejestrowanej bezpośrednio do tej partii
+::       i trzeba ją pozbierać z partii, z której pochodzi analizowana
+         __PARTREE.prefix(_parent);
+         {? __PARTREE.size()=0
+         || ZPARN.index('IDADD');
+            ZPARN.prefix(ZPARN.IDSRC);
+            {? ZPARN.first()
+            ||
+               {? OKR.first()
+               || {!
+                  |? _mask:=5+ZLGD.name();
+                     _mask+=ST.ODDZ+form(OKR.ROK-2000,-2,0,'99');
+                     ZLGD.use(_mask);
+                     ZLGD.index('ZPARN');
+                     ZLGD.prefix(ZPARN.ref());
+                     {? ZLGD.first()
+                     || {!
+                        |? _zlgd:=exec('ref_table','#table');
+                           _zlgd.add(ZLGD.ref());
+                           exec('add_prev_zlgd_2reftable','magdok_partie',ZLGD.ZGP,$ZLGD.ZPARN,_zlgd);
+                           {? _zlgd.tab.first()
+                           || {!
+                              |? _args.parent:=_parent;
+                                 _args.main:=null();
+                                 _args.czy_zlgd:=1;
+                                 exec('FindAndGet','#table',ZLGD,_zlgd.tab.SQL,,_formula,,_args);
+                                 _zlgd.tab.next()
+                              !}
+                           ?};
+                           obj_del(_zlgd);
+                           ZLGD.next()
+                        !}
+                     ?};
+::                   Sprawdzenie robocizny w rozbiciu na wyroby
+                     _mask:=5+ZL_WYRGD.name();
+                     _mask+=ST.ODDZ+form(OKR.ROK-2000,-2,0,'99');
+                     ZL_WYRGD.use(_mask);
+                     ZL_WYRGD.index('ZPARN');
+                     ZL_WYRGD.prefix(ZPARN.ref());
+                     {? ZL_WYRGD.first()
+                     || {!
+                        |? _zlgd:=exec('ref_table','#table');
+                           _zlgd.add(ZL_WYRGD.ref());
+                           exec('add_prev_zlgd_2reftable','magdok_partie',ZLGD.ZGP,$ZL_WYRGD.ZPARN,_zlgd,0);
+                           {? _zlgd.tab.first()
+                           || {!
+                              |? _args.parent:=_parent;
+                                 _args.main:=null();
+                                 _args.czy_zlgd:=0;
+                                 exec('FindAndGet','#table',ZL_WYRGD,_zlgd.tab.SQL,,_formula,,_args);
+                                 _zlgd.tab.next()
+                              !}
+                           ?};
+                           obj_del(_zlgd);
+                           ZL_WYRGD.next()
+                        !}
+                     ?};
+                     OKR.next()
+                  !}
+               ?}
+            ?}
+         ?};
+         __PARTREE.prefix();
+
+         OKR.cntx_pop()
+      ?};
+      TWRKPLC.cntx_pop();
+      TWRKZBR.cntx_pop();
+      ZGP.cntx_pop();
+      ZLGD.cntx_pop();
+      ZL_WYRGD.cntx_pop();
+      ZPARN.cntx_pop();
+      __PART.next()
+   !}
+?};
+M.cntx_pop();
+~~
+
+

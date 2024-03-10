@@ -1,0 +1,705 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ppl_pll_pkpr.fml
+:: Utworzony: 03.02.2016
+:: Autor: jaws
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PPL_PLL_PKPR - Karty pracownika
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Karty pracownika - główna formuła czynności.
+::  OLD: \kartaza/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+::# access=exec('run_cond_p','pkd')
+::# parses=exec('parses_o','ppl',params_get().in.O)
+::# properties=GRP_FIRM
+::
+::# kind=WE, symbol=P, type=_P, name=Wskazanie pracownika, required=T, keyref=T
+::# kind=WE, symbol=O, type=_O, name=Wskazanie listy płac, required=N, keyref=N
+::
+_par:=params_get();
+params_set(_par);
+
+_in:=_par.in;
+_ib:=_par.int;
+_rv:=_par.out;
+_mp:=_par.mp;
+
+_id:=exec('ref2uid','#table',_in.P);
+_do:=_mp.akcja();
+_result:='';
+
+{? _id=''
+|| _result:=exec('error','!ppl_pll_pkpr')
+
+|? _mp.isMicro()
+|| {? _do='START'
+   || _mp.keyRef(_id);
+      _mp.keep()
+   |? _do='STOP'
+   || _mp.delRef(_id);
+      _mp.cancel()
+   |? _do<>''
+   || _result:='Czynność %1 nie obsługuje akcji %2.'@[_mp.buf_act.UID,_do]
+   ?}
+
+|| _mp.save(_ib,_rv);
+   {? _do='ZAKOŃCZ'
+   || _mp.done()
+   |? _mp.pathTodo()
+   || _value:=exec('select','!ppl_pll_pkpr',_in.P,_in.O);
+      {? type_of(_value)=type_of(0)
+      || {? _value<>0
+         || _mp.done()
+         || _mp.keep()
+         ?}
+      || _result:=_value
+      ?}
+   ?}
+?};
+
+{? _result<>''
+:  obsługa błędów
+|| _mp.error(_result);
+   FUN.emsg(_result)
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Karty pracownika - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=exec('desc','pracownik',params_get().mp);
+{? _tab.ZAW_DANE='T'
+|| {? _tab.OBCY='T'
+   || 'Karty pracownika: %1 %2: Paszport - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PASZPORT,_tab.T,_tab.IP]
+   |? +_tab.PESEL
+   || 'Karty pracownika: %1 %2: PESEL - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.PESEL,_tab.T,_tab.IP]
+   || 'Karty pracownika: %1 %2: Data urodzenia - %3, Numer teczki - %4, Identyfikator - %5'@@
+         [_tab.NAZWISKO,_tab.PIERWSZE,_tab.UR_DATA,_tab.T,_tab.IP]
+   ?}
+|| 'Karty pracownika'@@
+?}
+
+
+\select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Obsługa czynności wykonywanej z listy zadań.
+::   WE: _a - wskazanie pracownika
+::       _b - wskazanie listy
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_err_msg:=exec('error','!ppl_pll_pkpr');
+
+{? var_pres('_a')<>type_of(null) | _a=null
+|| return(_err_msg)
+?};
+
+P.cntx_psh();
+P.prefix();
+{? ~P.seek(_a)
+|| P.cntx_pop();
+   return(_err_msg)
+?};
+
+{? type_of(_b)<>type_of(null) | _b=null
+|| O.cntx_psh();
+   O.index('LISTYPLA');
+   O.prefix(exec('ref_firma','ustawienia'),P.F_ZATR().KOD);
+   {? O.find_key(date()~1,date()~2) | O.last()
+   || SEEK.O:=O.ref()
+   || P.cntx_pop();
+      O.cntx_pop();
+      return(_err_msg)
+   ?};
+   O.cntx_pop()
+|| SEEK.O:=_b
+?};
+
+SEEK.O();
+exec('wybierz','lista_plac',SEEK.O);
+
+: ustal osobę
+OSOBA.cntx_psh();
+P.OSOBA();
+
+: pokaż karty
+KZ.cntx_psh();
+KZ.index('_KARTAZA');
+KZ.prefix(P.ref(),O.R);
+KP.cntx_psh();
+KP.index('_KARTAPO');
+KP.prefix(P.ref(),O.RP);
+KU.cntx_psh();
+KU.index('KARTAUB');
+KU.prefix(P.FIRMA,P.OSOBA,O.RU);
+
+KZ.win_sel('WER_P');
+_result:=KZ.select();
+
+KU.cntx_pop();
+KP.cntx_pop();
+KZ.cntx_pop();
+
+: porządki
+P.cntx_pop();
+OSOBA.cntx_pop();
+
+_result
+
+
+\done
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Obsługa akcji "Zakończ". Formuła wykonywana w dwóch środowiskach:
+::       - po wywołaniu z listy zadań (okno wertowania tabeli KZ z doklejonym oknem redagowania tabeli P);
+::       - w ramach obszaru roboczego (okno wertowania tabel KZ, KP, KU jako składowa okna grupowego tabeli UD_DEF).
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_TAB:=cur_tab(0,0);
+{? _TAB=KZ | _TAB=KP | _TAB=KU
+|| sel_exit()
+
+|| params_set(params_get());
+   exec('pkd_run','pkd','ZAKOŃCZ')
+?}
+
+
+\error
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Zwraca treść komunikatu błędu
+::   WE:
+::   WY: treść komunikatu
+::----------------------------------------------------------------------------------------------------------------------
+'Przeglądanie kart pracownika niemożliwe.\nNie znaleziono pracownika.'
+
+
+\ustaw_tytul
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Ustawia tytuł okienka podglądu składników karty zgodnie z rokiem i miesiącem wyświetlanego zapisu.
+::   WE: _a [TABLE] - alias tabeli karty: KZ/KP/KU
+::   WY:
+::  OLD: \tyt_kzup/kartprac.fml
+::----------------------------------------------------------------------------------------------------------------------
+_a.hdr_edit();
+_a.hdr_edit(' za '+date(_a.R,_a.M,0)$8+' - '+OSOBA.NAZWISKO+' '+OSOBA.PIERWSZE)
+
+
+\edit_var_kzup_typ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: KGS [2010]
+:: OPIS: Wartość początkowa pola TYP tabeli KZUP_UST
+::  OLD: \KZUP_TYP/war_tech.fml
+::----------------------------------------------------------------------------------------------------------------------
+EDIT_VAR.KZUP_TYP
+
+
+\kzup_ust_sx_bd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Wyswietla informacje dla pola S?
+::   WE: _a - liczbowe dopelnienie akronimu pola, po zamianie na napis pozwala na odwolanie sie do
+::       pol S1..S7 tabeli KZUP_UST i KZUP_S1..KZUP_S7 zmiennej EDIT_VAR
+::  OLD: \ust_info/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+_nazw:=!exec('kzup_var','!ppl_pll_pkpr')+'.S';
+_ustaw:=$('EDIT_VAR.KZUP_S'+$_a+':=_a');
+{? _nazw<>''
+|| _wart:=($('KZUP_UST.S'+$_a))();
+   _info:={? _wart || ($(_nazw+$_wart))() || '' ?};
+   _ustaw(_info)
+|| _ustaw('')
+?}
+
+
+\kzup_ust_sx_f3
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Obsługa klawisza F3 dla pól przechowujacych numer pozycji karty płacowej. Wyświetla listę dostepnych do wyboru
+::       numerow.
+::  OLD: \ust_sf3/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+_rs:=sql(
+   'select :_a.RS, R.RT '+
+   'from :_a join R using(:_a.RN,R.RN)'+
+   'order by :_a.RS',
+   sql(
+      'select :_a RS, min(RN) RN '+
+      'from R where :_a<>0 '+
+      'group by :_a',
+      exec('kzup_info','kart_pla',EDIT_VAR.KZUP_TYP).R_FLD
+));
+{? type_of(_rs)<>type_of(SYSLOG)
+|| return(fld)
+?};
+
+_rs.index(_rs.ndx_tmp('Numer',1,'RS',,));
+_wnd:=_rs.mk_sel('Składniki karty'@,'T',0,'kzup_ust_f3',,,,,'U');
+_rs.win_act(_wnd,,'Formuła','Wybierz',,,"sel_exit",,1);
+_rs.win_fld(_wnd,,'RS',,,3,0,,'Numer'@);
+_rs.win_fld(_wnd,,'RT',,,,,,'Nazwa'@);
+_rs.win_sel(_wnd);
+
+{? ~_rs.find_key(fld)
+|| _rs.first
+?};
+
+_numer:={? _rs.select(,1) || _rs.RS || fld ?};
+
+obj_del(_rs);
+_numer
+
+
+\kzup_ust_sx_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Sprawdza poprawnosc danych w polu S?
+::  OLD: \spr_usts/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+fld({? var_pres('S'+$fld,exec('kzup_tab','!ppl_pll_pkpr'))>0 || fld || 1 ?});
+exec('kzup_ust_sx_bd','!ppl_pll_pkpr',#(cur_afld+1));
+fld
+
+
+\karta_widok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Wyświetla okienko ustawień kartotek płacowych
+::   WE: _a - typ ustawien - dozwolone wartosci: Z, P, U
+::  OLD: \ust_kzup/kartprac.fml
+::----------------------------------------------------------------------------------------------------------------------
+: ustal kontekst wywołania
+EDIT_VAR.KZUP_TYP:=_a;
+exec('kzup_var','!ppl_pll_pkpr').KZUP_UST();
+: pokaż ustawienia
+KZUP_UST.index('OPIS');
+KZUP_UST.prefix(EDIT_VAR.KZUP_TYP);
+KZUP_UST.select(,1,10);
+1
+
+
+\kzup_usun_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GL [8.60]
+:: OPIS: usuwanie danych z karty podatkowej, zarobkowej i ubezpieczeniowej
+::   WE: _a - tabela z której usuwamy dane
+::   WY:
+::  OLD: \usun_kzup/kartprac.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? FUN.ask(
+      'Usunięcie zapisu może spowodować niepoprawne obliczenia.\n'
+      'Czy na pewno kontynuować?'@
+   )
+|| cur_tab(1,1).del(,1)
+?}
+
+
+\kz_widok_tab_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Akcja widok->tabela przestawna przed okien tabeli KZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('widok_tabela','kart_pla',KZ,P.ref(),O.R)
+
+
+\kz_widok_ust_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Akcja widok->ustawienia kolumn przed okien tabeli KZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('karta_widok','!ppl_pll_pkpr','Z')
+
+
+\kz_drukuj_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2010]
+:: OPIS: Wydruk zawartości karty
+::  OLD: \wyd_kartz/kartprac.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('widok_drukuj','kart_pla',KZ,P.ref(),O.R)
+
+
+\kz_rekord_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Rekord przed okien tabeli KZ
+::   WE: _a [NUMBER] - Rekord bieżący? [0 - nie / 1 - tak]
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kzup_wiersz','kart_pla',KZ,KART_ZAR);
+KART_ZAR.M:={? KZ.R=VAR.O().R & KZ.M=VAR.O().M || 'T' || 'N' ?};
+~~
+
+
+\kz_okno_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Okno przed okien tabeli KZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+EDIT_VAR.KZUP_TYP:='Z';
+exec('kzup_nazwy','kart_pla',KZ);
+exec('kzup_czytaj','kart_pla',KZ,KART_ZAR)
+
+
+\kz_wyswietl_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Przed wyświetl okien tabeli KZ
+::   WE:
+::   WY:
+::  OLD: \str_kz/kali.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('wyswietl','!ppl_pll_pkpr',KZ,KART_ZAR)
+
+
+\kp_widok_tab_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Akcja widok->tabela przestawna przed okien tabeli KP
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('widok_tabela','kart_pla',KP,P.ref(),O.RP)
+
+
+\kp_widok_ust_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Akcja widok->ustawienia kolumn przed okien tabeli KP
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('karta_widok','!ppl_pll_pkpr','P')
+
+
+\kp_drukuj_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2010]
+:: OPIS: Wydruk zawartości karty
+::----------------------------------------------------------------------------------------------------------------------
+exec('widok_drukuj','kart_pla',KP,P.ref(),O.RP)
+
+
+\kp_rekord_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Rekord przed okien tabeli KP
+::   WE: _a [NUMBER] - Rekord bieżący? [0 - nie / 1 - tak]
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kzup_wiersz','kart_pla',KP,KART_POD);
+KART_POD.M:={? KP.R=VAR.O().RP & KP.M=VAR.O().MP || 'T' || 'N' ?};
+~~
+
+
+\kp_okno_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Okno przed okien tabeli KP
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+EDIT_VAR.KZUP_TYP:='P';
+exec('kzup_nazwy','kart_pla',KP);
+exec('kzup_czytaj','kart_pla',KP,KART_POD)
+
+
+\kp_wyswietl_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Przed wyświetl okien tabeli KP
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('wyswietl','!ppl_pll_pkpr',KP,KART_POD)
+
+
+\ku_widok_tab_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Akcja widok->tabela przestawna przed okien tabeli KU
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('widok_tabela','kart_pla',KU,OSOBA.ref(),O.RU)
+
+
+\ku_widok_ust_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Akcja widok->ustawienia kolumn przed okien tabeli KU
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('karta_widok','!ppl_pll_pkpr','U')
+
+
+\ku_drukuj_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [2010]
+:: OPIS: Wydruk zawartości karty
+::----------------------------------------------------------------------------------------------------------------------
+exec('widok_drukuj','kart_pla',KU,OSOBA.ref(),O.RU)
+
+
+\ku_rekord_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Rekord przed okien tabeli KU
+::   WE: _a [NUMBER] - Rekord bieżący? [0 - nie / 1 - tak]
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kzup_wiersz','kart_pla',KU,KART_ZUS);
+KART_ZUS.M:={? KU.R=VAR.O().RU & KU.M=VAR.O().MU || 'T' || 'N' ?};
+~~
+
+
+\ku_okno_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Okno przed okien tabeli KU
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+EDIT_VAR.KZUP_TYP:='U';
+exec('kzup_nazwy','kart_pla',KU);
+exec('kzup_czytaj','kart_pla',KU,KART_ZUS)
+
+
+\ku_wyswietl_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Przed wyświetl okien tabeli KU
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('wyswietl','!ppl_pll_pkpr',KU,KART_ZUS)
+
+
+\wyswietl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Wyświetla zawartość karty
+::   WE: _a [TABLE] - alias tabeli karty: KZ/KP/KU
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_wnd:=exec('wyswietl_okno','!ppl_pll_pkpr',_a,_b);
+_a.win_edit(_wnd);
+
+exec('ustaw_tytul','!ppl_pll_pkpr',_a);
+_a.display();
+
+_a.win_edit('RED');
+_a.win_edel(_wnd)
+
+
+\wyswietl_okno
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jaws [17.00]
+:: OPIS: Tworzy okno wyświetlania karty
+::   WE: _a [TABLE] - alias tabeli karty: KZ/KP/KU
+::       _b [TABLE] - alias zmiennej: KART_ZAR/KART_POD/KART_ZUS
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+exec('kzup_nazwy','kart_pla',_a);
+_nfo:=exec('kzup_info','kart_pla',_a);
+
+R.cntx_psh();
+R.index(_nfo.R_KEY);
+
+_cnt:=_nfo.LEN;
+_col:=ceil(_cnt/20);
+_row:=ceil(_cnt/_col);
+
+_wnd:=_a.mk_edit(_a.comment(),0,'#kzup_red');
+{! _fld:=1.._cnt
+|! _acr:='S'+$_fld;
+   _txt:=($('_a.'+_acr))(_b)+' ('+$_fld+')';
+   _tip:='Pozycja nie jest wykorzystywana'@;
+   _opt:='enable=0';
+   R.prefix(_fld);
+   {? R.first()
+   || _tip:='';
+      {!
+      |? _tip+=$R.RN+' - '+R.RT+', ';
+         R.next()
+      !};
+      _tip-=2;
+      _opt:='enable=1'
+   ?};
+   _a.win_efld(_wnd,,_acr,,,15,2,,_txt,,_tip);
+   _a.efld_opt(_wnd,_opt,,_acr);
+   {? _fld%*_row=0
+   || _a.win_ecol(_wnd)
+   ?}
+!};
+
+R.cntx_pop();
+_wnd
+
+
+\kzup_var
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Ustala zmienną dla danego typu karty płacowej
+::   WY: alias zmiennej strukturalnej
+::  OLD: \kzup_var/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('kzup_info','kart_pla',EDIT_VAR.KZUP_TYP).N_VAR
+
+
+\kzup_tab
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Ustala tabelę dla danego typu karty płacowej
+::   WY: alias tabeli
+::  OLD: \kzup_tab/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('kzup_info','kart_pla',EDIT_VAR.KZUP_TYP).TABLE
+
+
+\kzup_ust_wybierz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Obsługa akcji wybierz okienka tabeli KZUP_UST
+::   WE:
+::  OLD: \kzupmenu/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('kzup_var','!ppl_pll_pkpr').KZUP_UST:=KZUP_UST.ref();
+sel_exit()
+
+
+\kzup_ust_dolacz_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Obsługa akcji dołącz okienka tabeli KZUP_UST
+::   WE:
+::  OLD: \kzupmenu/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+KZUP_UST.blank();
+{! _n:=1..7
+|! ($('KZUP_UST.S'+$_n+':=_a'))(_n)
+!};
+KZUP_UST.fld_fml('PREF','BEFORE_EDIT',"1");
+{? KZUP_UST.edit("exec('kzup_ust_ae','!ppl_pll_pkpr',0)")
+|| {? KZUP_UST.add(1)
+   || exec('kzup_ust_domyslny','!ppl_pll_pkpr')
+   || FUN.emsg('Dołączenie zapisu nie powiodło się.'@)
+   ?}
+?}
+
+
+\kzup_ust_popraw_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Obsługa akcji popraw okienka tabeli KZUP_UST
+::   WE:
+::  OLD: \kzupmenu/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+KZUP_UST.get();
+KZUP_UST.fld_fml('PREF','BEFORE_EDIT',$$(KZUP_UST.PREF<>'T'));
+{? KZUP_UST.edit("exec('kzup_ust_ae','!ppl_pll_pkpr',1)")
+|| {? KZUP_UST.put(1)
+   || exec('kzup_ust_domyslny','!ppl_pll_pkpr')
+   || FUN.emsg('Modyfikacja zapisu nie powiodła się.'@)
+   ?}
+?}
+
+
+\kzup_ust_usun_b
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Obsługa akcji usuń okienka tabeli KZUP_UST
+::   WE:
+::  OLD: \kzupmenu/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? KZUP_UST.size=1 | KZUP_UST.PREF='T'
+|| FUN.info('Usunięcie domyślnego widoku nie jest możliwe.'@);
+   return()
+|? ~exec('del_ask','#table',KZUP_UST)
+|| return()
+?};
+
+_var:=exec('kzup_var','!ppl_pll_pkpr');
+{? _var.KZUP_UST=KZUP_UST.ref()
+|| _var.KZUP_UST:=null
+?};
+KZUP_UST.del()
+
+
+\kzup_ust_domyslny
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Obsługa zmiany wartości pola PREF tabeli KZUP_UST
+::   WE:
+::----------------------------------------------------------------------------------------------------------------------
+{? KZUP_UST.PREF<>'T'
+|| return(0)
+?};
+_ref:=KZUP_UST.ref();
+KZUP_UST.cntx_psh();
+KZUP_UST.index('OPIS');
+KZUP_UST.prefix(KZUP_UST.TYP);
+_loop:=KZUP_UST.first();
+{!
+|? _loop
+|! {? KZUP_UST.PREF='T'
+   || {? KZUP_UST.ref()<>_ref
+      || KZUP_UST.PREF:='N';
+         KZUP_UST.put()
+      ?}
+   ?};
+   _loop:=KZUP_UST.next()
+!};
+KZUP_UST.cntx_pop()
+
+
+\kzup_ust_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: GS [2009+]
+:: OPIS: Sprawdza poprawność rekordu KZUP_UST
+::   WE: _a - okreslenie rodzaju modyfikacji tabeli: 0 dodawanie rekordu, 1 poprawianie rekordu
+::  OLD: \kzup_ust_ae/kart_pla.fml
+::----------------------------------------------------------------------------------------------------------------------
+_chk:=__CHK.table(KZUP_UST,_a);
+{? type_of(_chk)=type_of('') | ~_chk
+|| return(_chk)
+?};
+
+{! _n:=1..7
+|! {! _m:=_n+1..7
+   |! {? ($('KZUP_UST.S'+$_n+'=KZUP_UST.S'+$_m))()
+      || {? ~FUN.ask(
+               'Widok wielokrotnie uwzględnia ten sam składnik.\n'
+               'Czy na pewno zapisać ustawienia?'@
+            )
+         || return('S'+$_m)
+         ?}
+      ?}
+   !}
+!};
+1
+
+:Sign Version 2.0 jowisz:1048 2020/10/16 15:19:19 d58d05872ceb079e97a64ac265ba8ec2af01d62a029a13834cc479059b10c28364dea3ae6389f196b9083c8062a22538ddf80c49540a2a3142dbccf6fe548884685950285c2f757b3f2661bdcaadaa5158009a7a946d026aa63a0bb6249ec2c08db5c8332578c0f2fa7f3328a6523ecfdab631c5ba314da3b954b07905b2bb82

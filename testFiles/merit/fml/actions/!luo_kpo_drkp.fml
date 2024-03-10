@@ -1,0 +1,336 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !luo_kpo_drkp.fml
+:: Utworzony: 27.02.2019
+:: Autor: MW
+::======================================================================================================================
+:: Zawartość: Formuły czynności LUO_KPO_DRKP
+::            Rejestracja karty przekazania odpadów
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [19.22]
+:: OPIS: Czynność LUO_KPO_DRKP - formuła główna
+::   WE: _a - [obj_new] - parametry wejsciowe czynności
+::       _b - [obj_new] - parametry wewnętrzne czynności
+::       _c - [obj_new] - parametry wyjściowe czynności
+::       _d - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=ODDZ
+::# kind=WE,   symbol=ZLP,      type=_ZLP,    name=Zgłoszenie jednorazowe,             required=N
+::# kind=WE,   symbol=WYS,      type=_WYS,    name=Wysypisko,                          required=N
+::# kind=WE,   symbol=IL,       type=NUMBER,  name=Ilość,                              required=N
+::# kind=WE,   symbol=D,        type=DATE,    name=Data,                               required=N
+::# kind=WE,   symbol=ODP,      type=_ODP,    name=Rodzaj odpadu,                      required=N
+::# kind=WE,   symbol=KH_2,     type=_KH,     name=Przyjmujący,                        required=N
+::# kind=WE,   symbol=KH_ODB_2, type=_KH_ODB, name=Miejsce działalności przyjmującego, required=N
+::# kind=WE,   symbol=KH_KPOT,  type=_KH,     name=Transportujący,                     required=N
+::# kind=WE,   symbol=NRREJ,    type=STRING,  name=Numer rejestracyjny,                required=N
+::# required *|ZLP,WYS,IL,D|WYS,IL,D,ODP,KH_2,KH_ODB_2,KH_KPOT,NRREJ
+::# kind=WY,   symbol=KPO,  type=_KPO,   name=Karta przekazania odpadów, required=N
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=_mp.context;
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_area:=_mp.pathArea('LUO_KPO') | _mp.pathArea('LUM_ZGL');
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | (_mp.pathArea() & ~_area);
+_autoakc:=exec('autoAkc','#b__box',_mp,100280,'LUO_KPO_EAKP');
+
+{? _proc
+:: Sprawdzenie parametrów pracy dla czynności startowej
+|| {? ST.AR=0 | ST.ODDZ_KOD='' || FUN.info('Ustaw parametry pracy.'@); _wyn:=0; return() ?}
+?};
+
+exec('init','luo');
+
+:: Przełączam maski na zgodne z _out.KPO
+{? var_pres('KPO',_out)=type_of(null()) & _out.KPO
+|| _name:=ref_name(_out.KPO);
+   _oddz:=(6+_name)+1;
+   _rok:=(8+_name)+2;
+    exec('kpo_open','open_tab',_oddz,_rok)
+?};
+
+{? _mp.pathTodo()
+:: Ustawienie kontekstu wg instancji elementu w procesie
+|| {? var_pres('KPO',_out)=type_of(null()) & _out.KPO
+   || 1
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego KPO.')
+   ?}
+?};
+
+:: Sprawdzenie uprawnień
+params_set('in',_in,'user',OPERATOR.USER,'mp',_mp);
+{? exec('permissions','!luo_kpo_drkp')=0
+|| _mp.error('Brak uprawnień do uruchomienia czynności.'@);
+   return()
+?};
+
+_mp.trigRef('KPO',,1,,exec('kind_out','#b_port'),'KPO');
+
+{? _akcja='Dołącz' | _proc | _akcja='START_TODO'
+:: Obsługa Dołącz - dołącz w oknie obszaru i start procesu z pulpitu
+||
+:: Parametr 'akcja' wykorzystywany w formułach przycisków ?
+   params_set('out',_out,'mp',_mp,'akcja',_akcja);
+   params_exec('kpo_add','odpady');
+   _krefs:=_mp.getRefs();
+   {? var_pres('[1]',_krefs)<>type_of(~~)
+:: Dodano kartę przekazania odpadów
+   || KPO.cntx_psh();
+      KPO.prefix();
+      {? KPO.seek(_krefs[1])
+::    Zapisanie _out.KPO jeśli wcześniej nie zakończono rejestracji
+      || {? type_of(_out)>type_of(~~) & var_pres('KPO',_out)>=type_of(~~)
+         || _out.KPO:=KPO.ref();
+            _mp.save(,_out);
+            {? KPO.STATUS='Z'
+            || _mp.done()
+            ?};
+            _mp.descTodo()
+         ?}
+::    Brak karty przekazania odpadów w tabeli mimo zapisanego parametru wyjściowego KPO oznacza wycofanie czynności
+      || _mp.cancel()
+      ?};
+      KPO.cntx_pop()
+:: Wycofanie czynności bo nie dodano karty przekazania odpadów
+   || _mp.cancel()
+   ?};
+:: Ustawienie się na dodanej karcie w widoku obszaru
+   {? _area
+   || _outa:=_mp.load(exec('kind_out','#b_port'));
+      {? type_of(_outa)>type_of(~~) & var_pres('KPO',_outa)>type_of(~~)
+      || KPO.seek(_outa.KPO)
+      ?}
+   ?}
+
+|? _akcja='ZLP'
+|| _kpo_dodane:=0;
+   {? type_of(_in)>type_of(~~) & var_pres('ZLP',_in)=7
+   || exec('kpo_gen_dla_zlp_wyko','odpady',_in.ZLP);
+      _krefs:=_mp.getRefs();
+      {? var_pres('[1]',_krefs)<>type_of(~~)
+::    Dodano kartę przekazania odpadów
+      || KPO.cntx_psh();
+         KPO.prefix();
+         {? KPO.seek(_krefs[1])
+::       Zapisanie _out.KPO jeśli wcześniej nie zakończono rejestracji
+         || _kpo_dodane:=1;
+            {? type_of(_out)>type_of(~~) & var_pres('KPO',_out)>=type_of(~~)
+            || _out.KPO:=KPO.ref();
+               _mp.save(,_out);
+               {? KPO.STATUS='Z'
+               || _mp.done()
+               || _mp.keep()
+               ?}
+
+            ?}
+::       Brak karty przekazania odpadów w tabeli mimo zapisanego parametru wyjściowego KPO oznacza wycofanie czynności
+         ?};
+         KPO.cntx_pop()
+      ?}
+   ?};
+   {? ~_kpo_dodane
+:: Wycofanie czynności bo nie dodano karty przekazania odpadów
+   || _mp.cancel()
+   ?};
+:: Ustawienie się na dodanej karcie w widoku obszaru
+   {? _kpo_dodane & _area
+   || _outa:=_mp.load(exec('kind_out','#b_port'));
+      {? type_of(_outa)>type_of(~~) & var_pres('KPO',_outa)>type_of(~~)
+      || KPO.seek(_outa.KPO)
+      ?}
+   ?}
+
+|? _akcja='GPOD'
+|| _kpo_dodane:=0;
+   {? type_of(_in)>type_of(~~) & var_pres('WYS',_in)=7 & var_pres('IL',_in)=1 & var_pres('ODP',_in)=7
+      & var_pres('KH_2',_in)=7 & var_pres('KH_KPOT',_in)=7 & _in.IL>0
+   || {? var_pres('KH_ODB_2',_in)<>7
+      || _in.KH_ODB_2:=null()
+      ?};
+      {? var_pres('NRREJ',_in)<>2
+      || _in.NRREJ:=''
+      ?};
+      exec('kpo_gen_dla_gpod_wyko','odpady',_in.WYS,_in.IL,_in.D,_in.ODP,_in.KH_2,_in.KH_ODB_2,_in.KH_KPOT,_in.NRREJ
+                                           ,_context.GODZINA,_context.KOD_G,_context.NAZ_G,_context.OB_G);
+      _krefs:=_mp.getRefs();
+      {? var_pres('[1]',_krefs)<>type_of(~~)
+::    Dodano kartę przekazania odpadów
+      || KPO.cntx_psh();
+         KPO.prefix();
+         {? KPO.seek(_krefs[1])
+::       Zapisanie _out.KPO jeśli wcześniej nie zakończono rejestracji
+         || _kpo_dodane:=1;
+            {? type_of(_out)>type_of(~~) & var_pres('KPO',_out)>=type_of(~~)
+            || _out.KPO:=KPO.ref();
+               _mp.save(,_out);
+               _mp.done()
+            ?}
+::       Brak karty przekazania odpadów w tabeli mimo zapisanego parametru wyjściowego KPO oznacza wycofanie czynności
+         ?};
+         KPO.cntx_pop()
+      ?}
+   ?};
+   {? ~_kpo_dodane
+:: Wycofanie czynności bo nie dodano karty przekazania odpadów
+   || _mp.cancel()
+   ?};
+:: Ustawienie się na dodanej karcie w widoku obszaru
+   {? _kpo_dodane & _area
+   || _outa:=_mp.load(exec('kind_out','#b_port'));
+      {? type_of(_outa)>type_of(~~) & var_pres('KPO',_outa)>type_of(~~)
+      || KPO.seek(_outa.KPO)
+      ?}
+   ?}
+
+|? _akcja='Popraw' | _todo
+|| {? type_of(_out)>type_of(~~) & var_pres('KPO',_out)>type_of(~~)
+:: Uruchomione w procesie
+   || KPO.cntx_psh();
+      KPO.prefix();
+      {? KPO.seek(_out.KPO)
+      || params_set('out',_out,'mp',_mp,'akcja',_akcja);
+         {? params_exec('kpo_edit','odpady') & KPO.STATUS='Z'
+         || _mp.done()
+         ?};
+         _mp.descTodo()
+      ?};
+      KPO.cntx_pop()
+   |? _todo
+:: Uruchomione zadanie z listy todo i brak _out.KPO wtedy zadanie wycofujemy
+   || _mp.cancel()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   || params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      params_exec('kpo_edit','odpady');
+      _mp.descTodo()
+   ?}
+
+|? _akcja='Usuń'
+|| {? type_of(_out)>type_of(~~) & var_pres('KPO',_out)>type_of(~~)
+:: Uruchomione w procesie
+   || _kpo:=null();
+      KPO.cntx_psh();
+      _rec:=exec('rec_after_del','#table',KPO);
+      KPO.prefix();
+      {? KPO.seek(_out.KPO)
+      || _wyn:=exec('kpo_del','odpady');
+         {? ~KPO.seek(_out.KPO)
+::       Wycofuję instancję jeśli nie znaleziono karty przekazania odpadów
+         || _mp.cancel()
+         ?};
+         _kpo:=KPO.ref();
+         _mp.descTodo()
+      ?};
+      KPO.cntx_pop();
+      {? _wyn=1 & _rec<>null() || KPO.seek(_rec) ?};
+::    Ustawienie się na kolejnej karcie w widoku obszaru
+      {? _area || {? _kpo || KPO.seek(_kpo) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   || exec('kpo_del','odpady');
+      _mp.descTodo()
+   ?}
+
+|? _akcja='Zakończ'
+|| {? exec('chk_kpo','odpady',0)='' & exec('kpo_zakoncz','odpady',_autoakc)
+   || {? _autoakc | KPO.put()
+      || _mp.done()
+      ?}
+   ?}
+
+:: Kopiowanie na nową kartę (obszar roboczy) / Tworzenie karty na podst wzorca
+|? _akcja='Kopiuj'
+||
+:: Pobranie z kontekstu karty źródłowej
+   KPO.cntx_psh();
+   _src_ref:='';
+   _korw:='';
+   {? var_pres('SRC_REF',_context)=type_of('')
+   || _src_ref:=_context.SRC_REF
+   ?};
+   KPO.cntx_pop();
+
+   {? _src_ref<>''
+   || KPO.cntx_psh();
+      KPO.use(ref_name(_src_ref));
+      {? KPO.seek(_src_ref)
+      || _korw:=KPO.KORW;
+         _args_copy:=exec('args_copy','odpady');
+         _kpo:=exec('kpo_copy','odpady',KPO.ref,_args_copy)
+      ?};
+      KPO.cntx_pop()
+   ?};
+
+   {? _kpo<>null()
+   ||
+::    Zapisanie _out.KPO
+      _out.KPO:=_kpo;
+      _mp.save(,_out)
+
+:: Wycofanie czynności bo nie dodano karty przekazania odpadów
+   || _mp.cancel()
+   ?}
+
+|? _akcja='Importuj'
+|| _KPO:=_context.buffer;
+   KPO.cntx_psh();
+   KPO.prefix();
+   KPO.blank();
+   _KPO.set();
+   {? KPO.add()
+   || _KPO.memo_put();
+      _out.KPO:=KPO.ref();
+      _mp.save(,_out);
+      _mp.done();
+      _context.KPO:=KPO.ref()
+   ?};
+   KPO.cntx_pop()
+
+|| _mp.error('Nieobsługiwana ścieżka.')
+
+?}
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [19.22]
+:: OPIS: Formuła TO-DO
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? type_of(_out)>type_of(~~) & var_pres('KPO',_out)>type_of(~~)
+|| 'Zakończ rejestrację karty przekazania odpadów: %1'@@[exec('record','#to_string',_out.KPO)]
+|| 'Zarejestruj kartę przekazania odpadów'@@
+?}
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [19.22]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+_wyn:=1;
+_wyn
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:37 9d4f967de30a62c26ca765ca5f506186ec3d3b3c72f645cf21f57ccc7d4ea696d6e34806ff6a8635b6f27bbed70327cfc8353fc088aeffb78d3fd5c746d5644ebef8603eece58a2446234be99d4420b3af96fc3de6ca00f15c81792000f987106ce771395805090a52a5a7f96763ecd87ade0e1d9e3b270b23603c06176f4f28

@@ -1,0 +1,416 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_ezk_awda.fml
+:: Utworzony: 26.05.2022
+:: Autor: DG
+::======================================================================================================================
+:: Zawartość: Obsługa czynności PKD_EZK_AWDA - Pow. o wnioskach do akceptacji.
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [22.26]
+:: OPIS: Pow. o wnioskach do akceptacji - główna formuła czynności.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# properties=LOOP,SERVICE
+::# permissions=F_ZATR,UD_SKL
+::
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+::
+:: Parametry wejściowe
+:: Czynność zbiera informacje o wnioskach urlopowych w okresie określonym parametrami wejściowymi OD i DO.
+:: Jeżeli data OD i data DO nie są ustawione, zbierane będą wszystkie wnioski urlopowe.
+::# kind=WE, symbol=OD, type=DATE, name=Data początkowa badanego okresu, required=N
+::# kind=WE, symbol=DO, type=DATE, name=Data końcowa badanego okresu, required=N
+::
+:: Parametr wejściowy UD_SCH pozwala wskazać symbol schematu (typu PODZORG), który posłuży do ustalenia jednostki
+:: organizacyjnej, przekazanej parametrem UD_SKL. Jeżeli parametr nie zostanie przekazany (ustawiony), to wybrany
+:: zostanie schemat domyślny lub (jeżeli domyślny nie został określony) pierwszy (w kolejności alfabetycznej).
+::# kind=WE, symbol=UD_SCH, type=STRING, name=Schemat organizacyjny, required=N, fml_val="exec('ud_sch_wybierz','schemat',,_a).SYMBOL"
+::
+:: Parametr wejściowy UD_SKL pozwala wskazać jednostkę organizacyjną, do której będzie ograniczony zakres przetwarzania.
+:: Domyślnie przetwarzane będą wszystkie jednostki organizacyjne.
+::# kind=WE, symbol=UD_SKL, type=STRING, name=Jednostka organizacyjna, required=N, fml_val="exec('ud_skl_wybierz','schemat',,,1,_a)"
+::
+:: Parametr wejściowy SQL_FROM umożliwia zbudowanie dodatkowych relacji na potrzeby dodatkowego warunku
+:: (patrz SQL_WHERE).
+:: Domyślnie przyjmuje wartość pustą.
+::# kind=WE, symbol=SQL_FROM, type=STRING, name=Dodatkowe relacje filtra, required=N
+::
+:: Parametr wejściowy SQL_WHERE umożliwia dodatkowe ograniczenie listy współpracowników. Warunek może odwoływać się
+:: do tabeli pracowników (poprzez alias "P" np. "P".ID>1000) oraz
+:: do tabeli osób (poprzez alias "1OSOBA" np. "1OSOBA".PLEC='K').
+:: Odwołania do innych tabel wymagają odpowiedniego użycia parametru SQL_FROM.
+:: Domyślnie SQL_WHERE przyjmuje wartość pustą.
+::# kind=WE, symbol=SQL_WHERE, type=STRING, name=Dodatkowy warunek filtra, required=N
+::
+:: Parametr wejściowy FML_TEST umożliwia dodatkową weryfikację wyboru współpracownika do przetwarzania. Jest treścią
+:: formuły w formacie napisu. Jeżeli formuła zwróci wartość 0 to dany współpracownik nie będzie przetwarzany.
+:: Formuła jest wykonywana przy ustawionych buforach tabel: H, P, OSOBA.
+:: Domyślnie przyjmuje wartość '1'.
+::# kind=WE, symbol=FML_TEST, type=STRING, name=Dodatkowy warunek wyboru, required=N
+::
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+::
+:: Parametry wyjściowe.
+::# kind=WY, symbol=SUB, type=STRING, name=Temat, required=N
+::# kind=WY, symbol=RCV, type=MEMO, name=Lista odbiorców, required=N
+::# kind=WY, symbol=BODYH, type=MEMO, name=Treść w formacie HTML, required=N
+::
+:: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+_out:=_par.out;
+
+{? _mp.pathProc() | _mp.pathTodo()
+||
+:: Ustawienie domyślnej wartości parametru LOOP (żeby brama się nie zawiesiła).
+   _mp.save(exec('kind_out','#b_port'),'LOOP','N');
+
+:: Ustalenie / odzyskanie klucza grupującego.
+   _out.GRPKEY:=_mp.grpkey(_out.GRPKEY,_in.GRPKEY);
+
+   {? ~_mp.loop()
+::    Pierwszy obrót pętli - przygotujmy dane.
+::    Usuwamy wszystkie dotychczasowe klucze, które mogły zostać zapamiętane przy poprzednim uruchomieniu czynności
+::    (zakończonej _mp.keep()).
+   || _mp.grpkeyDelAll();
+
+::    Sprawdzenie parametrów wejściowych:
+      {? (_result:=exec('check_in','!pkd_ezk_awda'))=''
+      ||
+::       Pobranie listy maili
+         _wyb:=exec('prepare','!pkd_ezk_awda');
+         {? _wyb.first()
+         || {!
+            |? _mp.grpkeyAdd(_wyb.MAIL);
+               _wyb.next()
+            !}
+         || _out.RCV:=_out.BODYH:=_out.SUB:='';
+            _mp.save(,_out);
+            _mp.done();
+            return()
+         ?}
+      || _mp.error(_result);
+         return()
+      ?}
+
+
+   ?};
+:: Jeżeli coś było nie tak (z parametrami wejściowymi, z wyborem), to zostało obsłużone powyżej.
+:: Tutaj jesteśmy już na etapie obsługi pętli.
+
+   do();
+   _mail:=_mp.grpkeyGet();
+   {? _mail<>~~
+   || _ret:=exec('run','!pkd_ezk_awda',_in,_mail);
+      _out.RCV:=_ret.RCV;
+      _out.BODYH:=_ret.BODYH;
+      _out.SUB:=_ret.SUB;
+      _mp.save(,_out)
+   ?};
+
+   {? _mp.grpkeyDel()
+   || {? _mp.grpkeyGet()<>~~
+::       Jeżeli jest jeszcze choć jeden element do przetworzenia, to pętla powinna być kontynuowana.
+      || _mp.loop_continue()
+      || VAR_DEL.delete('__WNAKC')
+      ?}
+   ?};
+
+   _mp.done();
+   end()
+?};
+
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [22.26]
+:: OPIS: Pow. o niezaakc. wn. urlopowych - formuła opisu zadania.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Przypomnienie o wnioskach oczekujących akceptacji'@@
+
+
+\prepare
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [22.26]
+:: OPIS: Funkcja generuje listę kierowników, do których ma zostać wysłany mail z przypomnieniem
+::  OLD: \wn_doakc/mail.fml
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+
+_result:=tab_tmp(,
+   'MAIL','STRING[100]','Email'
+);
+
+:: Tabela do przetwarzania wniosków urlopowych z mailami do kierowników
+VAR_DEL.delete('__WNAKC');
+__WNAKC:=tab_tmp(1,
+   'EMAIL',   'STRING[%1]'[$MS.fld_len('USERS','EMAIL')],'Email'@,
+   'TYP',     'STRING[100]','Typ'@,
+   'NAZWISKO','STRING[%1]'[$MS.fld_len('OSOBA','NAZWISKO')],'Nazwisko'@,
+   'PIERWSZE','STRING[%1]'[$MS.fld_len('OSOBA','PIERWSZE')],'Imię'@,
+   'T',       'STRING[%1]'[$MS.fld_len('P','T')],'Nr teczki'@,
+   'ID',      'INTEGER','Identyfikator'@,
+   'WYDZIAL', 'STRING[%1]'[$MS.fld_len('UD_SKL','SYMBOL')],'Jednostka organizacyjna'@,
+   'STN',     'STRING[%1]'[$MS.fld_len('STN','ST')],'Stanowisko'@,
+   'D',       'DATE','Data wniosku'@
+);
+__WNAKC.index(__WNAKC.ndx_tmp('',1,'EMAIL',,,'TYP',,));
+
+: pobranie informacji o niezakaeptowanych wnioskach urlopowych
+_wnioski:=sql(
+  'select
+     case when NWU.AZ=\'?\' then \'Wniosek urlopowy \'
+               || cast(NWU.OD as STRING_TYPE)
+               || \'-\' || cast(NWU.DO as STRING_TYPE)
+               || \' (\' || R.RT  || \')\'
+          when NWU.AZ=\'D\' then ''Wniosek o wycofanie wniosku urlopowego \' ||
+                   cast(NWU.OD as STRING_TYPE) || \'-\' || cast(NWU.DO as STRING_TYPE)
+          end as TYP,
+     NWU.D,
+     OSOBA.NAZWISKO,OSOBA.PIERWSZE,P.IP,P.T,P.reference as PREF,STN.ST as STANOW, UD_SKL.SYMBOL as JEDN_ORG,
+     \'\' EDOKUM, 0 LP
+  from
+     NWU
+     join P using(NWU.P,P.reference)
+     join OSOBA using(P.OSOBA,OSOBA.reference)
+     join UD_SKL using(P.WYDZIAL,UD_SKL.reference)
+     join STN
+     join R using(NWU.R, R.reference)
+  where NWU.AZ in (\'?\',\'D\') '+
+  {? _in.OD<>date(0,0,0) || 'and to_date(:_a)<=NWU.DO ' || '' ?}+
+  {? _in.DO<>date(0,0,0) || 'and NWU.OD<=to_date(:_b) ' || '' ?},
+  _in.OD,_in.DO
+);
+_wnioski.index(_wnioski.ndx_tmp('',1,'T',,,'TYP',,));
+
+:: Filtrowanie współpracowników
+P.cntx_psh();
+P.clear();
+
+_ud_sch:=exec('szukaj_ud_sch','schemat','PODZORG',_in.UD_SCH);
+_ud_def:=
+   {? _in.UD_SKL=''
+   || exec('ud_def_firma','schemat','PODZORG')
+   || exec('szukaj_ud_def','schemat',_ud_sch,exec('szukaj_ud_skl','schemat','PODZORG',_in.UD_SKL))
+   ?};
+
+P.f_set(
+:: SORT
+   ,
+:: FROM
+   'left join F_ZATR using("P".F_ZATR,F_ZATR.REFERENCE)'+
+   {? _in.SQL_FROM<> '' || ' '+_in.SQL_FROM || '' ?},
+:: WHERE
+   'P.FIRMA=\''+$exec('ref_firma','ustawienia')+'\''+
+   {? _in.UD_SKL<>''
+   || ' and P.WYDZIAL in '
+         '('
+            'select UD_DEF.UD_SKL '
+            'from UD_DEF '
+            'where UD_DEF.UD_SCH=\''+$_ud_sch+'\' and UD_DEF.SCIEZKA like \''+_ud_def.SCIEZKA+'%\''
+         ')'
+   || ''
+   ?}+
+   {? _in.SQL_WHERE<>'' || ' and ('+_in.SQL_WHERE+')' || '' ?}
+);
+
+:: Przygotowujemy listę emaili przełożonych
+USERS.cntx_psh();
+USERS.index('OSOBA');
+{? _wnioski.first()
+|| {!
+   |? _teczka:=_wnioski.T;
+      {? P.f_seek(_wnioski.PREF)
+      || _superiors:=exec('show_kier','stanprac',P.ref,1,'TYPPOZ','AKCWNIO',,,1);
+         {? _superiors.first()
+         || {!
+            |? _level:=_superiors.L;
+               USERS.prefix(_superiors.OSOBA);
+               {? USERS.first()
+               || {? USERS.EMAIL<>''
+                  || __WNAKC.EMAIL:=USERS.EMAIL;
+                     __WNAKC.TYP:=_wnioski.TYP;
+                     __WNAKC.NAZWISKO:=_wnioski.NAZWISKO;
+                     __WNAKC.PIERWSZE:=_wnioski.PIERWSZE;
+                     __WNAKC.T:=_wnioski.T;
+                     __WNAKC.ID:=_wnioski.IP;
+                     __WNAKC.WYDZIAL:=_wnioski.JEDN_ORG;
+                     __WNAKC.STN:=_wnioski.STANOW;
+                     __WNAKC.D:=_wnioski.D;
+                     __WNAKC.add();
+                     {? ~_result.find_key(USERS.EMAIL)
+                     || _result.MAIL:=USERS.EMAIL;
+                        _result.add()
+                     ?}
+                  ?}
+               ?};
+               _superiors.next() & _superiors.L=_level
+            !}
+         ?};
+         obj_del(_superiors)
+      ?};
+      _wnioski.next()
+   !}
+?};
+USERS.cntx_pop();
+P.cntx_pop();
+
+_result
+
+
+\run
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [22.26]
+:: OPIS: Formuła odpowiedzialna za przygotownie danych do wysyłanego powiadomienia. Formuła zwraca tablicę nazwaną
+::       z elementami potrzebnymi do wysłania powiadomienia.
+::   WE: _a [OBJ] - parametry wejściowe czynności
+::       _b [STRING] - email pracownika
+::       [_c] [STRING] - adres HTTP w systemie CMS Serwis Pracowniczy
+::  OLD: \bd_akcwn/mail.fml
+::----------------------------------------------------------------------------------------------------------------------
+_in:=_a;
+_portUrl:={? var_pres('_c')=type_of('_c') || _c || REF.FIRMA().URL ?};
+
+_ret:=obj_new('RCV','BODYH','SUB');
+_ret.RCV:=_ret.BODYH:=_ret.SUB:='';
+
+: przerwij dzialanie jesli brak informacji
+{? var_pres('__WNAKC')<>type_of(SYSLOG) || return(_ret) ?};
+
+_ret.RCV:=_b;
+
+{? _ret.RCV=''
+|| return(_ret)
+?};
+
+__WNAKC.cntx_psh();
+__WNAKC.prefix(_ret.RCV);
+:: Jeśli nie ma adresu, to przerywamy wykonanie
+{? __WNAKC.first()
+|| _ret.SUB:='Przypomnienie o wnioskach urlopowych oczekujących akceptacji'@;
+
+   _th:="'<th [[STYLE_TABLE_TH]]>'+_a+'</th>'";
+   _td:="'<td [[STYLE_TABLE_TD]]>'+_a+'</td>'";
+
+   _ret.BODYH:=
+      '<h3>'+
+         'Wnioski urlopowe pracowników oczekujące na weryfikację:'@+
+      '</h3><br>'
+      '<table [[STYLE_TABLE]]>\n'
+         '<tr [[STYLE_TABLE_TR]]>'+
+            _th('Lp.'@)+
+            _th('Typ'@)+
+            _th('Data złożenia'@)+
+            _th('Nazwisko'@)+
+            _th('Imię'@)+
+            _th('Stanowisko'@)+
+            _th('Jednostka'@)+
+            {? _portUrl<>''
+            || _th('Link'@)
+            || ''
+            ?}+
+         '</tr>\n';
+
+   _lp:=0;
+   {!
+   |? _lp+=1;
+      _akc_typ:=
+         {? (-__WNAKC.TYP)*'urlop'
+         || 'Dane kadrowe > Wnioski urlopowe - weryfikacja'@
+         |? (-__WNAKC.TYP)*'delegacja'
+         || 'Delegacje w obiegu'@
+         || 'Wnioski w obiegu'@
+         ?};
+      _ret.BODYH+=
+         '<tr [[STYLE_TABLE_TR]]>'+
+            _td($_lp)+
+            _td(__WNAKC.TYP)+
+            _td($__WNAKC.D)+
+            _td(__WNAKC.NAZWISKO)+
+            _td(__WNAKC.PIERWSZE)+
+            _td(__WNAKC.STN)+
+            _td(__WNAKC.WYDZIAL)+
+            {? _portUrl<>''
+            || _td(
+                  '<a href="' + _portUrl + '">'+
+                     _akc_typ+
+                  '</a>'
+               )
+            || ''
+            ?}+
+         '</tr>\n';
+      __WNAKC.next()
+   !};
+
+   _ret.BODYH+=
+      '</table>'+
+      '<p>'+
+         'Ta wiadomość została wygenerowana automatycznie - prosimy na nią nie odpowiadać.'@+
+      '</p>'
+?};
+__WNAKC.cntx_pop();
+
+_ret
+
+
+\check_in
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DG [22.26]
+:: OPIS: Weryfikacja poprawności parametrów wejściowych.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+params_set(_par:=params_get());
+_mp:=_par.mp;
+_in:=_par.in;
+_service:=_mp.isService();
+
+_d0:=date(0,0,0);
+
+:: Unifikacja typów parametrów wejściowych.
+{? _in.OD=~~
+|| _in.OD:=_d0
+?};
+{? _in.DO=~~
+|| _in.DO:=_d0
+?};
+{? _in.UD_SCH=~~ | _in.UD_SCH=''
+|| _in.UD_SCH:=exec('domyslny','schemat','PODZORG',1).SYMBOL
+?};
+{? _in.UD_SKL=~~
+|| _in.UD_SKL:=''
+?};
+{? _in.SQL_FROM=~~
+|| _in.SQL_FROM:=''
+?};
+{? _in.SQL_WHERE=~~
+|| _in.SQL_WHERE:=''
+?};
+{? _in.FML_TEST=~~
+|| _in.FML_TEST:=''
+?};
+
+{? _service
+:: Czynność uruchomiona w trybie serwisowym. Nieprawidłowe parametry wejściowe uniemożliwiają uruchomienie czynności.
+|| {? _in.DO<>_d0 & _in.DO<_in.OD
+   || return('Parametr wejściowy %1 [%2] mniejszy niż parametr wejściowy %3 [%4].' ['DO',$_in.DO,'OD',$_in.OD])
+   ?}
+?};
+
+''
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:39 0e9d3c09d47be7187af66ac834c8cdea496d95fbba4f26e623b716a93c327a15fd7f4df4e83c1bfc389ad7cf14807f8affef22021ecee0a1fcea41953c39b79cf232043f34288427451b3c661de08df8932f6d90cc39af7dd1271adcbc0cef14306a5a6d5c1ed55e7b087f37c29d84b2b6c9a3ba1269b5525ab5b0bb4ec448a1

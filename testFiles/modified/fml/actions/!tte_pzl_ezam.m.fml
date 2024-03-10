@@ -1,0 +1,559 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_ezam.fml
+:: Utworzony: 26.10.2015
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_EZAM - Zamknięcie zlecenia
+::======================================================================================================================
+
+
+\action_close_group_before
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Akcja grupa przed 'Zamknij' w oknach wertowania
+::   WY: 0/1
+::  TAG: <MBUILDER>
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+:: NUCO - zlecenia zamykamy zawsze z usunięciem procesów
+::{? (_choice:=FUN.choice('Zaznaczono: %1 zleceń. Czy zamknąć wybrane zlecenia i usunąć powiązane z nimi zadania?'@[$ZL.sel_size()]
+::                        ,,'Tylko zamknij'@,'Zamknij i usuń zadania'@))
+_choice:=2;
+{? FUN.ask('Zaznaczono: %1 zleceń. Czy zamknąć wybrane zlecenia i usunąć powiązane z nimi zadania?'@[$ZL.sel_size()])
+|| _result:=1;
+   {? _choice=2
+   || ZLEC.CLEANER:='T'
+   || ZLEC.CLEANER:='N'
+   ?};
+:: Dla zlecenia nadrzędnego usuwane są z zaznaczenia wszystkie zlecenia podrzędne
+   ZL.cntx_psh();
+   _tab:=ZL.sel_aget();
+   {? _tab.first()
+   || {!
+      |? ZL.prefix();
+         {? ZL.seek(_tab.REF) & (ZL.RODZAJ='Z' | ZL.RODZAJ='N')
+         || ZL.index('NRNZL');
+            ZL.prefix(ZL.UNRZL);
+            {? ZL.first()
+            || {!
+               |? ZL.sel_del();
+                  ZL.next()
+               !}
+            ?}
+         ?};
+         _tab.next()
+      !}
+   ?};
+   ZL.cntx_pop();
+   KOMM.init(200,,'Zamknięcie zleceń'@,'')
+?};
+sel_nchk();
+_result
+
+
+\zl_zamknij
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MKO [8.60]
+:: OPIS: Obsługa zamknięcia zlecenia.
+::   WE: [_a] - ZL.ref() - ref zlecenia lub bieżące zlecenie
+::       [_b] - INTEGER - 0/[1] - czy wyświetlać pytania
+::       [_c] - INTEGER - 0/[1] - czy inicjować i wyświetlać KOMMa
+::       [_d] - INTEGER - [0]/1 - czy uruchomienie rekurencyjne
+::       [_e] - INTEGER -  [0]/1 - czy uruchomienie dla grupy rekordów
+::   WY: 0 / 1
+::  OLD: \zzlec2end/zlec4.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(ZL.ref()) || _ref:=_a || _ref:=null() ?};
+{? var_pres('_b')=type_of(0) || _ask:=_b || _ask:=1 ?};
+{? var_pres('_c')=type_of(0) || _komm:=_c || _komm:=1 ?};
+{? var_pres('_d')=type_of(0) || _rec:=_d || _rec:=d ?};
+{? var_pres('_e')=type_of(0) || _isgroup:=_e || _isgroup:=0 ?};
+
+_result:=0;
+_can_continue:=1;
+
+ZL.cntx_psh();
+{? _ref<>null()
+|| ZL.prefix();
+   {? ZL.seek(_ref)
+   || _can_continue:=1
+   || _can_continue:=0
+   ?}
+?};
+
+{? _can_continue>0
+||
+   _zl_top:=exec('top_level','zl_link',ZL.ref());
+   _nad:=exec('FindAndGet','#table',ZL,_zl_top,,"RODZAJ",'');
+
+   {? _komm>0
+   || KOMM.init(250,,'Zamknięcie zlecenia'@)
+   ?};
+
+   _subzlec:=exec('subzlec_exist','zl_link',ZL.ref());
+   _px_tex:=exec('get_tex_zl','px_tex',ZL.ref());
+   _tex_locked:=1;
+   _tex_obj:=~~;
+   {? _px_tex<>null()
+   || _tex_obj:=exec('lock','px_tex',_px_tex,_isgroup);
+      _tex_locked:=_tex_obj.LOCKED
+   ?};
+
+   _ok:=1;
+
+   {? _can_continue>0
+   ||
+::    Sprawdzana możliwość zablokowania zlecenia w każdym zakresie
+      {? exec('zl_lock','zl_common',,'N') &
+         exec('zl_lock','zl_common',,'T') &
+         exec('zl_lock','zl_common',,'P') &
+         exec('zl_lock','zl_common',,'L') &
+         exec('zl_lock','zl_common',,'I') &
+         exec('zl_lock','zl_common',,'R') &
+         _tex_locked>0
+      ||
+         _chk:=1;
+
+::       Sprawdzane zakończenie rejestrowania nagłówka
+         {? ZL.STAT_N='N'
+         || _can_continue:=0;
+            exec('komm_add','zl_common','Nie zakończono rejestracji nagłówka zlecenia.'@)
+         ?};
+
+::       Sprawdzenie czy zostało już zamknięte
+         {? ZL.STAN='Z'
+         || _can_continue:=0;
+            exec('komm_add','zl_common','Zlecenie jest już zamknięte.'@,1);
+            _result:=1
+         ?};
+
+         {? _can_continue>0
+         ||
+::          Kontrola zlecenia
+            _kontr:=exec('kontr_zamk','zl_common',{? _ask || 'R' || 'A' ?},0);
+            _choice:=0;
+            {? _kontr=2
+            || _ok:=1;_choice:=1
+            |? _kontr=1
+            || {? _ask>0
+               ||
+:: NUCO - zlecenia zamykamy zawsze z usunięciem procesów (jeśli ma o tym decydować użytkownik
+::                  {? _subzlec>0
+::                  || _ok:={? (_choice:=FUN.choice('Czy zamknąć zlecenie %1 i jego podzlecenia oraz usunąć powiązane z nimi zadania?'@[ZL.SYM]
+::                                                 ,,'Tylko zamknij'@,'Zamknij i usuń zadania'@)) || 1 || -1 ?}
+::                  || _ok:={? (_choice:=FUN.choice('Czy zamknąć zlecenie %1 oraz usunąć powiązane z nim zadania?'@[ZL.SYM]
+::                                                 ,,'Tylko zamknij'@,'Zamknij i usuń zadania'@)) || 1 || -1 ?}
+                  _choice:=2;
+                  {? _subzlec>0
+                  || _ok:={? FUN.ask('Czy zamknąć zlecenie %1 i jego podzlecenia oraz usunąć powiązane z nimi zadania?'@[ZL.SYM])
+                          ||  1
+                          || -1
+                          ?}
+                  || _ok:={? FUN.ask('Czy zamknąć zlecenie %1 oraz usunąć powiązane z nim zadania?'@[ZL.SYM])
+                          ||  1
+                          || -1
+                          ?}
+                  ?}
+               || _ok:=1
+               ?}
+            || _ok:=0
+            ?};
+
+            {? _ok>0
+            ||
+::             Czy uruchamiać cleanera dla zlecenia
+               {? _choice=2
+               || ZLEC.CLEANER:='T'
+               |? _choice=1
+               || ZLEC.CLEANER:='N'
+               |? _choice=0 & ZLEC.CLEANER=''
+               || ZLEC.CLEANER:='N'
+               ?};
+               {? _rec=0
+               ||
+::                Obowiązkowa kontrola rozliczenia partii jeżeli zlecenie partiowane
+::                lub którekolwiek z podzleceń partiowane
+                  {? ZL.RODZAJ='Z' | ZL.RODZAJ='N'
+                  ||
+                     _part_chk:=0;
+                     ZL.cntx_psh();
+                     ZL.index('NRNZL');
+                     ZL.prefix(ZL.UNRZL);
+                     {? ZL.first()
+                     || {!
+                        |? {? ZL.STAN='O' & exec('zlec_party','zl_common',ZL.ref)>0
+                           || _part_chk:=1
+                           ?};
+                           ZL.next()
+                        !}
+                     ?};
+                     ZL.cntx_pop();
+                     {? _part_chk>0
+                     || exec('creator_gr_load','magdok_partie',,ZL.ref())
+                     ?}
+                  ||
+                     {? exec('zlec_party','zl_common',ZL.ref)>0
+                     || _top_rodzaj:=exec('top_rodzaj','zl_link',ZL.ref());
+                        {? _top_rodzaj='N'
+                        ||
+::                         Dla zleceń niezależnych podzlecenia rozliczane osobno
+                           _top_level:=ZL.ref()
+                        ||
+::                         Dla zleceń złożonych podzlecenia rozliczane w ramach całego zlecenia złożonego
+                           _top_level:=exec('top_level','zl_link',ZL.ref())
+                        ?};
+                        exec('creator_gr_load','magdok_partie',,_top_level)
+                     ?}
+                  ?};
+
+                  _args:=exec('creator_args','magdok_partie');
+                  _args.MODE:='ZL';
+                  _args.KOM_AGR:=2;
+                  {? var_pres('CR_ENV')>100
+                  ||
+::                   Jesli nie było żadnych powiązań partii z rozchodami i zwrotami to umożliwiam siłową akceptację
+                     {? CR_ENV.TAB_ZPAR.size()=0 & CR_ENV.TAB_ZPAZ.size()=0
+                     || _args.FORCE:=1
+                     ?}
+                  ?};
+                  {? _ask>0
+                  || _args.SHOW:=1;
+                     _args.KOM_AKC:=_komm;
+                     _args.CHK_MODE:=2
+                  || _args.SHOW:=2;
+                     _args.KOM_AKC:=_komm;
+                     _args.CHK_MODE:=2
+                  ?};
+                  _ok:=exec('creator_gr_show','magdok_partie',_args)
+               ?};
+               ~~
+            ?};
+
+            {? _subzlec>0 & _ok>0
+            ||
+::             Zamknięcie podzleceń
+               ZL.cntx_psh();
+               ZL.index('NRNZL');
+               ZL.prefix(ZL.UNRZL);
+               {? ZL.first()
+               || {!
+                  |?
+::                   !!! REKURENCJA !!!
+                     {? exec('zl_zamknij','!tte_pzl_ezam',ZL.ref(),0,0,1,_isgroup)=0
+                     || _ok:=0
+                     || {? ZLEC.CLEANER='T' || exec('clean_record','#b__box',ZL.uidref(),0) ?}
+                     ?};
+                     ZL.next()
+                  !}
+               ?};
+               ZL.cntx_pop()
+            ?};
+
+::          Zamykane jest bieżące zlecenie
+            {? _ok>0 || _result:=exec('poj2end','!tte_pzl_ezam') ?};
+            {? _result & ZLEC.CLEANER='T' || exec('clean_record','#b__box',ZL.uidref(),0) ?}
+
+         ?}
+      ||
+::       Nie udało się zablokować zlecenia
+         exec('komm_add','zl_common','Nie udało się zablokować zlecenia'@)
+      ?};
+      exec('zl_unlock','zl_common',,'N');
+      exec('zl_unlock','zl_common',,'T');
+      exec('zl_unlock','zl_common',,'P');
+      exec('zl_unlock','zl_common',,'L');
+      exec('zl_unlock','zl_common',,'I');
+      exec('zl_unlock','zl_common',,'R');
+      {? _px_tex<>null()
+      || exec('unlock','px_tex',_tex_obj)
+      ?}
+   ?};
+
+   {? _komm>0 & _ok>=0
+   || KOMM.select()
+   ?}
+?};
+ZL.cntx_pop();
+_result
+
+
+\poj2end
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MLAK [2011]
+:: OPIS: Obsługa zamknięcia zlecenia.
+::       Kontekst wywołania - rekord ZL
+::   WY: 1 - udało się, 0 - nie udało się zamknąć zlecenia
+::  OLD: \poj2end/zlec4.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=1;
+
+do();
+
+ZL.cntx_psh();
+_var:=VAR.A_ZLEC;
+VAR.A_ZLEC:=ZL.ref();
+_stan_zl:=ZL.STAN;
+
+ZL.clear();
+ZL.STAN:='Z';
+ZL.NSTAN:=ZL.STAN+'_';
+ZL.PSTAN:=_stan_zl;
+ZL.HIDDEN:='N';
+ZL.CLOSED:=OPERATOR.USER;
+ZL.DO:=date();
+
+_ok:=exec('add_zwar_pos','zl_common','oz',0);
+
+{? _ok>0 || exec('ust_znac','zl_head') ?};
+
+{? _ok>0 || _ok:=ZL.put() ?};
+
+{? _ok>0 & ZL.SCEAN<>'' || exec('aktdeazl','magazyn_mob',ZL.SCEAN,ZL.KTM,ZL.STAN) ?};
+
+VAR.A_ZLEC:=_var;
+:: Aktualizacja obiektu planowanego dotyczącego zlecenia
+{? _ok>0
+|| _ok:=exec('zl2obj','px_obj');
+   {? _ok=0 || exec('komm_add','zl_common','Nie udało się zaktualizować obiektu planistycznego zlecenia.'@,2) ?}
+?};
+
+ZL.cntx_pop();
+ZL.get();
+
+:: Usuwanie rezerwacji
+{? _ok>0
+|| {? ZL.PSTAN='O' || exec('obl_prod','magazyn_stan',ZL.KTM,ZL.MG,2) ?};
+   exec('usurez','zamsiw_limit',ZL.ref(),null(),1);
+   exec('ZlecZK_Ns2Arch','!tte_pzl_ezam',ZL.ref());
+   exec('zl_delete_rez','zl_common',ZL.ref())
+?};
+_can_continue:=1;
+
+_can_del:=1;
+{? ZL.HWYK>0 & exec('get','#params',500621)<>'Z'
+||
+:: Zlecenie ma wykonania i synchronizacja wykonań plan->zlecenie, nie można usuwać
+:: bo znikną ZLGD i analiza zlecenia da koszt robocizny 0
+   _can_del:=0
+?};
+_mainver:=exec('get_mainversion','px_ver');
+
+:: Usuwanie zlecenia z planu
+{? ZL.TYP().PL_DEL='T'
+||
+   {? _can_del>0
+   ||
+::    1. Plan strategiczny
+      _px_obj:=exec('get_zl_object','px_obj',ZL.ref());
+      {? _px_obj<>null()
+      ||
+         PX_CONN.cntx_psh();
+         PX_CONN.index('VER');
+         PX_CONN.prefix(_mainver,_px_obj);
+         _ref_table:=exec('ref_table','#table');
+         {? PX_CONN.first()
+         || {!
+            |? _ref_table.add(PX_CONN.PX_GRP);
+               PX_CONN.next()
+            !}
+         ?};
+         _tab:=_ref_table.tab;
+         _px:=0;
+         {? _tab.first()
+         || _px:=1;
+            {!
+            |? _next:=0;
+               _ref_nxt:=null();
+               _tab.cntx_psh();
+               {? _tab.next()
+               || _ref_nxt:=_tab.ref()
+               ?};
+               _tab.cntx_pop();
+
+               _can_continue:=exec('clean_from_plan','px_grp',_tab.SQL,1,1,1,0);
+
+               {? _ref_nxt<>null()
+               || _next:=_tab.seek(_ref_nxt)
+               ?};
+               _next>0 & _can_continue>0
+            !}
+         ?};
+         {? _can_continue>0
+         || {? _tab.first()
+            || {!
+               |? _can_continue:=exec('delete','px_grp',_tab.SQL);
+                  _tab.next() & _can_continue>0
+               !}
+            ?}
+         ?};
+         {? _px>0
+         || {? _can_continue>0
+            || exec('add_zwar_pos','zl_common','pl',0,'Podczas zamykania usunięto automatycznie zlecenie z planu strateg.'@)
+            || exec('komm_add','zl_common','Nie udało się usunąć zlecenia z planu strategicznego.'@,2,1)
+            ?}
+         ?};
+         exec('il_plan_refresh','px_obj',_px_obj);
+         exec('planend_refresh','px_obj',_px_obj);
+         PX_CONN.cntx_pop()
+      ?};
+
+::    2. Plan operacyjny
+      PL_PART.cntx_psh();
+      PL_PART.index('ZL');
+      PL_PART.prefix(ZL.ref());
+:: NUCO - nie usuwamy z planu operacyjnego
+      {? PL_PART.first(); 0
+      || _can_continue:=exec('del_zlec','po_plan',$ZL.ref(),1);
+         {? _can_continue>0
+         || exec('add_zwar_pos','zl_common','pl',0,'Podczas zamykania usunięto automatycznie zlecenie z planu oper.'@)
+         || exec('komm_add','zl_common','Nie udało się usunąć zlecenia z planu operacyjnego.'@,2,1)
+         ?}
+      ?};
+      PL_PART.cntx_pop()
+   || exec('komm_add','zl_common','Nie udało się usunięcie z planu podczas zamykania zlecenia ze względu na parametr: %1.'@['500621'],2,1)
+   ?};
+
+:: Po usunięciu zlecenia z planu jeżeli zlecenie jest członkiem grupy operacji wzbudzam też usuwanie
+:: z planu grup operacji
+:: NUCO - nie usuwamy z planu operacyjnego
+   {? _can_continue>0 & exec('is_grop_member_planned','zl_grop'); 0
+   || _can_continue:=exec('delete_grop_plan_when_close','zl_grop')
+   ?};
+   ~~
+?};
+
+:: Usuwanie opóźnień z planu strategicznego - jeżeli jakieś były
+:: robimy to bezwarunkowo, bo te opóźnienia zostaną do usranej śmierci i będą zaśmiecały plan
+{? _can_del>0
+|| _px_obj:=exec('get_zl_object','px_obj',ZL.ref());
+   {? _px_obj<>null()
+   || PX_POZ.cntx_psh();
+      PX_POZ.index('STATUS3');
+      PX_CONN.cntx_psh();
+      PX_CONN.index('VER');
+      PX_CONN.prefix(_mainver,_px_obj);
+      {? var_pres('_ref_table')>100
+      || obj_del(_ref_table)
+      ?};
+      _ref_table:=exec('ref_table','#table');
+      {? PX_CONN.first()
+      || {!
+         |? _ref_table.add(PX_CONN.PX_GRP);
+            PX_CONN.next()
+         !}
+      ?};
+      {? var_pres('_tab')>100
+      || obj_del(_tab)
+      ?};
+      _tab:=_ref_table.tab;
+      _px:=0;
+      {? _tab.first()
+      ||
+         {!
+         |? _next:=0;
+            _ref_nxt:=null();
+            _tab.cntx_psh();
+            {? _tab.next()
+            || _ref_nxt:=_tab.ref()
+            ?};
+            _tab.cntx_pop();
+
+            _px_grp:=exec('FindAndGet','#table',PX_GRP,_tab.SQL,,,null);
+            {? _px_grp<>null()
+            || PX_POZ.prefix(_px_grp,exec('status_delay','px_poz'),);
+               {? PX_POZ.first()
+               || _px:=1;
+                  {!
+                  |? _next:=0;
+                     _ref_nxt:=null();
+                     PX_POZ.cntx_psh();
+                     {? PX_POZ.next()
+                     || _ref_nxt:=PX_POZ.ref()
+                     ?};
+                     PX_POZ.cntx_pop();
+
+                     _can_continue:=exec('status_set','px_poz',PX_POZ.ref(),exec('status_normal','px_poz'));
+                     {? _can_continue>0
+                     || _can_continue:=exec('status_update','px_poz',PX_POZ.ref(),,0)
+                     ?};
+
+                     {? _ref_nxt<>null()
+                     || _next:=PX_POZ.seek(_ref_nxt)
+                     ?};
+                     _next>0 & _can_continue>0
+                  !};
+                  {? _can_continue>0
+                  || _can_continue:=exec('status_rebuild','px_grp',PX_GRP.ref())
+                  ?}
+               ?}
+            ?};
+
+            {? _ref_nxt<>null()
+            || _next:=_tab.seek(_ref_nxt)
+            ?};
+            _next>0 & _can_continue>0
+         !}
+      ?};
+
+      {? _px>0
+      || {? _can_continue>0
+         || exec('add_zwar_pos','zl_common','pl',0,'Podczas zamykania usunięto opóźnienia z planu strateg.'@)
+         || exec('komm_add','zl_common','Nie udało się usunąć opóźnień z planu strategicznego.'@,2,1)
+         ?}
+      ?};
+      PX_POZ.cntx_pop();
+      PX_CONN.cntx_pop();
+      ~~
+   ?}
+?};
+
+:: Oznaczenie surowców w zamkniętym zleceniu - usunięcie z planu dostaw
+{? _ok>0
+|| ZLIM.cntx_psh();
+   ZLIM.index('ZN');
+   ZLIM.prefix(ZL.ref());
+   {? ZLIM.first()
+   || {!
+      |? {? ZLIM.LIMIT='T' & ZLIM.AKC='N' | ZLIM.LIMIT='N'
+         || ZLIM.AKC:='Z';
+            ZLIM.put()
+         ?};
+         ZLIM.next()
+      !}
+   ?};
+   ZLIM.cntx_pop()
+?};
+
+:: Archiwizacja technologii zlecenia
+{? _ok & ZL.TKTL<>null()
+||
+   _args:=exec('args_copy','tech_arch');
+   _args.TKTL_SRC:=ZL.TKTL;
+   _args.DELETE:=1;
+   _args.TRANS:=1;
+   _args.DIR:='ARCHIWUM';
+   _args.COPY_ACT:=0;
+   _args.MASK_SRC:=ref_name(ZL.TKTL)+3;
+:: Maska docelowa archiwum jest maską typu _14 gdzie 14 to rok zamknięcia zlecenia
+   _args.MASK_DST:='_'+(($(date()~1))+2);
+   {? exec('tktl_copy','tech_arch',_args)>0
+   || ~~
+   || _ok:=0;
+      exec('komm_add','zl_common','Nie udało się przesunąć technologii zlecenia do archiwum.'@,2)
+   ?}
+?};
+
+:: Usuwanie rozpisek rozliczeń surowców nielimitowanych wygenerowanych przy rejestracji wykonania
+:: oraz powiązanych z nimi rezerwacji
+{? _ok
+|| exec('del4ZLGD','zl_limit',2)
+?};
+
+{? _ok=0 || undo() ?};
+end();
+
+_ok
+
+

@@ -1,0 +1,603 @@
+:!UTF-8
+:: (c) Macrologic ERP by Asseco. Wszelkie prawa zastrzezone
+:: ===============================================
+:: Nazwa pliku: #abc_notify.fml
+:: Utworzony:   2020-02-14 [TNO]
+:: Wersja:      $Revision:  $ $Name:  $
+:: Zmiany:      $Date:  $ $Author:  $
+:: ===============================================
+:: ZAWARTOSC:   Narzedzie do obslugi powiadomien z portalu ABS
+::              Wykorzystuje dodatkowy modul JAR
+::              Wersja obsluguje wiele tenantow
+::              TYLKO DO UZYTKU WEWNETRZNEGO
+::
+::              wersja 1.3 wiele tenantow, dzialanie w tle
+::              wersja 1.4 debug mode (pisanie na konsole)
+::              wersja 1.5 environment, host dla kazdego tenanta
+
+:: ===============================================
+:: LONG_NAMES:  wymagany
+
+://jesli ta zmienna bedzie ustawiona na 1, to modul bedzie uruchamiany w trybie DEBUG
+_debug := 0;
+
+://wymagamy dlugich nazw
+{? cfg_info('long_names') <> '1' ||
+  _obj := json_parse('json';'
+    {
+      "Valid": 0,
+      "Reason": "LONG_NAMES_REQUIRED"
+    }
+  ');
+  return(_obj)
+?};
+
+:// DEV kasowanie zmiennej globalnej gdy _debug=1
+://globalna instancja
+{? ~_debug & var_pres('__ABCNOTIFY__') = type_of(obj_new(1))
+  & var_pres('__TYPE__', __ABCNOTIFY__) = type_of('') & __ABCNOTIFY__.__TYPE__ = '__ABCNOTIFY__'
+  & var_pres('Valid', __ABCNOTIFY__) = type_of(0) & __ABCNOTIFY__.Valid ||
+  return(__ABCNOTIFY__)
+?};
+
+{? var_pres('__ABCNOTIFY__') > 0 || &__ABCNOTIFY__ ?};
+
+:> stale, wlasciwosci i metody
+__ABCNOTIFY__ := json_parse('json';'
+  {
+    "__TYPE__": "__ABCNOTIFY__",
+    "__VERSION__": 1.5,
+
+    "CONST": {
+      "STATE": {
+        "UNKNOWN": "INITIAL",
+        "STARTING": "STARTING",
+        "RESTARTING": "RESTARTING",
+        "CONNECTED": "CONNECTED",
+        "REGISTERED": "REGISTERED",
+        "WAITING": "WAITING",
+        "NOTIFIED": "NOTIFIED",
+        "DISCONNECTED": "DISCONNECTED",
+        "ERROR_CONNECT_UNKNOWN_HOST": "ERROR_CONNECT_UNKNOWN_HOST",
+        "ERROR_CONNECT_SSL_FAILED": "ERROR_CONNECT_SSL_FAILED",
+        "ERROR_CONNECT_FAILED": "ERROR_CONNECT_FAILED",
+        "ERROR_SOCKET_WRITE_ERROR": "ERROR_SOCKET_WRITE_ERROR",
+        "ERROR_SOCKET_READ_ERROR": "ERROR_SOCKET_READ_ERROR",
+        "ERROR_SOCKET_ERROR": "ERROR_SOCKET_ERROR",
+        "ERROR_SOCKET_TIMEOUT": "ERROR_SOCKET_TIMEOUT",
+        "ERROR_FILE_WRITE_ERROR": "ERROR_FILE_WRITE_ERROR"
+      }
+    },
+
+    "Valid": 0,
+    "Reason": "",
+    "Debug": 0,
+    
+    "Error": {
+      "return": null
+    },
+
+    "Host": "abc-notifications.assecobs.pl",
+    "Environment": "",
+    "TenantData": null,
+    "Timeout": 3600,
+    
+    "TempDir": null,
+    "ClientPrefix": "",
+    "PathSeparator": null,
+    "CmdLine": null,
+    "Notifications": null,
+
+    "setHost": null,
+    "setEnvironment": null,
+    "setTenantIds": null,
+    "setTenantData": null,
+    "setTimeout": null,
+    "start": null,
+    "stop": null,
+    "getState": null,
+    "waitForNotification": null,
+
+    "getWorkDir": null,
+    "getLogPath": null
+  }
+');
+
+:// DEV walidacja JSON
+{? var_pres('__ABCNOTIFY__') = type_of(~~) || msg('JSON_PARSE_ERROR'); return ?};
+
+__ABCNOTIFY__.Debug := _debug;
+
+:> === OBSLUGA BLEDOW ===
+
+:> .Error.return([return], [reason])
+__ABCNOTIFY__.Error.return :=
+:: ustawia powod i zwraca wartosc
+"
+  _ret := {? var_pres('_a') > 0 || _a || ~~ ?};
+  _reason := '';
+  {? var_pres('_b') = type_of('') ||
+    _reason := _b
+  ?};
+
+  __ABCNOTIFY__.Reason := _reason;
+  return(_ret)
+";
+
+:> === wlasciwosci dynamiczne ===
+__ABCNOTIFY__.ClientPrefix := 8 + hash($utc_get);
+:// DEV
+://__ABCNOTIFY__.ClientPrefix := 'abc';
+
+__ABCNOTIFY__.TempDir := fmk_tmp_dir();
+{? type_of(__ABCNOTIFY__.TempDir) = type_of(~~) ||
+  return(__ABCNOTIFY__.Error.return(__ABCNOTIFY__, 'UNABLE_CREATE_TEMP_DIR'))
+?};
+
+:// DEV
+://__ABCNOTIFY__.TempDir := obj_new('get_path');
+://__ABCNOTIFY__.TempDir.get_path := "'c:\\\\temp'";
+
+:> sprawdzenie srodowiska uruchomieniowego
+{? sys_name(1) = 'WINDOWS' ||
+  _sep := '\\';
+:// DEV mjrun gdy _debug=1, mjrunw docelowo
+  _mjrun := {? _debug || 'mjrun.exe' || 'mjrunw.exe' ?}
+||
+  _sep := '/';
+  _mjrun := 'MacroJRUN'
+?};
+
+__ABCNOTIFY__.PathSeparator := _sep;
+
+_exe_dir := exe_dir(1); {? _exe_dir + 1 <> _sep || _exe_dir += _sep ?};
+_mjrun := _exe_dir + _mjrun;
+{? fexists(_mjrun) <> 1 ||
+  return(__ABCNOTIFY__.Error.return(__ABCNOTIFY__, 'MACRO_JRUN_NOT_FOUND'))
+?};
+
+_jar := 'AbcNotifierClientMultiWatch.jar';
+_jar_dir := pth_dir(_jar); {? _jar_dir + 1 <> _sep || _jar_dir += _sep ?};
+_jar := _jar_dir + _jar;
+{? fexists(_jar) <> 1 ||
+  return(__ABCNOTIFY__.Error.return(__ABCNOTIFY__, 'ABC_NOTIFIER_CLIENT_JAR_NOT_FOUND'))
+?};
+
+__ABCNOTIFY__.CmdLine := '"%1" -wait -java -jar "%2"'[_mjrun, _jar];
+_result := system(__ABCNOTIFY__.CmdLine, 1);
+_version := (_result - 100) / 10;
+{? _version <> __ABCNOTIFY__.__VERSION__ ||
+  return(__ABCNOTIFY__.Error.return(__ABCNOTIFY__, 'ABC_NOTIFIER_CLIENT_UNKNOWN_VERSION'))
+?};
+__ABCNOTIFY__.CmdLine := gsub(__ABCNOTIFY__.CmdLine, '-wait ', '');
+
+:> .getWorkDir()
+__ABCNOTIFY__.getWorkDir :=
+:: zwraca pelna sciezke do katalogu roboczego
+"
+  {? ~__ABCNOTIFY__.Valid || return(__ABCNOTIFY__.Error.return('', 'OBJECT_NOT_VALID')) ?};
+  
+  return(__ABCNOTIFY__.Error.return(__ABCNOTIFY__.TempDir.get_path()))
+";
+
+:> .getLogPath()
+__ABCNOTIFY__.getLogPath :=
+:: zwraca pelna sciezke do pliku logu
+"
+  {? ~__ABCNOTIFY__.Valid || return(__ABCNOTIFY__.Error.return('', 'OBJECT_NOT_VALID')) ?};
+  
+  _ret := '%1%2%3.log'[
+    __ABCNOTIFY__.TempDir.get_path(),
+    __ABCNOTIFY__.PathSeparator,
+    __ABCNOTIFY__.ClientPrefix
+  ];
+
+  return(__ABCNOTIFY__.Error.return(_ret))
+";
+
+:> .setHost(host)
+__ABCNOTIFY__.setHost :=
+:: ustawienie adresu serwera powiadomien (Timeout)
+:: adres ten bedzie uzywany w przypadku, gdy przy dodawaniu tenantow, nie podano hosta
+:: zwraca poprzednia wartosc
+"
+  {? ~__ABCNOTIFY__.Valid || return(__ABCNOTIFY__.Error.return(0, 'OBJECT_NOT_VALID')) ?};
+
+  {? var_pres('_a') <> type_of('') || return(__ABCNOTIFY__.Error.return(0, 'HOST_BAD_TYPE')) ?};
+  _host := _a;
+: // na razie walidujemy tylko, czy host nie jest pusty
+  {? _host = '' || return(__ABCNOTIFY__.Error.return(0, 'BAD_TIMEOUT_VALUE')) ?};
+
+  _old := __ABCNOTIFY__.Host;
+  __ABCNOTIFY__.Host := _host;
+
+  return(__ABCNOTIFY__.Error.return(_old))
+";
+
+:> .setEnvironment(host)
+__ABCNOTIFY__.setEnvironment :=
+:: ustawienie srodowiska definiowanych powiadomien (Environment)
+:: wartosc ta bedzie uzywana w przypadku, gdy przy dodawaniu tenantow, nie podano srodowiska
+:: zwraca poprzednia wartosc
+"
+  {? ~__ABCNOTIFY__.Valid || return(__ABCNOTIFY__.Error.return(0, 'OBJECT_NOT_VALID')) ?};
+
+  {? var_pres('_a') <> type_of('') || return(__ABCNOTIFY__.Error.return(0, 'ENVIRONMENT_BAD_TYPE')) ?};
+  _env := _a;
+
+  _old := __ABCNOTIFY__.Environment;
+  __ABCNOTIFY__.Environment := _env;
+
+  return(__ABCNOTIFY__.Error.return(_old))
+";
+
+:> .setTenantIds(tenant_id / tenant_ids, [environment], [host])
+__ABCNOTIFY__.setTenantIds :=
+:: ustawienie parametrow powiadomienia (TenantData)
+:: zwraca poprzednia liste tenantow
+"
+  {? __ABCNOTIFY__.Valid  = 0 || return(__ABCNOTIFY__.Error.return(~~, 'OBJECT_NOT_VALID'))
+  |? __ABCNOTIFY__.Valid  <> 1 || return(__ABCNOTIFY__.Error.return(~~, 'ALREADY_STARTED')) ?};
+
+: //jesli podano pojedynczy Id jako napis, to robimy z niego tablice jednoelementowa
+  {? var_pres('_a') = type_of('') ||
+    _array := obj_new(1);
+    _array[1] := _a;
+    _a := _array;
+    &_array
+  ?};
+
+: //environment
+  {? var_pres('_b') <= 0 || _env := __ABCNOTIFY__.Environment
+  |? var_pres('_b') <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_BAD_ENVIRONMENT_TYPE'))
+  ||
+    _env := _b
+  ?};
+
+: //host
+  {? var_pres('_c') <= 0 || _host := __ABCNOTIFY__.Host
+  |? var_pres('_c') <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_BAD_HOST_TYPE'))
+  |? _c = '' || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_BAD_HOST_VALUE'))
+  ||
+    _host := _c
+  ?};
+
+  {? var_pres('_a') <> type_of(obj_new(1)) || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_BAD_IDS_TYPE')) ?};
+  _array := _a;
+  _data := obj_new(obj_len(_array));
+  {! _i := 1 .. obj_len(_array) |!
+    {? var_pres('[%1]'[$_i], _array) <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_BAD_ID_TYPE')) ?};
+    _id := |_array[_i]; {! |? _id + 1 = ' ' |! _id := _id - 1 !};
+    {? _id = '' || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_BAD_ID_VALUE')) ?};
+    _data[_i] := obj_new('host', 'environment', 'tenant');
+    _data[_i].host := _host;
+    _data[_i].environment := _env;
+    _data[_i].tenant := _id
+  !};
+
+  _old := __ABCNOTIFY__.TenantData;
+  {? type_of(__ABCNOTIFY__.TenantData) = type_of(obj_new(1)) || obj_del(__ABCNOTIFY__.TenantData) ?};
+  __ABCNOTIFY__.TenantData := _data;
+
+  return(__ABCNOTIFY__.Error.return(_old))
+";
+
+:> .setTenantData(tenant_data)
+__ABCNOTIFY__.setTenantData :=
+:: ustawienie parametrow powiadomienia (TenantData)
+:: zwraca poprzednia liste tenantow
+"
+  {? __ABCNOTIFY__.Valid  = 0 || return(__ABCNOTIFY__.Error.return(~~, 'OBJECT_NOT_VALID'))
+  |? __ABCNOTIFY__.Valid  <> 1 || return(__ABCNOTIFY__.Error.return(~~, 'ALREADY_STARTED')) ?};
+
+  {? var_pres('_a') <> type_of(obj_new(1)) || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_DATA_TYPE')) ?};
+
+  _array := _a;
+  _data := obj_new(obj_len(_array));
+  {! _i := 1 .. obj_len(_array) |!
+    {? type_of(_array[_i]) = type_of('') ||
+:     //jesli elementem jest pojedynczy napis
+      _id := |_array[_i]; {! |? _id + 1 = ' ' |! _id := _id - 1 !};
+      {? _id = '' || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_ID_VALUE')) ?};
+      _data[_i] := obj_new('host', 'environment', 'tenant');
+      _data[_i].host := __ABCNOTIFY__.Host;
+      _data[_i].environment := __ABCNOTIFY__.Environment;
+      _data[_i].tenant := _id
+    
+    |? obj_ntab(_array[_i]) ||
+:     //jesli elementem jest struktura z nazwanymi polami
+      {? var_pres('tenant', _array[_i]) >= 0 ||
+        {? var_pres('tenant', _array[_i]) <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_ID_TYPE')) ?};
+        _id := |_array[_i].tenant; {! |? _id + 1 = ' ' |! _id := _id - 1 !};
+        {? _id = '' || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_ID_VALUE')) ?}
+      ||
+        return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_MISSING_ID_FIELD'))
+      ?};
+
+      _env := __ABCNOTIFY__.Environment;
+      {? var_pres('environment', _array[_i]) > 0 ||
+        {? var_pres('environment', _array[_i]) <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_ENVIRONMENT_TYPE')) ?};
+        _env := _array[_i].environment
+      ?};
+
+      _host := __ABCNOTIFY__.Host;
+      {? var_pres('host', _array[_i]) > 0 ||
+        {? var_pres('host', _array[_i]) <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_HOST_TYPE')) ?};
+        _host := _array[_i].host;
+        {? _host = '' || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_HOST_VALUE')) ?}
+      ?};
+
+      _data[_i] := obj_new('host', 'environment', 'tenant');
+      _data[_i].host := _host;
+      _data[_i].environment := _env;
+      _data[_i].tenant := _id
+    
+    |? type_of(_array[_i]) = type_of(obj_new(1)) ||
+:     //jesli elementem jest tablica elementow
+      {? var_pres('[1]', _array[_i]) <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_ID_TYPE')) ?};
+      _id := |_array[_i][1]; {! |? _id + 1 = ' ' |! _id := _id - 1 !};
+      {? _id = '' || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_ID_VALUE')) ?};
+
+      _env := __ABCNOTIFY__.Environment;
+      {? var_pres('[2]', _array[_i]) > 0 ||
+        {? var_pres('[2]', _array[_i]) <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_ENVIRONMENT_TYPE')) ?};
+        _env := _array[_i][2]
+      ?};
+
+      _host := __ABCNOTIFY__.Host;
+      {? var_pres('[3]', _array[_i]) > 0 ||
+        {? var_pres('[3]', _array[_i]) <> type_of('') || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_HOST_TYPE')) ?};
+        _host := _array[_i][3];
+        {? _host = '' || return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_HOST_VALUE')) ?}
+      ?};
+
+      _data[_i] := obj_new('host', 'environment', 'tenant');
+      _data[_i].host := _host;
+      _data[_i].environment := _env;
+      _data[_i].tenant := _id
+
+    ||
+      return(__ABCNOTIFY__.Error.return(~~, 'TENANT_DATA_BAD_DATA_VALUE'))
+    ?}
+  !};
+
+  _old := __ABCNOTIFY__.TenantData;
+  {? type_of(__ABCNOTIFY__.TenantData) = type_of(obj_new(1)) || obj_del(__ABCNOTIFY__.TenantData) ?};
+  __ABCNOTIFY__.TenantData := _data;
+
+  return(__ABCNOTIFY__.Error.return(_old))
+";
+
+:> .setTimeout(timeout)
+__ABCNOTIFY__.setTimeout :=
+:: ustawienie parametrow powiadomienia (Timeout)
+:: zwraca poprzednia wartosc
+"
+  {? ~__ABCNOTIFY__.Valid || return(__ABCNOTIFY__.Error.return(0, 'OBJECT_NOT_VALID')) ?};
+
+  {? var_pres('_a') <> type_of(0) || return(__ABCNOTIFY__.Error.return(0, 'TIMEOUT_BAD_TYPE')) ?};
+  _timeout := floor(_a);
+  {? _timeout <= 0 || return(__ABCNOTIFY__.Error.return(0, 'TIMEOUT_BAD_VALUE')) ?};
+
+  _old := __ABCNOTIFY__.Timeout;
+  __ABCNOTIFY__.Timeout := _timeout;
+
+  return(__ABCNOTIFY__.Error.return(_old))
+";
+
+:> .start()
+__ABCNOTIFY__.start :=
+:: uruchomienie modulu ze sprawdzeniem stanu
+:: zwraca liczbe oczekujacych watkow (powinna byc taka sama jak tenantow)
+"
+  {? __ABCNOTIFY__.Valid  = 0 || return(__ABCNOTIFY__.Error.return(0, 'OBJECT_NOT_VALID'))
+  |? __ABCNOTIFY__.Valid  <> 1 || return(__ABCNOTIFY__.Error.return(0, 'ALREADY_STARTED')) ?};
+
+  {? type_of(__ABCNOTIFY__.TenantData) <> type_of(obj_new(1)) ||
+    return(__ABCNOTIFY__.Error.return(0, 'NO_TENANT_IDS'))
+  ?};
+
+  _workdir := __ABCNOTIFY__.TempDir.get_path();
+: //usuwamy wszystkie pliki robocze, ktore mogly zostac po wczesniejszym wywolaniu
+  _Files := fdir(_workdir, 1);
+  _Files.prefix(0);
+  {! |? _Files.find_key(__ABCNOTIFY__.ClientPrefix + '.') |!
+    {? _Files.NAME <> '%1.log'[__ABCNOTIFY__.ClientPrefix] ||
+      ferase('%1%2%3'[_workdir, __ABCNOTIFY__.PathSeparator, _Files.NAME])
+    ?};
+    _Files.del()
+  !};
+  &_Files;
+  
+: //tworzymy plik z danymi tenantow
+  _args_filename := '%1%2%3.ARGS'[_workdir, __ABCNOTIFY__.PathSeparator, __ABCNOTIFY__.ClientPrefix];
+  _args := fopen(_args_filename, 'Uw',, 1, 1);
+  {? ~_args.is_open() || return(__ABCNOTIFY__.Error.return(0, 'ERROR_CREATING_ARGS_FILE')) ?};
+  {! _i := 1 .. obj_len(__ABCNOTIFY__.TenantData) |!
+    _args.fwrite(__ABCNOTIFY__.TenantData[_i].host);
+    _args.fwrite(__ABCNOTIFY__.TenantData[_i].environment);
+    _args.fwrite(__ABCNOTIFY__.TenantData[_i].tenant)
+  !};
+  _args.fclose();
+
+: //uruchamiamy modul
+  _cmd := __ABCNOTIFY__.CmdLine;
+  {? __ABCNOTIFY__.Debug || _cmd += ' --debug' ?}; '/* --debug */';
+  _cmd += ' ""%1""'[_workdir]; '/* workDir */';
+  _cmd += ' ""%1""'[__ABCNOTIFY__.ClientPrefix]; '/* clientId */';
+  _cmd += ' ""%1""'[spli_str(username, '.')[2]]; '/* watchProcessId */';
+  
+  _res := system(_cmd);
+
+: //wynik wywolania sprawdzamy tylko dla Windows, bo dla Linuksa zwraca kod wynikowy MacroJRUN, a nie 1/0
+  {? sys_name(1) = 'WINDOWS' & ~_res || return(__ABCNOTIFY__.Error.return(0, 'ERROR_STARTING_MODULE')) ?};
+
+  __ABCNOTIFY__.Valid := 2;
+
+: //odczytujemy state uruchomionych watkow
+  _states := obj_new(1);
+  _waiting := 0;
+  _error := 0;
+  {! _try := 1 .. 5 |?
+    delay(1);
+    &_states; _states := __ABCNOTIFY__.getState();
+    {? type_of(_states) = type_of(obj_new(1)) ||
+      _waiting := 0;
+      _error := 0;
+      {! _i := 1 .. obj_len(_states) |!
+        {? _states[_i].state = __ABCNOTIFY__.CONST.STATE.WAITING || _waiting += 1 ?};
+        {? _states[_i].state * 'ERRROR' = 1 || _error += 1 ?}
+      !};
+      _waiting + _error < obj_len(__ABCNOTIFY__.TenantData)
+    ||
+      1
+    ?}
+  !};
+
+  _reason := {? _error || 'ERRORS_DURING_START' || '' ?};
+
+  return(__ABCNOTIFY__.Error.return(_waiting, _reason))
+";
+
+:> .stop()
+__ABCNOTIFY__.stop :=
+:: zatrzymanie modulu
+:: zwraca informacje o wyniku operacji
+"
+  {? __ABCNOTIFY__.Valid  = 0 || return(__ABCNOTIFY__.Error.return(0, 'OBJECT_NOT_VALID'))
+  |? __ABCNOTIFY__.Valid  <> 2 || return(__ABCNOTIFY__.Error.return(0, 'NOT_STARTED')) ?};
+
+  _workdir := __ABCNOTIFY__.TempDir.get_path();
+: //wstawiamy plik polecenia
+  _command := '%1%2%3.STOP'[_workdir, __ABCNOTIFY__.PathSeparator, __ABCNOTIFY__.ClientPrefix];
+  fopen(_command, 'bw', 0, 1, 1).fclose();
+
+  _break := 0;
+  {! _try := 1 .. 5 |?
+    delay(1);
+    _break := (fexists(_command) = 0);
+
+    ~_break
+  !};
+
+  {? _break || __ABCNOTIFY__.Valid := 1 ?};
+
+  return(__ABCNOTIFY__.Error.return(_break))
+";
+
+:> .getState()
+__ABCNOTIFY__.getState :=
+:: pobranie informacji o stanie watkow klientow
+:: zwraca tablice par [tenant, state]
+:: statusy sa z listy .CONST.STATE
+"
+  {? __ABCNOTIFY__.Valid  = 0 || return(__ABCNOTIFY__.Error.return(~~, 'OBJECT_NOT_VALID'))
+  |? __ABCNOTIFY__.Valid  <> 2 || return(__ABCNOTIFY__.Error.return(~~, 'NOT_STARTED')) ?};
+
+  _workdir := __ABCNOTIFY__.TempDir.get_path();
+: //wstawiamy plik polecenia
+  _command := '%1%2%3.STATE'[_workdir, __ABCNOTIFY__.PathSeparator, __ABCNOTIFY__.ClientPrefix];
+  fopen(_command, 'bw', 0, 1, 1).fclose();
+
+: //czekamy na plik odpowiedzi
+  _prefix := '%1.state.'[__ABCNOTIFY__.ClientPrefix];
+  _Files := obj_new(1);
+  _break := 0;
+  {! _try := 1 .. 10 |?
+    delay(, 500);
+    &_Files; _Files := fdir(_workdir, 1);
+    _break := _Files.find_key(0, _prefix);
+    
+    ~_break
+  !};
+  {? ~_break || return(__ABCNOTIFY__.Error.return(~~, 'ERROR_GET_STATE')) ?};
+
+: //odczytujemy statusy z najswiezszego pliku
+  _Files.prefix(0, _prefix);
+  _Files.last();
+
+  _response := '%1%2%3'[_workdir, __ABCNOTIFY__.PathSeparator, _Files.NAME];
+  _file := fopen(_response, 'ur', 0, 1, 1);
+  _states := obj_new(obj_len(__ABCNOTIFY__.TenantData));
+  {! _i := 1 .. obj_len(_states) |!
+    _states[_i] := obj_new('host', 'environment', 'tenant', 'state');
+    _states[_i].host := _file.fread();
+    _states[_i].environment := _file.fread();
+    _states[_i].tenant := _file.fread();
+    _states[_i].state := _file.fread()
+  !};
+  _file.fclose();
+  ferase(_response);
+  
+  return(__ABCNOTIFY__.Error.return(_states))
+";
+
+:> .waitForNotification([timeout])
+__ABCNOTIFY__.waitForNotification :=
+:: uruchomienie oczekiwania i zwrocenie wyniku jako tekstu
+:: zwaraca 1 jak przyszlo powiadomienia 0 w .p.p
+"
+  {? __ABCNOTIFY__.Valid  = 0 || return(__ABCNOTIFY__.Error.return(~~, 'OBJECT_NOT_VALID'))
+  |? __ABCNOTIFY__.Valid  <> 2 || return(__ABCNOTIFY__.Error.return(~~, 'NOT_STARTED')) ?};
+
+  {? type_of(__ABCNOTIFY__.Notifications) = type_of(obj_new(1)) ||
+    obj_del(__ABCNOTIFY__.Notifications);
+    __ABCNOTIFY__.Notifications := ~~
+  ?};
+
+  {? var_pres('_a') = type_of(0) & __ABCNOTIFY__.setTimeout(_a) = 0 ||
+:   //Reason bedzie juz ustawiony
+    return(0)
+  ?};
+
+  _workdir := __ABCNOTIFY__.TempDir.get_path();
+  _prefix := '%1.notify.'[__ABCNOTIFY__.ClientPrefix];
+  _Files := obj_new(1);
+  _wait_end := floor(utc_get()) + __ABCNOTIFY__.Timeout + 1;
+  {! |?
+    &_Files; _Files := fdir(_workdir, 1);
+    _break := _Files.find_key(0, _prefix);
+
+    {? ~_break ||
+      delay(1);
+      {? utc_get() > _wait_end || _break := 2 ?}
+    ?};
+
+    ~_break
+  !};
+
+  {? _break = 2 || return(__ABCNOTIFY__.Error.return(~~, 'TIMEOUT')) ?};
+
+: //pobieramy z plikow powiadomienia
+  _Files.prefix(0, _prefix);
+  _notifications := obj_new(_Files.size());
+  _file := obj_new(1);
+  _i := 0;
+  {? _Files.first() ||
+    {! |?
+      _filename := '%1%2%3'[_workdir, __ABCNOTIFY__.PathSeparator, _Files.NAME];
+      &_file; _file := fopen(_filename, 'ur', 0, 1, 1);
+      {? _file.is_open() ||
+        _i += 1;
+        _notifications[_i] := obj_new('host', 'environment', 'tenant', 'notification');
+        _notifications[_i].host := _file.fread();
+        _notifications[_i].environment := _file.fread();
+        _notifications[_i].tenant := _file.fread();
+        _notifications[_i].notification := _file.fread();
+        _file.fclose()
+      ?};
+      ferase(_filename);
+      _Files.next()
+    !}
+  ?};
+
+ __ABCNOTIFY__.Notifications := _notifications;
+
+ return(__ABCNOTIFY__.Error.return(__ABCNOTIFY__.Notifications, 'NOTIFIED'))
+";
+
+__ABCNOTIFY__.Valid := 1;
+
+return(__ABCNOTIFY__)
+
+:Sign Version 2.0 jowisz:1045 2022/06/30 14:23:08 9fcc596044586eee02a0a384e0491487253cffa3da883feb95dd0d0e480c7f3dff32283f367e7f60ed1ae2361d23e2c25e00cb8f8b58b6a114ef6d55988ccc2a675ffde535bf88d55ea742960fa94fbf63ad54c1a6ac14283ce12c41a7919bad7097c44d8ee60eb33d38de349cccab7e7ee10be50fd24c28f73b8f32a5ced62a

@@ -1,0 +1,211 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #lock.fml
+:: Utworzony: 29.01.2021
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Formuły wykorzystywane do obsługi tymczasowego blokowania dostępu do zasobów.
+::======================================================================================================================
+
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.14]
+:: OPIS: Formuła tworzy "obiekt" do obsługi tymczasowego blokowania dostępu do zasobu.
+::       Zasobem może być:
+::          * Określona funkcjonalność. Zależy nam, aby dana funkcjonalność mogła być uruchomiona (jednocześnie)
+::            wyłącznie przez jednego użytkownika.
+::          * Plik tekstowy. Chcemy ustrzec się przed nadpisaniem zmienionej zawartości pliku.
+::            Niepożądany scenariusz, przed którym chcemy się bronić:
+::             1. Plik odczytuje i zmienia użytkownik 1.
+::             2. Plik odczytuje i zmienia użytkownik 2.
+::             3. Plik zapisuje użytkownik 1.
+::             4. Plik zapisuje użytkownik 2 nadpisująć zmiany wprowadzone przez użytkownika 1, nawet o tym nie wiedząc.
+::       Obiekt oferuje dwie metody:
+::          lock(k1[,k2[,k3[,k4[,...]]]])
+::             Metoda blokuje dostęp do funkcjonalności identyfikowanej przekazanymi parametrami, które powinny
+::             definiować zakres dostępu / blokady.
+::             Przykłady
+::                .lock('DefiniowanieWaznychParametrow')
+::                   Funkcjonalność 'DefiniowanieWaznychParametrow' jest blokowana w ramach całego systemu.
+::                .lock(_firma,_name)
+::                   Funkcjonalność _name jest blokowana w ramach każdej firmy. Oznacza to, że funkcjonalność może być
+::                   jednocześnie wykonywana przez użytkowników pracujących w różnych firmach, ale w ramach jednej
+::                   firmy może jej używać tylko jeden użytkownik (jedna sesja).
+::                .lock(_user,_name)
+::                .lock(_firma,_user,_name)
+::
+::          unlock([k1[,k2[,k3[,k4[,...]]]]])
+::             Metoda zdejmuje wcześniej założoną blokadę.
+::             Wartość parametrów musi być identyczna jak w wywołaniu metody lock().
+::             Jeżeli wszystkie parametry zostaną pominięte, to nastąpi próba odblokowania zasobu, który był blokowany
+::             jako ostatni. Metoda NIE obsługuje jednak stosu wywołań. Prawidłowe są zatem wywołania:
+::                {? _funkc.lock(_n1)
+::                || ...
+::                   _funkc.unlock()            <-- Brak argumentów
+::                ?};
+::                {? _funkc.lock(_n2)
+::                || ...
+::                   _funkc.unlock()            <-- Brak argumentów
+::                ?};
+::
+::             Jeżeli jednak występuje konieczność zagnieżdzania wywołań, to parametry MUSZĄ być podawane:
+::             -+------------------------------+------------------------------+------------------------------
+::              |   A. Znakomicie              |   B. Poprawnie               |   C. Źle
+::             -+------------------------------+------------------------------+------------------------------
+::             1|   {? _funkc.lock(_n1)        |   {? _funkc.lock(_n1)        |   {? _funkc.lock(_n1)
+::             2|   || ...                     |   || ...                     |   || ...
+::             3|      {? _funkc.lock(_n2)     |      {? _funkc.lock(_n2)     |      {? _funkc.lock(_n2)
+::             4|      || ...                  |      || ...                  |      || ...
+::             5|         _funkc.unlock(_n2)   |         _funkc.unlock()      |         _funkc.unlock()
+::             6|      ?};                     |      ?};                     |      ?};
+::             7|      _funkc.unlock(_n1)      |      _funkc.unlock(_n1)      |      _funkc.unlock()
+::             8|   ?}                         |   ?}                         |   ?}
+::
+::             Kolumna A zawiera pełne wywołania, nie pozostawiając wątpliwości przy identyfikowaniu funkcjonalności.
+::             W kolumnie B, w linii nr 5 zrezygnowaliśmy z parametrów, ale ponieważ ostatnio blokwaną funkcjonalnością
+::             była funkcjonalność _n2 (linia nr 3), to ten kod również zadziała.
+::             Pominięcie parametrów w liniach nr 5 i 7 w kolumnie C jest błędem. Funkcjonalność _n1 NIE zostanie
+::             odblokowana w ramach wykonania linii nr 7.
+::
+::
+::       UWAGI
+::          1. Funkcjonalność wymaga silnika 20.14 (obsługa tabel tymczasowych na serwerze).
+::          2. W zmiennej _TABGLOB znajduje się uchwyt dowolnej niemaskowalnej tabeli globalnej.
+::             Technicznie: zostanie ona użyta jako semafor.
+::          3. Usunięcie z pamięci zwracanego "obiektu" automatycznie odblokowuje funkcjonalność!
+::          4. Obsługa tłumaczeń tekstów wyświetlanych w ramach formuł wewnętrznych wymaga "powtórzenia" komunikatów
+::             (patrz: fragmenty kodu poprzedzone linią rozpoczynającą się od ':: @').
+::
+::   WE: [_a] [NUMBER] - Tryb wsadowy, bez komunikatów [0*/1].
+::       [_b] [STRING] - Tytuł / nazwa funkcjonalności. Jeżeli _a=0, to parametr nie ma znaczenia. [domyślnie: ''].
+::   WY: Uchwyt obiektu.
+::----------------------------------------------------------------------------------------------------------------------
+_batch:=var_pres('_a')=type_of(0) & _a;
+_title:={? var_pres('_b')=type_of('') || _b || '' ?};
+
+_TABGLOB:=SYSLOG;
+
+_funkc:=obj_new('MSG','TITLE','OK','TAB','HASH','lock','unlock');
+_funkc.MSG:=~_batch;
+_funkc.TITLE:=_title;
+_funkc.OK:=0;
+:: Wstępne wartości "metod".
+_funkc.lock:="0";
+_funkc.unlock:="0";
+
+_ident:='lock_resource';
+_STLIST:=st_list(_ident,0);
+_TAB:={? _STLIST.first() || st_open(_STLIST.IDENT) || ~~ ?};
+obj_del(_STLIST);
+{? type_of(_TAB)=type_of(~~)
+:: Tabeli na serwerze nie ma, żeby ją utworzyć potrzebujemy wyłączności.
+|| {? ~(_funkc.OK:=_TABGLOB.lock(1,1,1))
+   || {? _funkc.MSG
+      || {? _funkc.TITLE=''
+         || FUN.emsg('Dostęp do funkcjonalności nie jest możliwy.\nSpróbuj ponownie za chwilę.'@)
+         || FUN.emsg('Dostęp do funkcjonalności "%1" nie jest możliwy.\nSpróbuj ponownie za chwilę.'@ [_funkc.TITLE])
+         ?}
+      ?};
+      return(_funkc)
+   ?};
+   _STLIST:=st_list(_ident,0);
+   _TAB:={? _STLIST.first() || st_open(_STLIST.IDENT) || ~~ ?};
+   {? type_of(_TAB)=type_of(~~)
+   || _TAB:=st_create(1,
+         'HASH','STRING[40]','Odcisk klucza funkcjonalności',
+         'SES_ID','STRING[11]','Identyfikator sesji',
+         'TM_STAMP','REAL','Znacznik czasowy początku blokady'
+      );
+      _TAB.st_id_make(_TABGLOB.name(0),_ident,-1)
+   ?};
+   _TABGLOB.unlock()
+|| _funkc.OK:=1
+?};
+
+_funkc.TAB:=_TAB;
+
+_a2s:="
+   {? ~.OK || return(0) ?};
+   _key:='';
+   {! _lp:=1 .. _
+   |! _val:=_[_lp];
+      _type:=type_of(_val);
+      _key+=
+         {? _type=1 | _type=3 | _type=4 | _type=7 || $_val
+         |? _type=2 || _val
+         |? _type=5 || _val$3
+         || '~'
+         ?}+'^'
+   !};
+   _hash:=hash(_key);
+";
+
+:: @
+'Funkcjonalność jest blokowana przez użytkownika %1 na terminalu %2 od: %3.'@ ['','',''];
+'Funkcjonalność "%4"\njest blokowana przez użytkownika %1 na terminalu %2 od: %3.'@ ['','','',''];
+_funkc.lock:=$(_a2s+"
+   _ret:=0;
+   {? do_state()>0
+   || {? .MSG
+      || FUN.error('"+'Blokowanie funkcjonalności nie jest dostępne w transakcji.'@+"')
+      ?}
+   |? .TAB.find_key(_hash,)
+   || {? .TAB.r_lock(1,1)
+      || .TAB.SES_ID:=.TAB.ses_id();
+         .TAB.TM_STAMP:=.TAB.tm_stamp();
+         _ret:=.TAB.put()
+      |? .MSG
+      || _msg:=
+            {? .TITLE=''
+            || 'Funkcjonalność jest blokowana przez użytkownika %1 na terminalu %2 od: %3.'@
+               [.TAB.ses_info(.TAB.SES_ID,'log_name'),.TAB.ses_info(.TAB.SES_ID,'log_tty'),19+tm_form(.TAB.TM_STAMP)]
+            || 'Funkcjonalność \"%4\"\njest blokowana przez użytkownika %1 na terminalu %2 od: %3.'@
+               [.TAB.ses_info(.TAB.SES_ID,'log_name'),.TAB.ses_info(.TAB.SES_ID,'log_tty'),19+tm_form(.TAB.TM_STAMP),
+                .TITLE]
+            ?};
+         FUN.emsg(_msg)
+      ?}
+   || .TAB.blank();
+      .TAB.HASH:=_hash;
+      .TAB.SES_ID:=.TAB.ses_id();
+      .TAB.TM_STAMP:=.TAB.tm_stamp();
+      _ret:=.TAB.add() & .TAB.r_lock(1,1)
+   ?};
+   {? _ret
+   || .HASH:=_hash;
+      1
+   || .HASH:='';
+      0
+   ?}
+");
+
+:: @
+'Funkcjonalność "%1" nie była blokowana.'@ [''];
+_funkc.unlock:=$(_a2s+"
+   {? _=0 & .HASH<>''
+   || _hash:=.HASH;
+      .HASH:=''
+   ?};
+   _ret:=0;
+   {? do_state()>0
+   || {? .MSG
+      || FUN.error('"+'Blokowanie funkcjonalności nie jest dostępne w transakcji.'@+"')
+      ?}
+   |? .TAB.find_key(_hash,)
+   || _ret:=.TAB.del(,1)>0
+   |? .MSG
+   || _msg:=
+         {? .TITLE=''
+         || '"+'Funkcjonalność nie była blokowana.'@+"'
+         || 'Funkcjonalność \"%1\" nie była blokowana.'@ [.TITLE]
+         ?};
+      FUN.emsg(_msg)
+   ?};
+   _ret
+");
+
+_funkc
+
+:Sign Version 2.0 jowisz:1045 2023/06/15 14:52:36 970c471a7fbfce50024014c1db736be68de9046eb1d2a72ea9fbfc8a8b41d4c7a963bb8ca26015135adffa3f52887a4c90e8f0f1721f9f9a6219079a69e9623a73e8b1ff903dedb9c8ff004b9d29d97c3de0a8cfaa12efafce6ddecb9f2d4d9e944ea6895862f3d44f71a710ec6a9de6c5add98b80856d258ed1945c53a20550

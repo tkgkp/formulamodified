@@ -1,0 +1,1189 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: fis.fml
+:: Utworzony: 25.07.2016
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Drukarka fiskalna
+::======================================================================================================================
+
+
+\set_prt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: Inicjowanie drukarki ustawionej w definicji systemu
+::   WE: [_a] - Tabela OZ lub FIS
+::       [_b] - 0/1 - dane pobieramy z bufora tabeli
+::   WY: 0-inicjowanie nie powiodło się, 1-powiodło się
+::----------------------------------------------------------------------------------------------------------------------
+_Tab:={? var_pres('_a')=type_of(OZ) || _a || OZ ?};
+_buf:={? var_pres('_b')=type_of(0) || _b || 0 ?};
+_ok:=0;
+
+:: Zabezpieczenie interm bez indevice
+{? exec('cli_functions','#system')=0
+|| FUN.emsg(exec('indevice_nacc_msg','#system'));
+   return(0)
+?};
+
+{? var_pres('PRT_FISK')>100 || obj_del(PRT_FISK) ?};
+_continue:=1;
+{? _buf=0
+||
+   {? _Tab=FIS
+   ||
+      _continue:=0
+   ||
+      OZ.index('OZ');
+      OZ.prefix(OPERATOR.USER().KOD,OPERATOR.USER().KOD);
+      _continue:=OZ.first()
+   ?}
+?};
+{? _continue & (_Tab.PORT<>'' | (_Tab.PORT='MDEV' & _Tab.MDEV=''))
+||
+:: jesli ustawiony jest port
+   _can_continue:=1;
+   {? -(_Tab.TYPFISK)='fis_posnet'
+   || {? exec('interm','#system')>0
+      || FUN.emsg(exec('interm_nacc_msg','#system'));
+         _can_continue:=0
+      ?}
+   ||
+      {? exec('cli_functions','#system')=0
+      || FUN.emsg(exec('indevice_nacc_msg','#system'));
+         _can_continue:=0
+      ?}
+   ?};
+
+   {? _can_continue>0
+   ||
+      PRT_FISK:=exec('create',_Tab.TYPFISK); PRT_FISK.init();
+      {? OZ.PORT<>'MDEV'
+      || PRT_FISK.DEV:={? _Tab.AS='T' || '@'+_Tab.PORT || _Tab.PORT ?}
+      || PRT_FISK.DEV:=_Tab.MDEV
+      ?};
+      PRT_FISK.MODE:={? _Tab.MODE='' || '' || ($_Tab.MODE)() ?};
+      _ok:=PRT_FISK.DEV<>'' & PRT_FISK.MODE<>''
+   ?}
+|| FUN.info('Nie zdefiniowano portu dla drukarki fiskalnej.'@)
+?};
+_ok
+
+
+\chck_err
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: komunikat o bledzie drukarki fiskalnej
+::   WE:
+::   WY: 0/1
+::  OLD: \chck_err/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _a<>1
+|| FUN.info('Błąd drukarki fiskalnej.'
+      '\nNależy sprawdzić czy drukarka jest prawidłowo zainstalowana i podłączona.'
+      '\nSprawdź kod błędu na wyświetlaczu drukarki fiskalnej.'@
+   );
+   0
+|| 1
+?}
+
+
+\cur_fis_ktm
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [$12.20]
+:: OPIS: zwraca aktualna nazwe materialu dla drukarki fiskalnej
+::   WE: _a - M.ref
+::       _b - rok do ustalenia stawki VAT
+::       _c - miesiac do ustalenia stawki VAT
+::   WY: M_SV.FIS_KTM
+::  OLD: \cur_fis_ktm/defin.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:='';
+M.cntx_psh; M_SV.cntx_psh; OKR.cntx_psh;
+M.prefix;
+{? M.seek(_a)
+||
+   M_SV.index('OD'); M_SV.prefix('0',M.ref);
+   {? M_SV.last
+   ||
+      _ok:=1;
+      {!
+      |?
+         {? M_SV.OD()~1<_b | M_SV.OD~1=_b & M_SV.OD~2<=_c || _ok:=0; _wyn:=M_SV.FIS_KTM ?};
+         _ok & M_SV.prev
+      !};
+::    rok wczesniejszy od pierwszego zdefiniowanego w systemie
+      {? _ok || _wyn:=M_SV.FIS_KTM ?}
+   ||
+      _wyn:=M.FIS_KTM
+   ?}
+?};
+M.cntx_pop; M_SV.cntx_pop; OKR.cntx_pop;
+_wyn
+
+
+\param
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Ustawienia i parametryzacja: stanowiska fiskalne, parametry fiskalne użytkownika
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: stanowiska fiskalne
+_fis_sel:=FIS.mk_sel('Stanowiska fiskalne'@,'T',0,'fis_st',,,10);
+_fis_dol:="
+   FIS.blank();
+   FIS.win_edit('RED');
+   _env:=obj_new('slo');
+   params_set('env', _env);
+   exec('typysp_brutto_before','fis');
+   {? FIS.edit(\"chk_rec('KOD')\")
+   ||
+      FIS.add()
+   ?};
+   exec('typysp_brutto_after','fis')";
+_fis_pop:="
+   _kod:=FIS.KOD;
+   FIS.win_edit('RED');
+   _env:=obj_new('slo');
+   params_set('env', _env);
+   exec('typysp_brutto_before','fis');
+   {? FIS.edit(\"chk_rec('KOD')\")
+   ||
+      {? FIS.put()
+      ||
+         OZ.cntx_psh();
+         OZ.index('FIS'); OZ.prefix(FIS.ref());
+         _loop:=OZ.first();
+         {!
+         |? _loop
+         |!
+            {? OZ.r_lock(1,1,1)
+            ||
+               OZ.AS:=FIS.AS;
+               OZ.PORT:=FIS.PORT;
+               OZ.MDEV:=FIS.MDEV;
+               OZ.MODE:=FIS.MODE;
+               OZ.TYPFISK:=FIS.TYPFISK;
+               OZ.FIS_DR:=FIS.FIS_DR;
+               OZ.A:=FIS.A;
+               OZ.B:=FIS.B;
+               OZ.C:=FIS.C;
+               OZ.D:=FIS.D;
+               OZ.E:=FIS.E;
+               OZ.F:=FIS.F;
+               OZ.ZW:=FIS.ZW;
+               OZ.K1:=FIS.K1;
+               OZ.K2:=FIS.K2;
+               OZ.K3:=FIS.K3;
+               OZ.HEADER:=FIS.HEADER;
+               OZ.FOOTER:=FIS.FOOTER;
+               OZ.ASKDRPAR:=FIS.ASKDRPAR;
+               OZ.TSAI:=FIS.TSAI;
+               OZ.TSP:=FIS.TSP;
+               OZ.TSNS:=FIS.TSNS;
+               OZ.POSFG:=FIS.POSFG;
+               OZ.POSFK:=FIS.POSFK;
+               OZ.POSDK:=FIS.POSDK;
+               OZ.POSTD:=FIS.POSTD;
+               OZ.POSTR:=FIS.POSTR;
+               OZ.POSWAL:=FIS.POSWAL;
+               OZ.TSTYP:=FIS.TSTYP;
+               OZ.TSCASHBA:=FIS.TSCASHBA;
+               OZ.POSCZYN:=FIS.POSCZYN;
+               OZ.POSAUTO:=FIS.POSAUTO;
+               OZ.POSPHOTO:=FIS.POSPHOTO;
+               OZ.POSTDW:=FIS.POSTDW;
+               OZ.POSSZ:=FIS.POSSZ;
+               OZ.POSCNW:=FIS.POSCNW;
+               OZ.put();
+               OZ.r_unlock()
+            ?};
+            _loop:=OZ.next()
+         !};
+         OZ.cntx_pop()
+      ?}
+   ?};
+   exec('typysp_brutto_after','fis')";
+_fis_usu:="
+   _first:=0;
+   PARSES.cntx_psh();
+   PARSES.prefix();
+   _loop:=PARSES.first();
+   {!
+   |? _loop
+   |!
+      {? PARSES.FIS=FIS.ref() || _first:=1 ?};
+      _loop:=_first=0 & PARSES.next()
+   !};
+   PARSES.cntx_pop();
+   {? _first
+   || FUN.info('Stanowisko wybrane w parametrach pracy co najmniej jednego użytkownika.\n'
+         'Usunięcie stanowiska niedostępne.'@);
+::    Brak metod do obsługi PARSES innych użytkowników dlatego przerwanie usuwania.
+::    W przyszłości można dodać obsługę akutalizacji PARSES po usunięciu stanowiska fiskalnego.
+      return(0)
+   ?};
+   _txt:='';
+   OZ.cntx_psh();
+   OZ.index('FIS');
+   OZ.prefix(FIS.ref());
+   _size:=OZ.size();
+   _txt:=
+      {? _size=1
+      || 'Stanowisko fiskalne przypisane użytkownikowi.\nUsunąć stanowisko fiskalne?'@
+      |? _size>1
+      || 'Stanowisko fiskalne przypisane użytkownikom.\nUsunąć stanowisko fiskalne?'@
+      || 'Usunąć stanowisko fiskalne?'@
+      ?};
+   {? FUN.ask(_txt)
+   || _loop:=OZ.first();
+      {!
+      |? _loop
+      |!
+         OZ.cntx_psh();
+         OZ.FIS:=null();
+         OZ.prefix();
+         OZ.put();
+         OZ.cntx_pop();
+         _loop:=OZ.first()
+      !};
+      FIS.del()
+   ?};
+   OZ.cntx_pop();
+   1";
+FIS.win_fld(_fis_sel,,'KOD',,,30,,,'Stanowisko'@);
+FIS.win_act(_fis_sel,1,'Formuła','&Dołącz'@@,,'Dołączenie nowej pozycji'@,_fis_dol,,1,,,,'D');
+FIS.win_act(_fis_sel,,'Formuła','&Dołącz'@@,,'Dołączenie nowej pozycji'@,_fis_dol,,1,,,,'D');
+FIS.win_act(_fis_sel,,'Formuła','&Popraw'@@,,'Poprawianie pozycji'@,_fis_pop,,0,,,,'P');
+FIS.win_act(_fis_sel,,'Formuła','&Usuń'@@,,'Usunięcie pozycji'@,_fis_usu,,0,,,,'U');
+_fis:="FIS.index('KOD'); FIS.prefix(); FIS.win_edit('RED'); FIS.first()";
+
+_us_sel:=USERS.mk_sel('Użytkownicy'@,'T',0,'fis_us',,,10);
+USERS.win_fld(_us_sel,,'KOD',,,10,,,'Nazwa'@);
+USERS.win_fld(_us_sel,,'DANE',,,30,,,'Dane użytkownika'@);
+_fb:="exec('us_par_fis','fis',USERS.KOD,1)";
+USERS.win_act(_us_sel,,'Formuła','&Parametry fiskalne'@@,,,_fb,,1,,,,'P');
+_fb:="exec('us_par_fis','fis',USERS.KOD,0)";
+USERS.win_act(_us_sel,,'Wyświetl',,,,_fb,,1);
+_us:="USERS.index('USR_KKOD'); USERS.prefix(); USERS.win_edit(''); USERS.first()";
+
+_sel:=FIS.grp_make('Parametry fiskalne'@,,'fis_param',,,,,'normal');
+FIS.grp_sel(_sel,,_fis_sel,'Stanowiska fiskalne'@,,,,,_fis,,,,'maximized');
+FIS.grp_sel(_sel,USERS,_us_sel,'Użytkownicy'@,,,,,_us,,,,'maximized');
+FIS.grp_sel(_sel,FIS_DR,'WER','Drukarki fiskalne'@,,,,,,,,,'maximized');
+
+_env:=obj_new('slo');
+params_set('env', _env);
+
+FIS.win_sel(_sel);
+FIS.select()
+
+
+\us_par_fis
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2006]
+:: OPIS: ustawianie parametrow drukarki fiskalnej dla uzytkownika
+::   WE: _a  uzytkownik np. 10+username
+::       _b - 0-wyświetl, 1-edytuj
+::  OLD: \paramu/defin.fml
+::----------------------------------------------------------------------------------------------------------------------
+OZ.cntx_psh();
+SLU.cntx_psh();
+OZ.index('OZ');
+OZ.prefix();
+OZ.win_edit('REDFIS');
+{? ~OZ.find_key(_a,_a)
+||
+   USERS.cntx_psh();
+   USERS.index('USR_KKOD');
+   USERS.prefix(_a,_a);
+   {? USERS.first()
+   ||
+      OZ.blank();
+      OZ.USER:=USERS.KOD;
+      OZ.US:=USERS.ref();
+      OZ.add()
+   ?};
+   USERS.cntx_pop()
+?};
+{? _b & OZ.FIS=null()
+||
+   _env:=obj_new('slo');
+   params_set('env', _env);
+   exec('typysp_brutto_before','fis');
+   {? OZ.edit()
+   ||
+      OZ.cntx_psh();
+      OZ.get();
+      OZ.cntx_pop();
+      OZ.put(1)
+   ?};
+   exec('typysp_brutto_after','fis')
+||
+   _env:=obj_new('slo');
+   params_set('env', _env);
+   exec('typysp_brutto_before','fis');
+   OZ.display();
+   exec('typysp_brutto_after','fis')
+?};
+SLU.cntx_pop();
+OZ.cntx_pop();
+''
+
+
+\ae_port
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2008]
+:: OPIS: po redakcji OZ.PORT
+::  OLD: \ae_port/defin.fml
+::----------------------------------------------------------------------------------------------------------------------
+win_disp()
+
+
+\kom_fis
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2011]
+:: OPIS: udostepnianie do edycji pol komentarza w parametrach i stanowiskach fiskalnych zaleznie od typu drukarki
+::   WE: _a =0-inne, 1-protokol posnet
+::       _b =0-przed wyswietleniem, 1-przed redakcja
+::  OLD: \kom_fis/defin.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=
+   {? _a
+   || cur_tfld.TYPFISK=exec('str_posnet_','#blank')
+   || cur_tfld.TYPFISK<>exec('str_posnet_','#blank')
+   ?};
+{? _b
+|| _wyn
+|| {? _wyn || '' || exec('findfnv','#color') ?}
+?}
+
+
+\typfisk_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Przed redakcją FIS.TYPFISK i FIS_DR.TYPFISK - typ drukarki fiskalnej
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_Tab:=cur_tfld();
+_afld:=cur_afld();
+{? _afld='TYPFISK'
+|| {? _Tab=FIS_DR | (_Tab=FIS & _Tab.FIS_DR=null())
+   || DPOZ.WPR_S:=_Tab.TYPFISK
+   || _ret:=0
+   ?}
+?};
+_ret
+
+
+\typfisk_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2011]
+:: OPIS: po redakcji FIS.TYPFISK - typ drukarki fiskalnej
+::  OLD: \typfisk_ae/defin.fml
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=cur_tfld();
+_afld:=cur_afld();
+{? _afld='TYPFISK'
+|| exec('mode','fis')
+?};
+{? _tab=FIS | _tab=OZ
+|| {? fld=exec('str_posnet_','#blank')
+   || _tab.K1:='';
+      _tab.K2:='';
+      _tab.K3:=''
+   || _tab.FOOTER:='';
+      _tab.HEADER:=''
+   ?}
+?};
+win_disp;
+1
+
+
+\bd_mdev
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2008]
+:: OPIS: przed wyswietl dla OZ.MDEV
+::  OLD: \bd_mdev/defin.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? cur_tfld.PORT<>'MDEV' || exec('findfnrd','color') || '' ?}
+
+
+\be_mdev
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MZ [2008]
+:: OPIS: przed redakcja OZ.MDEV
+::  OLD: \be_mdev/defin.fml
+::----------------------------------------------------------------------------------------------------------------------
+cur_tfld.PORT='MDEV'
+
+
+\prt_tech
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2009+]
+:: OPIS: funkcje drukarki fiskalnej
+::  OLD: \prt_tech/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('PRT_FISK')>100  || exec('inne','fis')
+|| {? exec('set_prt','fis') || exec('inne','fis') ?}
+?};
+~~
+
+
+\inne
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: wywolanie menu funkcji technicznych drukarki
+::  OLD: \inne/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+SZEREGOW:=1;
+{? ROWNOLEG=1
+|| exec('fun_cent','fis')
+|? SZEREGOW=1
+|| exec('fun_rs','fis')
+|| popup(1,'Funkcje techniczne drukarki fiskalnej',
+      'A. Funkcje dod. - drukarka fiskalna - port równoległy',
+      'Funkcje dod. - drukarka fiksalne - port równoległy',
+      "exec('fun_cent','fis')",
+      'B. Funkcje dod. - drukarka fiskalna - port szeregowy',
+      'Funkcje dod. - drukarka fiskalna - port szeregowy',
+      "exec('fun_rs','fis')")
+?};
+~~
+
+
+\fun_cent
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: wywolanie funkcji dodatkowych dla int.rownoleglego
+::  OLD: \fun_cent/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+FUN.info('Włącz drukarkę ON LINE.'@);
+PRT_FISK.TYP:=ROWNOLEG;
+exec('funkcje','fis');
+~~
+
+
+\funkcje
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: menu funkcji dodatkowych
+::  OLD: \funkcje/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+_form:=
+"popup(1,'Funkcje drukarki',
+   'A. Raport okresowy',
+   'Wydruk raportu okresowego',
+   \"exec('rap_ok','fis')\",
+   'B. Raport dobowy (zerujący)',
+   'Wydruk raportu dobowego zerującego',
+   \"exec('fis_wyko','fis','rap_dob')\",
+   'C. Kontrola bazy danych',
+   'Kontrola zgodności bazy danych',
+   \"exec('kon_bazy','fis')\",
+   'D. Kontrola bazy danych według stanów',
+   'Kontrola zgodności bazy danych według stanów',
+   \"exec('kon_bazy_s','fis')\",
+   'E. Raport dobowy kasy/zmiany',
+   'Wydruk raportu dobowego kasy/zmiany',
+   \"exec('rap_zmn','fis')\",
+   'F. Odczytanie zegara',
+   'Odczytanie zegara drukarki',
+   \"exec('fis_wyko','fis','odcz_zeg')\",
+   'G. Ustawienie zegara',
+   'Ustawienie zegara drukarki',
+   \"exec('fis_wyko','fis','ust_zeg')\""
++
+{? OZ.TYPFISK<>exec('str_posnet_','#blank')
+||
+   ""
+||
+   ",
+   'G. Archiwizacja IND',
+   'Archiwizacja IND',
+   \"exec('fis_wyko','fis','arch_ind')\",
+   'H. Podgląd archiwum IND',
+   'Podgląd archiwum IND',
+   \"exec('archv_ind','fis')\",
+   'I. Status pamięci fiskalnej',
+   'Status pamięci fiskalnej',
+   \"exec('fis_wyko','fis','stat_ram_fis')\""
+?}
++
+   ")";
+($_form)();
+~~
+
+
+\rap_ok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: raport okresowy
+::  OLD: \rap_ok/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wynik:=1; '<-do wyjścia z pętli redakcyjnej';
+define('DATA1',date(),'Data od');
+define('DATA2',date(),'Data do');
+{? def_edit("chk_rec()",'Parametry wydruku')
+||
+    {? DEFINE.DATA1<=DEFINE.DATA2
+    ||
+      _fmoz:=exec('fis_begin','faktury_fis');
+      {? _fmoz[1]
+      || exec('chck_err','fis',PRT_FISK.rap_ok(DEFINE.DATA1,DEFINE.DATA2))
+      ?};
+      exec('fis_end','faktury_fis',_fmoz)
+    ||
+      FUN.info('Niepoprawny zakres dat.'@)
+    ?}
+?};
+~~
+
+
+\rap_dob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: wydruk raportu dobowego (zerujacego)
+::  OLD: \rap_dob/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('chck_err','fis',PRT_FISK.rap_dob());
+~~
+
+
+\kon_bazy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2009+]
+:: OPIS: sprawdzenie wewnętrznej bazy danych
+::  OLD: \kon_bazy/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+_fmoz:=exec('fis_begin','faktury_fis');
+{? _fmoz[1] & exec('chck_err','fis',PRT_FISK.beg_k_b())
+||
+   exec('ini_kom','#message','Kontrola zgodności bazy danych'@);
+   M.cntx_psh();
+   M.index('FIS_KTM'); M.prefix;
+   {? M.first()
+   ||
+      _dl:=exec('get','#params',300161,1);
+      _ok:=1;
+      {!
+      |?
+         _fis_ktm:=exec('cur_fis_ktm','fis',M.ref,date~1,date~2);
+         {? _fis_ktm='' || _fis_ktm:=M.KTM+' '+M.N ?};
+         M.VAT:=exec('m_vat','material',M.ref,null,,date~1,date~2);
+         _skip:=0;
+         {? M.VAT=null
+         ||
+            exec('add_kom','#message','Materiał %1 - brak stawki VAT.'@[M.KTM],2);
+            _skip:=1
+         ||
+            {? PRT_FISK.get_vat(M.VAT().KOD)=''
+            ||
+               exec('add_kom','#message','Materiał %1 - brak stawki VAT w parametrach fiskalnych.'@[M.KTM],2);
+               _skip:=1
+            ?}
+         ?};
+         {? ~_skip
+         ||
+            _ok:=
+               {? +_fis_ktm>_dl
+               || FUN.ask('Za długi opis materiału:\n%1.'
+                     '\nKontynuować sprawdzanie bazy danych?'@[_fis_ktm])
+               || PRT_FISK.poz_k_b(_fis_ktm,M.VAT().KOD)
+               ?}
+         ?};
+         _ok & M.next()
+      !}
+   ?};
+   M.cntx_pop();
+   exec('chck_err','fis',PRT_FISK.end_k_b());
+   exec('fis_end','faktury_fis',_fmoz);
+   exec('end_kom','#message')
+||
+   exec('fis_end','faktury_fis',_fmoz)
+?};
+~~
+
+
+\kon_bazy_s
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [12.30]
+:: OPIS: sprawdzenie wewnetrznej bazy danych wedlug tabeli stanow aktualnego magazynu
+::  OLD: \kon_bazy_s/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+_fmoz:=exec('fis_begin','faktury_fis');
+{? _fmoz[1] & exec('chck_err','fis',PRT_FISK.beg_k_b())
+||
+   exec('ini_kom','#message','Kontrola zgodności bazy danych'@);
+   SM.cntx_psh();
+   SM.index('SM');
+   SM.prefix(ST.MAG);
+   {? SM.first()
+   ||
+      _dl:=exec('get','#params',300161,1);
+      _ok:=1;
+      {!
+      |?
+         _fis_ktm:=exec('cur_fis_ktm','fis',SM.M,date~1,date~2);
+         {? _fis_ktm='' || _fis_ktm:=SM.M().KTM+' '+SM.M().N ?};
+         SM.M().VAT:=exec('m_vat','material',SM.M,null,,date~1,date~2);
+         _skip:=0;
+         {? SM.M().VAT=null
+         ||
+            exec('add_kom','#message','Materiał %1 - brak stawki VAT.'@[SM.M().KTM],2);
+            _skip:=1
+         ||
+            {? PRT_FISK.get_vat(SM.M().VAT().KOD)=''
+            ||
+               exec('add_kom','#message','Materiał %1 - brak stawki VAT w parametrach fiskalnych.'@[SM.M().KTM],2);
+               _skip:=1
+            ?}
+         ?};
+         {? ~_skip
+         ||
+            _ok:=
+               {? +_fis_ktm>_dl
+               || FUN.ask('Za długi opis materiału:\n%1.'
+                     '\nKontynuować sprawdzanie bazy danych?'@[_fis_ktm])
+               || PRT_FISK.poz_k_b(_fis_ktm,SM.M().VAT().KOD)
+               ?}
+         ?};
+         _ok & SM.next()
+      !}
+   ?};
+   SM.cntx_pop();
+   exec('chck_err','fis',PRT_FISK.end_k_b());
+   exec('fis_end','faktury_fis',_fmoz);
+   exec('end_kom','#message')
+||
+   exec('fis_end','faktury_fis',_fmoz)
+?};
+~~
+
+
+\rap_zmn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: raport dobowy kasy/zmiany
+::  OLD: \rap_zmn/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+undefine();
+define('ZMIANA','','Zmiana','Identyfikator zmiany',8,8,);
+def_opt('mark=1','ZMIANA');
+define('KASJER','','Kasjer','Imię i nazwisko kasjera',32,32,);
+def_opt('mark=1','KASJER');
+_ff:='key:F2';
+def_btn('text=%1,btn_label_align=center,panel=bottom,align=end'['&Zapisz'@],_ff);
+_ff:='key:Esc';
+def_btn('text=%1,btn_label_align=center,panel=bottom,align=end'['&Anuluj'@],_ff);
+
+{? def_edit("chk_rec()",'Parametry wydruku')
+|| _fmoz:=exec('fis_begin','faktury_fis');
+   {? _fmoz[1]
+   || exec('chck_err','fis',PRT_FISK.rap_zmn(DEFINE.ZMIANA,DEFINE.KASJER))
+   ?};
+   exec('fis_end','faktury_fis',_fmoz)
+?};
+undefine();
+~~
+
+
+\odcz_zeg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: odczytanie zegara
+::  OLD: \odcz_zeg/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zegar:=PRT_FISK.get_time();
+{? ~(+_zegar) || exec('chck_err','fis',0)
+||
+  FUN.info(_zegar)
+?};
+~~
+
+
+\ust_zeg
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: ustawienie zegara
+::  OLD: \ust_zeg/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('chck_err','fis',PRT_FISK.ust_zeg());
+~~
+
+
+\arch_ind
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2011]
+:: OPIS: archiwizacja IND
+::  OLD: \arch_ind/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('PRT_FISK')>100
+|| PRT_FISK.arch_ind()
+|| {? exec('set_prt','fis') || PRT_FISK.arch_ind() ?}
+?}
+
+
+\archv_ind
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2011]
+:: OPIS: podglad archiwum IND
+::  OLD: \archv_ind/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('PRT_FISK')>100
+|| PRT_FISK.archv_ind()
+|| {? exec('set_prt','fis') || PRT_FISK.archv_ind() ?}
+?}
+
+
+\stat_ram_fis
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: status pamieci fiskalnej
+::  OLD: \stat_ram_fis/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+_stat:=PRT_FISK.sfsk();
+{? ~(+_stat) || exec('chck_err','fis',0)
+||
+   FUN.info('Status pamięci fiskalnej:\n\n%1'@[_stat])
+?};
+~~
+
+
+\fun_rs
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: wywolanie funkcji dodatkowych dla int.szeregowego
+::  OLD: \fun_rs/prt_fisk.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? exec('set_prt','fis')
+||
+   PRT_FISK.TYP:=SZEREGOW;
+   exec('funkcje','fis')
+?};
+~~
+
+
+\fis2oz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Przepisanie definicji stanowiska fiskalnego (tabela FIS) do ustawień użytkownika (tabela OZ)
+::   WE: _a - USERS.KOD
+::       _b - FIS.ref()
+::       _c - 0-wypełnić bufor OZ, 1-zaktualizować zapis OZ
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_user:=_a;
+_fis:=_b;
+_update:=_c;
+
+OZ.blank();
+OZ.USER:=_user;
+OZ.index('OZ');
+OZ.prefix(_user,_user);
+_put:=OZ.first();
+{? _fis
+|| exec('FindAndGet','#table',FIS,_fis,,"
+      OZ.AS:=FIS.AS;
+      OZ.PORT:=FIS.PORT;
+      OZ.MDEV:=FIS.MDEV;
+      OZ.K1:=FIS.K1;
+      OZ.K2:=FIS.K2;
+      OZ.K3:=FIS.K3;
+      OZ.TYPFISK:=FIS.TYPFISK;
+      OZ.A:=FIS.A;
+      OZ.B:=FIS.B;
+      OZ.C:=FIS.C;
+      OZ.D:=FIS.D;
+      OZ.E:=FIS.E;
+      OZ.F:=FIS.F;
+      OZ.ZW:=FIS.ZW;
+      OZ.ASKDRPAR:=FIS.ASKDRPAR;
+      OZ.HEADER:=FIS.HEADER;
+      OZ.FOOTER:=FIS.FOOTER;
+      OZ.MODE:=FIS.MODE;
+      OZ.FIS_DR:=FIS.FIS_DR;
+               OZ.TSAI:=FIS.TSAI;
+               OZ.TSP:=FIS.TSP;
+               OZ.TSNS:=FIS.TSNS;
+               OZ.POSFG:=FIS.POSFG;
+               OZ.POSFK:=FIS.POSFK;
+               OZ.POSDK:=FIS.POSDK;
+               OZ.POSTD:=FIS.POSTD;
+               OZ.POSTR:=FIS.POSTR;
+               OZ.POSWAL:=FIS.POSWAL;
+               OZ.TSTYP:=FIS.TSTYP;
+               OZ.TSCASHBA:=FIS.TSCASHBA;
+               OZ.POSCZYN:=FIS.POSCZYN;
+               OZ.POSAUTO:=FIS.POSAUTO;
+               OZ.POSPHOTO:=FIS.POSPHOTO;
+               OZ.POSTDW:=FIS.POSTDW;
+               OZ.POSSZ:=FIS.POSSZ;
+               OZ.POSCNW:=FIS.POSCNW;
+      OZ.FIS:=FIS.ref()")
+|| OZ.FIS:=null()
+?};
+
+{? _update
+|| {? _put || OZ.put() || OZ.add() ?}
+?}
+
+
+\oz_fld_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Przed redakcją pól tabeli OZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_afld:=cur_afld();
+{? _afld='AS' | _afld='PORT' | _afld='ASKDRPAR' | _afld='FIS_DR'
+||
+   OZ.FIS=null()
+|? _afld='MODE'
+||
+   OZ.FIS=null() & OZ.FIS_DR=null()
+|? _afld='TYPFISK'
+||
+   {? OZ.FIS=null() & OZ.FIS_DR=null() || DPOZ.WPR_S:=OZ.TYPFISK; 1 ?}
+
+|? _afld='K1' | _afld='K2' | _afld='K3'
+||
+   exec('kom_fis','fis',0,1) & OZ.FIS=null()
+
+|? _afld='A' | _afld='B' | _afld='C' | _afld='D' | _afld='E' | _afld='F' | _afld='ZW'
+||
+   exec('jakislsv','ustawienia')='' & OZ.FIS=null()
+
+|? _afld='MDEV'
+||
+   exec('be_mdev','fis') & OZ.FIS=null()
+
+|? _afld='HEADER' | _afld='FOOTER'
+||
+   exec('kom_fis','fis',1,1) & OZ.FIS=null()
+||
+   1
+?}
+
+
+\oz_fld_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Po redakcji pól tabeli OZ
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_afld:=cur_afld();
+{? _afld='FIS'
+|| exec('fis2oz','fis',OZ.USER,fld(),0)
+|? _afld='TYPFISK'
+|| exec('mode','fis')
+|? _afld='FIS_DR'
+|| {? OZ.FIS_DR<>null()
+   || OZ.TYPFISK:=OZ.FIS_DR().TYPFISK;
+      OZ.MODE:=OZ.FIS_DR().MODE
+   ?}
+?};
+1
+
+
+\typysp_brutto_before
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.02]
+:: OPIS: Wyświetlenie tylko typów dokumentów w cenie brutto - przed oknem
+::   WE: -
+::   WY: ~~
+::  OLD:
+::----------------------------------------------------------------------------------------------------------------------
+{? XINFO.SLP=null
+||
+   FUN.info('W słownikach systemowych nie ustawiono słownika form płatności.'@)
+?};
+
+TYPYSP.cntx_psh();
+TYPYSP.f_clear();
+TYPYSP.clear();
+TYPYSP.win_dict('WER1');
+TYPYSP.f_set('T',,'TYPYSP.FIS=:_a and TYPYSP.KOR=:_b and TYPYSP.HIS=:_b and TYPYSP.ZAL=:_b and TYPYSP.UE=:_b', '\'T\'', '\'N\'');
+::TYPYSP.f_first()
+
+exec('after_edit_posczyn_fis','pos_pay');
+exec('after_edit_posczyn_oz','pos_pay');
+
+1
+
+
+\typysp_brutto_after
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.02]
+:: OPIS: Wyświetlenie tylko typów dokumentów w cenie brutto - po oknie
+::   WE: -
+::   WY: ~~
+::  OLD:
+::----------------------------------------------------------------------------------------------------------------------
+TYPYSP.f_clear();
+TYPYSP.cntx_pop();
+1
+
+::params_exec('typysp_pop','typysp')
+::params_exec('potsppar','!zws_par_ltds')
+::exec('tsp_upr','typysp',_where,2,0,,,0)
+
+
+\vatget
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Uzupełnij stawki VAT
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_manual:=1;
+SLU.cntx_psh();
+SLU.index('NAZ');
+SLU.prefix('~STAWKI VAT PL');
+{? ~SLU.first()
+||
+   FUN.info('Nie znaleziono słownika stawek VAT PL.'@)
+||
+   _slu:=SLU.ref();
+   _Tab:={? cur_tab(1,1)=FIS || FIS || OZ ?};
+   {? _Tab=OZ || _user:=OPERATOR.USER; OPERATOR.USER:=USERS.ref() ?};
+   exec('deklar','fis_drukarka',1);
+   exec('deklar_fsp','fis_posnet');
+   {? exec('set_prt','fis',_Tab,1)
+   ||
+      PRT_FISK.TYP:=SZEREGOW;
+      _fmoz:=exec('fis_begin','faktury_fis',{? _Tab=OZ || 0 || 1 ?});
+      {? _fmoz[1]
+      || _getvat:=PRT_FISK.vatget();
+         exec('fis_end','faktury_fis',_fmoz);
+         {? _getvat.RES
+         ||
+            _Tab.A:=exec('FindInSet','#table','SLO','SL',_getvat.A,_slu,,1,,null());
+            _Tab.B:=exec('FindInSet','#table','SLO','SL',_getvat.B,_slu,,1,,null());
+            _Tab.C:=exec('FindInSet','#table','SLO','SL',_getvat.C,_slu,,1,,null());
+            _Tab.D:=exec('FindInSet','#table','SLO','SL',_getvat.D,_slu,,1,,null());
+            _Tab.E:=exec('FindInSet','#table','SLO','SL',_getvat.E,_slu,,1,,null());
+            _Tab.F:=exec('FindInSet','#table','SLO','SL',_getvat.F,_slu,,1,,null());
+            _Tab.ZW:=exec('FindInSet','#table','SLO','SL',_getvat.G,_slu,,1,,null());
+            FUN.info('Uzupełniono stawki VAT.');
+            _manual:=0
+         ?}
+      || exec('fis_end','faktury_fis',_fmoz)
+      ?}
+   ?};
+   {? _manual & FUN.ask('Nie powiódło się odczytanie stawek VAT z drukarki.\nCzy przypisać domyślne stawki VAT?')
+   ||
+      _Tab.A:=exec('FindInSet','#table','SLO','SL','23 %',_slu,,1,,null());
+      _Tab.B:=exec('FindInSet','#table','SLO','SL',' 8 %',_slu,,1,,null());
+      _Tab.C:=exec('FindInSet','#table','SLO','SL',' 5 %',_slu,,1,,null());
+      _Tab.D:=exec('FindInSet','#table','SLO','SL',' 0 %',_slu,,1,,null());
+      _Tab.E:=exec('FindInSet','#table','SLO','SL','Zwol.',_slu,,1,,null());
+      _Tab.F:=null();
+      _Tab.ZW:=null();
+      FUN.info('Uzupełniono stawki VAT.')
+   ?};
+   {? _Tab=OZ || OPERATOR.USER:=_user ?}
+?};
+SLU.cntx_pop();
+''
+
+
+\mode
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Ustawia tryb otwarcia pasujący do typu drukarki fiskalnej
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_fld:=fld();
+_tab:=cur_tfld();
+{? DPOZ.WPR_S<>_fld || _tab.MODE:='exec(\'mode\',\'%1\')'[_fld] ?};
+1
+
+
+\mode_bl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Zwraca tryb otwarcia pasujący do typu drukarki fiskalnej
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_Tab:=cur_tfld();
+'exec(\'mode\',\'%1\')'[_Tab.TYPFISK]
+
+
+\fisdr_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [23.25]
+:: OPIS: FISK_DR - walidacja bufora
+::   WE: [_a] - 'add'/'put'
+::   WY: '' lub akronim pola
+::----------------------------------------------------------------------------------------------------------------------
+_akcja:=
+   {? var_pres('_a')=type_of('')
+   || {? _a='add' || 'dołącz' |? _a='put' || 'popraw' || _a ?}
+   || -menu_txt()
+   ?};
+
+_ret:=__CHK.record(FIS_DR,'NAZ');
+
+{? _ret=''
+|| _naz:=FIS_DR.NAZ;
+   {? _akcja='dołącz'
+   || {? exec('FindInSet','#table','FIS_DR','NAZ',_naz)
+      || _ret:='NAZ'
+      ?}
+   || _ref:=FIS_DR.ref();
+       FIS_DR.cntx_psh();
+       FIS_DR.index('NAZ');
+       FIS_DR.prefix(_naz,);
+       {? FIS_DR.first() & FIS_DR.ref()<>_ref
+       || _ret:='NAZ'
+       ?};
+       FIS_DR.cntx_pop()
+   ?};
+   {? _ret<>''
+   || FUN.info('Drukarka fiskalna o nazwie %1 już istnieje.'@[_naz])
+   ?}
+?};
+
+{? _ret='' & FIS_DR.NRUNIKAT<>''
+|| _nr:=FIS_DR.NRUNIKAT;
+   {? _akcja='dołącz'
+   || {? exec('FindInSet','#table','FIS_DR','NR',_nr)
+      || _ret:='NRUNIKAT'
+      ?}
+   || _ref:=FIS_DR.ref();
+       FIS_DR.cntx_psh();
+       FIS_DR.index('NR');
+       FIS_DR.prefix(_nr,);
+       {? FIS_DR.first() & FIS_DR.ref()<>_ref
+       || _ret:='NRUNIKAT'
+       ?};
+       FIS_DR.cntx_pop()
+   ?};
+   {? _ret<>''
+   || FUN.info('Drukarka fiskalna o numerze unikatowym %1 już istnieje.'@[_nr])
+   ?}
+?};
+
+_ret
+
+
+\fisdr_del
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [23.25]
+:: OPIS: Przed usunięciem rekordu tabeli FIS_DR. Sprawdza, czy nie wykorzystywany
+::   WY: 0 - nie można usuwać, zapis wykorzystywany w innych danych systemu
+::       1 - można usuwać
+::----------------------------------------------------------------------------------------------------------------------
+_count:=FIS_DR.count();
+{? _count
+|| FUN.emsg('Nie można usunąć tej drukarki fiskalnej. Istnieją powiązane struktury.'@)
+|| {? FIS_DR.r_lock(1,1,1)
+   || {? FUN.ask('Czy usunąć drukarkę fiskalną?'@)
+      || FIS_DR.del()
+      ?};
+      unlock_r()
+   || unlock_r();
+      FUN.info('Drukarka fiskalna jest wykorzystywana przez innego użytkownika.'@)
+   ?}
+?};
+0
+
+
+\fis_mode_be
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [23.25]
+:: OPIS: Przed redakcją pola FIS.MODE
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+{? FIS.FIS_DR<>null()
+|| _ret:=0
+?};
+_ret
+
+
+\fis_fisdr_ae
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [23.25]
+:: OPIS: Po redakcji pola FIS.FIS_DR
+::----------------------------------------------------------------------------------------------------------------------
+{? FIS.FIS_DR<>null()
+|| FIS.TYPFISK:=FIS.FIS_DR().TYPFISK;
+   FIS.MODE:=FIS.FIS_DR().MODE
+?};
+~~
+
+
+\fisdr_update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [23.25]
+:: OPIS: Przepisanie definicji drukarki fiskalnej (tabela FIS_DR) do ustawień użytkownika (tabela OZ)
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+FIS.cntx_psh();
+FIS.index('FISDR');
+FIS.prefix(FIS_DR.ref());
+{? FIS.first()
+|| {!
+   |? {? FIS.TYPFISK<>FIS_DR.TYPFISK | FIS.MODE<>FIS_DR.MODE
+      || FIS.TYPFISK:=FIS_DR.TYPFISK;
+         FIS.MODE:=FIS_DR.MODE;
+         FIS.put()
+      ?};
+      FIS.next()
+   !}
+?};
+FIS.cntx_pop();
+
+OZ.cntx_psh();
+OZ.index('FISDR');
+OZ.prefix(FIS_DR.ref());
+{? OZ.first()
+|| {!
+   |? {? OZ.TYPFISK<>FIS_DR.TYPFISK | OZ.MODE<>FIS_DR.MODE
+      || OZ.TYPFISK:=FIS_DR.TYPFISK;
+         OZ.MODE:=FIS_DR.MODE;
+         OZ.put()
+      ?};
+      OZ.next()
+   !}
+?};
+OZ.cntx_pop();
+
+~~
+
+
+\fis_wyko
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [23.25]
+:: OPIS: Wywołanie podanej formuły, ale z ewentualną rezerwacją drukarki fiskalnej
+::   WE: [_a] - nazwa formuły do wywołania
+::   WY: ~~ lub wynik formuły
+::----------------------------------------------------------------------------------------------------------------------
+_fnaz:='';
+{? var_pres('_a')>0
+|| _fnaz:=_a
+?};
+_wyn:=~~;
+{? _fnaz<>''
+|| _fml:='exec(\''+_fnaz+'\',\'fis\')';
+   _fml:=$_fml;
+   _fmoz:=exec('fis_begin','faktury_fis');
+   {? _fmoz[1]
+   || _wyn:=_fml()
+   ?};
+   exec('fis_end','faktury_fis',_fmoz)
+?};
+_wyn
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:39 58a9598caacd2163e097b4cbae4ecf810b69fc1f4bb1b032e7658c4edc489cb074dd7da41ae628814c46ab538e5445087a8f6a936017c84c3087bcff2184ac21842c7dae94dc79db99c6b4d8795e6ff347a32b7a1ab6156da53737f08b7678f9cd8f21ab2e454754e98d9a9ebf944385956f416e6c92340e19554e68231e3bf8

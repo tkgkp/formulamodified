@@ -1,0 +1,755 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: upgrade_2226_06.fml
+:: Utworzony: 13.12.2022
+:: Autor: IS
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych z wersji 21.37 na 22.26
+::
+::            Każda formuła powinna zwracać wartość liczbową, interpretacja:
+::                1 - całość przeszła bez błędów - realizacja zakwalifikowana jako wykonana
+::               -1 - całość przeszła z uwagami  - dla zadania automatycznego:
+::                                                   * realizacja zakwalifikowana jako wykonana
+::                                                 dla zadania manualnego:
+::                                                   * zrezygnowano z wykonania zadania w danej chwili - zadanie nadal
+::                                                     pozostaje do wykonania
+::                0 - został stwierdzony błąd    - realizacja zakwalifikowana jako przerwana
+::
+::            Definicja zadania transferowego:
+::               __UPG.add_task(name,[auto],[mf],domain,[ver],[required],[manual],[nofirm],[onlyact])
+::                gdzie:
+::                   name     [STRING] - nazwa formuły potransferowej (z bieżącego pliku).
+::                   auto     [STRING] - formuła automatyczna: T [domyślnie] / N
+::                   mf       [STRING] - formuła wielofirmowa: T [domyślnie] / N
+::                                        T - wykonywana tylko raz
+::                                        N - wykonywana w każdej firmie
+::                   domain   [STRING] - kod dziedziny produktowej (informacyjnie)
+::                   ver      [NUMBER] - wersja formuły
+::                   required [STRING] - czy zadanie musi być wykonane
+::                                       Dla zadań automatycznych parametr zawsze przyjmuje wartość T.
+::                                       Dla zadań manualnych - domyślnie: N.
+::                   manual   [STRING] - kod powiązanego zadania manualne w ramach wersji
+::                                        domyślnie brak
+::                                        jeśli podano i istnieje oraz zostaną dokonane zapisy w buforze to zadanie
+::                                        zmieni status na wymagalne
+::                   nofirm   [NUMBER] - dla zadań jednofirmowych pomija firmę '000' (wartość 1), 0-domyślna wartość
+::                   onlyact  [STRING] - zadanie aktualizacyjne dla danej wersji: T-tak, N-nie (domyślnie)
+::                                        (Czy zadanie weszło po emisji danej wersji?)
+::
+::            W formułach można stosować zapis do przesłania komunikatów dla realizacji, np.
+::               __UPG.msg('Brak zapisów dla roku 2016 w tabeli FAKS.')
+::            Uwaga: ponieważ wynik jest zapisywany do bazy danych, to NIE tłumaczymy go - nie kończymy znakiem @.
+::
+::            W formułach automatycznych, które zostały powiązane z formułą manualną można stosować zapis o danych
+::            wymagalnych do zweryfikowania, np.
+::               __UPG.buf(USERS.uidref(),'Zweryfikuj parametry użytkownika w kontekście anulowania dokumentów')
+::            zapis jest dołączony bezpośrednio pod wskazaną czynością manualną
+::            Do uzyskania zapisów dla realizacji zadania manualnego służy metoda:
+::               __UPG.get_buf()
+::            wynik zwracany jest w formie tabeli o strukturze:
+::               CODE  - STRING[48]
+::               DESC  - STRING[255]
+::               FIRMA - STRING[16] - ref SQL
+::
+::            \formuła      - formuła potransferowa
+::            \formuła_desc - opis dla formuły potransferowej
+::======================================================================================================================
+:: Sposób tworzenia i opisu formuł transferowych:
+::           - każda formuła musi zawierać opis (\formuła_desc) która w pierwszych zdaniach opisuje co robi, w kolejnych
+::             zdaniach zawiera krótki opis techniczny np. uzupełniono pole XX w tabeli AA wartością 'T'
+::           - każda formuła musi badać wynik swojego działania, zwracać 1, 0, -1 jeżeli od jej wykonania jest zależne
+::             działanie systemu
+::           - każda formuła musi tworzyć opis tego, jak przebiegło jej wykonanie wykorzystując __UPG.msg
+::             tak aby po opisie można było wywnioskować co formuła konkretnie zrobiła
+::             np. w tabeli AA Poprawiono X rekordów z N przeanalizowanych
+::           - każda funkcja powinna posiadać progress, pokazujący postęp wykonania (jeżeli funkcja jest przewidziana
+::             do wykonania na wielu rekordach)
+::======================================================================================================================
+
+\init
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Główna formuła aktualizacji 22.26_06
+::----------------------------------------------------------------------------------------------------------------------
+:: Zadania automatyczne, wykonywane raz dla całego systemu
+__UPG.add_task('stalesys_PL2023',,,'ZWS',,,,,'T');
+__UPG.add_task('rubryki_placowe_PL2023',,,'PPL',,,,,'T');
+:: Zadania automatyczne, wykonywane dla każdej firmy
+__UPG.add_task('pola_PL2023',,'N','PPL',2,,,1,'T');
+__UPG.add_task('f_zatra_add_PL2023',,'N','ZWS',,,,,'T');
+:: Zadania manualne, wykonywane raz dla całego systemu
+:: Zadania manualne, wykonywane dla każdej firmy
+__UPG.add_task('wycofania_PL2023','N','N','PPL',2,,,1,'T');
+__UPG.add_task('procesy_PL2023','N','N','PKD',,,,1,'T');
+~~
+
+
+\stalesys_PL2023
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Aktualizacja definicji stałych systemu
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+exec('init_kst','#stalesys',KST);
+:: Zmiana nazwy (opisu) pola KST.UL z "Ulga podatkowa" na "Ulga podatkowa 1/12", dodanie wartości w historii:
+exec('upd_acr','#stalesys','UL','Ulga podatkowa 1/12',,,,'KST');
+:: Nowe pola KST:
+exec('add_acr','#stalesys','UL2','Ulga podatkowa 1/24','T','T','T','KST','PPL','PKD','PRC');
+exec('kst_war_add','#stalesys','KST.UL2','0.00',date(0,0,0));
+exec('kst_war_add','#stalesys','KST.UL2','150.00',date(2023,1,1));
+exec('add_acr','#stalesys','UL3','Ulga podatkowa 1/36','T','T','T','KST','PPL','PKD','PRC');
+exec('kst_war_add','#stalesys','KST.UL3','0.00',date(0,0,0));
+exec('kst_war_add','#stalesys','KST.UL3','100.00',date(2023,1,1));
+exec('add_acr','#stalesys','KW_W','Kwota wolna','T','T','T','KST','PPL','PKD','PRC');
+exec('kst_war_add','#stalesys','KST.KW_W','0.00',date(0,0,0));
+exec('kst_war_add','#stalesys','KST.KW_W','30000.00',date(2022,1,1));
+__UPG.msg('Zaktualizowano definicje stałych systemu.');
+
+_ret
+
+
+\stalesys_PL2023_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Aktualizacja definicji stałych systemu - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Aktualizacja definicji stałych systemu:\n'
+' ● Ulga podatkowa 1/12\n'
+' ● Ulga podatkowa 1/24\n'
+' ● Ulga podatkowa 1/36\n'
+' ● Kwota wolna'
+
+
+\rubryki_placowe_PL2023
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Dodanie rubryk i atrybutów płacowych.
+::----------------------------------------------------------------------------------------------------------------------
+_result:=1;
+_txt:='';
+exec('__RUB','object');
+__RUB.fill();
+:: Dodanie nowych składników płacowych:
+::7230 Zw. podatku art.31c
+::7231 Dodatkowa UP(info)
+{? +exec('import','rubryki','g','7230,7231',1,0)
+|| _txt:='Dodanie nowych rubryk zakończyło się niepowodzeniem';
+   _result:=-1
+|| _txt:='Dodanie nowych rubryk zakończone powodzeniem'
+?};
+__UPG.msg(_txt);
+{? _result=-1 || return(_result) ?};
+
+:: Aktualizacja atrybutów rubryk:
+exec('add_attr','rubatr',9,908,'Ulgi podatkowe - pozostałe',1,'Ulgi podatkowe - pozostałe',,7230,7231);
+   exec('add_attr','rubatr',908,9081,'Zwolnienie z podatku - art.31c',1,
+        'Zwolnienie z podstawy opodatkowania - art.31c',,7230);
+      exec('add_attr','rubatr',9081,90811,'Zwolnienie z podatku',1,
+           'Zwolnienie z podstawy opodatkowania - art.31c.',,7230);
+      exec('add_attr','rubatr',9081,90812,'Rozliczenie',1,
+           'Dane wprowadzone do rozliczenia.',,7230);
+   exec('add_attr','rubatr',908,9082,'Dodatkowa UP - wspólne rozliczenie',1,
+        'Dodatkowa UP - wspólne rozliczenie',,7231);
+__UPG.msg('Zakończono aktualizację atrybutów składników płacowych.');
+
+_result
+
+
+\rubryki_placowe_PL2023_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Dodanie rubryk i atrybutów płacowych - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Dodanie rubryk płacowych:\n'
+' ● 7230: Zw. podatku art.31c\n'
+' ● 7231: Dodatkowa UP(info)\n'
+'Dodanie atrybutów płacowych w gałęzi:\n'
+' ● 908 Ulgi podatkowe - pozostałe'
+
+
+\pola_PL2023
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie wartości w nowych pola, modyfikacja w istniejących polach.
+::----------------------------------------------------------------------------------------------------------------------
+exec('__RUB','object');
+__RUB.fill();
+_result:=1;
+_firma:=exec('ref_firma','ustawienia');
+
+:: Rodzaje wniosków dotyczących podatków - zmiana nazw:
+_modKod:="
+   SLO_KOD.prefix(_a,_b,_b);
+   {? SLO_KOD.first()
+   || SLO_KOD.NAZWA:=_c;
+      SLO_KOD.SYSTEM:=_d;
+      SLO_KOD.put()
+   ?}
+";
+SLO_TYP.cntx_psh();
+SLO_KOD.trig_off('*','*');
+SLO_KOD.cntx_psh();
+SLO_KOD.index('KOD');
+_typ:=exec('slo_typ','ext_slo','WN_PODAT');
+_modKod(_typ,'UZ_POD','Wniosek o niepobieranie zaliczek na podatek dochodowy','T');
+_modKod(_typ,'KL_SRED','Wniosek o zaprzestanie stosowania ulgi dla klasy średniej','T');
+_modKod(_typ,'TP_ZAL_P','Wniosek o nieprzedłużanie terminów poboru zaliczek (pracownik)','T');
+_modKod(_typ,'TP_ZAL_Z','Wniosek o nieprzedłużanie terminów poboru zaliczek (zleceniobiorca)','T');
+&_typ;
+SLO_KOD.cntx_pop();
+SLO_KOD.trig_on('*','*');
+SLO_TYP.cntx_pop();
+
+:: Rodzaje wniosków dotyczących podatków - uzupełnienie słownika (przeniesienie ze SLO_KOD)
+OS_ZWSLO.trig_off('*','*');
+OS_ZWSLO.cntx_psh();
+OS_ZWSLO.index('TYPKOD');
+OS_ZWSLO.prefix(_firma);
+_addOsZwslo:=
+   "{? ~OS_ZWSLO.find_key(_a,_b,)
+    || OS_ZWSLO.blank(1);
+       OS_ZWSLO.FIRMA:=exec('ref_firma','ustawienia');
+       OS_ZWSLO.TYP:=_a;
+       OS_ZWSLO.KOD:=_b;
+       OS_ZWSLO.RODZAJ:=_c;
+       OS_ZWSLO.ROCZNE:=_d;
+       OS_ZWSLO.ZDR:=_e;
+       OS_ZWSLO.PODATNIK:=_f;
+       OS_ZWSLO.add(1)
+    ?}
+   ";
+_addOsZwslo('W','UZ_POD','Wniosek o niepobieranie zaliczek na podatek dochodowy','T','T','T');
+_addOsZwslo('W','KL_SRED','Wniosek o zaprzestanie stosowania ulgi dla klasy średniej','T','T','T');
+_addOsZwslo('W','TP_ZAL_P','Wniosek o nieprzedłużanie terminów poboru zaliczek (pracownik)','T','T','N');
+_addOsZwslo('W','TP_ZAL_Z','Wniosek o nieprzedłużanie terminów poboru zaliczek (zleceniobiorca)','T','T','N');
+_addOsZwslo('W','KU_50%','Wniosek o niestosowanie 50% kosztów uzyskania przychodu','N','T','T');
+:: Uzupełnienie nowych pól OS_ZWSLO: TYP, ROZLICZ, RA_DEF, PO, DO_OB i PODATNIK
+:: Zmiana OS_ZWSLO.ROCZNE dla ogłoszeń ('T' tylko dla powrotu z zagranicy)
+OS_ZWSLO.index('KOD');
+OS_ZWSLO.prefix(_firma);
+{? OS_ZWSLO.first()
+|| RA_DEF.cntx_psh();
+   _dtUst:=date(2022,7,1);
+   {!
+   |? _put:=0;
+      {? OS_ZWSLO.TYP=''
+      || OS_ZWSLO.TYP:='O';
+         _put:=1
+      ?};
+      {? OS_ZWSLO.PODATNIK=''
+      || {? ',TP_ZAL_P,TP_ZAL_Z,'*',%1,'[OS_ZWSLO.KOD]
+         || OS_ZWSLO.PODATNIK:='N'
+         || OS_ZWSLO.PODATNIK:='T'
+         ?};
+         _put:=1
+      ?};
+      {? OS_ZWSLO.ROZLICZ=''
+      || {? ',ZWPODE,ZWPOD,ZWPODP,ZWPODD,UZ_POD,'*',%1,'[OS_ZWSLO.KOD]
+         || OS_ZWSLO.ROZLICZ:='T'
+         || OS_ZWSLO.ROZLICZ:='N'
+         ?};
+         _put:=1
+      ?};
+      {? OS_ZWSLO.RA_DEF=null()
+      || {? ',ZWPODE,ZWPOD,ZWPODP,ZWPODD,'*',%1,'[OS_ZWSLO.KOD]
+         || {? __RUB.find_def('S',90202)
+            || OS_ZWSLO.RA_DEF:=RA_DEF.ref();
+               _put:=1
+            ?}
+         |? ',UZ_POD,'*',%1,'[OS_ZWSLO.KOD]
+         || {? __RUB.find_def('S',90812)
+            || OS_ZWSLO.RA_DEF:=RA_DEF.ref();
+               _put:=1
+            ?}
+         ?}
+      ?};
+      {? OS_ZWSLO.PO=''
+      || {? ',ZWPOD,KU_50%,'*',%1,'[OS_ZWSLO.KOD]
+         || OS_ZWSLO.PO:='T'
+         || OS_ZWSLO.PO:='N'
+         ?};
+         _put:=1
+      ?};
+      {? OS_ZWSLO.DO_OB=date(0,0,0) & ',TP_ZAL_P,TP_ZAL_Z,KL_SRED,'*',%1,'[OS_ZWSLO.KOD]
+      || OS_ZWSLO.DO_OB:=_dtUst-1;
+         _put:=1
+      ?};
+      {? ',ZWPODE,ZWPOD,ZWPODP,ZWPODD,'*',%1,'[OS_ZWSLO.KOD]
+      || {? ',ZWPODP,'*',%1,'[OS_ZWSLO.KOD]
+         || OS_ZWSLO.ROCZNE:='T'
+         || OS_ZWSLO.ROCZNE:='N'
+         ?};
+         _put:=1
+      ?};
+      {? _put
+      || OS_ZWSLO.put()
+      ?};
+
+      OS_ZWSLO.next()
+   !};
+   RA_DEF.cntx_pop()
+?};
+OS_ZWSLO.cntx_pop();
+OS_ZWSLO.trig_on('*','*');
+
+:: Uzupełnienie nowego pola P_IPOD.PU (Podział ulgi):
+P_IPOD.trig_off('*','*');
+P_IPOD.cntx_psh();
+P_IPOD.index('OD');
+P_IPOD.prefix();
+{? P_IPOD.first()
+|| {!
+   |? {? P_IPOD.PU=''
+      || P_IPOD.PU:='1';
+         P_IPOD.put()
+      ?};
+
+      P_IPOD.next()
+   !}
+?};
+P_IPOD.cntx_pop();
+P_IPOD.trig_on('*','*');
+
+:: Uzupełnienie nowego pola OS_ZWZAL.WYCOF:
+OS_ZWZAL.trig_off('*','*');
+OS_ZWZAL.cntx_psh();
+OS_ZWZAL.index('DOK_WYC');
+OS_ZWZAL.prefix(_firma);
+{? OS_ZWZAL.first()
+|| OS_ZWSLO.cntx_psh();
+   OS_ZWSLO.index('TYPKOD');
+   OS_ZWSLO.prefix(_firma,'W');
+   SLO_KOD.cntx_psh();
+   {!
+   |? _put:=0;
+      {? ~(',T,N,'*',%1,'[OS_ZWZAL.WYCOF])
+      || OS_ZWZAL.WYCOF:='N';
+         _put:=1
+      ?};
+::    Uzupełnienie wartości nowego pola OS_ZWZAL.OS_ZWSLO na podstawie OS_ZWZAL.SLO_KOD:
+      {? OS_ZWZAL.OS_ZWSLO=null() & OS_ZWSLO.find_key(OS_ZWZAL.SLO_KOD().KOD,)
+      || OS_ZWZAL.OS_ZWSLO:=OS_ZWSLO.ref();
+         _put:=1
+      ?};
+::    Uzupełnienie nowego pola OS_ZWZAL.WYCOFANY:
+      {? OS_ZWZAL.WYCOFANY=''
+      || OS_ZWZAL.WYCOFANY:='N';
+         _put:=1
+      ?};
+::    Wyczyszczenie pola ROK z wniosków nierocznego typu:
+      {? OS_ZWZAL.ROK<>0 & OS_ZWZAL.OS_ZWSLO().ROCZNE='N'
+      || OS_ZWZAL.ROK:=0;
+         _put:=1
+      ?};
+      {? _put
+      || OS_ZWZAL.put()
+      ?};
+
+      OS_ZWZAL.next()
+   !};
+   SLO_KOD.cntx_pop();
+   OS_ZWSLO.cntx_pop()
+?};
+OS_ZWZAL.cntx_pop();
+OS_ZWZAL.trig_on('*','*');
+
+:: Uzupełnienie nowych pól RU.UP, RU.WRKU50:
+RU.trig_off('*','*');
+RU.cntx_psh();
+RU.index('K');
+RU.prefix();
+{? RU.first()
+|| {!
+   |? _put:=0;
+      {? RU.UP=''
+      || {? ',1,2,3,4,5,6,'*',%1,'[RU.K]
+         || RU.UP:='T'
+         || RU.UP:='N'
+         ?};
+         _put:=1
+      ?};
+      {? RU.WRKU50=''
+      || {? ',2,3,'*',%1,'[RU.K]
+         || RU.WRKU50:='T'
+         || RU.WRKU50:='N'
+         ?};
+         _put:=1
+      ?};
+      {? _put
+      || RU.put()
+      ?};
+
+      RU.next()
+   !}
+?};
+RU.cntx_pop();
+RU.trig_on('*','*');
+
+:: Zmiana znacznika REZYGN i kasowanie ROK, ROK_Z na oświadczeniach typu "ZWPOD":
+OS_ZWPOD.trig_off('*','*');
+OS_ZWPOD.cntx_psh();
+OS_ZWPOD.index('TYP');
+OS_ZWPOD.prefix(_firma);
+OS_ZWSLO.cntx_psh();
+{? OS_ZWPOD.first()
+|| {!
+   |? _put:=0;
+      {? OS_ZWPOD.ROK<>0 & OS_ZWPOD.ROK>=2022 & OS_ZWPOD.OS_ZWSLO().KOD='ZWPOD'
+      || OS_ZWPOD.ROK:=0;
+         OS_ZWPOD.ROK_Z:=0;
+         {? OS_ZWPOD.REZYGN='T'
+         || OS_ZWPOD.REZYGN:='N';
+            OS_ZWPOD.AKTYWNY:='T'
+         ?};
+         _put:=1
+      ?};
+::    Oświadczenia "Młody pracownik" z 2019 mogły sterować znacznikiem aktywności, dezaktywujemy:
+      {? OS_ZWPOD.ROK<>0 & OS_ZWPOD.ROK=2019 & OS_ZWPOD.OS_ZWSLO().KOD='ZWPOD'
+      || OS_ZWPOD.AKTYWNY:='N';
+         _put:=1
+      ?};
+::    Uzupełnienie nowego pola OS_ZWPOD.WYCOFANY:
+      {? OS_ZWPOD.WYCOFANY=''
+      || OS_ZWPOD.WYCOFANY:='N';
+         _put:=1
+      ?};
+::    Wyczyszczenie pól ROK i ROK_Z z oświadczeń nierocznego typu:
+      {? (OS_ZWPOD.ROK<>0 | OS_ZWPOD.ROK_Z<>0) & OS_ZWPOD.OS_ZWSLO().ROCZNE<>'T'
+      || OS_ZWPOD.ROK:=0;
+         OS_ZWPOD.ROK_Z:=0;
+         _put:=1
+      ?};
+      {? _put
+      || OS_ZWPOD.put()
+      ?};
+
+      OS_ZWPOD.next()
+   !}
+?};
+OS_ZWSLO.cntx_pop();
+OS_ZWPOD.cntx_pop();
+OS_ZWPOD.trig_on('*','*');
+
+:: Przeniesienie wartości dla kwot podstawy wprowadzanych ręcznie:
+OS_ZWPKW.trig_off('*','*');
+OS_ZWPKW.cntx_psh();
+OS_ZWPKW.index('OS_ZWPKW');
+OS_ZWPOZ.cntx_psh();
+OS_ZWPOZ.index('OS_RMOR');
+OS_ZWPOZ.prefix(_firma);
+_tab_rub:=__RUB.sys_rub(9022);
+{? OS_ZWPOZ.first() & _tab_rub.RN
+|| {!
+   |? OS_ZWPKW.prefix(_firma,OS_ZWPOZ.ref());
+      {? OS_ZWPOZ.WYK_KW>0 & ~OS_ZWPKW.first()
+      || OS_ZWPKW.blank(1);
+         OS_ZWPKW.FIRMA:=_firma;
+         OS_ZWPKW.OS_ZWPOZ:=OS_ZWPOZ.ref();
+         OS_ZWPKW.R:=__RUB.ref(_tab_rub.RN);
+         OS_ZWPKW.WART:=OS_ZWPOZ.WYK_KW;
+         OS_ZWPKW.add()
+      ?};
+      OS_ZWPOZ.next()
+   !}
+?};
+OS_ZWPOZ.cntx_pop();
+OS_ZWPKW.cntx_pop();
+OS_ZWPKW.trig_on('*','*');
+
+:: Utworzenie słowników grup przychodów:
+SLO_TYP.cntx_psh();
+SLO_TYP.prefix();
+SLO_KOD.trig_off('*','*');
+SLO_KOD.cntx_psh();
+SLO_KOD.index('KOD');
+_typ:=exec('slo_typ','ext_slo','RODZ_PL');
+_addk:="
+   SLO_KOD.prefix(_a,_b,_b);
+   {? ~SLO_KOD.first()
+   || SLO_KOD.blank(1);
+      SLO_KOD.SLO_TYP:=_a;
+      SLO_KOD.KOD:=_b;
+      SLO_KOD.NAZWA:=_c;
+      SLO_KOD.SYSTEM:=_d;
+      SLO_KOD.add()
+   ?};
+   SLO_KOD.ref()
+";
+_addk(_typ,'UM_PRAC','Art. 32. – stosunek pracy','T');
+_addk(_typ,'UM_ZLEC','Art. 41. - umowy cywilnoprawne','T');
+_addk(_typ,'UM_SZKOL','Art. 35. - praktyka absolwencka lub staż uczniowski','T');
+&_typ;
+SLO_KOD.cntx_pop();
+SLO_KOD.trig_on('*','*');
+SLO_TYP.cntx_pop();
+
+:: Uzupełnienie nowego słownika grup umów:
+OS_GRRU.trig_off('*','*');
+OS_GRRU.cntx_psh();
+OS_GRRU.prefix();
+{? ~OS_GRRU.first()
+|| SLO_KOD.cntx_psh();
+   SLO_KOD.index('KOD');
+   SLO_KOD.prefix(exec('slo_typ','ext_slo','RODZ_PL'));
+   RU.cntx_psh();
+   RU.index('K');
+   RU.prefix(exec('slo_typ','ext_slo','UMZLEC'));
+   {? SLO_KOD.find_key('UM_SZKOL')
+   || _umowy:=spli_str('v,y',',');
+      {! _ii:=1..obj_len(_umowy)
+      |! {? RU.find_key(_umowy[_ii])
+         || OS_GRRU.SLO_KOD:=SLO_KOD.ref();
+            OS_GRRU.RU:=RU.ref();
+            OS_GRRU.add()
+         ?}
+      !};
+      obj_del(_umowy)
+   ?};
+   {? SLO_KOD.find_key('UM_ZLEC')
+   || _umowy:=spli_str('1,2,3,4,5,6',',');
+      {! _ii:=1..obj_len(_umowy)
+      |! {? RU.find_key(_umowy[_ii])
+         || OS_GRRU.SLO_KOD:=SLO_KOD.ref();
+            OS_GRRU.RU:=RU.ref();
+            OS_GRRU.add()
+         ?}
+      !};
+      obj_del(_umowy)
+   ?};
+   RU.cntx_pop();
+   SLO_KOD.cntx_pop()
+?};
+OS_GRRU.cntx_pop();
+OS_GRRU.trig_on('*','*');
+
+__UPG.msg('Zakończono uzupełnianie i modyfikację danych w kartotekach związanych z Polskim Ładem.');
+
+_result
+
+
+\pola_PL2023_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Uzupełnienie wartości w nowych pola, modyfikacja w istniejących polach - opis.
+::----------------------------------------------------------------------------------------------------------------------
+'Uzupełnienie i modyfikacja danych w kartotekach związanych z Polskim Ładem (styczeń 2023)'
+
+
+\wycofania_PL2023
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Generowanie wycofań oświadczeń - wyświetlanie okna do weryfikacji.
+::       Oświadczenie od 2023 roku składane są w odniesieniu do rodzaju płatnika.
+::       Należy zweryfikować, czy przedstawione w okienku oświadczenia nadal obowiązują.
+::----------------------------------------------------------------------------------------------------------------------
+_ret:=1;
+_firma:=exec('ref_firma','ustawienia');
+:: Wyświetlenie okienka z osobami do weryfikacji danych w kartotece oświadczeń i dodanie wycofań dla takich:
+exec('czytaj','#stalesys',,KST,'ZWPODW');
+_OSW:=sql('
+   select OSOBA.NAZWISKO as "Nazwisko", OSOBA.PIERWSZE as "Imię", OS_ZWPOD.D_OW as "Data zakończenia",
+          OS_ZWSLO.KOD as "Kod ZP", OS_ZWSLO.RODZAJ as "Rodzaj ZP", OS_ZWPOD.REFERENCE as REF, space(255) as "Uwagi",
+          case
+             when (extract (day from OS_ZWPOD.D_OW)<31 or extract (month from OS_ZWPOD.D_OW)<12)
+                  and (OS_ZWSLO.KOD<>\'ZWPOD\' or OS_ZWPOD.D_OW<>add_to_date(YEAR,:_a,OSOBA.UR_DATA))
+                then \'T\'
+                else \'N\'
+          end as "Wygenerowane wycofanie"
+   from OS_ZWPOD
+      join OSOBA using(OS_ZWPOD.OSOBA, OSOBA.REFERENCE)
+      join OS_ZWSLO using(OS_ZWPOD.OS_ZWSLO, OS_ZWSLO.REFERENCE)
+   where OS_ZWPOD.FIRMA=:_b and OS_ZWPOD.AKTYWNY=\'T\' and OS_ZWPOD.D_OW is not null
+   order by 8,1,2,3',KST.ZWPODW,_firma);
+{? _OSW.first()
+|| OS_ZWPOD.trig_off('*','*');
+   OS_ZWPOD.cntx_psh();
+:: Dodanie wycofań jeśli data końca jest różna od końca roku:
+   OS_ZWPOD.prefix();
+   _OSW.cntx_psh();
+   {!
+   |? {?_OSW.WYGENERO='T'
+      || _dodanoWyc:=0;
+         {? OS_ZWPOD.seek(_OSW.REF) & OS_ZWPOD.WYCOFANY<>'T'
+         || OS_ZWPOD.cntx_psh();
+            OS_ZWPOD.D_ZO:=OS_ZWPOD.D_OB:=OS_ZWPOD.D_OW+1;
+            OS_ZWPOD.D_OW:=date(0,0,0);
+            OS_ZWPOD.ROK:=OS_ZWPOD.ROK_Z:=0;
+            OS_ZWPOD.REZYGN:='T';
+            OS_ZWPOD.WYCOFANY:='N';
+            OS_ZWPOD.DOK_WYC:=#OS_ZWPOD.ref();
+            _dodanoWyc:=OS_ZWPOD.add();
+            {? _dodanoWyc
+            || _OSW.UWAGI:='Wygenerowano wycofanie oświadczenia od dnia %1'@[$(OS_ZWPOD.D_OB)]
+            || _OSW.UWAGI:='Nie udało się wygenerować wycofania oświadczenia!'@;
+               _ret:=-1
+            ?};
+            OS_ZWPOD.cntx_pop();
+            {? _dodanoWyc
+            || OS_ZWPOD.WYCOFANY:='T';
+               OS_ZWPOD.put()
+            ?}
+         || {? OS_ZWPOD.WYCOFANY='T'
+            || _OSW.UWAGI:='Istnieje już wycofanie dokumentu.'@
+            || _OSW.UWAGI:='Błąd w danych.'@;
+               _ret:=-1
+            ?}
+         ?}
+      || _OSW.UWAGI:='Zmiana działania oświadczeń. Była data zakończenia %1, która przestała obowiązywać. '
+            'Zweryfikuj dane, sprawdź naliczanie Zwolnionego przychodu.'@[$_OSW.DATA]
+      ?};
+      _OSW.put();
+
+      _OSW.next()
+   !};
+   _OSW.cntx_pop();
+   OS_ZWPOD.cntx_pop();
+   OS_ZWPOD.trig_on('*','*');
+   FUN.info('Zostanie wyświetlona lista oświadczeń posiadających datę zakończenia.\n'
+            'Dla opisanych oświadczeń zostały automatycznie utworzone wycofania.\n'
+            'Należy zweryfikować poprawność danych w kartotece oświadczeń.'@);
+   _ws:=_OSW.mk_sel('Osoby dla których należy zweryfikować poprawność danych w kartotece oświadczeń'@,,0,'#napraw_osw');
+   _OSW.win_fld(_ws,,'NAZWISKO',,,20,,0,'Nazwisko'@);
+   _OSW.win_fld(_ws,,'IMIĘ',,,15,,0,'Imię'@);
+   _OSW.win_fld(_ws,,'KOD',,,8,,0,'Kod ZP'@);
+   _OSW.win_fld(_ws,,'RODZAJ',,,30,,0,'Rodzaj ZP'@);
+   _OSW.win_fld(_ws,,'DATA',,,-10,,0,'Data zakończenia'@);
+   _OSW.win_fld(_ws,,'UWAGI',,,90,,0,'Uwagi'@);
+   _eksport:=
+      "_OSW:=cur_tab();
+       _tmpDir:=fmk_tmp_dir(0);
+       _folder:=_tmpDir.get_path();
+       _sep:=exec('sep','#file',1);
+       _plik:=_folder+_sep+'osw.csv';
+       _exp:=_OSW.export(
+                _plik,,,'UTF-8,header,nopth',,
+                'NAZWISKO',,1,,
+                'IMIĘ',,2,,
+                'KOD',,3,,
+                'RODZAJ',,4,,
+                'DATA',,5,1,
+                'UWAGI',,6,
+                );
+       {? _exp
+       || _zapis:=dlg_save(_plik);
+          {? type_of(_zapis)=type_of('')
+          || {? +_zapis
+             || _eksp:='Wyeksportowano do: %1'@[_zapis]
+             || _eksp:='Użytkownik zrezygnował z zapisania pliku'@
+             ?}
+          || _eksp:='Błąd podczas zapisywania pliku'@;
+             _ret:=-1
+          ?}
+       || _eksp:='Eksport do pliku zakończył się niepowodzeniem.'@
+       ?};
+       obj_del(_tmpDir);
+       FUN.info(_eksp)";
+
+   _OSW.win_act(_ws,0,'Formuła','Eksport do CSV'@,,'Eksport listy do pliku CSV'@,_eksport);
+   _OSW.win_btn(_ws,'text=%1,btn_label_align=center,panel=bottom,align=begin'['Eksport do CSV'@],'menu:E');
+   _OSW.win_sel(_ws);
+   _OSW.select()
+|| FUN.info('Brak oświadczeń wymagających ingerencji.'@)
+?};
+_msg:='';
+{? _ret=1
+|| {? FUN.ask('Czy oznaczyć zadanie "wycofania_PL2023" jako wykonane?'@)
+   || _msg:='Zakończono generowanie wycofań oświadczeń - wyświetlanie okna do weryfikacji związanych z Polskim Ładem.'
+   || _msg:='Użytkownik zrezygnował z oznaczenia zadania jako wykonane.';
+      _ret:=-1
+   ?}
+|| _msg:='Nie powiodło się generowanie wycofań oświadczeń związanych z Polskim Ładem.'
+?};
+__UPG.msg(_msg);
+
+_ret
+
+
+\wycofania_PL2023_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Generowanie wycofań oświadczeń - wyświetlanie okna do weryfikacji - opis
+::----------------------------------------------------------------------------------------------------------------------
+'Generowanie wycofań oświadczeń - wyświetlanie okna do weryfikacji.\n'
+'Oświadczenie od 2023 roku składane są w odniesieniu do rodzaju płatnika.\n'
+'Dla opisanych oświadczeń zostały automatycznie utworzone wycofania.\n'
+'Należy zweryfikować, czy przedstawione w okienku oświadczenia nadal obowiązują.\n'
+
+
+\f_zatra_add_PL2023
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Nadanie czynnościom uprawnień do form współpracy.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Lista czynności, dla których przypisane zostaną formy współpracy. Założenia:
+:: 1. Czynności są oddzielone przecinkami.
+:: 2. W ramach czynności przekazywana jest również informacja o kodach form współpracy (oddzielonych znakiem dwukropka).
+::    Zakładamy, że duże litery dotyczą form docelowych.
+_lista:=spli_str(
+   'PKD_EZK_OPDP:P:Z:K:T,'
+   'PKD_EZK_ORDP:P:Z:K:T',
+   ','
+);
+
+_ret:=1;
+B_ACTION.cntx_psh();
+B_ACTION.f_clear();
+B_ACTION.index('UNIK');
+B_ACTION.prefix();
+_lenl:=obj_len(_lista);
+{! _lp:=1 .. _lenl
+|! _acz:=spli_str(_lista[_lp],':');
+   _uid:=_acz[1];
+   {? B_ACTION.find_key(_uid,)
+   || _lena:=obj_len(_acz);
+      {! _lf:=2 .. _lena
+      |! _fz:=_acz[_lf];
+         __UPG.msg('Forma współpracy: %1 | Czynność: %2 - %3' [_fz,_uid,B_ACTION.NAME]);
+         _add:=exec('f_zatra_add','f_zatr',{? -_fz=_fz || 'N' || 'T' ?},_fz,_uid);
+         {? _add=''
+         || __UPG.msg(' - uprawnienia nadane')
+         || __UPG.msg(_add);
+            _ret:=-1
+         ?}
+      !}
+   || __UPG.msg('"%1" - nieprawidłowy kod czynności.' [_uid]);
+      _ret:=-1
+   ?};
+   obj_del(_acz)
+!};
+B_ACTION.cntx_pop();
+_ret
+
+
+\f_zatra_add_PL2023_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Nadanie czynnościom uprawnień do form współpracy - opis.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+'Nadanie czynnościom PKD_EZK_ORDP - Rejestracja danych podatkowych i PKD_EZK_OPDP - Przeglądanie danych podatkowych, '
+'uprawnień do wszystkich form współpracy.'
+
+
+\procesy_PL2023
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Import procesów Polski Ład styczeń 2023
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+exec('procesy','upgrade','22.26','PER_ADR','PER_ADR')
+
+
+\procesy_PL2023_desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IS [22.26]
+:: OPIS: Import procesów Polski Ład styczeń 2023 - opis
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+'Pozwala zaimportować zmienione procesy dziedziny PKD:\n'
+' ● PER_ADR - Zmiana adresu, US i danych podatkowych\n'
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:16:37 68d9932d3ecb93b5cee83ea7204bea20c5082e02c1bdf017230ca00a3946311cfc86989425758d092533bda173d768316766f5f989d5cf11a011c76c5f49fd260b51239fb2d0c776059800a6e1df8b17e823812f520367702690a74138aeca76f5d6bb495b0202bcb1921e273f56424757184285bc4b3217c8e9d4c62cd06255

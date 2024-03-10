@@ -1,0 +1,779 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !ltr_tra_dzle.fml
+:: Utworzony: 21.08.2019
+:: Autor: [rr]
+::======================================================================================================================
+:: Zawartość: Formuły czynności LTR_ZLE_DZLE - Rejestracja transportu
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Formuła główna czynności LTR_TRA_DZLE
+::   WE: _a - [obj_new] - parametry wejsciowe czynności
+::       _b - [obj_new] - parametry wewnętrzne czynności
+::       _c - [obj_new] - parametry wyjściowe czynności
+::       _d - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=TR_RODZ
+::# kind=WE,   symbol=TR_NZL,   type=_TR_NZL,  name=Dyspozycja transportowa,     required=N, keyref=T
+::# kind=WY,   symbol=TR_NAG,   type=_TR_NAG,  name=Transport,                 required=N, keyref=T
+
+_in:=params_get().in;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+:: Uruchomiona akcja
+_akcja:=_mp.akcja();
+_area:=_mp.pathArea('LTR_ZLE');
+_proc:=_mp.pathProc();
+_todo:=_mp.pathTodo() | (_mp.pathArea() & ~_area);
+_auto:=_mp.isAutoRun();
+_trnzl:={? var_pres('TR_NZL',_in)=type_of(null()) & _in.TR_NZL || _in.TR_NZL || null() ?};
+
+:: Sprawdzenie parametrów pracy dla czynności startowej
+::{? _mp.pathProc()
+::|| {? ST.AR=0 || FUN.info('Ustaw parametry pracy.'@); _wyn:=0; return() ?}
+::?};
+
+exec('init','ltr');
+
+:: Ustawienie kontekstu wg instancji elementu w procesie
+{? _mp.pathTodo()
+|| {? var_pres('TR_NAG',_out)=type_of(null()) & _out.TR_NAG
+   || 1
+   |? _trnzl=null() & (var_pres('TR_NAG',_out)<>type_of(null()) | _out.TR_NAG=null())
+   || _mp.error('Brak parametru wyjściowego TR_NAG.'); return(0)
+   |? ~_mp.isMicro()
+   || _akcja:='START_TODO'
+   || _mp.error('Brak parametru wyjściowego TR_NAG.'); return(0)
+   ?}
+?};
+
+:: Sprawdzenie uprawnień
+params_set('in',_in,'user',OPERATOR.USER,'mp',_mp);
+{? exec('permissions','!ltr_tra_dzle')=0
+|| _mp.error('Brak uprawnień do uruchomienia czynności.'@);
+   return()
+?};
+
+_mp.trigRef('TR_NAG',,1,,exec('kind_out','#b_port'),'TR_NAG');
+
+{? _akcja='Plan'
+||
+::    Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+      params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      _sel:=TR_NZL.sel_aget();
+      TR_NZL.sel_adel();
+      {? ~_sel.first() || _sel.REF:=#TR_NZL.ref(); _sel.add() ?};
+      _ilz:=_sel.size();
+      _ild:=exec('nzlNOtr_poz','transport',_sel);
+      obj_del(_sel);
+      FUN.info('Usunięto z transportu %1 tras z %2 wybranych\n'
+                 '(wg uprawnień do kategorii transportu).'@[$_ild,$_ilz])
+
+|? _akcja='Kopiuj'
+|| POM.TAB:='TR_NAG';
+   POM.TYPDOK:='TRA';
+   _czy_num:=exec('nr_pola','numery');
+   TR_NAG.get();
+   TR_NAG.cntx_psh();
+   TR_NAG.STAT_REJ:=TR_NAG.REAL:='N';
+   TR_NAG.REAL:='N';
+   TR_NAG.WYJ_D:=TR_Z.WYJ_D;
+   TR_NAG.WYJ_T:=TR_Z.WYJ_T;
+   TR_NAG.SPEC:='';
+   TR_NAG.ZAL:=TR_NAG.ROZ:=0;
+   TR_NAG.NR:=0;
+   TR_NAG.SYM:='';
+   TR_NAG.DZ:=date(0,0,0);
+   TR_NAG.GZ:=time(0,0,0);
+   exec('po_wyj_d_tr_nag','!ltr_tra_dzle');
+   {? _czy_num & TR_NAG.add() & exec('add_blk','transport',TR_NAG.ref())
+   || {? TR_NAG.NR=0 || exec('fak_numer','numery','',0); exec('znak','numery','TR_NAG'); TR_NAG.put(1) ?};
+      _new_trnag:=TR_NAG.ref();
+      TR_NAG.memo_set('','UW');
+      exec('done_blk','transport',_new_trnag)
+   ?};
+   TR_NAG.cntx_pop()
+
+|? _akcja='Dołącz' | _akcja='Zlecenie' | _akcja='Zlecenie+' | _akcja='Przewoz'
+   | _proc
+   | _akcja='START_TODO'
+||
+::    Parametr 'akcja' wykorzystywany w formułach przycisków 'Pozycje', 'Zakończ'
+      params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      {? _akcja='Zlecenie+'
+      || VAR_DEL.delete('__selzlp');
+         __selzlp:=ZLP.sel_aget();
+         ZLP.sel_adel();
+         {? ~__selzlp.first() || __selzlp.REF:=#ZLP.ref(); __selzlp.add() ?};
+         ZLP.cntx_psh();
+         TR_NZL.cntx_psh();
+         exec('ini_kom','#message','Informacje o dodaniu dyspozycji transportu.'@);
+         __kom_gr:='Dodanie dyspozycji do transportu.'@;
+         __selzlp.clear();
+         __selzlp.for_each("{? (ZLP.prefix(); ZLP.seek(__selzlp.REF,))
+                            || _tr_nzl:=null();
+                               TR_NZL.index('DOK_REF');
+                               TR_NZL.prefix(ZLP.uidref(),);
+                               {? TR_NZL.first()
+                               || {!
+                                  |? {? TR_NZL.STAT_REJ='Z' & TR_NZL.PLAN='T'
+                                      & exec('tr_rodz_ope','transport_wspolne',TR_NZL.TR_RODZ,'Dyspozycja'@,''@,2)
+                                     || _tr_nzl:=TR_NZL.ref();
+                                        0
+                                     || TR_NZL.next()
+                                     ?}
+                                  !}
+                               ?};
+                               {? _tr_nzl<>null()
+                               || __selzlp.REF:=#_tr_nzl;
+                                  {? __selzlp.put(1)
+                                  || exec('add_kom','#message'
+                                      ,'Dodano zgłoszenie %1 do transportu.'@[exec('ZLP','#to_string')],1)
+                                  ?}
+                               || exec('add_kom','#message'
+                                   ,'Dla zgłoszenia %1 nie ma zakończonej'
+                                    ' dyspozycji do zaplanowania.'@[exec('ZLP','#to_string')]
+                                   ,6);
+                                  __selzlp.del()
+                               ?}
+                            || __selzlp.del()
+                            ?}",0);
+         ZLP.cntx_pop();
+         TR_NZL.cntx_pop();
+         {? ~__selzlp.size()
+         || exec('add_kom','#message'
+             ,'Żadne z zaznaczonych zgłoszeń nie spełnia kryteriów zaplanowania do transportu.'@,81)
+         || __kom_on:={? exec('tr_nag_add','!ltr_tra_dzle',1,__selzlp)
+                      || exec('add_kom','#message'
+                          ,'Utworzono transport i dodano zgłoszenia.'@,38);
+                         1
+                      || 0
+                      ?}
+         ?};
+         exec('end_kom','#message');
+         VAR_DEL.delete('__selzlp')
+      |? _akcja='Przewoz'
+      || VAR_DEL.delete('__selzlp');
+         __selzlp:=UPMZAD.sel_aget();
+         UPMZAD.sel_adel();
+         {? ~__selzlp.first() || __selzlp.REF:=#UPMZAD.ref(); __selzlp.add() ?};
+         UPMZAD.cntx_psh();
+         TR_NZL.cntx_psh();
+         exec('ini_kom','#message','Informacje o dodaniu dyspozycji transportu.'@);
+         __kom_gr:='Dodanie dyspozycji do transportu.'@;
+         __selzlp.clear();
+         __selzlp.for_each("{? (UPMZAD.prefix(); UPMZAD.seek(__selzlp.REF,))
+                            || _tr_nzl:=null();
+                               TR_NZL.index('DOK_REF');
+                               TR_NZL.prefix(UPMZAD.uidref(),);
+                               {? TR_NZL.first()
+                               || {!
+                                  |? {? TR_NZL.STAT_REJ='Z' & TR_NZL.PLAN='T'
+                                      & exec('tr_rodz_ope','transport_wspolne',TR_NZL.TR_RODZ,'Dyspozycja'@,''@,2)
+                                     || _tr_nzl:=TR_NZL.ref();
+                                        0
+                                     || TR_NZL.next()
+                                     ?}
+                                  !}
+                               ?};
+                               {? _tr_nzl<>null()
+                               || __selzlp.REF:=#_tr_nzl;
+                                  {? __selzlp.put(1)
+                                  || exec('add_kom','#message'
+                                      ,'Dodano przewóz %1 do transportu.'@[exec('UPMZAD','#to_string')],1)
+                                  ?}
+                               || exec('add_kom','#message'
+                                   ,'Dla przewozu %1 nie ma zakończonej'
+                                    ' dyspozycji do zaplanowania.'@[exec('UPMZAD','#to_string')]
+                                   ,6);
+                                  __selzlp.del()
+                               ?}
+                            || __selzlp.del()
+                            ?}",0);
+         UPMZAD.cntx_pop();
+         TR_NZL.cntx_pop();
+         {? ~__selzlp.size()
+         || exec('add_kom','#message'
+             ,'Żaden z zaznaczonych przewozów nie spełnia kryteriów zaplanowania do transportu.'@,81)
+         || __kom_on:={? exec('tr_nag_add','!ltr_tra_dzle',1,__selzlp)
+                      || exec('add_kom','#message'
+                          ,'Utworzono transport i dodano przewozy.'@,38);
+                         1
+                      || 0
+                      ?}
+         ?};
+         exec('end_kom','#message');
+         VAR_DEL.delete('__selzlp')
+      |? _akcja='Zlecenie'
+      || exec('ini_kom','#message','Informacje o dodaniu dyspozycji transportu.'@);
+         __kom_gr:='Dodanie dyspozycji do transportu.'@;
+         _sel:=TR_NZL.sel_aget();
+         TR_NZL.sel_adel();
+         {? ~_sel.first()
+         || {? TR_NZL.STAT_REJ='Z' & TR_NZL.PLAN='T' || _sel.REF:=#TR_NZL.ref(); _sel.add() ?}
+         || TR_NZL.cntx_psh();
+            {!
+            |? {? (TR_NZL.prefix(); TR_NZL.seek(_sel.REF)) & TR_NZL.STAT_REJ='Z' & TR_NZL.PLAN='T'
+                & exec('tr_rodz_ope','transport_wspolne',TR_NZL.TR_RODZ,'Dyspozycja'@,''@,2)
+               || exec('add_kom','#message','Dodano dyspozycję %1 do transportu.'@[TR_NZL.SYM],1);
+                  _sel.next()
+               || exec('add_kom','#message','Nie można zaplanować dyspozycji %1 do transportu.'@[TR_NZL.SYM],6);
+                  _sel.del()
+               ?}
+            !};
+            TR_NZL.cntx_pop()
+         ?};
+         {? ~_sel.size()
+         || exec('add_kom','#message'
+             ,'Żadna z zaznaczonych dyspozycji nie spełnia kryteriów zaplanowania do transportu.'@,81)
+         || __kom_on:={? exec('tr_nag_add','!ltr_tra_dzle',1,_sel)
+                      || exec('add_kom','#message','Utworzono transport i dodano dyspozycje transportu.'@,38);
+                         1
+                      || 0
+                      ?}
+         ?};
+         exec('end_kom','#message');
+         obj_del(_sel)
+      || {? (_proc | _akcja='START_TODO') & _trnzl<>null()
+         || _sel:=tab_tmp(1,'REF','INTEGER','');
+            _sel.REF:=#_trnzl; _sel.add();
+            exec('tr_nag_add','!ltr_tra_dzle',1,_sel);
+            obj_del(_sel)
+         || exec('tr_nag_add','!ltr_tra_dzle')
+         ?}
+      ?};
+
+::    Podczytanie parametrów wyjściowych
+      _outa:=_mp.load(exec('kind_out','#b_port'));
+      {? var_pres('TR_NAG',_outa)<>type_of(~~) & _outa.TR_NAG
+::       Dodano dokument
+      ||
+::       Ustawienie się na dodanym dokumencie w widoku obszaru
+         {? _area || TR_NAG.seek(_outa.TR_NAG) ?}
+::       Wycofanie czynności bo nie dodano dokumentu
+      || _mp.cancel()
+      ?}
+
+|? _akcja='Popraw' | _akcja='Popraw+' | _akcja='Popraw++' | _akcja='Przewoz+'
+   | _todo
+|| _tr_nag:={? (_todo & var_pres('TR_NAG',_out)<>type_of(~~)) | var_pres('TR_NAG',_out)=type_of(null())
+            || _out.TR_NAG
+            || TR_NAG.ref()
+            ?};
+   {? _tr_nag<>null()
+:: Uruchomione w procesie
+   || TR_NAG.cntx_psh();
+      TR_NAG.prefix();
+      {? TR_NAG.seek(_tr_nag)
+      || {? ~_todo | TR_NAG.STAT_REJ='N'
+         || {? _akcja='Popraw++'
+            || VAR_DEL.delete('__selzlp');
+               __selzlp:=ZLP.sel_aget();
+               ZLP.sel_adel();
+               {? ~__selzlp.first() || __selzlp.REF:=#ZLP.ref(); __selzlp.add() ?};
+               ZLP.cntx_psh();
+               TR_NZL.cntx_psh();
+               exec('ini_kom','#message','Informacje o dodaniu dyspozycji transportu.'@);
+               __kom_gr:='Dodanie dyspozycji do transportu.'@;
+               __selzlp.clear();
+               __selzlp.for_each("{? (ZLP.prefix(); ZLP.seek(__selzlp.REF,))
+                                  || _tr_nzl:=null();
+                                     TR_NZL.index('DOK_REF');
+                                     TR_NZL.prefix(ZLP.uidref(),);
+                                     {? TR_NZL.first()
+                                     || {!
+                                        |? {? TR_NZL.STAT_REJ='Z' & TR_NZL.PLAN='T'
+                                            & exec('tr_rodz_ope','transport_wspolne',TR_NZL.TR_RODZ,'Dyspozycja'@,''@,2)
+                                           || _tr_nzl:=TR_NZL.ref();
+                                              0
+                                           || TR_NZL.next()
+                                           ?}
+                                        !}
+                                     ?};
+                                     {? _tr_nzl<>null()
+                                     || __selzlp.REF:=#_tr_nzl;
+                                        {? __selzlp.put(1)
+                                        || exec('add_kom','#message'
+                                            ,'Dodano zgłoszenie %1 do transportu.'@[exec('ZLP','#to_string')],1)
+                                        ?}
+                                     || exec('add_kom','#message'
+                                         ,'Dla zgłoszenia %1 nie ma zakończonej'
+                                          ' dyspozycji do zaplanowania.'@[exec('ZLP','#to_string')]
+                                         ,6);
+                                        __selzlp.del()
+                                     ?}
+                                  || __selzlp.del()
+                                  ?}",0);
+               ZLP.cntx_pop();
+               TR_NZL.cntx_pop();
+               {? ~__selzlp.size()
+               || exec('add_kom','#message'
+                   ,'Żadne z zaznaczonych zgłoszeń nie spełnia kryteriów zaplanowania do transportu.'@,81)
+               || exec('nzl2tr_poz','transport',TR_NAG.ref(),__selzlp)
+               ?};
+               exec('end_kom','#message');
+               VAR_DEL.delete('__selzlp')
+            |? _akcja='Przewoz+'
+            || VAR_DEL.delete('__selzlp');
+               __selzlp:=UPMZAD.sel_aget();
+               UPMZAD.sel_adel();
+               {? ~__selzlp.first() || __selzlp.REF:=#UPMZAD.ref(); __selzlp.add() ?};
+               UPMZAD.cntx_psh();
+               TR_NZL.cntx_psh();
+               exec('ini_kom','#message','Informacje o dodaniu dyspozycji transportu.'@);
+               __kom_gr:='Dodanie dyspozycji do transportu.'@;
+               __selzlp.clear();
+               __selzlp.for_each("{? (UPMZAD.prefix(); UPMZAD.seek(__selzlp.REF,))
+                                  || _tr_nzl:=null();
+                                     TR_NZL.index('DOK_REF');
+                                     TR_NZL.prefix(UPMZAD.uidref(),);
+                                     {? TR_NZL.first()
+                                     || {!
+                                        |? {? TR_NZL.STAT_REJ='Z' & TR_NZL.PLAN='T'
+                                            & exec('tr_rodz_ope','transport_wspolne',TR_NZL.TR_RODZ,'Dyspozycja'@,''@,2)
+                                           || _tr_nzl:=TR_NZL.ref();
+                                              0
+                                           || TR_NZL.next()
+                                           ?}
+                                        !}
+                                     ?};
+                                     {? _tr_nzl<>null()
+                                     || __selzlp.REF:=#_tr_nzl;
+                                        {? __selzlp.put(1)
+                                        || exec('add_kom','#message'
+                                            ,'Dodano przewóz %1 do transportu.'@[exec('UPMZAD','#to_string')],1)
+                                        ?}
+                                     || exec('add_kom','#message'
+                                         ,'Dla przewozu %1 nie ma zakończonej'
+                                          ' dyspozycji do zaplanowania.'@[exec('UPMZAD','#to_string')]
+                                         ,6);
+                                        __selzlp.del()
+                                     ?}
+                                  || __selzlp.del()
+                                  ?}",0);
+               UPMZAD.cntx_pop();
+               TR_NZL.cntx_pop();
+               {? ~__selzlp.size()
+               || exec('add_kom','#message'
+                   ,'Żaden z zaznaczonych przewozów nie spełnia kryteriów zaplanowania do transportu.'@,81)
+               || exec('nzl2tr_poz','transport',TR_NAG.ref(),__selzlp)
+               ?};
+               exec('end_kom','#message');
+               VAR_DEL.delete('__selzlp')
+            |? _akcja='Popraw+'
+            || _sel:=TR_NZL.sel_aget();
+               TR_NZL.sel_adel();
+               exec('ini_kom','#message','Informacje o dodaniu dyspozycji transportu.'@);
+               __kom_gr:='Dodanie dyspozycji do transportu.'@;
+               {? ~_sel.first()
+               || {? TR_NZL.STAT_REJ='Z' & TR_NZL.PLAN='T' || _sel.REF:=#TR_NZL.ref(); _sel.add() ?}
+               || TR_NZL.cntx_psh();
+                  {!
+                  |? {? (TR_NZL.prefix(); TR_NZL.seek(_sel.REF)) & TR_NZL.STAT_REJ='Z' & TR_NZL.PLAN='T'
+                      & exec('tr_rodz_ope','transport_wspolne',TR_NZL.TR_RODZ,'Dyspozycja'@,''@,2)
+                     || exec('add_kom','#message','Dodano dyspozycję %1 do transportu.'@[TR_NZL.SYM],1);
+                        _sel.next()
+                     || exec('add_kom','#message','Nie można zaplanować dyspozycji %1 do transportu.'@[TR_NZL.SYM],6);
+                        _sel.del()
+                     ?}
+                  !};
+                  TR_NZL.cntx_pop()
+               ?};
+               {? ~_sel.size()
+               || exec('add_kom','#message'
+                   ,'Żadna z zaznaczonych dyspozycji nie spełnia kryteriów zaplanowania do transportu.'@,81)
+               || exec('nzl2tr_poz','transport',TR_NAG.ref(),_sel)
+               ?};
+               exec('end_kom','#message');
+               obj_del(_sel)
+            || params_set('out',_out,'mp',_mp,'akcja',_akcja);
+               exec('tr_nag_pop','transport')
+            ?};
+::          Podczytanie parametrów wyjściowych
+            _outa:=_mp.load(exec('kind_out','#b_port'));
+            {? _mp.isMicro() & (var_pres('TR_NAG',_outa)=type_of(~~) | _outa.TR_NAG=null())
+::             Dołączono do transportu, którego nie było w procesie
+            || _mp.cancel()
+            ?};
+            _mp.descTodo()
+         || FUN.info('Transport nie podlega edycji.'@);
+            _mp.done()
+         ?}
+      ?};
+      TR_NAG.cntx_pop()
+   |? _todo
+:: Uruchomione zadanie z listy todo i brak _out.TR_NAG wtedy zadanie wycofujemy
+   || _mp.cancel()
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      params_set('out',_out,'mp',_mp,'akcja',_akcja);
+      exec('tr_nag_pop','transport')
+   ?}
+
+|? _akcja='Zakończ_wer' & _area
+|| {? exec('tr_nag_akc','transport') || _mp.done() ?}
+
+|? _akcja='Usuń'
+|| {? var_pres('TR_NAG',_out)=type_of(null())
+:: Uruchomione w procesie
+   || _tr_nag:=null();
+      TR_NAG.cntx_psh();
+      {? ~_area || TR_NAG.prefix() ?};
+      {? TR_NAG.seek(_out.TR_NAG)
+      ||
+         exec('tr_nag_usu','transport');
+
+         {? ~TR_NAG.seek(_out.TR_NAG)
+::       Wycofuję instancję jeśli nie znaleziono dokumentu
+         || _mp.cancel()
+         ?};
+         _tr_nag:=TR_NAG.ref()
+      ?};
+      TR_NAG.cntx_pop();
+::    Ustawienie się na kolejnym dokumencie w widoku obszaru
+      {? _area || {? _tr_nag || TR_NAG.seek(_tr_nag) ?} ?}
+   |? _mp.isMicro()
+:: Uruchomione poza procesem
+   ||
+      exec('tr_nag_usu','transport');
+
+      _mp.done()
+   ?}
+
+||
+   _mp.error('Nieobsługiwana ścieżka.'@)
+?};
+
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Opis czynności LTR_TRA_DZLE
+::       UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=_mp.load(exec('kind_in','#b_port'));
+_out:=_mp.load(exec('kind_out','#b_port'));
+
+{? type_of(_out)>type_of(~~) & var_pres('TR_NAG',_out)=type_of(null()) & _out.TR_NAG
+|| _plan:=exec('FindInSet','#table','TR_NZL','TR_NAG',_out.TR_NAG,,,,,null())<>null();
+   {? _plan
+   || 'Zakończ rejestrację transportu: %1'@@[exec('record','#to_string',_out.TR_NAG)]
+   || 'Rejestracja transportu: %1, wymaga zaplanowania tras z Obszaru'@@[exec('record','#to_string',_out.TR_NAG)]
+   ?}
+|? type_of(_in)>type_of(~~) & var_pres('TR_NZL',_in)=type_of(null()) & _in.TR_NZL
+|| 'Zarejestruj transport dla dyspozycji: %1'@@[exec('record','#to_string',_in.TR_NZL)]
+|| 'Zarejestruj transport'@@
+?}
+
+
+\permissions
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Formuła na uprawnienia dla czynności
+::   WE: params_get().in - parametry wejściowe czynności
+::           params_get().user - użytkownik dla którego sprawdzane są uprawnienia
+::           params_get().mp - Menedżer Procesów
+::   WY: 0 - użytkownik nie ma uprawnień do czynności
+::       1 - użytkownik ma uprawnienia do czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_user:=params_get().user;
+_mp:=params_get().mp;
+_wyn:=1;
+_wyn
+
+
+\tr_nag_dolacz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Dołączenie transportu
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LTR_TRA_DZLE';
+_params.AKCJA:='Dołącz';
+_params.PROC_START:='T';
+exec('mp_run','#b__box',_params);
+~~
+
+
+\tr_nag_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Modyfikacja transportu
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LTR_TRA_DZLE';
+_params.AKCJA:='Popraw';
+_params.UIDREF:=TR_NAG.uidref();
+exec('mp_run','#b__box',_params);
+~~
+
+
+\tr_nag_usun
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Usunięcie transportu
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LTR_TRA_DZLE';
+_params.AKCJA:='Usuń';
+_params.UIDREF:=TR_NAG.uidref();
+exec('mp_run','#b__box',_params);
+grp_disp(TR_NZL,'PLAN');
+grp_disp(TR_NZL,'TRASY');
+~~
+
+
+\tr_nag_zakoncz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Zakończenie transportu
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LTR_TRA_DZLE';
+_params.AKCJA:='Zakończ_wer';
+_params.UIDREF:=TR_NAG.uidref();
+exec('mp_run','#b__box',_params);
+~~
+
+
+\tr_nag_zlecenie
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Zakończenie transportu
+::----------------------------------------------------------------------------------------------------------------------
+:: wybór nagłówka transportu, do którego dodajemy
+_autorun:=TR_NZL.sel_size()=0 & exec('autoRUN','#b__box',TR_NZL.uidref(),'Transport');
+{? ~_autorun || _tr_naguid:=exec('wybTR_NAG','transport',TR_NZL.DT,TR_NZL.TR_RODZ) ?};
+
+{? _autorun
+|| grp_disp(TR_NZL,'PLAN');
+   exec('before_tr_nagplan','ltr');
+   grp_disp(TR_NZL,'TRASY')
+|? _tr_naguid='add'
+|| _params:=exec('mp_run_a','#b__box');
+   _params.PROC_START:='T';
+   _params.ACT_UID:='LTR_TRA_DZLE';
+   _params.UIDREF:=TR_NZL.uidref();
+   _params.AKCJA:='Zlecenie';
+   {? TR_NZL.sel_size()=0
+   || _params.PORTS_IN:=exec('portsIn','#b__box',_params.ACT_UID);
+      exec('portsInSet','#b__box',_params.PORTS_IN,_params.ACT_UID,'TR_NZL',TR_NZL.ref())
+   ?};
+   exec('mp_run','#b__box',_params);
+   grp_disp(TR_NZL,'PLAN');
+   exec('before_tr_nagplan','ltr');
+   grp_disp(TR_NZL,'TRASY')
+|? _tr_naguid<>''
+|| TR_NAG.cntx_psh();
+   TR_NAG.prefix();
+   {? TR_NAG.seek(_tr_naguid)
+   || _params:=exec('mp_run_a','#b__box');
+      _params.ACT_UID:='LTR_TRA_DZLE';
+      _params.UIDREF:=_tr_naguid;
+      _params.AKCJA:='Popraw+';
+      exec('mp_run','#b__box',_params)
+   ?};
+   TR_NAG.cntx_pop();
+   grp_disp(TR_NZL,'PLAN');
+   exec('before_tr_nagplan','ltr');
+   grp_disp(TR_NZL,'TRASY')
+|? TR_NZL.sel_size()
+|| TR_NZL.sel_adel()
+?};
+~~
+
+
+\tr_nag_zplanu
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Usuwa dyspozycje z transportu
+::----------------------------------------------------------------------------------------------------------------------
+_params:=exec('mp_run_a','#b__box');
+_params.ACT_UID:='LTR_TRA_DZLE';
+_params.AKCJA:='Plan';
+_params.UIDREF:=TR_NZL.TR_NAG().uidref();
+exec('mp_run','#b__box',_params);
+grp_disp(TR_NZL,'PLAN');
+grp_disp(TR_NZL,'TRASY');
+~~
+
+
+\tr_nag_add
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: dołączenie nowego transportu
+::   WE: [_a] - 1-dyspozycja transportowa, 0-normalne dołącz (domyślnie)
+::       [_b] - lista dyspozycji transportowych do przeniesienia na transport
+::   WY: 1-dołaczono 0-nie
+::----------------------------------------------------------------------------------------------------------------------
+_res:=0;
+_wgzl:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+_tnzl:={? _wgzl || _b || ~~ ?};
+
+_bie_trnag:=#TR_NAG.ref();
+_new_trnag:=null;
+
+POM.TAB:='TR_NAG';
+POM.TYPDOK:='TRA';
+_czy_num:=exec('nr_pola','numery');
+TR_NAG.cntx_psh();
+TR_NAG.prefix();
+TR_NAG.blank();
+{? exec('get','#params',700814,2)='N' || TR_NAG.BLKORD:='N' ?};
+{? _czy_num & TR_NAG.add() & exec('add_blk','transport',TR_NAG.ref())
+||
+   _new_trnag:=TR_NAG.ref();
+   TR_NAG.memo_set('','UW');
+
+   _var_tr_nag:=exec('var_tr_nag','transport');
+   _var_tr_nag.WYJ_D:=date(0,0,0);
+   _var_tr_nag.WYJ_T:=time(0,0,0);
+   _var_tr_nag.POJAZD:=null();
+   _var_tr_nag.KIER:=null();
+   _var_tr_nag.KIER_TEL:='';
+   _var_tr_nag.WLASNY:='N';
+   _var_tr_nag.TR_ZEWN:=null();
+   _var_tr_nag.TR_ZEWNU:='';
+   _var_tr_nag.TR_ZEWNT:='';
+   _var_tr_nag.PO_FIRST:=1;
+
+   params_set('context',params_get(),'var_tr_nag',_var_tr_nag);
+
+   {? _wgzl || exec('nzl2tr_poz','transport',TR_NAG.ref(),_tnzl,0,1) ?};
+   exec('tr_nag_win_edit_set','transport',exec('FindInSet','#table','TR_NZL','TR_NAG',TR_NAG.ref())<>null() & _wgzl);
+   _nag_edit:=TR_NAG.edit("params_exec('chk_tr_nag','transport')");
+   {? TR_NAG.STAT_REJ='N' || exec('tr_nag_pop_po','transport',_nag_edit) ?};
+   {? _nag_edit
+   || _wyn:=TR_NAG.put(1);
+      {? _wyn || TR_NAG.memo_put(,'UW') ?};
+      exec('tran_log','!ltr_tra_dzle',TR_NAG.ref());
+      exec('aktDPtran','transport',TR_NAG.ref());
+      exec('done_blk','transport',_new_trnag)
+   ||
+::    usuwanie numeru
+      exec('done_blk','transport',_new_trnag);
+      _del:={? exec('FindInSet','#table','TR_NZL','TR_NAG',TR_NAG.ref())<>null()
+            || _wgzl | TR_NAG.NR=0 | FUN.ask('Transport ma pozycje.\nCzy na pewno usunąć transport?'@)
+            || 1
+            ?};
+      {? _del || exec('tr_nag_usu','transport',-1); _new_trnag:=null() ?}
+   ?}
+|| FUN.info('Nieudana próba zablokowania tabeli nagłówków dyspozycji transportowych.\nSpróbuj ponownie.'@)
+?};
+TR_NAG.cntx_pop();
+{? _new_trnag=null()
+||
+   {? _bie_trnag>0 || TR_NAG.seek(_bie_trnag,) ?}
+||
+   {? ~_wgzl & TR_NAG.seek(_new_trnag)=0
+   ||
+      FUN.info('Aktualnie zredagowany transport nie jest dostępne w ustawionym zakresie widoku transportów.'@);
+      {? _bie_trnag>0 || TR_NAG.seek(_bie_trnag,) ?}
+   ?}
+?};
+_res:=_new_trnag<>null();
+_res
+
+
+\po_wyj_d_tr_nag
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: po redakcji pola TR_NAG.WYJ_D
+::----------------------------------------------------------------------------------------------------------------------
+_data:=TR_NAG.WYJ_D;
+{? _data<>date(0,0,0)
+|| TR_NAG.RR:=_data~1;
+   TR_NAG.RM:=_data~2;
+   TR_NAG.RT:=exec('NumberOfWeek','#datetime',_data,2);
+   TR_NAG.RD:=_data~3
+|| TR_NAG.RR:=TR_NAG.RM:=TR_NAG.RT:=TR_NAG.RD:=0
+?};
+1
+
+
+\po_tr_nag_wlasny
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: po redakcji pola TR_NAG.WLASNY
+::----------------------------------------------------------------------------------------------------------------------
+{? TR_NAG.WLASNY='T'
+|| TR_NAG.TR_ZEWN:=null();
+   TR_NAG.TR_ZEWNU:=TR_NAG.TR_ZEWNT:=TR_NAG.TR_ZEWNN:=TR_NAG.TR_ZEWNK:=''
+|| TR_NAG.KIER:=null();
+   TR_NAG.KIER_TEL:='';
+   {? TR_NAG.POJAZD().WLASNY='T' || TR_NAG.POJAZD:=null() ?}
+?};
+exec('set_efld_opt','transport');
+1
+
+
+\tr_nag_kopiuj
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Kopia nagłówka transportu
+::----------------------------------------------------------------------------------------------------------------------
+_sel:=TR_NAG.sel_aget();
+TR_NAG.sel_adel();
+{? ~_sel.first() || _sel.REF:=#TR_NAG.ref(); _sel.add() ?};
+TR_Z.win_edit('COPY');
+TR_NAG.cntx_psh();
+{? {? _sel.size()=1
+   || FUN.ask('Czy skopiować nagłówek transportu?'@)
+   || FUN.ask('Czy skopiować zaznaczone nagłówki transportu?'@)
+   ?}
+ & TR_Z.edit("__CHK.record(TR_Z,,'WYJ_D')")
+|| {!
+   |? {? (TR_NAG.prefix(); TR_NAG.seek(_sel.REF,))
+      || _params:=exec('mp_run_a','#b__box');
+         _params.ACT_UID:='LTR_TRA_DZLE';
+         _params.AKCJA:='Kopiuj';
+         _params.PROC_START:='T';
+         exec('mp_run','#b__box',_params);
+         obj_del(_params)
+      ?};
+      _sel.next()
+   !}
+?};
+TR_NAG.cntx_pop();
+obj_del(_sel);
+~~
+
+
+\tran_log
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [19.42]
+:: OPIS: Dopisuje log-i o zaplanowaniu transportu
+::   WE: _a - TR_NAG.ref()
+::----------------------------------------------------------------------------------------------------------------------
+TR_NZL.cntx_psh();
+TR_NZL.index('TR_NAG');
+TR_NZL.prefix(_a);
+{? TR_NZL.first()
+|| {!
+   |? _transport:={? TR_NZL.TR_NAG().WLASNY='T'
+                  || '%2 własny %1'@[TR_NZL.TR_NAG().POJAZD().NRREJ,TR_NZL.TR_NAG().SYM]
+                  || '%2 zewnętrzny %1'@[TR_NZL.TR_NAG().TR_ZEWN().KOD,TR_NZL.TR_NAG().SYM]
+                  ?};
+      _opis:=' (Transport %2 na dzień: %1)'@[$TR_NZL.TR_NAG().WYJ_D+', '+form(TR_NZL.TR_NAG().WYJ_T,,3),_transport];
+      exec('log_nag','transport_wspolne',TR_NZL.uidref(),'tran',_opis);
+      TR_NZL.next()
+   !}
+?};
+TR_NZL.cntx_pop();
+~~
+
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 3d31699f5ba38dd2075faa141a3208c4a9a87b733ad959254f9e99753655963fc58f843c0be4bc6286e44761a26898a395f05ff80a6803ca6023b6700dd28d14b73b3fde9a233779f0ecf115050e20aa8e4d41d4df7e7c9248141d57530c78e19e52874f32ad4a0484a89e76cf0921f7543ec4a42304a2e701521da73373e658

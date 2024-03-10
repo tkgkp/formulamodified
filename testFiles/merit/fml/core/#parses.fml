@@ -1,0 +1,3134 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: #parses.fml
+:: Utworzony: 28.11.2013
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Formuły wspomagające redagowanie indywidualnych parametrów pracy użytkownika - parametrów sesji.
+::======================================================================================================================
+
+
+\parses_decl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Definicja klasy ParSes. Klasa korzysta z definicji klas: Stack i BUFFER.
+::       Klasa korzysta ze struktur danych związanych z obsługą procesowości.
+::       Tabele:  PARSES, USERS,
+::                B_DOMAIN, B_ACTION, B_USRDOM, B_ACTROL, B_PERM, B_PERM_A, B_USRROL.
+::       Zmienne: REF.FIRMA.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Deklaracja klasy Stack.
+exec('stack_decl','#stack');
+:: Deklaracja klasy BUFFER (trochę na około, żeby oszukać ME).
+_fml:='_buffer';
+exec(,_fml);
+
+:: Przy powtórnym wywołaniu deklaracji klasy ParSes - zakończ.
+{? var_pres('ParSes',@.CLASS)>0
+|| return()
+?};
+
+obj_decl('ParSes',
+
+
+:: Stałe  --------------------------------------------------------------------------------------------------------------
+
+
+:: Minimalna i maksymalna długość identyfikatora parametru (nie może być większa niż 31 - ograniczenie MacroBASE'a na
+:: długość identyfikatora zmiennej). Poprawność stałych NIE jest sprawdzana. Oczywiście długość minimalna nie może być
+:: większa niż maksymalna. Dokładniej wartości muszą spełniać nierówność: 1 <=  CMinIdLen <= CMaxIdLen <= 31.
+   obj_fld('CMinIdLen',3),
+   obj_fld('CMaxIdLen',31),
+
+
+:: Pola prywatne -------------------------------------------------------------------------------------------------------
+
+
+:: Akronim okna, w którym odbywa się redagowanie parametrów. Pole wypełniane jest wyłącznie na czas redagowania
+:: parametrów.
+   obj_fld('WE',''),
+
+:: Wskazanie bieżącego użytkownika (USERS.ref()).
+:: Pole może być wykorzystywane do odczytu.
+   obj_fld('USER',null()),
+
+:: Tablica nazwana opisująca aktualny tryb pracy. Opis elementów:
+::    uidref   - Identyfikator systemowy rekordu parametrów.
+::    typ      - Typ pracy (Użytkownik / Sesja / Czynność).
+::    pid      - Identyfikator rekordu - rodzica, który będzie uaktualniany.
+::    act      - Identyfikator uruchamianej aktywności (czynności, obszaru roboczego, ...).
+::    id       - Identyfikator związany z typem pracy.
+   obj_fld('MODEB',~~),
+:: Tablica zapamiętująca pierwotny tryb pracy.
+   obj_fld('MODEP',~~),
+
+:: Tablica wszystkich parametrów.
+   obj_fld('PARAMETR',~~),
+
+:: Tabela tymczasowa przechowująca informacje o dziedzinach występowania parametru, tworzona na podstawie definicji
+:: parametrów (nie uwzględnia uprawnień).
+   obj_fld('TDOM',~~),
+:: Tablica indeksów tabeli TDOM.
+   obj_fld('NDOM',~~),
+
+:: Tabela tymczasowa czynności w obszarach roboczych, tworzona na podstawie definicji systemu
+:: (nie uwzględnia uprawnień).
+   obj_fld('TAT',~~),
+
+:: Tabela tymczasowa łącząca identyfikator parametru z uprawnieniem do danych, tworzona na podstawie definicji
+:: parametrów (nie uwzględnia uprawnień).
+   obj_fld('TPERM',~~),
+:: Tablica indeksów tabeli TPERM.
+   obj_fld('NPERM',~~),
+
+:: Tabela tymczasowa z uprawnieniami do danych, w podziale na czynności dla _bieżącego_ użytkownika.
+   obj_fld('TAPERM',~~),
+
+:: Tabela tymczasowa z uprawnieniami do danych, w podziale na dziedziny dla _bieżącego_ użytkownika.
+   obj_fld('TDPERM',~~),
+:: Tablica indeksów tabeli TDPERM.
+   obj_fld('NDPERM',~~),
+
+:: Tabela tymczasowa z definicją zakładek okna redagowania parametrów.
+   obj_fld('TTABN',~~),
+:: Tabela tymczasowa z definicją zmiennych na zakładkach.
+   obj_fld('TTABP',~~),
+:: Tablica nazwana z uchwytami indeksów tabeli TTABP.
+   obj_fld('NTABP',~~),
+
+:: Stos do przechowywania kolejnych kontekstów środowiska - trybów pracy.
+   obj_fld('SMODE',~~),
+
+:: Stos do przechowywania kolejnych kontekstów bieżącego rekordu parametrów.
+   obj_fld('SCNTX',~~),
+
+:: Flaga wykonywania formuł 'afterChange'.
+   obj_fld('ACF',1),
+
+:: Tablica z wartościami pustymi wszystkich pól tabeli PARSES.
+   obj_fld('BLANK',~~),
+
+:: Tabela ze zdefiniowanymi dziedzinami.
+   obj_fld('B_DOMAIN',~~),
+
+:: Tablica typów.
+   obj_fld('TYPE',~~),
+
+:: Czy praca poprzez CGI?
+   obj_fld('CGI',0),
+
+:: Pole techniczne wykorzystywane przez wybrane metody select*.
+   obj_fld('selectBuf',''),
+
+:: Wskazanie na samego siebie.
+   obj_fld('SELF',~~),
+
+:: Domena
+   obj_fld('DOMAIN',~~),
+
+:: Obszar
+   obj_fld('AREA',~~),
+
+:: Metody prywatne -----------------------------------------------------------------------------------------------------
+
+
+   obj_meth('clean',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda sprzątająca, usuwa zbędne zapisy z tabeli PARSES.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  _dttms:=tm_form(tm_stamp());
+      _dt:=date(#(4+_dttms),#(2+(5-_dttms)),#(2+(8-_dttms)));
+      _tm:=time(#(2+(11-_dttms)),#(2+(14-_dttms)),#(2+(17-_dttms)));
+::    Zmienna _ti_long zawiera znacznik czasowy 3 dni wcześniejszy od bieżącego.
+      _ti_long:=time_ident(_dt-3,_tm);
+
+      BI_PREL.cntx_psh();
+      _wm:='bi_e____';
+      {? BI_PREL.name()<>_wm
+      || BI_PREL.use(_wm)
+      ?};
+      BI_PREL.index('PARSES');
+      BI_PREL.prefix();
+      PARSES.cntx_psh();
+      PARSES.index('USER');
+      PARSES.prefix();
+      {? PARSES.first()
+      || {!
+         |? {? PARSES.r_lock(1,1,1)
+            || {? PARSES.TYP='U' | PARSES.TYP='W' |
+::                ^ Rekord użytkownika lub rekord sesji WWW.
+                  (-PARSES.TYP='s' & PARSES.ID<>'' & PARSES.ses_info(PARSES.ID,'exist')) |
+::                ^ Rekord wciąż aktywnej sesji.
+                  _ti_long<PARSES.IDADD |
+::                ^ Rekord utworzony później niż _ti_long. Takie "świeże" rekordy są pomijane ponieważ odwołania do nich
+::                  mogą być wciąż niezbędne, mimo spełnienia dalszych warunków.
+                  PARSES.ID='' |
+::                ^ Brak identyfikatora (rekord "tymczasowy", po którego nikt się nie zgłosił).
+                  BI_PREL.find_key(PARSES.uidref(),)
+::                ^ Rekord wykorzystywany (w procesie/czynności).
+               || PARSES.r_unlock();
+                  PARSES.next()
+               || PARSES.del()
+               ?}
+            || PARSES.next()
+            ?}
+         !}
+      ?};
+
+      PARSES.cntx_pop();
+      BI_PREL.cntx_pop();
+      ~~
+   ",-1),
+
+
+   obj_meth('clearPar',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zeruje wybrane pola techniczne elementu tablicy parametrów.
+::   WE:  _a [OBJECT] - Parametr.
+::        _b [NUMBER] - Wartość dla pola CHANGE.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+   "  _a.EDIT:=_a.NEED:=_a.CNTX:=0;
+      _a.CHANGE:=_b;
+      ~~
+   ",type_of(obj_new(1)),type_of(0),-1),
+
+
+   obj_meth('clearAllPar',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zeruje wybrane pola techniczne wszystkich elementów tablicy parametrów.
+::   WE: _a [NUMBER] - Wartość dla pola CHANGE [0/1].
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+      "  {? obj_ntab(.PARAMETR)
+         || {! _lp:=1 .. obj_len(.PARAMETR)
+            |! .clearPar(.PARAMETR[_lp],_a)
+            !}
+         ?};
+         ~~
+      ",type_of(0),-1),
+
+
+   obj_meth('copyArray',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda kopiuje wartości elementów tablicy źródłowej do elementów tablicy docelowej.
+::   WE: _a [ARRAY] - Tablica źródłowa.
+::       _b [ARRAY] - Tablica docelowa.
+::   WY: Tablica docelowa.
+::----------------------------------------------------------------------------------------------------------------------
+   "  {! _lp:=1 .. obj_len(_a)
+      |! _b[_lp]:=_a[_lp]
+      !};
+      _b
+   "),
+
+
+   obj_meth('createMode',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda tworzy tablicę nazwaną do przechowywania trybu pracy. Elementom tablicy nadawane są wartości puste.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  _arr:=obj_new('uidref','typ','pid','act','id');
+      _arr.uidref:=_arr.typ:=_arr.pid:=_arr.act:=_arr.id:='';
+      _arr
+   "),
+
+
+   obj_meth('edit',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Główna metoda odpowiedzialna za obsługę edycji parametrów - część wspólna wszystkich metod edycyjnych.
+::       Przed jej wywołaniem należy prawidłowo ustalić wartości pól EDIT, NEED, CHANGE i wyzerować wartość pola CNTX -
+::       tym zajmują się metody wywołujące. Schemat działania metody:
+::       1. Prolog.
+::          Dla każdego parametru, który ma być redagowalny:
+::          a) Wykonywana jest formuła 'prolog'. Jeżeli zwróci wartość 0 - następuje porzucenie edycji.
+::             Kolejnym krokiem będzie 3b.
+::          b) Zapamiętywana jest bieżąca (przed redagowaniem) wartość parametru (VALUEB).
+::          c) Aktualizowane są informacje o redagowalności parametru w tabelach definiujących strukturę (zakładki)
+::             okna.
+::          d) Wykonywane są operacje optymalizujące wygląd okna i zakładek (rezygnacja ze zbędnych zakładaek).
+::          e) Pola związane z parametrem są dodawane do tworzonego okienka.
+::       2. Redagowanie parametrów.
+::          a) We wszystkich formułach wykonywanych w trakcie redagowania pól, dostępny jest parametr
+::             params_get().ParSes, zawierający uchwyt do bieżącego obiektu.
+::          b) Próba zatwierdzenia okienka wywołuje formuły 'valid' dla każdego parametru, który jest wymagany.
+::             O wymagalności (w tym momencie) decyduje pole NEED (nie mylić z wynikiem formuły 'required').
+::          c) Walidacja kończy się porażką, jeżeli choć jedna z wywoływanych formuł 'valid' kończy się porażką.
+::             Jeżeli żadna z formuł 'valid' nie zakończy się porażką - walidacja kończy się sukcesem.
+::       3. Epilog.
+::          a) Dla każdego redagowanego parametru, jeżeli jego:
+::                - walidacja zakończyła się sukcesem;
+::                - wartość (zapamiętana w kroku 1b) zmieniła się;
+::             wykonywana jest formuła 'afterChange'.
+::          b) Dla każdego parametru, dla którego wykonana była formuła 'prolog' (w kroku 1a) - wykonywana jest
+::             formuła 'epilog'.
+::   WE:  _a  [STRING] - Nazwa metody wywołującej (do obsługi komunikatów).
+::       [_b] [NUMBER] - Tryb redagowania?
+::                         1 - Tak [domyślnie]. Metoda pracuje w trybie EDIT.
+::                         0 - Nie. Metoda pracuje w trybie DISPLAY.
+::       [_c] [NUMBER] - Wymuszenie wykonania formuł 'afterChange'.
+::                         0 - Nie [domyślnie]. Formuły są wykonywane wyłącznie dla zmienionych parametrów.
+::                         1 - Tak. Każdy redagowany parametr uznawany jest za zmieniony.
+::                             Dla każdego więc wykonywana jest formuła 'afterChange'.
+::   WY: 1 - Redagowanie zakończone sukcesem.
+::       0 - Redagowanie nie powiodło się (nie zostały wypełnione wszystkie wymagane pola/zmienne) lub wystąpił błąd.
+::----------------------------------------------------------------------------------------------------------------------
+   ".edit(_a,1,0)",type_of(''),-1),
+
+   obj_meth('edit',".edit(_a,_b,0)",type_of(''),type_of(0),-1),
+
+   obj_meth('edit',".edit(_a,1,_c)",type_of(''),type_of(~~),type_of(0),-1),
+
+   obj_meth('edit',
+   "  _meth:=_a;
+      _edit:=_b;
+      _force:=_c;
+
+      PARSES.cntx_psh();
+      PARSES.clear();
+
+      _maxlp:={? obj_ntab(.PARAMETR) || obj_len(.PARAMETR) ?};
+      _exit:=1;
+      _weo:=.WE:='';
+      _change:=1;
+
+      {? .MODEB.uidref=''
+      || .error(_meth,'#10')
+      |? ~PARSES.seek(.MODEB.uidref)
+      || .error(_meth,'#11','Edycja nie jest możliwa.'@)
+      |? ~.TTABN.first()
+      || .error(_meth,'Brak definicji wyglądu okna redagowania - zakładek i/lub parametrów.'@)
+
+      || _exit:=0;
+
+::       Liczba zakładek
+         _lz:=0;
+
+::       Wyczyszczenie zmiennych sterujących redagowaniem.
+         {!
+         |? {? .TTABN.RED
+            || .TTABN.RED:=0;
+               .TTABN.put()
+            ?};
+            .TTABN.next()
+         !};
+         .TTABP.prefix();
+         _dp:=.TTABP.first();
+         {!
+         |? _dp
+         |! {? .TTABP.RED
+            || .TTABP.RED:=0;
+               .TTABP.put()
+            ?};
+            _dp:=.TTABP.next()
+         !};
+
+         _txt:='';
+::       Dla redagowalnych zmiennych wykonanie niezbędnych akcji (prolog, zapamiętanie wartości, ...).
+::       Ponieważ dany parametr może występować na kilku zakładkach, to akcja wykonywana jest w pętli po wszystkich
+::       parametrach, a nie po parametrach w zakładkach. Dzięki temu, nawet jeżli parametr występuje w kilku zakładkach
+::       to odpowiednie formuły są wykonywane tylko raz.
+
+         .TTABP.index(.NTABP.ID);
+         {! _lp:=1 .. _maxlp
+         |? {? .PARAMETR[_lp].EDIT
+            || .TTABP.prefix(.PARAMETR[_lp].ID,);
+               {? .TTABP.first()
+::                Parametr jest redagowalny co najmniej na jednej zakładce.
+               || _prolog:=.exec(.PARAMETR[_lp],'prolog',_change);
+                  {? type_of(_prolog)=.TYPE.NUMBER & _prolog=0
+                  || _exit:=1
+                  || .PARAMETR[_lp].CNTX:=1;
+                     .PARAMETR[_lp].VALUEB:=.exec(.PARAMETR[_lp],'value')
+                  ?};
+
+::                Aktualizacja znacznika redagowania w strukturach okienkowych.
+                  {!
+                  |? .TTABP.RED:=1;
+                     .TTABP.put();
+                     {? .TTABN.find_key(.TTABP.TTABN)
+                     || .TTABN.RED+=1;
+                        .TTABN.put();
+                        {? .TTABN.RED=1
+::                         Po pojawieniu się pierwszego parametru na zakładce - zakładamy, że zakładka będzie
+::                         prezentowana.
+                        || _lz+=1
+                        ?}
+                     ?};
+                     .TTABP.next()
+                  !}
+               || _txt+=', '+.PARAMETR[_lp].NAME;
+                  .PARAMETR[_lp].EDIT:=0
+               ?}
+            ?};
+            ~_exit
+         !};
+         {? _txt<>''
+         || FUN.info('Definicja wyglądu okna redagowania nie zawiera następujących parametrów:'@+'\n'+(2-_txt)+'.')
+         ?};
+
+::       Jeżeli każdy parametr w zakładce A występuje w jeszcze jednej zakładce, to z zakładki A możemy zrezygnować.
+         .TTABP.index(.NTABP.TNREDLP);
+         _dn:=.TTABN.last();
+::       Wyjątkowo zaczniemy od ostatniej zakładki.
+         {!
+         |? _dn
+         |! {? .TTABN.RED
+            || .TTABP.prefix(.TTABN.LP,1);
+               _dubelki:=0;
+               _dp:=.TTABP.first();
+               {!
+               |? _dp
+               |! .TTABP.cntx_psh();
+                  .TTABP.index(.NTABP.REDID);
+                  .TTABP.prefix(1,.TTABP.ID,);
+                  _size:=.TTABP.size();
+                  .TTABP.cntx_pop();
+                  {? _size>1
+                  || _dubelki+=1;
+                     _dp:=.TTABP.next()
+                  || _dp:=0
+                  ?}
+               !};
+               {? _dubelki=.TTABN.RED
+::                Wszystkie parametry bieżącej zakładki występują na innych zakładkach.
+               || .TTABN.RED:=0;
+                  .TTABN.put();
+                  _lz-=1;
+                  .TTABP.cntx_psh();
+                  .TTABP.index(.NTABP.TTABN);
+                  .TTABP.prefix(.TTABN.LP);
+                  _dp:=.TTABP.first();
+                  {!
+                  |? _dp
+                  |! {? .TTABP.RED
+                     || .TTABP.RED:=0;
+                        .TTABP.put()
+                     ?};
+                     _dp:=.TTABP.next()
+                  !};
+                  .TTABP.cntx_pop()
+               ?}
+            ?};
+            _dn:=.TTABN.prev()
+         !}
+      ?};
+
+::    Doklejanie okien.
+      {? ~_exit & _lz>0
+      || _weo:=PARSES.win_edit('?');
+         .WE:=PARSES.mk_edit('Parametry pracy'@,,'#parses'+(-(_meth+3)),,,'normal');
+         _dn:=.TTABN.first();
+         {!
+         |? _dn
+         |! {? .TTABN.RED
+            || {? _lz>1
+::                Zakładkę tworzymy tylko wtedy, gdy jest ich więcej niż jedna.
+               || PARSES.win_etab(.WE,.TTABN.TYTUL)
+               ?};
+               _psep:={? .TTABN.RED>7 || ceil(.TTABN.RED/2)+1 ?};
+::             Jeżeli parametrów jest więcej niż 7, to podział na kolumny - w połowie. W przeciwnym wypadku (parametrów
+::             mniej niż 8 - bez podziału).
+               _lpp:=0;
+
+               .TTABP.prefix(.TTABN.LP);
+               _dp:=.TTABP.first();
+               {!
+               |? _dp
+               |! {? .TTABP.RED
+                  || _lpp+=1;
+                     {? _lpp=_psep
+                     || _lpp:=0;
+                        PARSES.win_ecol(.WE)
+                     ?};
+                     _par:=.getPar(.TTABP.ID);
+                     PARSES.win_ewin(.WE,,_par.WIN,_par.NAME);
+                     _required:=.exec(_par,'required');
+                     {? type_of(_required)=.TYPE.STRING & _required<>''
+::                      Jeżeli zdefiniowano łańcuch wymaganych pól - rozbierzmy go na czynniki pierwsze i postawmy
+::                      czerwone gwiazdki (mark=1) tam gdzie trzeba.
+                     || _lista:=spli_str(_required,',');
+                        {! _lpf:=1 .. obj_len(_lista)
+                        |! {? _lista[_lpf]<>'' & 1+_lista[_lpf]<>'-'
+                           || _poz:=_lista[_lpf]*'.';
+                              {? _poz
+                              || _fld:=(_poz-1)+_lista[_lpf];
+                                 _join:=_poz-_lista[_lpf];
+                                 PARSES.efld_opt(.WE,'mark=1',,_fld,_join)
+                              || PARSES.efld_opt(.WE,'mark=1',,_lista[_lpf])
+                              ?}
+                           ?}
+                        !};
+                        obj_del(_lista)
+                     ?};
+                     obj_del(_par)
+                  ?};
+                  _dp:=.TTABP.next()
+               !};
+               .TTABP.prefix()
+            ?};
+            _dn:=.TTABN.next()
+         !};
+         exec('ok_esc','#window',PARSES,.WE,,,,,,,exec('text_red_ok','#window'));
+         PARSES.win_edit(.WE)
+      ?};
+
+      _ok:=0;
+      {? ~_exit
+::       Żaden z PROLOG-ów nie wykluczył redagowania - redagujemy.
+      || {? _lz
+         || {! _lp:=1 .. _maxlp
+            |! {? .PARAMETR[_lp].EDIT
+               || .exec(.PARAMETR[_lp],'beforeService',_change)
+               ?}
+            !};
+            {? ~_edit
+            || PARSES.display()
+            |? params_set('ParSes',.SELF);
+               PARSES.edit($'params_get().ParSes.valid()')
+            || _ok:=.putPARSES();
+::             Jeżeli redagowanie zakończyło się sukcesem, rekord został uaktualniony - sprawdźmy, które zmienne się
+::             zmieniły. Ustawiamy flagę, którą będzie można pobrać metodą isChanged().
+::             Flagi ustawiamy w osobnej pętli, aby były dostępne we wszystkich formułach typu 'afterChange' i 'epilog'
+::             a nie tylko w formułach, które jeszcze nie były wykonywane.
+               {? _ok
+               || {! _lp:=1 .. _maxlp
+                  |! .PARAMETR[_lp].CHANGE:=.PARAMETR[_lp].EDIT &
+                        (.PARAMETR[_lp].VALUEB<>(.PARAMETR[_lp].VALUEA:=.exec(.PARAMETR[_lp],'value')) | _force)
+                  !}
+               ?}
+            || PARSES.get()
+            ?}
+
+::          Brak parametrów do redagowania - komunikat o uprawnieniach.
+         || .error(_meth,'#7')
+         ?}
+      ?};
+
+      {! _lp:=1 .. _maxlp
+      |! {? _ok & .PARAMETR[_lp].CHANGE & .ACF
+         || .exec(.PARAMETR[_lp],'afterChange',_change);
+            .PARAMETR[_lp].ENVVAL:=.PARAMETR[_lp].VALUEA
+         ?};
+         {? .PARAMETR[_lp].CNTX
+         || .exec(.PARAMETR[_lp],'epilog',_change)
+         ?}
+      !};
+
+      {? _weo<>''
+      || PARSES.win_edit(_weo);
+         PARSES.win_edel(.WE);
+         .WE:=''
+      ?};
+      PARSES.cntx_pop();
+
+      .clearAllPar(0);
+      _ok
+   ",type_of(''),type_of(0),type_of(0),-1),
+
+
+   obj_meth('error',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Obsługa komunikatów o błędach.
+::   WE:  _a  [STRING] - Nazwa metody wywołującej, jeżeli wartość pusta - komunikat NIE jest wyświetlany.
+::        _b  [STRING] - Komunikat, lub kod komunikatu.
+::       [_c] [ANY]    - Dla wybranych kodów komunikatu możliwe jest przekazanie dodatkowych parametrów/informacji.
+::       [_d] [ANY]    - Dla wybranych kodów komunikatu możliwe jest przekazanie dodatkowych parametrów/informacji.
+::       [_e] [ANY]    - Dla wybranych kodów komunikatu możliwe jest przekazanie dodatkowych parametrów/informacji.
+::       [_f] [ANY]    - Dla wybranych kodów komunikatu możliwe jest przekazanie dodatkowych parametrów/informacji.
+::   WY: Numer błędu ze znakiem minus.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _ret:={? 1+_b='#' || -#(1-_b) || -100 ?};
+      _msg:=
+         {? _b='#1'
+         || 'Niepoprawna wartość parametru [%1].'@ [_c]+{? var_pres('_d')=.TYPE.STRING || '\n'+_d || '' ?}
+         |? _b='#2'
+         || 'Parametr [%1] nie został jeszcze zdefiniowany.'@ [_c]
+         |? _b='#3'
+         || 'Dziedzina [%1] nie została znaleziona.'@ [_c]
+         |? _b='#4'
+         || 'Żaden parametr nie został jeszcze zdefiniowany.'@+{? var_pres('_c')=.TYPE.STRING || '\n'+_c || '' ?}
+         |? _b='#5'
+         || 'Długość identyfikatora parametru powinna należeć do przedziału <%1..%2>.'@ [$.CMinIdLen,$.CMaxIdLen]+
+            {? var_pres('_c')=.TYPE.STRING || '\n'+_c || '' ?}
+         |? _b='#6'
+         || 'Powtórna definicja parametru [%1] nie została dodana.'@ [_c]
+         |? _b='#7'
+         || 'Brak uprawnień do redagowania parametrów.'@
+         |? _b='#8'
+         || 'Nieprawidłowy typ argumentu [%1].'@ [_c]+'\n'+
+            {? var_pres('_d')=.TYPE.STRING || 'Oczekiwana wartość znakowa.'@
+            |? var_pres('_d')=.TYPE.NUMBER || 'Oczekiwana wartość liczbowa.'@
+            |? var_pres('_d')=.TYPE.RULE || 'Oczekiwana wartość formułowa.'@
+            |? var_pres('_d')=.TYPE.REFERENCE || 'Oczekiwana wartość złączeniowa.'@
+            |? var_pres('_d')=.TYPE.TABLE || 'Oczekiwany uchwyt tabeli lub zmiennej.'@
+            || ''
+            ?}+
+            {? var_pres('_e')=.TYPE.STRING || '\n'+_e || '' ?}
+         |? _b='#9'
+         || 'Brak uprawnień do redagowania parametru [%1].'@ [_c]
+         |? _b='#10'
+         || 'Tryb pracy nie został określony. Użyj metody setMode().'@
+         |? _b='#11'
+         || 'Brak rekordu parametrów.'@+{? var_pres('_c')=.TYPE.STRING || '\n'+_c || '' ?}
+         |? _b='#12'
+         || 'Środowisko pracy nie zostało określone. Użyj metody setEnv().'@
+         || _b
+         ?};
+      {? _a<>''
+      || {? app_info('web_sesid')<>''
+         || web_msg(_msg)
+         || echo('Klasa obiektu: ParSes | Metoda: %1 | Kod błędu: %2'@ [_a,$_ret]);
+            FUN.error(_msg);
+            echo()
+         ?}
+      ?};
+      _ret
+   ",type_of(''),type_of('')),
+
+
+   obj_meth('exec',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda uruchamia wskazaną formułę dla bieżącego parametru, zwraca jej wynik, odtwarzając wcześniej kontekst
+::       pracy. Do wykonywanej formuły przekazywane są dwa lub trzy parametry:
+::          _a - Uchwyt do obiektu wywołującego formułę.
+::          _b - Identyfikator parametru.
+::          _c - Dodatkowy parametr przekazywany do wykonywanej formuły (opcjonalnie).
+::   WE:  _a  [OBJECT] - Parametr.
+::        _b  [STRING] - Nazwa pola przechowującego formułę do uruchomienia.
+::       [_c] [ANY]    - Dodatkowy parametr przekazywany do wykonywanej formuły (opcjonalnie).
+::   WY: Wynik przekazanej formuły.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _par:=_a;
+      _fml:=_b;
+
+      ($('_a.'+_fml))(_par)(.SELF,_par.ID,{? _>2 || _c || ~~ ?})
+   "),
+
+
+   obj_meth('formID',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda formatuje wartość pola ID przy obsłudze sesji webTerm-owych.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  _sep:='^';
+      _ret:=form(_a,15)+_sep;
+      {? var_pres('_b')=.TYPE.STRING
+      || _ret+=form(_b,32)+_sep;
+         {? var_pres('_c')=.TYPE.STRING
+         || _ret+=form(_c,15)+_sep
+         ?}
+      ?};
+      _ret
+   ",type_of('')),
+
+
+   obj_meth('getDom',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zwraca identyfikator dziedziny dla wskazanej czynności.
+::   WE: _a [STRING] - Nazwa metody wywołującej (do komunikatów o błędach).
+::       _b [STRING] - Identyfikator czynności.
+::   WY: '' lub identyfikator dziedziny.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:=_a;
+      _act:=_b;
+
+      B_DOMAIN.cntx_psh();
+      B_DOMAIN.prefix();
+      B_ACTION.cntx_psh();
+      B_ACTION.index('UNIK');
+      B_ACTION.prefix();
+      {? B_ACTION.find_key(_act,)
+      || _ret:=B_ACTION.B_DOMAIN().SYMBOL
+      || _ret:='';
+         .error(_meth,'Brak definicji czynności [%1].'@ [_act])
+      ?};
+      B_ACTION.cntx_pop();
+      B_DOMAIN.cntx_pop();
+      _ret
+   ",type_of(''),type_of(''),-1),
+
+
+   obj_meth('getPar',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zwraca definicję parametru o podanym identyfikatorze - istnienie tablicy parametrów
+::       musi być wcześniej potwierdzone.
+::   WE: _a [STRING] - Identyfikator parametru
+::   WY: Parametr o podanym identyfikatorze.
+::----------------------------------------------------------------------------------------------------------------------
+      "($('_a.'+_a))(.PARAMETR)",type_of(''),-1),
+
+
+   obj_meth('isEmpty',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda sprawdza czy choć jeden z parametrów dostępnych do redakcji dla bieżącego użytkownika i zaznaczony
+::       wcześniej jako wymagalny jest pusty - wymaga uzupełnienia.
+::       Metoda zakłada, że bufor tabeli PARSES został prawidłowo wypełniony przez metodę wywołującą.
+::   WE: _a [STRING] - Nazwa metody wywołującej (do komunikatów o błędach).
+::   WY: 1 - Istnieją parametry, które nie są wypełnione.
+::       0 - Wszystkie parametry są wypełnione.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:=_a;
+
+      _ret:=0;
+      _change:=2;
+      {? obj_ntab(.PARAMETR)
+      || {! _lp:=1 .. obj_len(.PARAMETR)
+         |? {? .PARAMETR[_lp].EDIT & .PARAMETR[_lp].NEED
+            || _val:=.exec(.PARAMETR[_lp],'needChange');
+               _ret:={? type_of(_val)=.TYPE.NUMBER || _val ?} | .PARAMETR[_lp].EMPTY=.exec(.PARAMETR[_lp],'value')
+            ?};
+            ~_ret
+         !}
+      ?};
+      _ret
+   ",type_of(''),-1),
+
+
+   obj_meth('putPARSES',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zastępuje zawartość bieżącego rekordu zawartością bufora. Dodatkowo, jeżeli bieżąca sesja jest
+::       "podstawową" sesją użytkownika, aktualizowany jest również rekord parametrów użytkownika.
+::   WE:
+::   WY: 1 - Zastąpienie (z ewentualna aktualizacją rekordu użytkownika) powiodło się.
+::       0 - Akcja nie zakończyła się sukcesem.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _tryb:=
+         {? PARSES.TYP='s' | PARSES.TYP='W' || 'uu'
+         |? .MODEB.pid<>'' || 'up'
+         || ''
+         ?};
+      {? 1+_tryb='u'
+::       Aktualizacja dotyczy nie tylko rekordu "bieżącego" .
+      || _lista:=',IDADD,TYP,USER,ID,';
+         do();
+         {? PARSES.put(1)
+         || _size:=PARSES.fld_num();
+            _buf:=obj_new(_size);
+::          Zapamiętujemy wszystkie pola bieżącego rekordu.
+            {! _lp:=1 .. _size
+            |! _buf[_lp]:=($('PARSES.'+PARSES.fld_acr(_lp)))()
+            !};
+
+            _fm:=
+               '{? _fld:=\\'PARSES.\\'+_a; '+
+                {? _tryb='up' || '($_fld)()=_b & ' || '' ?}+
+                '($_fld)()<>_c || ($_fld)():=_c; 1 ?}';
+
+            PARSES.cntx_psh();
+            PARSES.clear();
+
+            {? _tryb='up' & PARSES.seek(.MODEB.pid)
+::             Spróbujemy uaktualnić rekord rodzica. Jego brak nie jest błędem.
+            || _zmiana:=0;
+               {! _lp:=1 .. _size
+               |! _acr:=PARSES.fld_acr(_lp);
+                  {? _lista*(','+_acr+',')=0
+                  || _zmiana+=($_fm)(_acr,.BLANK[_lp],_buf[_lp])
+                  ?}
+               !};
+               {? _zmiana
+               || PARSES.put()
+               ?}
+            ?};
+
+            PARSES.index('USER');
+            PARSES.prefix('U',PARSES.USER);
+            {? PARSES.first()
+::             Replikujemy wartości pól, z wyjątkiem pól, których akronimy zostały wymienione w zmiennej _lista.
+            || _zmiana:=0;
+               {! _lp:=1 .. _size
+               |! _acr:=PARSES.fld_acr(_lp);
+                  {? _lista*(','+_acr+',')=0
+                  || _zmiana+=($_fm)(_acr,.BLANK[_lp],_buf[_lp])
+                  ?}
+               !};
+               {? _zmiana
+               || PARSES.put()
+               ?}
+            || undo()
+            ?};
+
+            PARSES.cntx_pop()
+
+         || undo()
+         ?};
+         end()
+      || PARSES.put()
+      ?}
+   "),
+
+
+   obj_meth('selectAll',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda "wybiera" parametry dostępne (zgodnie z uprawnieniami) dla bieżącego użytkownika.
+::   WE:  _a  [STRING] - Nazwa metody wywołującej (do komunikatów o błędach).
+::       [_b] [STRING] - Dodatkowy (opcjonalny) komunikat przy braku parametrów.
+::       [_c] [NUMBER] - Wartość dla pola CHANGE [domyślnie: 0].
+::   WY: 1 - Akcja zakończona powodzeniem.
+::       0 - Brak parametrów.
+::      -1 - Akcja zakończona porażką.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:=_a;
+      _msg:={? var_pres('_b')=.TYPE.STRING || _b || ~~ ?};
+      _change:={? var_pres('_c')=.TYPE.NUMBER || _c ?};
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4',_msg);
+         return(-1)
+      ?};
+
+      .clearAllPar(0);
+
+      _ret:=0;
+
+      .TDOM.index(.NDOM.ID);
+      .TPERM.index(.NPERM.ID);
+      .TDPERM.index(.NDPERM.PERM);
+
+      B_USRDOM.cntx_psh();
+      B_USRDOM.index('DS');
+      B_USRDOM.prefix(REF.FIRMA,.USER);
+
+      {! _lp:=1 .. obj_len(.PARAMETR)
+      |! .clearPar(.PARAMETR[_lp],_change);
+::       Czy parametr będzie redagowany? Na razie tego nie wiemy - sprawdźmy.
+         _required:=.exec(.PARAMETR[_lp],'required');
+         .PARAMETR[_lp].NEED:=type_of(_required)=.TYPE.STRING & _required<>'';
+
+::       Parametry powiązane z dziedzinami.
+         .TDOM.prefix(.PARAMETR[_lp].ID,);
+         {? .TDOM.first()
+         || {!
+            |? {? .CGI | B_USRDOM.find_key(.TDOM.DOM,)
+               || .PARAMETR[_lp].EDIT:=1;
+                  _ret+=1;
+                  0
+               || .TDOM.next()
+               ?}
+            !}
+         ?};
+
+::       Parametry powiązane z uprawnieniami do danych.
+         {? ~.PARAMETR[_lp].EDIT
+         || .TPERM.prefix(.PARAMETR[_lp].ID,);
+            {? .TPERM.first()
+            || {!
+               |? .TDPERM.prefix(.TPERM.PERM);
+                  {? .TDPERM.first()
+                  || {!
+                     |? {? B_USRDOM.find_key(.TDPERM.DOM,)
+                        || .PARAMETR[_lp].EDIT:=1;
+                           _ret+=1;
+                           0
+                        || .TDPERM.next()
+                        ?}
+                     !}
+                  ?};
+                  ~.PARAMETR[_lp].EDIT & .TPERM.next()
+               !}
+            ?}
+         ?}
+      !};
+
+      B_USRDOM.cntx_pop();
+
+      _ret>0
+   ",type_of('')),
+
+
+   obj_meth('selectDom',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda "wybiera" parametry związane ze wskazaną dziedziną, dostępne (zgodnie z uprawnieniami) dla bieżącego
+::       użytkownika.
+::   WE:  _a  [STRING] - Nazwa metody wywołującej (do komunikatów o błędach).
+::        _b  [ARRAY]  - Tablica z identyfikatorami dziedzin.
+::       [_c] [STRING] - Dodatkowy (opcjonalny) komunikat przy braku parametrów.
+::       [_d] [NUMBER] - Wartość dla pola CHANGE [domyślnie: 0].
+::   WY: 1 - Akcja zakończona powodzeniem.
+::       0 - Brak parametrów.
+::      -1 - Akcja zakończona porażką.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:=_a;
+      _doms:=_b;
+      _msg:={? var_pres('_c')=.TYPE.STRING || _c || ~~ ?};
+      _change:={? var_pres('_d')=.TYPE.NUMBER || _d ?};
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4',_msg);
+         return(-1)
+      ?};
+
+      .clearAllPar(_change);
+      .selectBuf:='|';
+
+      _err:=0;
+      _ret:=0;
+
+      .TDOM.index(.NDOM.DI);
+      .TPERM.index(.NPERM.PERM);
+      .TDPERM.index(.NDPERM.DOM);
+
+      B_USRDOM.cntx_psh();
+      B_USRDOM.index('DS');
+      B_USRDOM.prefix(REF.FIRMA,.USER);
+
+      {! _lp:=1 .. obj_len(_doms)
+      |? _err=0
+      |! {? var_pres('['+$_lp+']',_doms)<>.TYPE.STRING
+         || _err:=.error(_meth,'#8','DOM'+$_lp,'')
+
+         |? ~.B_DOMAIN.find_key(_doms[_lp],)
+         || _err:=.error(_meth,'#3',_doms[_lp])
+
+         || _ret+=.selectPar4Dom(_doms[_lp],1)+.selectPerm4Dom(_doms[_lp],1)
+         ?}
+      !};
+
+      B_USRDOM.cntx_pop();
+
+      {? _err<0
+      || -1
+      |? _ret=0
+      || 0
+      || 1
+      ?}
+   ",type_of(''),type_of(obj_new(1))),
+
+
+   obj_meth('selectPar',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda "wybiera" parametry dostępne (zgodnie z uprawnieniami) dla bieżącego użytkownika.
+::       Weryfikuje, czy parametr(-y) wskazane w wywołaniu są dostępne dla bieżącego użytkownika.
+::   WE:  _a  [STRING] - Nazwa metody wywołującej (do komunikatów o błędach).
+::        _b  [ARRAY]  - Tablica z parametrami.
+::       [_c] [STRING] - Dodatkowy (opcjonalny) komunikat przy braku parametrów.
+::   WY: 1 - Akcja zakończona powodzeniem.
+::       0 - Brak parametrów.
+::      -1 - Akcja zakończona porażką.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:=_a;
+      _pars:=_b;
+      _msg:={? var_pres('_c')=.TYPE.STRING || _c || ~~ ?};
+
+      {? ~obj_ntab(.PARAMETR)
+      || return(.error(_meth,'#4',_msg))
+      ?};
+
+      .clearAllPar(0);
+
+      _err:=0;
+      _ret:=0;
+
+      .TDOM.index(.NDOM.ID);
+      .TPERM.index(.NPERM.ID);
+      .TDPERM.index(.NDPERM.PERM);
+      .TDPERM.prefix();
+
+      B_USRDOM.cntx_psh();
+      B_USRDOM.index('DS');
+      B_USRDOM.prefix(REF.FIRMA,.USER);
+
+      {! _lp:=1 .. obj_len(_pars)
+      |? _err=0
+      |! {? var_pres('['+$_lp+']',_pars)<>.TYPE.STRING
+         || _err:=.error(_meth,'#8','ID'+$_lp,'')
+
+         |? var_pres(_pars[_lp],.PARAMETR)<0
+         || _err:=.error(_meth,'#2',_pars[_lp])
+
+         |? _par:=.getPar(_pars[_lp]);
+            .TDOM.prefix(_pars[_lp],);
+            {? .TDOM.first()
+            || {!
+               |? {? .CGI | B_USRDOM.find_key(.TDOM.DOM,)
+                  || _par.EDIT:=1;
+                     _par.NEED:=1;
+                     _ret+=1;
+                     0
+                  || .TDOM.next()
+                  ?}
+               !}
+            ?};
+::          Powyżej sprawdzamy, czy czy istnieje dziedzina związana z danym parametrem, do której mamy uprawnienia.
+::          Poniżej sprawdzamy (jeżeli parametr nie został zakwalifikowany do edycji), czy mamy dostęp do uprawnień,
+::          które wynikają z tego parametru.
+            {? ~_par.EDIT
+            || .TPERM.prefix(_par.ID,);
+               {? .TPERM.first()
+               || {!
+                  |? {? .TDPERM.find_key(.TPERM.PERM,)
+                     || _par.EDIT:=1;
+                        _par.NEED:=1;
+                        _ret+=1;
+                        0
+                     || .TPERM.next()
+                     ?}
+                  !}
+               ?}
+            ?};
+            _ok:=_par.EDIT;
+            obj_del(_par);
+            ~_ok
+         || _err:=.error(_meth,'#9',_pars[_lp])
+
+         ?}
+      !};
+
+      B_USRDOM.cntx_pop();
+
+      {? _err<0
+      || -1
+      |? _ret=0
+      || 0
+      || 1
+      ?}
+   "),
+
+
+   obj_meth('selectPar4Dom',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.37]
+:: OPIS: Właściwe "wybieranie" parametrów związanych ze wskazaną dziedziną, dostępnych (zgodnie z uprawnieniami) dla
+::       bieżącego użytkownika.
+::       Metoda korzysta z pola .selectBuf - należy je zainicjować przed wywołaniem.
+::   WE:  _a  [STRING] - Identyfikator dziedziny produktowej. Zakłada się, że poprawność parametru (istnienie dziedziny
+::                       o podanym identyfikatorze) została zweryfikowana w metodzie wywołującej.
+::       [_b] [NUMBER] - Pomijaj ustawianie kontekstu [0*/1].
+::   WY: Liczba wybranych parametrów.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _dom:=_a;
+      _cntx:=~_b;
+
+      _ret:=0;
+      {? _cntx
+      || .TDOM.index(.NDOM.DI);
+         B_USRDOM.cntx_psh();
+         B_USRDOM.index('DS');
+         B_USRDOM.prefix(REF.FIRMA,.USER)
+      ?};
+      .TDOM.prefix(_dom);
+      {? .TDOM.first() & (.CGI | B_USRDOM.find_key(_dom,))
+::       Jeżeli do dziedziny produktowej zostały przywiązane parametry i użytkownik ma do niej dostęp, to ustawiamy te
+::       parametry. Jeżeli jednak nie ma dostępu, to te parametry nie są mu potrzebne. Nieustawienie ich nie jest błędem
+::       ponieważ i tak nie będzie mógł uruchomić żadnej czynności, która potrzebowałaby (ewentualnie) tych parametrów.
+::       Problem przede wszystkim dotyczy uruchamiania obszarów roboczych, które zawierają czynności z różnych dziedzin.
+      || {!
+         |? _id:=.TDOM.ID;
+            {? .selectBuf*'|%1|' [_id]=0
+            || .selectBuf+=_id+'|';
+               _par:=.getPar(_id);
+               _par.EDIT:=1;
+               _required:=.exec(_par,'required');
+               _par.NEED:=type_of(_required)=.TYPE.STRING & _required<>'';
+               obj_del(_par);
+               _ret+=1
+            ?};
+            .TDOM.next()
+         !}
+      ?};
+      {? _cntx
+      || B_USRDOM.cntx_pop()
+      ?};
+
+      _ret
+   ",type_of(''),type_of(0),-1),
+
+   obj_meth('selectPar4Dom',".selectPar4Dom(_a,0)",type_of(''),-1),
+
+
+   obj_meth('selectPar4Uid',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.37]
+:: OPIS: Właściwe "wybieranie" parametrów związanych ze wskazaną czynnością, na podstawie uprawnień do danych.
+::       Zakłada się, że uprawnienia do czynności (możliwość jej uruchomienia) została już zweryfikowana.
+::       Metoda korzysta z pola .selectBuf - należy je zainicjować przed wywołaniem.
+::   WE:  _a  [STRING] - Identyfikator czynności. Zakłada się, że poprawność parametru (istnienie czynności
+::                       o podanym identyfikatorze) została zweryfikowana w metodzie wywołującej.
+::   WY: Liczba wybranych parametrów.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _uid:=_a;
+
+      _ret:=0;
+      .TPERM.index(.NPERM.PERM);
+      .TAPERM.prefix(_uid,);
+      {? .TAPERM.first()
+      || {!
+         |? .TPERM.prefix(.TAPERM.PERM,);
+            {? .TPERM.first()
+            || {!
+               |? _id:=.TPERM.ID;
+                  {? .selectBuf*'|%1|' [_id]=0
+                  || .selectBuf+=_id+'|';
+                     _par:=.getPar(_id);
+                     _par.EDIT:=1;
+                     _required:=.exec(_par,'required');
+                     _par.NEED:=type_of(_required)=.TYPE.STRING & _required<>'';
+                     obj_del(_par);
+                     _ret+=1
+                  ?};
+                  .TPERM.next()
+               !}
+            ?};
+            .TAPERM.next()
+         !}
+      ?};
+      _ret
+   ",type_of(''),-1),
+
+
+   obj_meth('selectPerm4Dom',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.37]
+:: OPIS: Właściwe "wybieranie" parametrów związanych ze wskazaną dziedziną, dostępnych (zgodnie z uprawnieniami) dla
+::       bieżącego użytkownika na podstawie uprawnień do danych.
+::       Metoda korzysta z pola .selectBuf - należy je zainicjować przed wywołaniem.
+::   WE:  _a  [STRING] - Identyfikator dziedziny produktowej. Zakłada się, że poprawność parametru (istnienie dziedziny
+::                       o podanym identyfikatorze) została zweryfikowana w metodzie wywołującej.
+::       [_b] [NUMBER] - Pomijaj ustawianie kontekstu [0*/1].
+::   WY: Liczba wybranych parametrów.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _dom:=_a;
+      _cntx:=~_b;
+
+      _ret:=0;
+      {? _cntx
+      || .TDPERM.index(.NDPERM.DOM);
+         .TPERM.index(.NDPERM.PERM);
+         B_USRDOM.cntx_psh();
+         B_USRDOM.index('DS');
+         B_USRDOM.prefix(REF.FIRMA,.USER)
+      ?};
+
+      .TDPERM.prefix(_dom,);
+      {? .TDPERM.first() & (.CGI | B_USRDOM.find_key(_dom,))
+      || {!
+         |? .TPERM.prefix(.TDPERM.PERM,);
+            {? .TPERM.first()
+            || {!
+               |? _id:=.TPERM.ID;
+                  {? .selectBuf*'|%1|' [_id]=0
+                  || .selectBuf+=_id+'|';
+                     _par:=.getPar(_id);
+                     _par.EDIT:=1;
+                     _required:=.exec(_par,'required');
+                     _par.NEED:=type_of(_required)=.TYPE.STRING & _required<>'';
+                     obj_del(_par);
+                     _ret+=1
+                  ?};
+                  .TPERM.next()
+               !}
+            ?};
+            .TDPERM.next()
+         !}
+      ?};
+
+      {? _cntx
+      || B_USRDOM.cntx_pop()
+      ?};
+
+      _ret
+   ",type_of(''),type_of(0),-1),
+
+   obj_meth('selectPerm4Dom',".selectPerm4Dom(_a,0)",type_of(''),-1),
+
+
+   obj_meth('setUser',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda pozwala na zmianę obsługiwanego użytkownika na tego wskazanego parametrem. Metoda powstała w związku z
+::       zastosowaniami innymi niż desktopowe (np. webTerm).
+::   WE: _a [REFERENCE] - Wskazanie użytkownika.
+::   WY: Status operacji:
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='setUser';
+      _user:=_a;
+
+      _bz:=0;
+      USERS.cntx_psh();
+      USERS.index('USR_AKOD');
+      USERS.prefix();
+      {? USERS.seek(_user) & USERS.AKT='T'
+      || {? .USER=USERS.ref()
+         || _bz:=1
+         || .USER:=USERS.ref()
+         ?}
+      || .USER:=null();
+         .error(_meth,'Niepoprawna wartość parametru %1 [%2].'@ ['USER',_a])
+      ?};
+      USERS.cntx_pop();
+      {? .USER=null()
+      || return(0)
+      |? _bz
+      || return(1)
+      ?};
+
+      {? type_of(.MODEB)=.TYPE.ARRAY
+      || obj_del(.MODEB)
+      ?};
+      .MODEB:=.createMode();
+
+      {? type_of(.MODEP)=.TYPE.ARRAY
+      || obj_del(.MODEP)
+      ?};
+      .MODEP:=.createMode();
+
+      .readPerm();
+
+::    To może być absolutnie pierwsze logowanie danego użytkownika - stwórzmy dla niego pusty rekord parametrów.
+      _typ:='U';
+      PARSES.cntx_psh();
+      PARSES.index('USER');
+      PARSES.prefix();
+      {? ~PARSES.find_key(_typ,.USER)
+      || PARSES.blank();
+         PARSES.TYP:=_typ;
+         PARSES.USER:=.USER;
+         PARSES.add()
+      ?};
+      PARSES.cntx_pop();
+      1
+   ",type_of(null()),-1),
+
+
+   obj_meth('setUser',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [20.42]
+:: OPIS: Metoda pozwala na zmianę obsługiwanego użytkownika, na obecnie zalogowanego w aplikacji [app_info('app_user')].
+::       Wykorzystywana przy dostępie przez webTerm-a.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='setUser';
+
+      _user:=app_info('app_user');
+      USERS.cntx_psh();
+      USERS.index('USR_AKOD');
+      USERS.prefix();
+      _ref:={? USERS.find_key('T',_user,) || USERS.ref() || null() ?};
+      USERS.cntx_pop();
+      .setUser(_ref)
+   ",-1),
+
+
+   obj_meth('valid',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda do walidacji zawartości okienka. Zakłada wywołanie we właściwym kontekście, który nie jest tutaj
+::       sprawdzany.
+::   WE:
+::   WY: Wynik zależy od formuł 'valid' wskazanych na etapie definiowania parametrów (metoda addPar()).
+::       Jeżeli wszystkie pola zostały wypełnione prawidłowo - metoda zwróci '' lub 1.
+::       Jeżeli walidacja nie zakończyła się sukcesem - metoda zwróci akronim problematycznego pola lub 0.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _ret:=1;
+      .TTABP.cntx_psh();
+      .TTABP.index(.NTABP.TTABN);
+      .TTABP.prefix();
+      _again:=.TTABP.first();
+      {!
+      |? _again
+      |! _par:=.getPar(.TTABP.ID);
+         {? _par.EDIT & _par.NEED
+         || _ret:=.exec(_par,'valid');
+            _again:=(((type_of(_ret)=.TYPE.STRING & _ret='') | (type_of(_ret)=.TYPE.NUMBER & _ret))) & .TTABP.next()
+         || _again:=.TTABP.next()
+         ?};
+         obj_del(_par)
+      !};
+      .TTABP.cntx_pop();
+      _ret
+   ",-1),
+
+
+   obj_meth('readPerm',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [21.37]
+:: OPIS: Metoda tworzy tabele tymczasowe z informacjami o uprawnieniach do danych na podstawie czynności,
+::       do których ma dostęp bieżący użytkownik:
+::          .TAPERM - Dziedzina, Czynność, Uprawnienie.
+::          .TDPERM - Dziedzina, Uprawnienie.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  {? type_of(.TAPERM)=.TYPE.TABLE
+      || obj_del(.TAPERM)
+      ?};
+      {? type_of(.TDPERM)=.TYPE.TABLE
+      || obj_del(.TDPERM)
+      ?};
+      .TAPERM:=sql(
+         'select distinct B_DOMAIN.SYMBOL as DOM, B_ACTION.UID, B_PERM.NAME as PERM '
+         'from B_PERM_A join B_PERM using (B_PERM_A.B_PERM,B_PERM.REFERENCE) '
+                       'join :_c using (B_PERM.NAME,:_c.PERM) '
+                       'join B_ACTION using (B_PERM_A.B_ACTION,B_ACTION.REFERENCE) '
+                       'join B_DOMAIN using (B_ACTION.B_DOMAIN,B_DOMAIN.REFERENCE) '
+         'where B_PERM_A.B_ACTION in ( '
+                  'select B_ACTROL.B_ACTION '
+                  'from B_USRROL join B_ACTROL using (B_USRROL.B_ROLE,B_ACTROL.B_ROLE) '
+                  'where B_USRROL.FIRMA=:_a and B_USRROL.USERS=:_b '
+                  'order by 1 '
+               ') '
+         'order by 2, 3',
+         REF.FIRMA,.USER,.TPERM
+      );
+      .TDPERM:=sql('select distinct DOM, PERM from :_a order by 1, 2',.TAPERM);
+      .NDPERM.DOM:=.TDPERM.index('?');
+      .NDPERM.PERM:=.TDPERM.ndx_tmp(,,'PERM',,,'DOM',,);
+      ~~
+   "),
+
+
+:: Metody publiczne ----------------------------------------------------------------------------------------------------
+
+
+   obj_meth('__init',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda inicjująca obiekt - utworzenie kilku struktur złożonych. W definicji metody nie wskazujemy typu
+::       parametru, aby zawsze (bez względu na typy i ilość parametrów) wywoływana była właśnie TA metoda.
+::   WE: _a [OBJECT]    - Wskazanie tworzonego obiektu.
+::       _b [REFERENCE] - Wskazanie zalogowanego (bieżącego) użytkownika (USERS.ref()).
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+   "  _null:=null();
+      _a.TYPE:=obj_new('NUMBER','STRING','RULE','REFERENCE','ARRAY','TABLE');
+      _a.TYPE.NUMBER:=type_of(0);
+      _a.TYPE.STRING:=type_of('');
+      _a.TYPE.RULE:=type_of($'');
+      _a.TYPE.REFERENCE:=type_of(_null);
+      _a.TYPE.ARRAY:=type_of(_a.TYPE);
+      _a.TYPE.TABLE:=type_of(PARSES);
+
+      {? var_pres('_b')<>.TYPE.REFERENCE | _b=_null | ref_tab(_b)<>USERS
+      || _a.error('__init','Błąd inicjalizacji obiektu - brak argumentów [%1].'@ ['USER'])
+      |? USERS.cntx_psh();
+         USERS.prefix();
+         {? USERS.seek(_b) & USERS.AKT='T'
+         || _a.USER:=USERS.ref()
+         || _a.USER:=_null
+         ?};
+         USERS.cntx_pop();
+         _a.USER=_null
+      || _a.error('__init','Błąd inicjalizacji obiektu - nieprawidłowa wartość argumentu [%1].'@ ['USER'])
+      ?};
+
+      _a.SELF:=_a;
+
+      _a.MODEB:=_a.createMode();
+      _a.MODEP:=_a.createMode();
+
+      _a.TTABN:=tab_tmp(1,
+         'LP','INTEGER','Nr zakładki',
+         'TYTUL','STRING[255]','Tytuł zakładki',
+::       Pola techniczne.
+         'ROZMIAR','INTEGER','Liczba elementów w zakładce',
+         'RED','INTEGER','Liczba elementów redagowalnych'
+      );
+      _a.TTABP:=tab_tmp(2,
+         'TTABN','INTEGER','Nr zakładki',
+         'LP','INTEGER','Nr zmiennej',
+         'ID','STRING['+$_a.CMaxIdLen+']','Identyfikato zmiennej',
+::       Pole techniczne wykorzystywane na etapie budowy okna redagowania - czy pole będzie redagowane?
+         'RED','INTEGER','Redagowalne?'
+      );
+      _a.NTABP:=obj_new('TTABN','ID','TNREDLP','REDID');
+::    Podstawowa kolejność przeglądania tabeli.
+      _a.NTABP.TTABN:=_a.TTABP.index('?');
+::    Indeks do sprawdzania, czy parametr już nie został dodany do bieżącej zakładki oraz do wyszukiwania
+::    zakładek wskazanego parametru.
+      _a.NTABP.ID:=_a.TTABP.ndx_tmp(,,'ID',,,'TTABN',,);
+::    Indeks do szybkiego przegladania parametrów resagowalnych.
+      _a.NTABP.TNREDLP:=_a.TTABP.ndx_tmp(,,'TTABN',,,'RED',,,'LP',,);
+::    Indeks do liczenia liczby wystąpień na zakładkach.
+      _a.NTABP.REDID:=_a.TTABP.ndx_tmp(,,'RED',,,'ID',,);
+
+      _a.TPERM:=tab_tmp(2,
+         'ID','STRING['+$_a.CMaxIdLen+']','Identyfikator zmiennej',
+         'PERM','STRING[20]','Nazwa uprawnienia do danych'
+      );
+      _a.NPERM:=obj_new('ID','PERM');
+      _a.NPERM.ID:=_a.TPERM.index('?');
+      _a.NPERM.PERM:=_a.TPERM.ndx_tmp(,,'PERM',,,'ID',,);
+
+      .NDPERM:=obj_new('DOM','PERM');
+
+::    Kopia tabeli dziedzin pozwoli na rezygnację z zapamiętywania kontekstów, ustawiania indeksu i prefiksu.
+      _a.B_DOMAIN:=sql('select B_DOMAIN.SYMBOL from B_DOMAIN order by SYMBOL');
+
+      _a.TDOM:=tab_tmp(2,
+         'DOM','STRING[3]','Dziedzina',
+         'ID','STRING['+$_a.CMaxIdLen+']','Identyfikator parametru',
+         'NAME','STRING[100]','Nazwa parametru'
+      );
+      _a.NDOM:=obj_new('DI','ID');
+      _a.NDOM.DI:=_a.TDOM.index('?');
+      _a.NDOM.ID:=_a.TDOM.ndx_tmp(,,'ID',,,'DOM',,);
+
+      _a.TAT:=app_info('area_task');
+
+      _a.SMODE:=obj_new(@.CLASS.Stack);
+
+      _a.SCNTX:=obj_new(@.CLASS.Stack);
+
+      _a.CGI:=cli_ver()='cgi';
+
+::    Zapamiętanie wartości pustych dla pól tabeli PARSES.
+      PARSES.cntx_psh();
+      PARSES.prefix();
+      PARSES.blank(1);
+      _size:=PARSES.fld_num();
+      _a.BLANK:=obj_new(_size);
+      _run:='';
+      {! _lp:=1 .. _size
+      |! _run+='_a[%1]:=PARSES.%2; ' [$_lp,PARSES.fld_acr(_lp)]
+      !};
+      ($(_run-2))(_a.BLANK);
+      PARSES.cntx_pop();
+
+      ~~
+   "),
+
+
+   obj_meth('__done',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Destruktor. Jeżeli obiekt pracował w trybie sesji - możemy usunąć rekord parametrów.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  {? -.MODEP.typ='s'
+      || .del(.MODEP.uidref)
+      ?};
+      ~~
+   "),
+
+
+   obj_meth('addDom',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda, dla wskazanego parametru, definiuje dziedziny jego występowania.
+::   WE:  _a  [STRING] ID    - Identyfikator parametru (patrz opis metody addPar()).
+::        _b  [STRING] OB1   - Akronim dziedziny. Parametr, w odróżnieniu od następnych, jest obowiązkowy.
+::       [_c] [STRING] OB1   - Akronim dziedziny.
+::       [_d] [STRING] OB1   - Akronim dziedziny.
+::       [_e] [STRING] OB1   - Akronim dziedziny.
+::       [_f] [STRING] OB1   - Akronim dziedziny.
+::   WY: Numer błędu (ujemny) zgodny z metodą error LUB
+::       0 - Dziedzina nie została dodana (brak parametru/nieprawidłowy typ).
+::       n - Liczba dodanych lub niewymagających dodania (już istniejących) dziedzin.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _id:=_a;
+
+      _meth:='addDom';
+
+      {? ~obj_ntab(.PARAMETR)
+      || return(.error(_meth,'#4'))
+      |? var_pres(_id,.PARAMETR)<0
+      || return(.error(_meth,'#2',_id))
+      ?};
+
+      _ret:=0;
+      _par:=.getPar(_id);
+      .TDOM.index(.NDOM.ID);
+      .TDOM.prefix(_id,);
+      {! _lp:=2 .. _
+      |! _dom:=_[_lp];
+         {? type_of(_dom)<>.TYPE.STRING
+         || return(.error(_meth,'#8','OB'+$(_lp-1),''))
+         |? .TDOM.find_key(_dom,)
+         || _ret+=1
+         |? .B_DOMAIN.find_key(_dom,) & exec('lic','#b_domain',_dom)
+::          Ponieważ nadawane są wartości wszystkim polom w rekordzie, to rezygnujemy z wywołania metody blank().
+         || .TDOM.ID:=_id;
+            .TDOM.DOM:=_dom;
+            .TDOM.NAME:=_par.NAME;
+            _ret+=.TDOM.add()
+         ?}
+      !};
+      _ret
+   ",type_of(''),type_of('')),
+
+
+   obj_meth('addPar',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda dodaje definicję parametru.
+::   WE: _a [ARRAY] - Tablica nazwana - wynik metody args().
+::   WY: Numer błędu (ujemny) zgodny z metodą error LUB
+::       0 - Parametr nie został dodany.
+::       1 - Parametr został dodany.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='addPar';
+
+      {? var_pres('_a')<>.TYPE.ARRAY
+      || return(.error(_meth,'#8','ARGS',,'Oczekiwana tablica parametrów - patrz metoda args().'@))
+      ?};
+      _args:=_a;
+
+      _dane:=obj_new(
+::       Wartości przekazywane argumentami wywołania.
+         'ID','NAME','PERM','WIN',
+::       Formuły przekazywane argumentami wywołania.
+         'required','value','args','setVal','getVal','valid','afterChange','prolog','epilog','beforeService',
+         'needChange',
+::       Pole specjalne - bufor dla programisty - również przekazywany argumentem wywołania.
+         'BUFFER',
+::       Pola wewnętrzne (techniczne), opisane w miejscu użycia.
+         'EMPTY','ENVVAL','EDIT','NEED','VALUEB','VALUEA','CNTX','CHANGE'
+      );
+
+      _ntab:=obj_ntab(.PARAMETR);
+      _run:='_wf:=\"1\"; _void:=~~; ';
+
+      _wf:=$'1';
+
+      _name:='ID';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp<>.TYPE.STRING
+      || return(.error(_meth,'#8','ARGS.'+_name,''))
+      |? +_args.ID<.CMinIdLen | +_args.ID>.CMaxIdLen
+      || return(.error(_meth,'#5'))
+      |? _ntab & var_pres(_args.ID,.PARAMETR)>=0
+      || return(.error(_meth,'#6',_args.ID))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='NAME';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp<>.TYPE.STRING
+      || return(.error(_meth,'#8','ARGS.'+_name,''))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='PERM';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp<>.TYPE.STRING
+      || return(.error(_meth,'#8','ARGS.'+_name,''))
+      || _run+=
+            '_a.%1:=obj_new(\\'SIZE\\',\\'ARRAY\\'); '
+            '_perm:=gsub(_b.%1,\\' \\',\\'\\'); '
+            '{? _perm=\\'\\' '
+             '|| _a.%1.SIZE:=0 '
+             '|| _a.%1.ARRAY:=spli_str(_perm,\\',\\'); _a.%1.SIZE:=obj_len(_a.%1.ARRAY) '
+             '?}; ' [_name]
+      ?};
+
+      _name:='WIN';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp<>.TYPE.STRING
+      || return(.error(_meth,'#8','ARGS.'+_name,''))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+::    Formuły.
+
+      _name:='required';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,_wf))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='value';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,_wf))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='args';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_void; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,_wf))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='setVal';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,_wf))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='getVal';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,_wf))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='valid';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,_wf))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='afterChange';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,_wf))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='prolog';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,_wf))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='epilog';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,.TYPE.RULE))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='beforeService';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,.TYPE.RULE))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+      _name:='needChange';
+      _vp:=var_pres(_name,_args);
+      {? _vp<0
+      || return(.error(_meth,'W tablicy ARGS brak elementu [%1].'@ [_name]))
+      |? _vp=0
+      || _run+='_a.%1:=_wf; ' [_name]
+      |? _vp<>.TYPE.RULE
+      || return(.error(_meth,'#8','ARGS.'+_name,.TYPE.RULE))
+      || _run+='_a.%1:=_b.%1; ' [_name]
+      ?};
+
+::    Bufor może być dowolnego typu.
+      _dane.BUFFER:={? var_pres('BUFFER',_args)>0 || _args.BUFFER || ~~ ?};
+
+::    Wartości początkowe pól technicznych.
+      .clearPar(_dane,0);
+
+      _dane.ENVVAL:=~~;
+
+::    Finał (prawie) - dodanie elementu do tablicy nazwanej.
+      {? _ntab
+      || _parametr:=obj_ntab_add(.PARAMETR,_args.ID);
+         obj_del(.PARAMETR);
+         .PARAMETR:=_parametr
+      || .PARAMETR:=obj_new(_args.ID)
+      ?};
+      _run+='_c.%1:=_a' [_args.ID];
+      ($(_run))(_dane,_args,.PARAMETR);
+
+::    Ustalenie wartości pustej. Posłuży do zbadania, czy użytkownik ma uzupełnione wszystkie niezbędne parametry.
+      PARSES.cntx_psh();
+      PARSES.blank(1);
+      _dane.EMPTY:=.exec(_dane,'value');
+      PARSES.cntx_pop();
+
+::    Zapamiętanie powiązania parametru z uprawnieniem do danych;
+      {! _lp:=1 .. _dane.PERM.SIZE
+      |! .TPERM.blank();
+         .TPERM.ID:=_dane.ID;
+         .TPERM.PERM:=_dane.PERM.ARRAY[_lp];
+         .TPERM.add()
+      !};
+
+      1
+   "),
+
+
+   obj_meth('args',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zwraca tablicę nazwaną, będącą obowiązkowym parametrem wejściowym metody addPar.
+::   WE:
+::   WY: Tablica nazwana.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _arg:=obj_new(
+::       Identyfikator parametru (dowolny, unikalny, łańcuch znakowy o długości z przedziału
+::       <.CMinIdLen ... .CMaxIdLen>.
+         'ID',
+
+::       Nazwa parametru, wykorzystywana jako tytuł separatora umieszczanego w okienku przed parametrem.
+         'NAME',
+
+::       Lista nazw uprawnień do danych, które są powiązane z danym parametrem.
+::       Elementy listy są rozdzielane przecinkiem.
+::       Nazwy uprawnień NIE są weryfikowane.
+         'PERM',
+
+::       Akronim okna źródłowego zmiennej.
+         'WIN',
+
+::       Formuła, której rezultatem ma być lista akronimów pól (oddzielona przecinkami), które są obowiązkowe
+::       do wypełnienia (będą w oknie zaznaczone czerwoną gwiazdką). Poprawność formuły i jej rezultatu (akronimów)
+::       nie jest weryfikowana. Każdy z elementów listy:
+::          - Może być elementem prostym np. 'DEPTSYM' - pole PARSES.DEPTSYM jest typu prostego.
+::          - Może być elementem zrelacjonowanym np. 'F_ZATR.KOD' - pole PARSES.F_ZATR jest polem typu _F_ZATR.
+::            W okienku są prezentowane dwa pola: PARSES.F_ZATR().KOD i PARSES.F_ZATR().OPIS. My chcemy aby gwiazdka
+::            pojawiła się przy pierwszym z nich.
+::          - Może się rozpoczynać minusem np. '-VIEW'. Wówczas zmienna będzie traktowana jako obowiązkowa, ale przy
+::            polu nie pojawi się czerwona gwiazdka. Konstrukcja do zastosowania np. przy polach typu radio-button.
+::       Patrz opis parametru valid.
+         'required',
+
+::       Formuła zwracająca bieżącą wartość parametru. Dla grupy parametrów, może to być złożenie interpretacji
+::       znakowych każdego z parametrów grupy. Formuła wykorzystywana do uchwycenia:
+::          - Czy parametr jest pusty (zapamiętywana jest wartość zwracana dla pustego rekordu tabeli PARSES).
+::          - Czy zmieniła się wartość parametru na etapie edycji.
+         'value',
+
+::       Formuła zwracająca tablicę nazwaną, będącą parametrem w formule setVal i wynikiem w formule getVal.
+::       Dla zmiennych typu prostego zamiast tabeli może to być typ prosty.
+::       Przykład.
+::          Jeżeli w systemie zdefiniowana jest tabela z okresami, to wymiana danych z programistą (setVal/getVal)
+::          powinna odbywać się poprzez tablicę obj_new('rok','mc','ref') - i taką tablicę powinna zwracać formuła args.
+         'args',
+
+::       Formuła ustawiająca wartość parametru (programowo) na podstawie przekazanych wartości.
+::       Do formuły przekazywane są parametry:
+::          _a - Uchwyt do obiektu wywołującego formułę.
+::          _b - Identyfikator parametru.
+::          _c - Nowa wartość parametru - tablica nazwana z wartościami parametru lub wartość prosta.
+         'setVal',
+
+::       Formuła udostępniająca wartość parametru (poza obiektem i formułami z nim związanymi). Dla parametru typu
+::       prostego będzie to wartość, dla parametrów złożonych - tablica nazwana, której struktura jest określona
+::       przez formułę args. Dla zmiennych typu prostego zamiast tabeli może to być typ prosty.
+         'getVal',
+
+::       Formuła sprawdzająca poprawność parametru (pól) w trakcie zatwierdzania okienka. Wykonywana:
+::          - dla parametrów wymagalnych - zawsze;
+::          - dla parametrów opcjonalnych - tylko przy sprawdzaniu wypełnienia dla dziedziny i dla parametru.
+::       Formuła powinna zwracać akronim pola umieszczonego w okienku, do którego ma wrócić redagowanie. Może też
+::       zwrócić sam wynik walidacji (0/1), ale jest to gorsze rozwiązanie. Do formuły przekazywane są parametry:
+::          _a - Uchwyt do obiektu wywołującego formułę.
+::          _b - Identyfikator parametru.
+         'valid',
+
+::       Formuła wykonywana po zatwierdzeniu okienka, jeżeli zmieniła się wartość parametru. Formuła powinna więc
+::       wykonać te wszystkie działania, które są konsekwencją zmiany parametru. W szczególności może to być zmiana
+::       masek tabel po zmianie okresu.
+::       Formuła wykonywana również przy zmianie trybu pracy oraz przy starcie obszaru roboczego.
+::       Uwagi.
+::       Jeżeli od ostatniego wykonania formuły wartość parametru nie zmieniła się - formuła nie będzie wykonywana.
+::       Formuła nie jest wykonywana, jeżeli redagowanie zostało zainicjowane z pulpitu.
+::       Do formuły przekazywane są parametry:
+::          _a - Uchwyt do obiektu wywołującego formułę.
+::          _b - Identyfikator parametru.
+::          _c - Tryb użycia (zgodny z wynikiem metod isChanged):
+::                1 - Formuła wywołana po faktycznej zmianie wartości w oknie redagowania.
+::                2 - Formuła wywołana w celu ustalenia środowiska.
+         'afterChange',
+
+::       Formuła wykonywana przed wyświetleniem okienka a przy zmianie trybu pracy - przed wykonaniem formuły
+::       'afterChange'. Dla parametru (pola) słownikowego może np. założyć filtr na tabelę słownika, ustawić okno, ... .
+::       Jeżeli zwróci wartość 0 - następuje porzucenie edycji.
+::       Do formuły przekazywane są parametry:
+::          _a - Uchwyt do obiektu wywołującego formułę.
+::          _b - Identyfikator parametru.
+::          _c - Tryb użycia (zgodny z wynikiem metod isChanged):
+::                1 - Formuła wywołana po faktycznej zmianie wartości w oknie redagowania.
+::                2 - Formuła wywołana w celu ustalenia środowiska.
+         'prolog',
+
+::       Formuła wykonywana po wyjściu z okienka (sprzątająca po 'prolog'). Dla parametru (pola) słownikowego może np.
+::       zdjąć filtr z tabeli słownika. Do formuły przekazywane są parametry:
+::          _a - Uchwyt do obiektu wywołującego formułę.
+::          _b - Identyfikator parametru.
+::          _c - Tryb użycia (zgodny z wynikiem metod isChanged):
+::                1 - Formuła wywołana po faktycznej zmianie wartości w oknie redagowania.
+::                2 - Formuła wywołana w celu ustalenia środowiska.
+         'epilog',
+
+::       Formuła wykonywana przed obsługą okienka. Parametr będzie redagowany, okno jest zdefiniowane (zawiera już
+::       wszystkie pola/parametry). Do formuły przekazywane są parametry:
+::          _a - Uchwyt do obiektu wywołującego formułę.
+::          _b - Identyfikator parametru.
+::          _c - Tryb użycia (zgodny z wynikiem metod isChanged):
+::                1 - Formuła wywołana po faktycznej zmianie wartości w oknie redagowania.
+::                2 - Formuła wywołana w celu ustalenia środowiska.
+::       Uwaga.
+::          Parametr _c jest przekazywany dla zgodności z pozostałymi formułami. Faktycznie formuła będzie wykonywana
+::          tylko dla _c=1.
+         'beforeService',
+
+::       Formuła wykonywana podczas sprawdzania, czy wszystkie niezbędne parametry mają ustawione wartości. Formuła
+::       może służyć do wymuszenia redagowania parametrów, np. w przypadku utraty uprawnień do konkretnej wartości.
+::       Jeżeli formuła zwróci niezerową wartość liczbową, parametr będzie wymagał ponownego wprowadzenia.
+::       Do formuły przekazywane są parametry:
+::          _a - Uchwyt do obiektu wywołującego formułę.
+::          _b - Identyfikator parametru.
+::          _c - Tryb użycia (zgodny z wynikiem metod isChanged):
+::                1 - Formuła wywołana po faktycznej zmianie wartości w oknie redagowania.
+::                2 - Formuła wywołana w celu ustalenia środowiska.
+         'needChange',
+
+::       Bufor roboczy do zastosowań programistycznych. Najwygodniejsza wydaje się być tablica nazwana. Bufor
+::       przypisywany jest do odpowiedniej zmiennej wewnętrznej. Dostęp do wartości bufora odbywa się poprzez metody
+::       getBuf() i setBuf().
+          'BUFFER'
+      );
+
+      _arg.ID:='';
+      _arg.NAME:='';
+      _arg.PERM:='';
+      _arg.WIN:='';
+
+      _arg.required:=$'~~';
+      _arg.value:=$'~~';
+      _arg.args:=$'~~';
+      _arg.setVal:=$'1';
+      _arg.getVal:=$'1';
+      _arg.valid:=$'1';
+      _arg.afterChange:=$'1';
+      _arg.prolog:=$'1';
+      _arg.epilog:=$'1';
+      _arg.beforeService:=$'1';
+      _arg.needChange:=$'0';
+      _arg.BUFFER:=~~;
+
+      _arg
+   ",-1),
+
+
+   obj_meth('args',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zwraca tablicę nazwaną, która jest parametrem metody setVal() oraz rezultatem metody getVal().
+::       Dla zmiennych typu prostego zamiast tabeli może to być typ prosty.
+::   WE: _a [STRING ] ID - Identyfikator parametru (patrz opis metody addPar()).
+::   WY: Tablica nazwana lub ~~.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _id:=_a;
+
+      _meth:='args';
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4');
+         return(~~)
+      |? var_pres(_id,.PARAMETR)<0
+      || .error(_meth,'#2',_id);
+         return(~~)
+      || .exec(.getPar(_id),'args')
+      ?}
+   ",type_of(''),-1),
+
+
+   obj_meth('cleanWS',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda usuwa zbędne zapisy związane z obsługą serwera WWW.
+::   WE:
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+   "  _tcid:=app_info('web_tcid');
+      {? _tcid<>''
+      || _id:=.formID(_tcid);
+         PARSES.cntx_psh();
+         PARSES.index('ID');
+         PARSES.prefix('W',_id);
+         {? PARSES.first()
+         || {!
+            |? PARSES.del()
+            !}
+         ?};
+         PARSES.cntx_pop()
+      ?};
+      ~~
+   ",-1),
+
+
+   obj_meth('cleanWT',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda usuwa zbędne zapisy związane z obsługą webTerm-a.
+::   WE:
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+   "  _tcid:=app_info('web_tcid');
+      _sesid:=app_info('web_sesid');
+      {? _tcid<>'' & _sesid<>''
+      || _id:=.formID(_tcid,_sesid);
+         PARSES.cntx_psh();
+         PARSES.index('ID');
+         PARSES.prefix('W',_id);
+         {? PARSES.first()
+         || {!
+            |? PARSES.del()
+            !}
+         ?};
+         PARSES.cntx_pop()
+      ?};
+      ~~
+   ",-1),
+
+
+   obj_meth('clone',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda tworzy kopię wskazanego rekordu parametrów.
+::   WE:  _a  [STRING]         - Typ rekordu (bez U), który ma zostać utworzony (patrz opis metody setMode()).
+::       [_b] [STRING]         - Spodziewany rezultat:
+::                               'R' - PARSES.ref() [domyślnie]
+::                               'U' - PARSES.uidref()
+::       _c [REFERENCE/STRING] - Wskazanie rekordu źródłowego (PARSES.ref()) lub
+::                               Identyfikator rekordu źródłowego (PARSES.uidref()) lub
+::                               'P' - Wskazanie, że rekordem źródłowym ma być rekord pierwotny.
+::   WY: Rezultat zależy od argumentu _b:
+::       'R' -> Referencja utworzonego rekordu lub null() w przypadku błędów lub niepowodzenia.
+::       'U' -> Identyfikator systemowy utworzonego rekordu lub '' w przypadku błędów lub niepowodzenia.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _tr:={? _b='U' | _b='R' || _b || 'R' ?};
+
+      _ret:={? _tr='R' || null() || '' ?};
+
+      _meth:='clone';
+
+      {? ~(_a='S' | _a='C')
+      || .error(_meth,'#1','TYP','Dostępne wartości: S / C .'@);
+         return(_ret)
+      |? ~(var_pres('_c')=.TYPE.REFERENCE | (var_pres('_c')=.TYPE.STRING & (_c='P' | +_c=48)))
+      || .error(_meth,'#8','REF',,'Oczekiwany ref() lub uidref() lub wartość P.'@);
+         return(_ret)
+      |? var_pres('_c')=.TYPE.STRING & _c='P'
+      || {? .MODEP.uidref=''
+         || .error(_meth,
+               'Tryb pracy nie został jeszcze ustawiony.\n'
+               'Klonowanie rekordu parametrów PIERWOTNYCH nie jest możliwe.'@
+            );
+            return(_ret)
+         || _c:=.MODEP.uidref
+         ?}
+      ?};
+
+      PARSES.cntx_psh();
+      PARSES.clear();
+      {? PARSES.seek(_c)
+      || PARSES.TYP:=_a;
+         {? _a<>'S'
+         || PARSES.USER:=null()
+         ?};
+         PARSES.ID:='';
+         {? PARSES.add()
+         || _ret:={? _tr='R' || PARSES.ref() || PARSES.uidref() ?}
+         ?}
+      || .error(_meth,'#11','Klonowanie nie powiodło się.'@)
+      ?};
+      PARSES.cntx_pop();
+
+      _ret
+   ",type_of(''),type_of('')),
+
+
+   obj_meth('clone',".clone(_a,'',_c)",type_of(''),type_of(~~),type_of(''),-1),
+
+
+   obj_meth('clone',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda tworzy kopię bieżącego rekordu parametrów.
+::   WE:  _a  [STRING]           - Typ rekordu (bez U), który ma zostać utworzony (patrz opis metody setMode()).
+::       [_b] [REFERENCE/STRING] - Spodziewany rezultat:
+::                                  'R' - PARSES.ref() [domyślnie]
+::                                  'U' - PARSES.uidref()
+::   WY: Rezultat zależy od argumentu _b:
+::       'R' -> Referencja utworzonego rekordu lub null() w przypadku błędów lub niepowodzenia.
+::       'U' -> Identyfikator systemowy utworzonego rekordu lub '' w przypadku błędów lub niepowodzenia.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _ret:='';
+
+      _meth:='clone';
+
+      {? ~(_a='S' | _a='C')
+      || .error(_meth,'#1','TYP','Dostępne wartości: S / C .'@);
+         return(_ret)
+
+      |? .MODEB.uidref=''
+      || .error(_meth,'#10');
+         return(_ret)
+
+      ?};
+
+      .clone(_a,_b,.MODEB.uidref)
+   ",type_of(''),type_of(''),-1),
+
+
+   obj_meth('clone',".clone(_a,'')",type_of(''),-1),
+
+
+   obj_meth('del',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda usuwa wskazany identyfikatorem rekord parametrów.
+::   WE: _a [REFERENCE/STRING] - Wskazanie rekordu źródłowego (PARSES.ref()) lub
+::                               Identyfikator rekordu źródłowego (PARSES.uidref()).
+::   WY: Stan operacji (zgodny z rezultatem metody del() klasy TABLE).
+::----------------------------------------------------------------------------------------------------------------------
+   "  _ret:=0;
+      {? var_pres('_a')=.TYPE.REFERENCE | (var_pres('_a')=.TYPE.STRING & +_a=48)
+      || PARSES.cntx_psh();
+         PARSES.prefix();
+         {? PARSES.seek(_a)
+         || _ret:=PARSES.del(,1)
+         ?};
+         PARSES.cntx_pop()
+      ?};
+      _ret
+   "),
+
+
+   obj_meth('isSetAll',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [19.02]
+:: OPIS: Metoda sprawdza czy wypełniono wszystkie wymagane parametry pracy bieżącego użytkownika
+::   WE:
+::   WY: 0-wymagane parametry pracy nie są wypełnione, 1-wymagane parametry pracy są wypełnione
+::----------------------------------------------------------------------------------------------------------------------
+   "  _result:=1;
+      _meth:='isSetAll';
+
+      _sel:=.selectAll(_meth);
+      {? _sel>0
+      || PARSES.cntx_psh();
+         PARSES.prefix();
+         {? .MODEB.uidref=''
+         || .error(_meth,'#10')
+         |? ~PARSES.seek(.MODEB.uidref)
+         || .error(_meth,'#11','Edycja nie jest możliwa.'@)
+         || {? __PARSES.isEmpty(_meth)
+            || FUN.info('Wymagane ustawienie parametrów pracy.'@);
+               _result:=0
+            ?}
+         ?};
+         PARSES.cntx_pop()
+      ?};
+      _result
+   "),
+
+
+   obj_meth('displayAll',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda odpowiedzialna za przygotowanie okienka i wyświetlenie odpowiednich parametrów (zgodnie z uprawnieniami
+::       bieżącego użytkownika).
+::   WE:
+::   WY: Patrz opis metody edit().
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='displayAll';
+
+      _sel:=.selectAll(_meth,'Wyświetlenie nie jest możliwe.'@);
+      {? _sel>0
+      || .edit(_meth,0)
+      |? _sel=0
+      || FUN.info('Brak parametrów do wyświetlenia.'@);
+         0
+      ?}
+   "),
+
+
+   obj_meth('displayDom',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda pozwala na wyświetlenie parametrów związanych z konkretną dziedziną.
+::   WE:  _a  [ARRAY/STRING] DOM1 - Identyfikator dziedziny lub tablica z identyfikatorami.
+::       [_b] [STRING]       DOM2 - Identyfikator dziedziny.
+::       [_c] [STRING]       DOM3 - Identyfikator dziedziny.
+::       [_d] [STRING]       DOM4 - Identyfikator dziedziny.
+::       [_e] [STRING]       DOM5 - Identyfikator dziedziny.
+::       [_f] [STRING]       DOM6 - Identyfikator dziedziny.
+::   WY: Patrz opis metody edit().
+::----------------------------------------------------------------------------------------------------------------------
+   "  _doms:=obj_new(_);
+      {! _lp:=1 .. _
+      |! _doms[_lp]:=_[_lp]
+      !};
+      .displayDom(_doms)
+   ",type_of('')),
+
+   obj_meth('displayDom',
+   "  _doms:=_a;
+
+      _meth:='displayDom';
+
+      _sel:=.selectDom(_meth,_doms,'Wyświetlenie nie jest możliwe.'@);
+      {? _sel>0
+      || .edit(_meth,0)
+      |? _sel=0
+      || FUN.info('Brak parametrów do wyświetlenia.'@);
+         0
+      ?}
+   ",type_of(obj_new(1)),-1),
+
+
+   obj_meth('displayPar',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda pozwala na wyświetlenie wskazanych parametrów.
+::   WE:  _a  [ARRAY/STRING] ID1 - Identyfikator parametru lub tablica z identyfikatorami.
+::       [_b] [STRING]       ID2 - Identyfikator parametru.
+::       [_c] [STRING]       ID3 - Identyfikator parametru.
+::       [_d] [STRING]       ID4 - Identyfikator parametru.
+::       [_e] [STRING]       ID5 - Identyfikator parametru.
+::       [_f] [STRING]       ID6 - Identyfikator parametru.
+::   WY: Patrz opis metody edit().
+::----------------------------------------------------------------------------------------------------------------------
+   "  _pars:=obj_new(_);
+      {! _lp:=1 .. _
+      |! _pars[_lp]:=_[_lp]
+      !};
+      .displayPar(_pars)
+   ",type_of('')),
+
+   obj_meth('displayPar',
+   "  _pars:=_a;
+
+      _meth:='displayPar';
+
+      _sel:=.selectPar(_meth,_pars,'Wyświetlenie nie jest możliwe.'@);
+      {? _sel>0
+      || .edit(_meth,0)
+      |? _sel=0
+      || FUN.info('Brak parametrów do wyświetlenia.'@);
+         0
+      ?}
+   ",type_of(obj_new(1)),-1),
+
+
+   obj_meth('editAll',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda odpowiedzialna za przygotowanie okienka i redagowanie odpowiednich parametrów (zgodnie z uprawnieniami
+::       bieżącego użytkownika). Jeżeli parametr nie jest wymagany (patrz argument 'required' z metody addPar())
+::       okienko można opuścić nawet, jeżeli dany parametr jest pusty - nie został wypełniony.
+::   WE:
+::   WY: Patrz opis metody edit().
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='editAll';
+
+      _sel:=.selectAll(_meth,'Edycja nie jest możliwa.'@);
+      {? _sel>0
+      || .edit(_meth,1)
+      |? _sel=0
+      || FUN.info('Brak parametrów do edycji.'@);
+         0
+      ?}
+   "),
+
+
+   obj_meth('editDom',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda pozwala na edycję parametrów związanych z konkretną dziedziną. Jeżeli parametr nie jest wymagany (patrz
+::       argument 'required' z metody addPar()) okienko można opuścić nawet, jeżeli dany parametr jest pusty - nie
+::       został wypełniony.
+::   WE:  _a  [ARRAY/STRING] DOM1 - Identyfikator dziedziny lub tablica z identyfikatorami.
+::       [_b] [STRING]       DOM2 - Identyfikator dziedziny.
+::       [_c] [STRING]       DOM3 - Identyfikator dziedziny.
+::       [_d] [STRING]       DOM4 - Identyfikator dziedziny.
+::       [_e] [STRING]       DOM5 - Identyfikator dziedziny.
+::       [_f] [STRING]       DOM6 - Identyfikator dziedziny.
+::   WY: Patrz opis metody edit().
+::----------------------------------------------------------------------------------------------------------------------
+   "  .DOMAIN:=_a;
+      _doms:=obj_new(_);
+      {! _lp:=1 .. _
+      |! _doms[_lp]:=_[_lp]
+      !};
+      .editDom(_doms)
+   ",type_of('')),
+
+   obj_meth('editDom',
+   "  _doms:=_a;
+
+      _meth:='editDom';
+
+      _sel:=.selectDom(_meth,_doms,'Edycja nie jest możliwa.'@);
+      {? _sel>0
+      || .edit(_meth,1)
+      |? _sel=0
+      || FUN.info('Brak parametrów do edycji.'@);
+         0
+      ?}
+   ",type_of(obj_new(1)),-1),
+
+
+   obj_meth('editPar',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda pozwala na edycję wskazanych parametrów. Wszystkie parametry traktowane są jako "wymagane" (patrz
+::       argument 'required' z metody addPar()).
+::   WE:  _a  [ARRAY/STRING] ID1 - Identyfikator parametru lub tablica z identyfikatorami.
+::       [_b] [STRING]       ID2 - Identyfikator parametru.
+::       [_c] [STRING]       ID3 - Identyfikator parametru.
+::       [_d] [STRING]       ID4 - Identyfikator parametru.
+::       [_e] [STRING]       ID5 - Identyfikator parametru.
+::       [_f] [STRING]       ID6 - Identyfikator parametru.
+::   WY: Patrz opis metody edit().
+::----------------------------------------------------------------------------------------------------------------------
+   "  _pars:=obj_new(_);
+      {! _lp:=1 .. _
+      |! _pars[_lp]:=_[_lp]
+      !};
+      .editPar(_pars)
+   ",type_of('')),
+
+   obj_meth('editPar',
+   "  _pars:=_a;
+
+      _meth:='editPar';
+
+      _sel:=.selectPar(_meth,_pars,'Edycja nie jest możliwa.'@);
+      {? _sel>0
+      || .edit(_meth,1)
+      |? _sel=0
+      || FUN.info('Brak parametrów do edycji.'@);
+         0
+      ?}
+   ",type_of(obj_new(1)),-1),
+
+
+   obj_meth('getACF',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zwraca informację o fladze, która włącza lub wyłącza wykonywanie formuł 'afterChange'.
+::   WE:
+::   WY: Aktualna wartość flagi.
+::----------------------------------------------------------------------------------------------------------------------
+         ".ACF",-1),
+
+
+   obj_meth('getBID',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zwraca identyfikator rekordu bieżącego.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+      ".MODEB.uidref"),
+
+
+   obj_meth('getBuf',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda umożliwia odczyt bufora związanego z parametrem o podanym identyfikatorze.
+::       Dla każdego parametru, można zdefiniować swoisty bufor do przechowywania informacji, które programista uzna za
+::       istotne. Bufor może być zmienną typu prostego lub tablicą. Odczyt tego bufora odbywa się właśnie za pomocą
+::       opisywanej metody. Patrz również opis metody setBuf().
+::       Przykładem zastosowania mechanizmu bufora może być zapamiętywanie wartości pola przed jego redagowaniem
+::       i dostęp do tej informacji w formule po redagowaniu pola. Mechanizm ma pomóc w nieużywaniu zmiennych globalnych
+::       (pomocniczych).
+::   WE: _a [STRING] ID - Identyfikator parametru.
+::   WY: Jeżeli parametr o podanym identyfikatorze nie został znaleziony (zdefiniowany) metoda zwróci ~~. W przeciwnym
+::       wypadku metoda zwróci bufor.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='getBuf';
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4');
+         return(~~)
+      |? var_pres(_a,.PARAMETR)<0
+      || .error('getBuf','Brak definicji parametru [%1].'@ [_a]);
+         ~~
+      || .getPar(_a).BUFFER
+      ?}
+   ",type_of(''),-1),
+
+
+   obj_meth('getPID',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zwraca identyfikator rekordu pierwotnego.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+      ".MODEP.uidref"),
+
+
+   obj_meth('getParams',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WH [17.00]
+:: OPIS: Metoda zwraca tabelkę tymczasową zawierającą wszystkie parametry podane dziedziny
+::   WE: _a [STRING] - Identyfikator dziedziny np. 'ZWS'
+::   WY: Tabela tymczasowa o strukturze zgodnej z tabelą .TDOM (patrz: __init).
+::----------------------------------------------------------------------------------------------------------------------
+      "sql('select * from :_a where DOM=\\':_b\\' order by DOM, ID',.TDOM,_a)",type_of(''),-1),
+
+
+   obj_meth('getVal',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zwraca wartość parametru w postaci czytelnej. Dla zmiennych przechowywanych jako typy złączeniowe
+::       będzie to tablica nazwana (patrz opis metody args()). Dla zmiennych typów prostych może to być wartość prosta.
+::   WE: _a [STRING] ID - Identyfikator parametru (patrz opis metody addPar()).
+::   WY: Tablica nazwana lub ~~.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _id:=_a;
+
+      _ret:=~~;
+
+      _meth:='getVal';
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4');
+         return(_ret)
+      |? var_pres(_id,.PARAMETR)<0
+      || .error(_meth,'#2',_id);
+         return(_ret)
+      |? .MODEB.uidref=''
+      || .error(_meth,'#10');
+         return(_ret)
+      ?};
+
+      PARSES.cntx_psh();
+      PARSES.prefix();
+      {? PARSES.seek(.MODEB.uidref)
+      || _ret:=.exec(.getPar(_id),'getVal')
+      || .error(_meth,'#11','Pobranie wartości parametru [%1] nie powiodło się.'@[_id])
+      ?};
+      PARSES.cntx_pop();
+
+      _ret
+   ",type_of(''),-1),
+
+
+   obj_meth('isChanged',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda odpowiada na pytanie czy wartość parametru o podanym identyfikatorze została zmieniona. Metoda ma
+::       zastosowanie w formułach typu 'afterChange' i 'epilog'. Wywołanie w innym kontekście pracy nie ma sensu -
+::       wynikiem będzie 0.
+::   WE: _a [STRING] ID - Identyfikator parametru.
+::   WY: 0 - Wartość parametru o podanym identyfikatorze nie została zmieniona.
+::       1 - Wartość parametru o podanym identyfikatorze została zmieniona.
+::       2 - Uznajmy, że wartość parametru o podanym identyfikatorze została zmieniona. Z taką sytuacją mamy
+::           do czynienia po wywołaniu metody setEnv, kiedy to do rzeczywistej redakcji parametrów nie dochodzi, ale
+::           formułom 'afterChange' i 'prolog' chcemy powiedzieć, że parametr jednak się zmienił.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _id:=_a;
+      {? obj_ntab(.PARAMETR) & var_pres(_id,.PARAMETR)>=0
+      || .getPar(_id).CHANGE
+      ?}
+   ",type_of(''),-1),
+
+
+   obj_meth('isEdited',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda odpowiada na pytanie czy parametr o podanym identyfikatorze jest obecnie redagowany.
+::       Metoda może być użyta np. w formułach obsługi pola w okienku, dla parametrów powiązanych.
+::   WE: _a [STRING] ID - Identyfikator parametru.
+::   WY: 0 - Parametr o podanym identyfikatorze nie jest edytowany lub nie został znaleziony.
+::       1 - Parametr o podanym identyfikatorze jest edytowany.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _id:=_a;
+      {? obj_ntab(.PARAMETR) & var_pres(_id,.PARAMETR)>=0
+      || .getPar(_id).EDIT
+      ?}
+   ",type_of(''),-1),
+
+
+   obj_meth('popContext',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda przywraca aktualne wartości bieżącego rekordu parametrów.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='popContext';
+
+      _ret:=0;
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4');
+         return(_ret)
+      |? .MODEB.uidref=''
+      || .error(_meth,'#10');
+         return(_ret)
+      ?};
+
+      PARSES.cntx_psh();
+      PARSES.prefix();
+      {? PARSES.seek(.MODEB.uidref)
+      || _buf:=.SCNTX.pop();
+         {? type_of(_buf)
+         || {? ~_buf.is_equal()
+            || _buf.restore();
+               PARSES.put();
+               _ret:={? .MODEB.act='' || 1 || .setEnv(.MODEB.act) ?}
+            ?}
+         || .error(_meth,'Stos kontekstów parametrów pracy jest pusty. Pobranie elementu nie jest możliwe.'@)
+         ?}
+      || .error(_meth,'#11','Przywrócenie wartości bieżącego rekordu nie powiodło się.'@)
+      ?};
+      PARSES.cntx_pop();
+
+      _ret
+   "),
+
+
+   obj_meth('popEnv',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda zdejmuje ze stosu i przywraca tryb pracy (patrz opis metody pushEnv()).
+::   WE:
+::   WY: 1 - Tryb pracy i środowisko przywrócone.
+::       0 - Przywracanie trybu pracy i środowiska nie powiodło się.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='popEnv';
+
+      _ret:=0;
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4');
+         return(_ret)
+      |? .MODEB.uidref=''
+      || .error(_meth,'#10');
+         return(_ret)
+      ?};
+
+      _mode:=.SMODE.pop();
+      {? type_of(_mode)
+      || .copyArray(_mode,.MODEB);
+         PARSES.cntx_psh();
+         PARSES.prefix();
+         {? PARSES.seek(.MODEB.uidref)
+         || _ret:={? .MODEB.act='' || 1 || .setEnv(.MODEB.act) ?}
+         || .error(_meth,'#11','Przywrócenie trybu pracy nie powiodło się.'@)
+         ?};
+         PARSES.cntx_pop()
+      || .error(_meth,'Stos trybów pracy jest pusty. Pobranie elementu nie jest możliwe.'@)
+      ?};
+
+      _ret
+   "),
+
+
+   obj_meth('pushContext',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda pozwala zapamiętać aktualne wartości bieżącego rekordu parametrów.
+::   WE:
+::   WY: 1 - Operacja zakończyła się sukcesem.
+::       0 - Operacja nie zakończyła się sukcesem.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='pushContext';
+
+      _ret:=0;
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4');
+         return(_ret)
+      |? .MODEB.uidref=''
+      || .error(_meth,'#10');
+         return(_ret)
+      ?};
+
+      PARSES.cntx_psh();
+      PARSES.prefix();
+      {? PARSES.seek(.MODEB.uidref)
+      || _buf:=obj_new(@.CLASS.BUFFER,'PARSES');
+         .SCNTX.push(_buf)
+      || .error(_meth,'#11','Zapamiętanie wartości parametrów nie powiodło się.'@)
+      ?};
+      PARSES.cntx_pop();
+
+      _ret
+   "),
+
+
+   obj_meth('pushEnv',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda odkłada na stos (zapamiętuje) bieżący tryb pracy. Umożliwia to przełączenie (zmianę) trybu pracy
+::       (patrz opis metody setMode()) i późniejszy powrót do odłożonego trybu (patrz opis metody popEnv()).
+::   WE:
+::   WY: 1 - Operacja zakończyła się sukcesem.
+::       0 - Operacja nie zakończyła się sukcesem.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='pushEnv';
+
+      _ret:=0;
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4');
+         return(_ret)
+      |? .MODEB.uidref=''
+      || .error(_meth,'#10');
+         return(_ret)
+      ?};
+
+      .SMODE.push(.copyArray(.MODEB,.createMode()));
+
+      1
+   "),
+
+
+   obj_meth('setACF',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda ustawia / zwraca informację o fladze, która włącza lub wyłącza wykonywanie formuł 'afterChange'.
+::   WE: [_a] [NUMBER] - Nowa wartość flagi (opcjonalnie):
+::                         1 - Formuły 'afterChange' będą wykonywane.
+::                         0 - Formuły 'afterChange' nie będą wykonywane.
+::   WY: Dotychczasowa wartość flagi.
+::----------------------------------------------------------------------------------------------------------------------
+         "_a==.ACF",type_of(0),-1),
+
+
+   obj_meth('setBuf',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda umożliwia zapis bufora związanego z parametrem o podanym identyfikatorze.
+::       Dla każdego parametru, można zdefiniować swoisty bufor do przechowywania informacji, które programista uzna za
+::       istotne. Bufor może być zmienną typu prostego lub tablicą. Zapis bufora odbywa się właśnie za pomocą opisywanej
+::       metody. Patrz również opis metody getBuf().
+::       Przykładem zastosowania mechanizmu bufora może być zapamiętywanie wartości pola przed jego redagowaniem
+::       i dostęp do tej informacji w formule po redagowaniu pola. Mechanizm ma pomóc w nieużywaniu zmiennych globalnych
+::       (pomocniczych).
+::       Uwaga: wywołanie z jednym parametrem usuwa bufor.
+::   WE:  _a  [STRING] ID  - Identyfikator parametru.
+::       [_b] [ANY]    BUF - Dowolna wartość [domyślnie ~~].
+::   WY: 0 - Parametr o podanym identyfikatorze nie został znaleziony.
+::       1 - Wartość bufora została zapamiętana.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _id:=_a;
+
+      _meth:='setBuf';
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4');
+         0
+      |? var_pres(_id,.PARAMETR)<0
+      || .error(_meth,'Brak definicji parametru [%1].'@ [_a]);
+         0
+      || _par:=.getPar(_id);
+         {? type_of(_par.BUFFER)=.TYPE.ARRAY
+         || obj_del(_par.BUFFER)
+         ?};
+         _par.BUFFER:={? _>1 || _b || ~~ ?};
+         1
+      ?}
+   ",type_of('')),
+
+
+   obj_meth('setEnv',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda odpowiedzialna za ustawienie środowiska na podstawie bieżącego rekordu parametrów. Przed ustawieniem
+::       środowiska sprawdzane jest czy choć jeden z wymagalnych przez uruchamianą aktywność parametrów jest pusty -
+::       wymaga uzupełnienia.
+::       Jeżeli istnieje parametr wymagający uzupełnienia i wybrano tryb edycji - odbywa się redagowanie.
+::       Rezygnacja z redagowania lub brak trybu edycji kończy działanie metody bez ustawienia środowiska.
+::   WE:  _a  [STRING] - Identyfikator uruchamianej aktywności -
+::                       obszaru roboczego, czynności (raportującej, startowej, ...), dziedziny produktowej.
+::       [_b] [NUMBER] - Tryb edycji [domyślnie: 1].
+::       [_c] [NUMBER] - Wymuszenie ustawienia środowiska.
+::                       Jeżeli wartość parametru pracy użytkownika nie zmieniła się od ostatniego ustawienia
+::                       środowiska, to formuły 'prolog', 'afterChange' i 'epilog' nie są wykonywane. Jednak nawet
+::                       w takiej sytuacji (niezmieniona wartość) można wymusić ich wykonanie. Za to właśnie odpowiada
+::                       opisywany parametr.
+::                         0 - Jeżeli wartość parametru pracy nie zmieniła się, formuły nie będą wykonywane [domyślnie].
+::                         1 - Nawet jeżeli wartość parametru pracy nie zmieniła się, formuły będą wykonywane.
+::   WY: 0 - Środowisko nie zostało ustawione.
+::       1 - Środowisko zostało ustawione.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _id:=_a;
+      _edit:=_b;
+      _force:=_c;
+
+      _meth:='setEnv';
+      _ret:=1;
+
+      PARSES.cntx_psh();
+      PARSES.prefix();
+
+      _lpar:=0;
+      .selectBuf:='|';
+      {? ~obj_ntab(.PARAMETR)
+      || _ret:=.error(_meth,'#4')
+
+      |? .MODEB.uidref=''
+      || _ret:=.error(_meth,'#10')
+
+      |? ~PARSES.seek(.MODEB.uidref)
+      || _ret:=.error(_meth,'#10')
+
+      |? +_id=12
+::       Czynność
+      || {? (_dom:=.getDom(_meth,_id))=''
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator czynności.'@)
+         || _lpar+=.selectPar4Dom(_dom)+.selectPar4Uid(_id)
+         ?}
+
+      |? +_id=7
+::       Obszar roboczy
+      || .TAT.prefix(_id,);
+         {? .TAT.first()
+         || _lista:='|';
+            .TDOM.index(.NDOM.DI);
+            B_USRDOM.cntx_psh();
+            B_USRDOM.index('DS');
+            B_USRDOM.prefix(REF.FIRMA,.USER);
+            {!
+            |? {? (_dom:=.getDom(_meth,.TAT.B_TASK))<>''
+               || {? _lista*'|%1|' [_dom]=0
+                  || _lista+='%1|' [_dom];
+                     _lpar+=.selectPar4Dom(_dom,1)
+                  ?};
+                  _lpar+=.selectPar4Uid(.TAT.B_TASK)
+               ?};
+               .TAT.next()
+            !};
+            B_USRDOM.cntx_pop();
+            .setArea(_id)
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator obszaru roboczego.'@)
+         ?}
+
+      |? +_id=3
+::       Dziedzina produktowa
+      || {? .B_DOMAIN.find_key(_id,)
+         || _lpar+=.selectPar4Dom(_id)
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator dziedziny produktowej.'@)
+         ?};
+         ~~
+
+      |? _edit
+      || _ret:=.error(_meth,'#1','ID',
+            'Oczekiwany identyfikator czynności, obszaru roboczego lub dziedziny produktowej.'@)
+
+      || _ret:=0
+      ?};
+
+      {? _ret=1 & _lpar
+      || .MODEB.act:=_id;
+
+         {? .CGI | ~.isEmpty(_meth)
+::          Wszystkie wymagane zmienne są niepuste - ustawiamy środowisko.
+::          Przy pracy przez CGI ustawiamy środowisko nawet, jezeli któraś ze zmiennych jest pusta.
+         || _change:=2;
+            {! _lp:=1 .. obj_len(.PARAMETR)
+            |! _cv:=.exec(.PARAMETR[_lp],'value');
+               {? .PARAMETR[_lp].EDIT & (_force | .PARAMETR[_lp].ENVVAL<>_cv) & .ACF
+               || .PARAMETR[_lp].CHANGE:=_change;
+                  .PARAMETR[_lp].ENVVAL:=_cv
+               ?}
+            !};
+            {! _lp:=1 .. obj_len(.PARAMETR)
+            |! {? .PARAMETR[_lp].CHANGE=_change
+               || .exec(.PARAMETR[_lp],'prolog',_change);
+                  .exec(.PARAMETR[_lp],'afterChange',_change);
+                  .exec(.PARAMETR[_lp],'epilog',_change)
+               ?};
+               .clearPar(.PARAMETR[_lp],0)
+            !}
+
+         |? _edit
+::          Są puste zmienne. Wywołujemy edycję. W przypadku pozytywnej walidacji ustawiane jest środowisko (wewnątrz
+::          metody edit(). Jeżeli edycja nie zakończyła się sukcesem - wynikiem będzie 0.
+         || _ret:=.edit(_meth,1,1)
+
+         || _ret:=0
+         ?}
+
+      ?};
+
+      PARSES.cntx_pop();
+
+      _ret<>0
+
+   ",type_of(''),type_of(0),type_of(0),-1),
+
+   obj_meth('setEnv',".setEnv(_a,1,0)",type_of(''),-1),
+
+   obj_meth('setEnv',".setEnv(_a,_b,0)",type_of(''),type_of(0),-1),
+
+   obj_meth('setEnv',".setEnv(_a,1,_c)",type_of(''),type_of(~~),type_of(0),-1),
+
+
+   obj_meth('setMode',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda służy do zmiany aktualnego trybu pracy.
+::   WE:  _a  [STRING] - Typ uruchamianego trybu pracy. Dostępne wartości:
+::                         U - Praca w trybie użytkownika (podstawowy tryb pracy), dostępna w pierwszej zakładce
+::                             aplikacji. Ponieważ użytkownik został podany przy inicjalizacji obiektu, dla tego typu
+::                             drugi parametr nie jest wymagany.
+::                         s - Praca w trybie "start zakładki". To właśnie rekord typu "s" jest ustawiany jako bieżący
+::                             przy otwarciu nowej zakładki (otwarciu obszaru roboczego). I to właśnie na jego podstawie
+::                             budowane jest nowe środowisko.
+::                         S - Praca w trybie sesji. Stosowana przy uruchamianiu obszaru roboczego w nowej sesji. Wymaga
+::                             parametru (_b), który jest systemowym identyfikatorem rekordu parametrów utworzonym na
+::                             potrzeby danej sesji (PARSES.uidref()).
+::                         C - Praca w trybie menadżera procesów. Stosowana przy uruchamianiu czynności z listy zadań,
+::                             które wymagają "własnych" parametrów. Parametrów jak w chwili utworzenia czynności, a nie
+::                             tych obecnych. Wymaga parametru (_b), który jest ref-em rekordu parametrów utworzonym
+::                             na potrzeby danej czynności (PARSES.ref()).
+::                         W - Praca poprzez webTerma. W tym trybie metoda zachowuje bieżący rekord tabeli PARSES.
+::
+::                         P - Przywrócenie PIERWOTNEGO trybu pracy, trybu, który był ustawiony jako pierwszy po
+::                             zainicjowaniu obiektu. Ten tryb nie może być zatem ustawiony jako pierwszy.
+::       [_b] [STRING] - Identyfikator rekordu - parametr obowiązkowy tylko dla typów S i C.
+::       [_c] [STRING] - Identyfikator instancji - parametr obowiązkowy tylko dla typu C.
+::       [_d] [STRING] - Identyfikator rekordu - rodzica, który ma być uaktualniany przy zmianie wartości parametrów
+::                       związanej z ich brakiem. Parametr opcjonalny.
+::   WY: Numer błędu (liczba ujemna) lub 1, jeżeli operacja powiodła się.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='setMode';
+
+      {? ~obj_ntab(.PARAMETR)
+      || return(.error(_meth,'#4','Zmiana trybu pracy nie jest możliwa.'@))
+      ?};
+      {? _a='U' | -_a='s' | _a='C' | _a='W' | _a='P'
+      || _typ:=_a
+      || return(.error(_meth,'#1','TYP','Dostępne wartości: U / S / C / W / P.'@))
+      ?};
+
+      _ret:=1;
+      _ref:=null();
+
+      PARSES.cntx_psh();
+      PARSES.index('USER');
+      PARSES.prefix();
+
+      {? _typ='U'
+      || {? ~.CGI
+         || .clean()
+         ?};
+         {? ~PARSES.find_key(_typ,.USER)
+         || PARSES.blank();
+            PARSES.TYP:=_typ;
+            PARSES.USER:=.USER;
+            PARSES.ID:='';
+            PARSES.add()
+         ?};
+::       Utworzenie kopii rekordu użytkownika. W utworzonym rekordzie (mimo, że będzie typu s) pozostawiamy wskazanie na
+::       użytkownika. Będzie ono znakiem, że przy zmianie wartości tego rekordu (s) konieczna jest aktualizacja rekordu
+::       użytkownika (U).
+         PARSES.TYP:='s';
+         PARSES.ID:=PARSES.ses_id(1);
+         PARSES.add()
+
+      |? -_typ='s'
+      || _id:=PARSES.ses_id(1);
+         {? var_pres('_b')<>.TYPE.STRING
+         || _ret:=.error(_meth,'#8','ID','')
+         |? +_b<>48
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator rekordu (błędna długość).'@)
+         |? ~PARSES.seek(_b)
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator rekordu (brak rekordu).'@)
+         |? PARSES.TYP<>_typ
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator rekordu (błędny typ).'@)
+         |? _typ='S' & ~(PARSES.ID='' | PARSES.ID=_id)
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator rekordu (rekord używany).'@)
+         |? PARSES.ID='' | (_typ='s' & ~PARSES.ses_info(PARSES.ID,'exist'))
+::          Jeżeli jest to pierwsze uruchomienie sesji (obszaru) lub sesja nie jest już aktywna
+::          (np. odświeżenie pulpitu) to stemplujemy (przejmujemy) rekord parametrów.
+         || PARSES.ID:=_id;
+            PARSES.put()
+         ?}
+
+      |? _typ='C'
+      || {? var_pres('_b')<>.TYPE.STRING
+         || _ret:=.error(_meth,'#8','ID','')
+         |? +_b<>48
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator rekordu (błędna długość).'@)
+         |? ~PARSES.seek(_b)
+         || _ret:=.error(_meth,'#1','ID','Oczekiwany identyfikator rekordu (brak rekordu).'@)
+         |? PARSES.TYP<>_typ
+         || _ret:=.error(_meth,'#1','ID','Oczekiwana wartość złączeniowa (błędny typ).'@)
+         |? var_pres('_c')<>.TYPE.STRING
+         || _ret:=.error(_meth,'#8','INST','')
+         |? ~(PARSES.ID='' | PARSES.ID=_c)
+         || _ret:=.error(_meth,'#1','INST','Oczekiwany identyfikator instancji.'@)
+         |? PARSES.ID=''
+         || PARSES.ID:=_c;
+            PARSES.put()
+         ?}
+
+      |? _typ='W'
+      || {? ~.setUser()
+::         Jeżeli nie udało się ustalić użytkownika, to nie ma co kontynuować, a odpowiedni komunikat został już
+::         wyświetlony.
+         || ~~
+         |? _tcid:=app_info('web_tcid');
+            _sesid:=app_info('web_sesid');
+            _tabid:=app_info('web_tabid');
+            _tcid='' | _sesid='' | _tabid=''
+         || _ret:=.error(_meth,'Tryb pracy dostepny tylko dla webTerm-a.'@)
+         || _formCID:=.formID(_tcid,_sesid,_tabid);
+            {? PARSES.find_key(_typ,.USER,_formCID,)
+::             Kontynuacja.
+            || _ref:=PARSES.ref()
+            |? _partabid:=app_info('web_parent_tabid');
+               _partabid<>'' & PARSES.find_key(_typ,.USER,.formID(_tcid,_sesid,_partabid),)
+::             Znaleziono rodzica. Posłuży jako rekord wzorcowy.
+            || PARSES.ID:=_formCID;
+               {? PARSES.add()
+               || _ref:=PARSES.ref()
+               ?}
+            |? PARSES.find_key('U',.USER)
+::             Wygląda na pierwsze uruchomienie. Rekordem wzorcowym będzie rekord użytkownika.
+            || PARSES.TYP:=_typ;
+               PARSES.ID:=_formCID;
+               {? PARSES.add()
+               || _ref:=PARSES.ref()
+               ?}
+            ?}
+         ?}
+
+      |? _typ='P'
+      || {? .MODEP.uidref=''
+         || _ret:=.error(_meth,
+               'Tryb pracy nie został jeszcze ustawiony.\n'
+               'Przywrócenie trybu PIERWOTNEGO nie jest możliwe.'@
+            )
+         |? ~PARSES.seek(MODEP.uidref)
+         || _ret:=.error(_meth,'Rekord parametrów PIERWOTNYCH nie został odnaleziony.'@)
+         ?}
+
+      ?};
+
+      _parent:='';
+      {? _ret=1 & _>3
+      || PARSES.cntx_psh();
+         {? var_pres('_d')<>.TYPE.STRING
+         || _ret:=.error(_meth,'#8','PARENT','')
+         |? +_d<>48
+         || _ret:=.error(_meth,'#1','PARENT','Oczekiwany identyfikator rekordu (błędna długość).'@)
+         |? ~PARSES.seek(_d)
+         || _ret:=.error(_meth,'#1','parent','Oczekiwany identyfikator rekordu (brak rekordu).'@)
+         || _parent:=_d
+         ?};
+         PARSES.cntx_pop()
+      ?};
+      {? _ret=1
+      || .MODEB.uidref:=PARSES.uidref();
+         .MODEB.typ:=PARSES.TYP;
+         .MODEB.pid:=_parent;
+         .MODEB.act:='';
+         .MODEB.id:=PARSES.ID;
+
+         {? .MODEP.uidref=''
+::          Zapamiętanie pierwotnego trybu pracy.
+         || .MODEP.uidref:=.MODEB.uidref;
+            .MODEP.typ:=.MODEB.typ;
+            .MODEP.pid:=.MODEB.pid;
+            .MODEP.act:=.MODEB.act;
+            .MODEP.id:=.MODEB.id
+         ?}
+      ?};
+
+      {? _typ<>'W' & type_of(.TAPERM)=type_of(~~)
+::       Dla typu W uprawnienia zostały ustawione w metodzie .setUser().
+      || .readPerm()
+      ?};
+
+      PARSES.cntx_pop();
+      {? _ref<>null()
+      || PARSES.prefix();
+         _ret:=PARSES.seek(_ref)
+      ?};
+
+      _ret=1
+   ",type_of('')),
+
+
+   obj_meth('setVal',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda ustawia nową wartość parametru. Wartość przekazywana jest w sposób czytelny. Dla zmiennych
+::       przechowywanych jako typy złączeniowe będzie to tablica nazwana (patrz opis metody args()). Dla zmiennych typu
+::       prostego zamiast tabeli może to być typ prosty. Metoda m.in. wykonuje akcję afterChange, która odpowiada za
+::       ustawienie środowiska.
+::   WE: _a  [STRING] ID    - Identyfikator parametru (patrz opis metody addPar()).
+::       _b  [ANY]    VAL   - Nowa wartość parametru.
+::      [_c] [NUMBER] FORCE - Wymuszenie ustawienia środowiska, nawet w przypadku braku zmiany wartości parametru.
+::   WY: Wynik zwracany przez formułę 'setVal' wskazanego parametru lub ~~.
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='setVal';
+
+      _ret:=~~;
+
+      _id:=_a;
+
+      {? ~obj_ntab(.PARAMETR)
+      || .error(_meth,'#4')
+      |? var_pres(_id,.PARAMETR)<0
+      || .error(_meth,'#2',_id)
+      |? .MODEB.uidref=''
+      || .error(_meth,'#10')
+      |? _<2
+      || .error(_meth,'Brak parametru określającego nową wartość parametru.'@)
+      || PARSES.cntx_psh();
+         PARSES.clear();
+         {? PARSES.seek(.MODEB.uidref)
+         || _par:=.getPar(_id);
+            _vb:=.exec(_par,'value');
+            _ret:=.exec(_par,'setVal',_b);
+            _va:=.exec(_par,'value');
+            {? ((var_pres('_c')=.TYPE.NUMBER & _c) | _va<>_vb) & (_va=_vb | .putPARSES()) & .ACF
+            || _change:=2;
+               .exec(_par,'prolog',_change);
+               .exec(_par,'afterChange',_change);
+               _par.ENVVAL:=_va;
+               .exec(_par,'epilog',_change)
+            ?};
+            obj_del(_par)
+         || .error(_meth,'#11','Ustawienie wartości nie powiodło się.'@)
+         ?};
+         PARSES.cntx_pop()
+      ?};
+
+      _ret
+   ",type_of('')),
+
+
+   obj_meth('win_epar',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda dodaje parametry do ostatnio zdefiniowanej zakładki.
+::   WE:  _a  [STRING] - Identyfikator zmiennej.
+::       [_b] [STRING] - Identyfikator zmiennej.
+::       [_c] [STRING] - Identyfikator zmiennej.
+::       [_d] [STRING] - Identyfikator zmiennej.
+::       [_e] [STRING] - Identyfikator zmiennej.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  _meth:='win_epar';
+
+      {? ~obj_ntab(.PARAMETR)
+      || return(.error(_meth,'#4'))
+      ?};
+
+      _err:=0;
+
+      .TTABP.index(.NTABP.ID);
+      .TTABP.prefix();
+      {! _lp:=1 .. _
+      |? _err=0
+      |! _id:=_[_lp];
+         {? type_of(_id)<>.TYPE.STRING
+         || _err:=.error(_meth,'#8','ID'+$_lp,'')
+         |? var_pres(_id,.PARAMETR)<0
+         || _err:=.error(_meth,'#2',_id)
+         |? (_last:=.TTABN.last()) & .TTABP.find_key(_id,.TTABN.LP)
+         || _err:=.error(_meth,
+               {? .TTABN.LP
+               || 'Parametr %1 już został dodany do bieżącej zakładki okna redagowania.'@ [_id]
+               || 'Parametr %1 już został dodany do okna redagowania.'@ [_id]
+               ?}
+            )
+         || {? ~_last
+::             Jeżeli w tabeli zakładek nie ma jeszcze żadnego zapisu - okno będzie bez podziału na zakładki.
+::             Tworzymy zakładkę wirtualną (z LP=0).
+            || .TTABN.blank();
+               .TTABN.add()
+            ?};
+            .TTABP.blank();
+            .TTABP.TTABN:=.TTABN.LP;
+            .TTABP.LP:=.TTABN.ROZMIAR+1;
+            .TTABP.ID:=_[_lp];
+            {? .TTABP.add()
+            || .TTABN.ROZMIAR+=1;
+               .TTABN.put()
+            ?}
+         ?}
+      !};
+
+      _err
+
+   ",type_of('')),
+
+
+   obj_meth('win_etab',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Metoda definiuje rzeczywistą zakładkę w oknie redagowania.
+::       Możliwa jest praca bez podziału na zakładki. Ale nawet wówczas w tabeli .TTABN znajduje się jeden zapis
+::       (zakładka wirtualna) z LP=0. Jeżeli więc
+::   WE: _a [STRING] - Tytuł zakładki.
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+   "  {? .TTABN.first() & .TTABN.LP=0
+      || .error('win_etab','Próba dodania zakładki po dodaniu zmiennych.'@);
+         return()
+      ?};
+      .TTABN.blank();
+      .TTABN.LP:=.TTABN.size()+1;
+      .TTABN.TYTUL:=_a;
+      .TTABN.add()
+   ",type_of(''),-1),
+
+   obj_meth('setArea',
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [23.25]
+:: OPIS: Setter dla zmiennej pomocniczej area
+::   WE: _a [STRING] - Nazwa obszaru
+::----------------------------------------------------------------------------------------------------------------------
+   "  .AREA:=_a
+   ",type_of(''),-1),
+)
+
+
+\import
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Wczytuje formułę na PARSES
+::   WE: [_a] - [1]-z komunikatami 0-bez
+::       [_b] - B_DOMAIN.ref - obszar którego czynności aktualizować, jeśli nie podane to wszystkie obszary
+::----------------------------------------------------------------------------------------------------------------------
+_komm:={? var_pres('_a')>0 || _a || 1 ?};
+{? _komm>0
+|| KOMM.init(,,'Import uprawnień do danych czynności')
+?};
+
+_b_domain:=null();
+{? var_pres('_b')=type_of(B_DOMAIN.ref())
+|| _b_domain:=_b
+?};
+
+B_DOMAIN.index('SYMBOL');
+B_DOMAIN.prefix();
+B_ACTION.index('B_DOMAIN');
+{? _b_domain=null()
+||
+:: Wszystkie obszary
+   {? B_DOMAIN.first()
+   || {!
+      |? B_ACTION.prefix('T',B_DOMAIN.ref());
+         {? B_ACTION.first()
+         || {!
+            |? {? B_ACTION.MANUAL<>'T'
+               || exec('imp4act','#parses')
+               ?};
+               B_ACTION.next()
+            !}
+         ?};
+         B_DOMAIN.next()
+      !}
+   ?}
+||
+:: Wybrany obszar
+   B_ACTION.prefix('T',_b_domain);
+   {? B_ACTION.first()
+   || {!
+      |? {? B_ACTION.MANUAL<>'T'
+         || exec('imp4act','#parses')
+         ?};
+         B_ACTION.next()
+      !}
+   ?}
+?};
+{? _komm & ~KOMM.empty()
+|| KOMM.select()
+?}
+
+
+\imp4act
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Wczytuje formuły na PARSES
+::   WE: [_a] - [1]-z komunikatami 0-bez
+::----------------------------------------------------------------------------------------------------------------------
+_fun_g:='main';
+_plik:=exec('filename','#b_action');
+{? exec('is_fun','#file',_plik,_fun_g)
+||
+   _fparses:='';
+   _fun_str:=exec('string_fun','#file',_plik,_fun_g,'::# parses=');
+   _split:=spli_str(_fun_str,'\n');
+
+   {? obj_len(_split)>0
+   ||
+      {! _it:=1..obj_len(_split)
+      |!
+         _wiersz:=_split[_it];
+
+         _fparses+={? _wiersz<>'\n' & _wiersz<>''
+                   || _wiersz
+                   || ''
+                   ?}
+      !}
+   ?};
+
+   {? B_ACTION.FPARSES<>_fparses
+   || B_ACTION.FPARSES:=_fparses;
+      B_ACTION.put(1)
+   ?}
+?}
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:13:35 c5cac07e904606cffc47aeb3a5132797f427c00af49fd1ce460a1231fc997f6678eb47b332df23db8e8871044729075179cbbedc174a95af449c52ca03c8f6b3f58054d1984928d9d1a08c0750669e3625aff9aefee13bae5463533b4d0c29b1960b10aa30d29dcbda2530c7738e03b97eeba8debe46ba01af3b3f1035cc12c8

@@ -1,0 +1,823 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !pkd_zes_orka.fml
+:: Utworzony: 01.03.2016
+:: Autor: RWR
+::======================================================================================================================
+:: Zawartość: Formuły czynności PKD_ZES_ORKA - Wydruk kartotek kadrowych
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Wydruk kartotek kadrowych - główna formuła czynności.
+::   WY:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+::# permissions=F_ZATR,UD_SKL
+::
+exec('rep_exec','#b_report','PKD_ZES_ORKA','pkd_w*',,1)
+
+
+\calosc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: DRO
+:: OPIS: Wyliczenie średniego zatrudnienia wg stanowisk w obrębie jednostek organizacyjnych
+::       w podanym zakresie dat
+::   WE: _a - początek okresu
+::       _b - koniec okresu
+::       _c - napis zawierający kody nieobecności do pominięcia
+::             'B' - urlop bezpłatny
+::             'O' - slużba wojskowa
+::             'W' - urlop wychowawczy
+::  OLD: \calosc/stat.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of(date) || return(0) ?};
+{? var_pres('_b')<>type_of(date) || return(0) ?};
+{? var_pres('_c')<>type_of('') || _c:='' ?};
+
+_kz:='';
+{!
+|? _c<>''
+|! _kz+='\''+(1+_c)+'\',';
+   _c:=1-_c
+!};
+_kz:=_kz-1;
+
+echo('Trwa pobieranie informacji o zatrudnieniu...');
+_H:=sql('select H.OD, H.RWY, H.DO, UD_SKL.SYMBOL WYDZIAL, STN.ST,0.00-0.00 ETAT, 0.00-0.00 ILOSC, H.P '+
+        'from H join UD_SKL using(H.WYDZIAL,UD_SKL.REFERENCE) join STN using(H.ST,STN.REFERENCE) '+
+               'join P using(H.P,P.REFERENCE) join F_ZATR using(P.F_ZATR,F_ZATR.REFERENCE) '+
+        'where F_ZATR.KOD=\':_d\' and(H.OD<=to_date(:_b) and (H.DO is null or to_date(:_a)<=H.DO)) and P.FIRMA=:_c',
+        _a,_b,exec('ref_firma','ustawienia'),__F_ZATR.P);
+
+{? type_of(_H)<>type_of(SYSLOG) || return(0) ?};
+
+{? _H.first()
+|| {!
+   |? _od:={? _H.OD<_a || _a || _H.OD ?};
+      _do:={? _H.DO=#0 | _b<_H.DO || _b || _H.DO ?};
+      _H.ILOSC:=(_do-_od+1)/(_b-_a+1);
+      _H.ETAT:= _H.RWY*((_do-_od+1)/(_b-_a+1));
+      _H.put();
+      _H.next()
+   !};
+
+   _rub:='';
+   {? _kz<>''
+   || {? _kz*'B' || _rub+=__RUB.sys_sql(112)+',' ?};
+      {? _kz*'O' || _rub+=__RUB.sys_sql(1323)+',' ?};
+      {? _kz*'W' || _rub+=__RUB.sys_sql(133)+',' ?};
+      _rub:=_rub-1
+   ?};
+   {? _rub<>''
+   ||
+:     uwzględniaj tylko tych pracowników
+      _P:=sql('select distinct :_a.P from :_a',_H);
+      {? type_of(_P)<>type_of(SYSLOG) || return(0) ?};
+
+:     nieobecności wlaściwe dla B,O,W i tylko tych pracowników, którzy ze względu na zatrudnienie zostali uwzględnieni
+      _N:=sql(
+         'select N.OD, N.DO, N.REFERENCE as REF '+
+         'from N join R using (N.NB,R.REFERENCE) join :_c using (N.P,:_c.P) '+
+         'where N.KOR=\'N\' and R.RN in ('+_rub+') and N.OD<=to_date(:_b) and to_date(:_a)<=N.DO',
+         _a,_b,_P
+      );
+      {? type_of(_N)<>type_of(SYSLOG) || return(0) ?};
+
+:     określenie jednostki org. i stanowiska własciwych ze względu na czas wystąpienia nieobecności
+      _add:=
+         "  _a.blank();
+            _a.OD:=_b;
+            _a.DO:=_c;
+            _a.ILOSC:=-(_c-_b+1)/(_e-_d+1);
+            _a.ETAT:=_a.RWY-(_c-_b+1)/(_e-_d+1);
+            _a.WYDZIAL:=H.WYDZIAL().SYMBOL;
+            _a.ST:=H.ST().ST;
+            _a.add()
+         ";
+      H.cntx_psh();
+      H.index('_HISTKOD');
+      N.cntx_psh();
+      N.clear();
+      _loop:=_N.first();
+      {!
+      |? _loop
+      |! {? N.seek(BIT.sqlint(_N.REF),)
+         || H.prefix(N.P,'Z');
+            _od:={? _N.OD<_a || _a || _N.OD ?};
+            _do:={? _b<_N.DO || _b || _N.DO ?};
+            {? H.find_le(_do) & (H.DO=#0 | _od<=H.DO)
+            || {? H.OD<=_od & (H.DO=#0 | _do<=H.DO)
+               || _add(_H,_od,_do,_a,_b)
+               |? H.OD<=_od & H.DO<_do & H.DO<>#0
+               || _add(_H,_od,H.DO,_a,_b);
+                  {? H.next()
+                  || _add(_H,H.OD,_do,_a,_b)
+                  ?}
+               |? _od<H.OD
+               || _add(_H,H.OD,_do,_a,_b);
+                  {? H.prev()
+                  || _od:={? H.OD<_od || _od || H.OD ?};
+                     _add(_H,_od,H.DO,_a,_b)
+                  ?}
+               ?}
+            ?}
+         ?};
+         _loop:=_N.next()
+      !};
+      N.cntx_pop();
+      H.cntx_pop()
+   ?}
+?};
+
+sql('select WYDZIAL, ST, sum(ILOSC) ILOSC, sum(ETAT) ETAT from     :_a group by WYDZIAL, ST',_H)
+
+
+\pkd_bhpippoz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.00]
+:: OPIS: Ustalenie parametrów do wydruku szkoleń BHP i ppoż (pkd_bhpippoz.rpm).
+::   WE: _a - tabela, za pomocą której zostaną przekazane parametry do wydruku.
+::       _b - tytuł wydruku
+::   WY: tabela z ustalonymi parametrami.
+::----------------------------------------------------------------------------------------------------------------------
+_a.TAB:=tab_tmp(,
+   'ASK','INTEGER','Zakres informacji',
+   'DATA','DATE','Data analizy',
+   'OD','DATE','Data od',
+   'DO','DATE','Data do');
+
+_a.TAB.fld_fml('ASK','AFTER_EDIT',
+   "  {? cur_tab().ASK=1
+      || cur_tab().efld_opt(cur_tab().win_edit('?'),'enable=0',,'OD');
+         cur_tab().efld_opt(cur_tab().win_edit('?'),'enable=0',,'DO');
+         cur_tab().efld_opt(cur_tab().win_edit('?'),'enable=1, mark=1',,'DATA')
+      || cur_tab().efld_opt(cur_tab().win_edit('?'),'enable=1'+{? cur_tab().ASK=2 || ', mark=1' || ', mark=0' ?},,'OD');
+         cur_tab().efld_opt(cur_tab().win_edit('?'),'enable=1'+{? cur_tab().ASK=2 || ', mark=1' || ', mark=0' ?},,'DO');
+         cur_tab().efld_opt(cur_tab().win_edit('?'),'enable=0',,'DATA')
+      ?}
+   "
+);
+_a.TAB.fld_fml('OD','AFTER_EDIT',
+   "  {? cur_tab().ASK=2 & cur_tab().OD=#0
+      || FUN.emsg('Nie podano daty początkowej.'@+'\n'+'Proszę uzupełnić pole.'@); 0
+      || 1
+      ?}
+   "
+);
+_a.TAB.fld_fml('DO','AFTER_EDIT',
+   "  {? cur_tab().ASK=2 & cur_tab().DO=#0
+      || FUN.emsg('Nie podano daty końcowej.'@+'\n'+'Proszę uzupełnić pole.'@); 0
+      || 1
+      ?}
+   "
+);
+_a.CHK:=
+   "  {? cur_tab().ASK=1 & cur_tab().DATA=#0
+      || FUN.emsg('Nie podano daty kontroli.'@+'\n'+'Proszę uzupełnić pole.'@); 'DATA'
+      |? cur_tab().ASK=2 & cur_tab().OD=#0
+      ||  FUN.emsg('Nie podano daty początkowej.'@+'\n'+'Proszę uzupełnić pole.'@); 'OD'
+      |? cur_tab().ASK=2 & cur_tab().DO=#0
+      || FUN.emsg('Nie podano daty końcowej.@'+'\n'+'Proszę uzupełnić pole.'@); 'DO'
+      |? cur_tab().DO<cur_tab().OD & cur_tab().DO<>#0
+      || FUN.emsg('Wprowadzono nieprawidłowy zakres dat'@+'\n'+'(data od późniejsza od daty do).'@); 'OD'
+      || 1
+      ?}
+   ";
+
+_a.TAB.ASK:=1;
+_a.TAB.DATA:=date();
+_a.TAB.OD:=date(,1,1);
+_a.TAB.DO:=date(,12,0);
+
+_a.RED:=_a.TAB.mk_edit(_b,,'pkd_bhpippoz');
+_a.TAB.win_esep(_a.RED,'Parametry wydruku.');
+_a.TAB.win_efld(_a.RED,,'ASK',,,,,,
+   'Zakres informacji o szkoleniach BHP i PPOŻ.'@,,,
+   'radio-buttons',,
+   'Nieaktualne'@,"1",
+   'Kończące się w okresie'@,"2",
+   'Pełna kartoteka'@,"3");
+_a.TAB.win_esep(_a.RED,'Szkolenia nieaktualne.');
+_a.TAB.win_efld(_a.RED,,'DATA',,,11,,,'Data kontroli');
+_a.TAB.win_esep(_a.RED,'Szkolenia w okresie.');
+_a.TAB.win_efld(_a.RED,,'OD',,,11,,,'Od dnia');
+_a.TAB.win_efld(_a.RED,,'DO',,,11,,,'Do dnia');
+
+_a.TAB.efld_opt(_a.RED,'enable=1, mark=1',,'DATA');
+_a.TAB.efld_opt(_a.RED,'enable=0',,'OD');
+_a.TAB.efld_opt(_a.RED,'enable=0',,'DO');
+_a.TAB.win_ebtn(_a.RED,'text=%1,panel=bottom,align=end'['OK'@],"'key:F2'");
+_a.TAB.win_ebtn(_a.RED,'text=%1,panel=bottom,align=end'['Anuluj'@],"'key:Esc'");
+_a.TAB.win_edit(_a.RED);
+
+{? ~_a.TAB.edit(_a.CHK)
+|| _a.TAB.ASK:=0
+?}
+
+
+\pkd_wdyscyplina
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.00]
+:: OPIS: okno z parametrami do wydruku dyscyplina pracy
+::   WE: _a - nazwa pliku
+::       _b - nazwa sekcji
+::       _c - tytuł okienka
+::   WY: _tab - tabela z parametrami wydruku
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of('') || _a:='profile.upf' ?};
+_PROFILE:=exec('code_grp','profile',_a,_b,'N',,,'DICT');
+
+_tab:=tab_tmp(1,
+   'ROK','INTEGER','Rok',
+   'KONTROLA','INTEGER','Konrola limitu na datę',
+   'DATA','DATE','Data kontroli',
+   'RODZ','INTEGER','Rodzaj sprawozdania',
+   'WYBOR','STRING[64]','Wybór parametów',
+   'LISTA','SYS_MEMO','Lista składników'
+);
+_tab.ROK:=date()~1;
+_tab.KONTROLA:=0;
+_tab.RODZ:=1;
+_tab.DATA:=date(0,0,0);
+_tab.WYBOR:='';
+_tab.memo_set(,'LISTA');
+_tab.add();
+_tab.memo_put(,'LISTA');
+
+_tab.fld_fml(
+   'ROK',
+   'AFTER_EDIT',
+   "  {? cur_tab().ROK<=1900
+      || FUN.emsg('Błędna wartość parametru wydruku'@); 0
+      || {? cur_tab().KONTROLA
+         || cur_tab().DATA:={? cur_tab().ROK=date()~1 || date() || date(cur_tab().ROK,12,0) ?}
+         || cur_tab().DATA:=#0
+         ?}; 1
+      ?}
+   "
+);
+_tab.fld_fml(
+   'KONTROLA',
+   'AFTER_EDIT',
+   "  params_set(_par:=params_get());
+      {? _par.tab.KONTROLA
+      || _par.tab.fld_fml('DATA','BEFORE_EDIT',\"1\");
+         _par.tab.fld_fml('RODZ','BEFORE_EDIT',\"0\");
+         _par.tab.DATA:={? _par.tab.ROK=date()~1 || date() || date(_par.tab.ROK,12,0) ?}
+      || _par.tab.fld_fml('DATA','BEFORE_EDIT',\"0\");
+         _par.tab.fld_fml('RODZ','BEFORE_EDIT',\"1\");
+         _par.tab.DATA:=#0
+      ?};
+      _par.tab.efld_opt(_par.red,'enable='+$_par.tab.KONTROLA,,'DATA');
+      _par.tab.efld_opt(_par.red,'enable='+$~_par.tab.KONTROLA,,'RODZ')
+   "
+);
+_tab.fld_fml(
+   'DATA',
+   'AFTER_EDIT',
+   "  {? cur_tab().DATA~1<>cur_tab().ROK
+      || FUN.emsg('Data kontoroli nie jest zgodna z rokiem raportu'@); 0
+      || 1
+      ?}
+   "
+);
+_tab.fld_fml(
+   'WYBOR',
+   'F3',
+   "  _par:=params_get();
+      _par.PROFILE.find_key(fld());
+      {? _par.PROFILE.select(,1)
+      || _par.PROFILE.NAME
+      ?}
+   "
+);
+_tab.fld_fml(
+   'WYBOR',
+   'AFTER_EDIT',
+   "  _par:=params_get();
+      {? +cur_tab().WYBOR
+      || _par.PROFILE.index(_par.PROFILE.ndx_tmp(,1,'GROUP',,,'NAME',,));
+         _par.PROFILE.prefix(_par.tresc);
+         {? _par.PROFILE.find_key(cur_tab().WYBOR)
+         || cur_tab().WYBOR:=_par.PROFILE.NAME;
+            cur_tab().put();
+            _txt:=_par.PROFILE.memo_txt(,1,'VALUE');
+            cur_tab().memo_set(_txt,'LISTA');
+            cur_tab().memo_put(,'LISTA');
+::          W okienku rezygnujemy z prezentacji przecinków na początku i końcu listy składników.
+            {? 1+_txt=',' & _txt+1=','
+            || cur_tab().memo_set(1-_txt-1,'LISTA')
+            ?};
+            _par.PROFILE.cntx_psh();
+            _par.PROFILE.clear();
+            exec('save','#profile',_par.PROFILE,_par.plik);
+            _par.PROFILE.cntx_pop();
+            win_disp();
+            1
+         || FUN.emsg('Brak zdefiniowanego parametru.'+'\n'+'Proszę wybrać wartość ze słownika'@); 0
+         ?}
+      || cur_tab().memo_set(,'LISTA');
+         cur_tab().memo_put();
+         1
+      ?}
+   "
+);
+_tab.fld_fml('LISTA','BEFORE_EDIT',"0");
+
+_red:=_tab.mk_edit(_c,0,'pkd_wdyscyplina');
+_tab.win_esep(_red,'Parametry wydruku'@);
+_tab.win_efld(_red,,'ROK',,,4,,,'Raport za rok'@);
+_tab.win_efld(_red,,'KONTROLA',,,,,,'Wyliczać wykorzystanie limitu na konkretną datę?'@,,,'check-box',,"1","0");
+_tab.win_efld(_red,,'DATA',,,11,,,'Data kontroli'@);
+_tab.win_efld(_red,,'WYBOR',,,47,,,'Parametr'@,,,,'F3_button=1');
+_tab.win_efld(_red,,'LISTA',,,50,-3,,'Składniki'@);
+_tab.win_efld(_red,,'RODZ',,,,,,'Rodzaj sprawozdania'@,,,
+   'radio-buttons',,
+   'Przekroczone limity'@,"0",
+   'Pełna kartoteka'@,"1"
+);
+exec('ok_esc','#window',_tab,_red);
+_tab.efld_opt(_red,'mark=1',,'ROK');
+_tab.efld_opt(_red,'enable='+$_tab.KONTROLA,,'DATA');
+_tab.efld_opt(_red,'enable='+$~_tab.KONTROLA,,'RODZ');
+_tab.efld_opt(_red,'mark=1,enable=1',,'WYBOR');
+_tab.win_edit(_red);
+
+params_set('tab',_tab,'red',_red,'PROFILE',_PROFILE,'plik',_a,'tresc',_b);
+
+{? _tab.edit(
+      "  _wyn:=1;
+         {? cur_tab().WYBOR=''
+         || {? FUN.ask('Żadna z rubryk nie została zaznaczona.'@+'\n'+'Czy na pewno rezygnujesz?'@)
+            || cur_tab().del()
+            || return('WYBOR')
+            ?}
+         ?};
+         _wyn
+      "
+   )
+|| 1
+|| _tab.del()
+?};
+_tab
+
+
+\pkd_wkartosob
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.00]
+:: OPIS: Ustalenie parametrów do wydruku kartoteki danych osobowych.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+zakres.TAB:=tab_tmp(1,
+   'LP','INTEGER','L.p.',
+   'ID','INTEGER','Id.',
+   'AKCJA','STRING[60]','Akcja',
+   'MACRO','STRING[16]','Nazwa macra',
+   'STAN','INTEGER','Znacznik',
+   'UPR','INTEGER','Uprawnienia'
+);
+zakres.NDX:=obj_new('ID','LP');
+zakres.NDX.LP:=zakres.TAB.index('?');
+zakres.NDX.ID:=zakres.TAB.ndx_tmp(,,'ID',,);
+zakres.sz:=0;
+
+zakres.add:=
+   "  zakres.TAB.blank();
+      zakres.TAB.ID:=_a;
+      zakres.TAB.LP:=zakres.TAB.size()+1;
+      zakres.TAB.AKCJA:=_b;
+      zakres.TAB.MACRO:=_c;
+      zakres.TAB.UPR:=_d;
+      {? zakres.TAB.add() & zakres.sz<+_b || zakres.sz:=+_b ?}
+   ";
+
+zakres.set:=
+   "  zakres.TAB.cntx_psh();
+      zakres.TAB.index(zakres.NDX.ID);
+      zakres.TAB.prefix();
+      {? zakres.TAB.find_key(_a) & zakres.TAB.UPR
+      || zakres.TAB.STAN:={? var_pres('_b')=type_of(0) || _b ?};
+         zakres.TAB.put()
+      ?};
+      zakres.TAB.cntx_pop()
+   ";
+
+'Akcje dodajemy w takiej kolejności, w jakiej chcemy aby pojawiły się w menu.';
+'Nowe akcje = nowe (kolejne) identyfikatory.';
+
+zakres.add(1,'Dodatkowe dane osobowe'@,'prac_dod',1);
+zakres.add(8,'Aktualne dane adresowe'@,'os_adres',exec('uprawnieniawrap','pkd','x'@,'ZWS_DOS_PPDA','ZWS_DOS_PRDA')='');
+zakres.add(10,'Dorobek naukowy'@,'os_dnauk',exec('uprawnieniawrap','pkd','x'@,'PKD_DOS_PPPN','PKD_DOS_PRPN')='');
+zakres.add(2,'Rachunki osobiste'@,'rachunek',exec('uprawnieniawrap','pkd','x'@,'PKD_DOS_PPRB','PKD_DOS_PRRB')='');
+zakres.add(3,'Dodatkowe kwalifikacje'@,'dod_kwal',exec('uprawnieniawrap','pkd','x'@,'PKD_DOS_PPKW','PKD_DOS_PRKW')='');
+zakres.add(4,'Członkowie rodziny'@,'rodzina',exec('uprawnieniawrap','pkd','x'@,'PKD_DOS_PPRD','PKD_DOS_PRRO')='');
+zakres.add(5,'Okresy poprzedniego zatrudnienia'@,'zaklady',
+   exec('uprawnieniawrap','pkd','x'@,'PKD_DOS_PPSW','PKD_DOS_PRSW')=''
+);
+zakres.add(6,'Przebieg pracy zawodowej'@,'historia',
+   exec('uprawnieniawrap','pkd','x'@,'PKD_EZK_PPZA','PKD_EZK_RPZA')=''
+);
+zakres.add(7,'Informacje wojskowe'@,'wojsko',exec('uprawnieniawrap','pkd','x'@,'PKD_DOS_PPWO','PKD_DOS_PRWO')='');
+zakres.add(9,'Umowy lojalnościowe'@,'umloj',exec('uprawnieniawrap','pkd','x'@,'PKD_EZK_OPUL','PKD_EZK_ORUL')='');
+
+_size:=zakres.TAB.size()+1;
+{? _size<3 || _size:=3 |? _size>30 || _size:=30 ?};
+_ws:=zakres.TAB.mk_sel('Kartoteka osobowa'@,'N',,'#pkd_wkartosb',,,_size);
+_sz:={? zakres.sz<20 || 20 || zakres.sz ?};
+zakres.TAB.win_fld(_ws,,'AKCJA',,,_sz,,,'Dostępne elementy wydruku'@);
+zakres.TAB.win_fld(_ws,,'STAN',,,5,,,'Wybór'@,,,2,,"1","0");
+zakres.TAB.win_fld(_ws,,'UPR',,,5,,,'Uprawnienia'@,,,2,,"1","0");
+zakres.TAB.win_sel(_ws);
+zakres.TAB.win_act(_ws,,'Rekord',,,,"{? cur_tab().UPR || cur_tab().STAN || '200:200:200,255:255:255' ?}");
+zakres.TAB.win_act(_ws,,'Formuła','Dalej'@@,,,"sel_exit()",,,,,,,,'target=window');
+zakres.TAB.win_act(
+   _ws,,
+   'Formuła',
+   'Zmień'@,,,
+   "  {? cur_tab().UPR || cur_tab().STAN:=~cur_tab().STAN; cur_tab().put() ?}
+   ",,1,1
+);
+zakres.TAB.win_act(_ws,,'Formuła','Legenda'@@,,,"exec('legenda','color','$$Element zaznaczony')",,,,,,
+   'L',,'target=window'
+);
+zakres.TAB.win_btn(_ws,'text=%1,panel=right,align=begin'['Zmień'@],'menu:Z');
+zakres.TAB.win_btn(_ws,'text=%1,panel=bottom,align=end'['OK'@],'menu:D');
+zakres.TAB.win_btn(_ws,'text=%1,panel=bottom,align=end'['Anuluj'@],'key:Esc')
+
+
+\pkd_kart_dod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.00]
+:: OPIS: Ustalenie parametrów do wydruku kartoteki dodatkowych.
+::   WE:
+::   WY: _tab - tabela z parametrami wydruku
+::----------------------------------------------------------------------------------------------------------------------
+KART_DEF.cntx_psh();
+KART_DEF.prefix();
+exec('f_set_nosys','kart_dod');
+SLO_TYP.cntx_psh();
+SLO_TYP.index('SYMBOL');
+SLO_KOD.cntx_psh();
+SLO_KOD.index('NAZWA');
+
+_tab:=tab_tmp(1,
+   'SYMBOL','STRING[8]','Symbol kartoteki',
+   'NAZWA','STRING[40]','Nazwa kartoteki',
+   'KT','STRING[1]','Kategoria',
+   'KAT','STRING[150]','Opis kategorii',
+   'OD','DATE','Data od',
+   'DO','DATE','Data do'
+);
+_tab.NAZWA:=_tab.SYMBOL:=_tab.KT:=_tab.KAT:='';
+_tab.OD:=date(,1,1);
+_tab.DO:=date(,12,0);
+_tab.add();
+
+_tab.fld_fml(
+   'NAZWA',
+   'F3',
+   "  _par:=params_get();
+      KART_DEF.prefix();
+      _ws:=KART_DEF.mk_sel('Wybór kartoteki dodatkowej'@,,,,,,25,,'U');
+      KART_DEF.win_fld(_ws,,'SYMBOL',,,10,,,'Symbol'@);
+      KART_DEF.win_fld(_ws,,'NAZWA',,,40,,,'Nazwa'@);
+      KART_DEF.win_act(_ws,0,'Formuła','Wybierz'@@,,,\"sel_exit()\",,1);
+      KART_DEF.win_sel(_ws);
+      {? KART_DEF.select()
+      || cur_tab().NAZWA:=KART_DEF.NAZWA;
+         cur_tab().SYMBOL:=KART_DEF.SYMBOL;
+         cur_tab().KT:=cur_tab().KAT:='';
+         SLO_TYP.prefix(KART_DEF.SYMBOL,);
+         {? SLO_TYP.first()
+         || SLO_KOD.prefix(SLO_TYP.ref());
+            cur_tab().efld_opt(_par.ws,'enable='+$(SLO_KOD.first()),,'KAT')
+         ?}
+      || cur_tab().NAZWA:=cur_tab().SYMBOL:=cur_tab().KT:=cur_tab().KAT:='';
+         cur_tab().efld_opt(_par.ws,'enable=0',,'KAT')
+      ?};
+      win_disp()
+   "
+);
+_tab.fld_fml(
+   'NAZWA',
+   'AFTER_EDIT',
+   " {? cur_tab().NAZWA=''
+     || cur_tab().NAZWA:=cur_tab().SYMBOL:=cur_tab().KT:=cur_tab().KAT:='';
+        FUN.emsg('Proszę wybrać kartotekę ze słownika.'@); 0
+     || KART_DEF.prefix(cur_tab().SYMBOL,);
+        {? ~KART_DEF.first()
+        || cur_tab().NAZWA:=cur_tab().SYMBOL:=cur_tab().KT:=cur_tab().KAT:='';
+           FUN.emsg('Wprowadzona wartość nie została odnaleziona.'@+'\n'+'Proszę wybrać kartotekę ze słownika.'@); 0
+        || 1
+        ?}
+     ?}
+   "
+);
+_tab.fld_fml(
+   'KAT',
+   'F3',
+   "  KART_DEF.prefix(cur_tab().SYMBOL,);
+      {? KART_DEF.first()
+      || SLO_TYP.prefix(KART_DEF.SYMBOL,);
+         {? SLO_TYP.first()
+         || SLO_KOD.prefix(SLO_TYP.ref());
+            _ws:=SLO_KOD.mk_sel('Słownik: '@+cur_tab().NAZWA,,,,,,25,,'U');
+            SLO_KOD.win_fld(_ws,,'KOD',,,8,,,'Kod'@);
+            SLO_KOD.win_fld(_ws,,'NAZWA',,,50,,,'Nazwa'@);
+            SLO_KOD.win_act(
+               _ws,
+               0,
+               'Formuła',
+               'Wybierz'@@,,,
+               \" params_get().tab.KT:=cur_tab().KOD;
+                  params_get().tab.KAT:=cur_tab().NAZWA;
+                  sel_exit()
+               \",,1
+            );
+            SLO_KOD.win_act(
+               _ws,
+               0,
+               'Formuła',
+               'Wybierz ws&zystkie'@@,,,
+               \" params_get().tab.KT:=' ';
+                  params_get().tab.KAT:='Wszystkie kategorie'@;
+                  sel_exit()
+               \"
+            );
+            SLO_KOD.win_sel(_ws);
+            params_set('tab',cur_tab());
+            {? SLO_KOD.select()
+            || 1
+            || cur_tab().KT:=cur_tab().KAT:=''
+            ?};
+            win_disp()
+         ?}
+      || FUN.emsg('Wskazana kategoria nie została odnalezione w słowniku'@)
+      ?}
+   "
+);
+_tab.fld_fml(
+   'KAT',
+   'AFTER_EDIT',
+   "  {? cur_tab().KAT=''
+      || cur_tab().KT:=cur_tab().KAT:='';
+         FUN.emsg('Proszę wybrać kategorię ze słownika'@)
+      |? cur_tab().KAT='Wszystkie kategorie'@
+      || 1
+      ||  SLO_KOD.prefix(SLO_TYP.ref(),cur_tab().KAT,);
+         {? ~SLO_KOD.first()
+         || cur_tab().KT:=cur_tab().KAT:='';
+            FUN.emsg('Wprowadzona wartość nie została odnaleziona.'@+'\n'+'Proszę wybrać kategorię ze słownika.'@); 0
+         || 1
+         ?}
+      ?}
+   "
+);
+_tab.fld_fml('OD','AFTER_EDIT',"{? cur_tab().OD=#0 || FUN.emsg('Błędne daty.'@); 0 || 1 ?}");
+_tab.fld_fml('DO','AFTER_EDIT',"{? cur_tab().DO=#0 || FUN.emsg('Błędne daty.'@); 0 || 1 ?}");
+
+_ws:=_tab.mk_edit('Kartoteki dodatkowe'@,0,'pkd_kartprkal');
+_tab.win_esep(_ws,'Parametry wydruku'@);
+_tab.win_efld(_ws,,'NAZWA',,,50,,,'Kartoteka'@,,,,'F3_button=1');
+_tab.win_efld(_ws,,'KAT',,,50,,,'Kategoria'@,,,,'F3_button=1');
+_tab.win_efld(_ws,,'OD',,,10,,,'Od'@);
+_tab.win_efld(_ws,,'DO',,,10,,,'Do'@);
+exec('ok_esc','#window',_tab,_ws);
+_tab.efld_opt(_ws,'mark=1',,'NAZWA');
+_tab.efld_opt(_ws,'mark=1,enable=0',,'KAT');
+_tab.efld_opt(_ws,'mark=1',,'OD');
+_tab.efld_opt(_ws,'mark=1',,'DO');
+_tab.win_edit(_ws);
+
+params_set('ws',_ws);
+
+{? ~_tab.edit(
+    "  {? cur_tab().OD>cur_tab().DO || FUN.emsg('Błędne daty.'@); 0 || 1 ?}
+    "
+    )
+|| _tab.del()
+?};
+
+SLO_KOD.win_sel();
+SLO_KOD.cntx_pop();
+SLO_TYP.cntx_pop();
+KART_DEF.f_clear();
+KART_DEF.cntx_pop();
+_tab
+
+
+\pkd_sr_zat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.00]
+:: OPIS: Ustalenie parametrów do wydruku średnie zatrudnienie.
+::   WE: _a - tytuł okienka
+::   WY: _tab - tabela z parametrami wydruku
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp(1,
+   'RODZ','INTEGER','Rodzaj sprawozdania',
+   'OD','DATE','Od dnia',
+   'DO','DATE','Do dnia',
+   'UB','INTEGER','Urlop bezpłatny',
+   'SW','INTEGER','Służba wojskowa',
+   'UW','INTEGER','Urlop wychowawczy',
+   'SN','INTEGER','Sposób naliczania'
+);
+
+_tab.RODZ:=3;
+_tab.OD:=date(,1,1);
+_tab.DO:=date(,12,0);
+_tab.SN:=1;
+_tab.UB:=_tab.SW:=_tab.UW:=0;
+_tab.add();
+
+_ed:=_tab.mk_edit(_a,0,'pkd_wsredniezat');
+_tab.win_esep(_ed,'Parametry wydruku'@);
+_tab.win_efld(
+   _ed,,
+   'RODZ',,,,,,
+   'Rodzaj sprawozdania'@,,,
+   'radio-buttons',,
+   'wg stanowisk'@,"1",
+   'wg jednostek'@,"2",
+   'wg jednostek i stanowisk'@,"3");
+_tab.win_efld(_ed,,'OD',,,11,,,'Od dnia'@);
+_tab.win_efld(_ed,,'DO',,,11,,,'Do dnia'@);
+_tab.win_efld(
+   _ed,,
+   'SN',,,,,,
+   'Sposób prezentacji'@,,,
+   'radio-buttons',,
+   'w Osobach'@,"1",
+   'w Etatach'@,"2");
+_tab.win_esep(_ed,'Czy pomijać nieobecności?'@);
+_tab.win_efld(_ed,,'UB',,,,,,'Urlop bezpłatny'@,,,'check-box',,"1","0");
+_tab.win_efld(_ed,,'SW',,,,,,'Służba wojskowa'@,,,'check-box',,"1","0");
+_tab.win_efld(_ed,,'UW',,,,,,'Urlop wychowawczy'@,,,'check-box',,"1","0");
+exec('ok_esc','#window',_tab,_ed);
+_tab.win_edit(_ed);
+
+{? ~_tab.edit(
+    "  {? cur_tab().OD<=#0 | cur_tab().DO<=#0 | cur_tab().OD>cur_tab().DO
+       || FUN.emsg('Podano błędne daty'@); 0
+       || 1
+       ?}
+    "
+    )
+|| _tab.del()
+?};
+
+_tab
+
+
+\pkd_zalaczniki
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.00]
+:: OPIS: Ustalenie parametrów do wydruku badań lekarskich.
+::   WE: _a - tytuł okienka
+::       _b - [1/0] niepobrane/pobrane
+::   WY: _tab - tabela z parametrami wydruku
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp(1,
+   'TYP','INTEGER','Typ załącznika',
+   'OKR','INTEGER','Czy z okresu',
+   'POB','INTEGER','Pobrania',
+   'OD','DATE','Początek okresu',
+   'DO','DATE','Koniec okresu'
+);
+_tab.TYP:=0;
+_tab.OD:=_tab.DO:=date(0,0,0);
+_tab.add();
+
+_tab.fld_fml(
+   'OKR',
+   'AFTER_EDIT',
+   "  {? cur_tab().OKR
+      || cur_tab().OD:=date(,,1);
+         cur_tab().DO:=date(,,0)
+      || cur_tab().OD:=cur_tab().DO:=date(0,0,0)
+      ?};
+      _ed:=params_get().ed;
+      cur_tab().efld_opt(_ed,'enable='+$cur_tab().OKR,,'OD');
+      cur_tab().efld_opt(_ed,'enable='+$cur_tab().OKR,,'DO')
+   "
+);
+
+_ed:=_tab.mk_edit(_a,0,'pkd_wpobranezal');
+_tab.win_esep(_ed,'Parametry wydruku'@);
+_tab.win_efld(_ed,,'TYP',,,,,,'Typy załączników'@,,,'radio-buttons',,'Wszystkie'@,"0",'Wybrane'@,"1");
+_tab.win_efld(_ed,,'OKR',,,,,,'Okres kontroli'@,,,'radio-buttons',,'Bez ograniczeń'@,"0",'Zakres dat'@,"1");
+_tab.win_efld(_ed,,'OD',,,11,,,'Początek okresu'@);
+_tab.win_efld(_ed,,'DO',,,11,,,'Koniec okresu'@);
+{? _b
+|| _tab.win_efld(_ed,,'POB',,,,,,'Pobrania'@,,,'radio-buttons',,'Wszystkie'@,"0",'Przez pracownika'@,"1")
+?};
+exec('ok_esc','#window',_tab,_ed);
+_tab.efld_opt(_ed,'enable=0',,'OD');
+_tab.efld_opt(_ed,'enable=0',,'DO');
+_tab.win_edit(_ed);
+
+params_set('ed',_ed);
+
+{? ~_tab.edit(
+    "  {? cur_tab().OD>cur_tab().DO & cur_tab().DO<>#0
+       || FUN.emsg('Data początku okresu nie może być większa od daty końcowej.'@); 0
+       || 1
+       ?}
+    "
+   )
+|| _tab.del()
+?};
+
+_tab
+
+
+\pkd_wbadania
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: areKc [17.00]
+:: OPIS: Ustalenie parametrów do wydruku badań lekarskich.
+::   WE:
+::   WY: _tab - tabela z parametrami wydruku
+::----------------------------------------------------------------------------------------------------------------------
+_tab:=tab_tmp(1,
+   'RODS','INTEGER','Rodzaj sprawozdania',
+   'DATA','DATE','Data kontroli',
+   'ZA','STRING[1]','Pracownicy z wygasającymi umowami',
+   'OD','DATE','Od dnia',
+   'DO','DATE','Do dnia'
+);
+_tab.RODS:=1;
+_tab.DATA:=date();
+_tab.ZA:='T';
+_tab.OD:=_tab.DO:=date(0,0,0);
+_tab.add();
+
+_tab.fld_fml(
+   'RODS',
+   'AFTER_EDIT',
+   "  {? cur_tab().RODS=1
+      || cur_tab().DATA:=date();
+         cur_tab().OD:=cur_tab().DO:=date(0,0,0)
+      || cur_tab().DATA:=date(0,0,0);
+         cur_tab().OD:=date(,1,1);
+         cur_tab().DO:=date(,12,0)
+      ?};
+      _ed:=params_get().ed;
+      cur_tab().efld_opt(_ed,'enable='+$(cur_tab().RODS-1),,'OD');
+      cur_tab().efld_opt(_ed,'enable='+$(cur_tab().RODS-1),,'DO');
+      cur_tab().efld_opt(_ed,'enable='+$(~(cur_tab().RODS-1)),,'DATA')
+   "
+);
+
+_ed:=_tab.mk_edit('Badania okresowe'@,0,'pkd_wbadania');
+_tab.win_esep(_ed,'Parametry wydruku - badania'@);
+_tab.win_efld(
+   _ed,,
+   'RODS',,,,,,
+   'Rodzaj sprawozdania'@,,,
+   'radio-buttons',,
+   'Badania nieaktualne'@,"1",
+   'Badania kończące się w okresie'@,"2"
+);
+_tab.win_efld(_ed,,'ZA',,,,,,'Uwzględniać pracowników z wygasającymi umowami? '@,,
+                             'Uwzględnieni zostaną pracownicy aktualnie zatrudnieni, którym umowa o pracę wygasa'
+                             ' przed datą kontroli lub końcem badanego okresu.'@,'check-box',,"'T'","'N'");
+_tab.win_esep(_ed,'Badania nieaktualne'@);
+_tab.win_efld(_ed,,'DATA',,,11,,,'Data kontroli'@);
+_tab.win_esep(_ed,'Badania kończące się w okresie'@);
+_tab.win_efld(_ed,,'OD',,,11,,,'Od dnia'@);
+_tab.win_efld(_ed,,'DO',,,11,,,'Do dnia'@);
+exec('ok_esc','#window',_tab,_ed);
+_tab.efld_opt(_ed,'enable=0',,'OD');
+_tab.efld_opt(_ed,'enable=0',,'DO');
+_tab.efld_opt(_ed,'enable=1, mark=1',,'DATA');
+_tab.win_edit(_ed);
+
+params_set('ed',_ed);
+
+{? ~_tab.edit(
+    " _ok:=1;
+      {? cur_tab().RODS=2
+      || {? cur_tab().OD<>#0 & cur_tab().DO<>#0 & cur_tab().DO<cur_tab().OD
+         || FUN.emsg('Podano nieprawidłowy zakres dat'@+'\n'+'(data od poźniejsza od daty do).'@);
+            _ok:='OD'
+         ?}
+      |? cur_tab().RODS=1
+      || {? cur_tab().DATA=#0
+         || FUN.emsg('Należy podać datę kontroli.'@);
+            _ok:='DATA'
+         ?}
+      ?};
+      _ok
+    "
+)
+|| _tab.del()
+?};
+
+_tab
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:40 501617138bbaaca073252a984708193d36ae42e078fe68500031cec7206f1375703dcafe75b435d223b6b724c6005564d0675ef6e65511eba31d560ae21e2a00ff613f2c69de5e11fd21569a58015d48894a247a915c2dcc2e180141f49c83ecd5d1eac8af00130404753e5d46b00ba8b334e7a0b6fb6cfa9b4198f23ffa3bfc

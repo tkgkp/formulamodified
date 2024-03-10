@@ -1,0 +1,457 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: mwa_projgd.fml
+:: Utworzony: 15.02.2019
+:: Autor: Markus
+:: Systemy:
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi rozliczeń godzinowych projektów przez MacroWebAPI
+::======================================================================================================================
+
+
+\serialize_projgd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Formuła pomocnicza do serializacji rekordów z tabeli PROJGD.
+::   WE: _a [FILE] - obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::   WY: 0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku.
+::----------------------------------------------------------------------------------------------------------------------
+_resp:=fopen(null,'Uw',,1,1);
+
+_data:="
+   PROJGD.xml_records(params_get().resp,,'data','p',,'noheader=1,norecord=0,nodata=1,indentation=1'
+      ,'REFERENCE',,'IDADD',
+      ,'FIRMA',,'OSOBA',,'P',
+      ,'BLOKADA',,'DATA',,'ILOSC',,'OPIS',
+      ,'WSK1',,'WSK2',,'WSK3',,'WSK4',,'WSK5',,'WSK6',
+      ,'JO_ZLEC',,'JO_SWIAD',
+      ,'PROJEKTY',,'KH',,'HAN',
+   );
+   ''
+";
+_tab:=tab_tmp(,'STATUS','STRING[20]','');
+_tab.STATUS:='OK'; _tab.add();
+params_set('resp',_resp);
+_tab.xml_records(_resp,_a.METHOD+'Response',,'p',_a.OUTNSPC,'norecord=1'
+   ,'STATUS:status',
+   ,'',_data
+);
+
+_resp
+
+
+\read_projgd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje informacje o rozliczeniach godzin dla projektów.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+:: #PARAM rok Rok, dla którego zwracane będą dane [domyślnie: bieżący]
+:: #PARAM firma Symbol firmy [domyślnie: bieżąca]
+::_rok:=exec('get_option','#webservice',_b,'rok');
+::_firma:=exec('get_option','#webservice',_b,'firma');
+
+_par:=params_get();
+_rok:=exec('get_option','mwapi',_par,'Rok').value;
+_firma:=exec('get_option','mwapi',_par,'Firma').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? _rok<>'' & #_rok=0
+|| _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['rok',_rok])
+?};
+
+_fref:=null();
+{? _firma='000'
+|| _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['firma',_firma])
+|? _firma<>''
+|| FIRMA.cntx_psh();
+   FIRMA.index('SYMBOL');
+   FIRMA.prefix(_firma,);
+   {? FIRMA.first()
+   || _fref:=FIRMA.ref()
+   || _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['firma',_firma])
+   ?};
+   FIRMA.cntx_pop()
+|? (_fref:=exec('ref_firma','ustawienia'))=null()
+|| _wsenv.add_error('Ustalenie bieżącej firmy nie powiodło się.'@)
+?};
+
+{? ~_wsenv.has_errors()
+||
+   _rok:=#_rok;
+   {? _rok=0
+   || _rok:=date()~1
+   ?};
+
+   PROJGD.cntx_psh();
+   PROJGD.use('pj_g%1' [$_rok+4]);
+   PROJGD.index('OSOBA');
+   PROJGD.prefix(_fref);
+   _ret:=exec('serialize_projgd','mwa_projgd',_par);
+   PROJGD.cntx_pop()
+?};
+
+{? _wsenv.has_errors()
+||
+   _resp:=_wsenv.to_json();
+   _ret:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_ret
+
+
+\read_projgd_ref
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje informacje o rozliczeniu godzin dla projektu na podstawie wskazania (SQL-ref'a).
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_ref:=exec('get_option','mwapi',_par,'Ref').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_ref=16 & type_of(_TAB:=ref_tab(_ref))<>type_of(~~) & _TAB=PROJGD
+|| PROJGD.cntx_psh();
+   _mask:=ref_name(_ref);
+   {? PROJGD.name()<>_mask
+   || PROJGD.use(_mask)
+   ?};
+   PROJGD.index('IDADD');
+   PROJGD.prefix();
+   {? PROJGD.seek(_ref)
+   || PROJGD.prefix(PROJGD.IDADD);
+      _ret:=exec('serialize_projgd','mwa_projgd',_par)
+   || _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['<ref>',_ref])
+   ?};
+   PROJGD.cntx_pop()
+
+|| _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['<ref>',_ref])
+?};
+
+{? _wsenv.has_errors()
+||
+   _resp:=_wsenv.to_json();
+   _ret:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_ret
+
+
+\read_projgd_idadd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje informacje o rozliczeniu godzin dla projektu na podstawie wartości pola IDADD.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_idadd:=exec('get_option','mwapi',_par,'IDADD').value;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_idadd=31 & idtime_valid(_idadd)
+|| _found:=0;
+   PROJGD.cntx_psh();
+   _NAMES:=PROJGD.names();
+   _loop:=_NAMES.first();
+   {!
+   |? _loop
+   |! PROJGD.use(_NAMES.NAME);
+      PROJGD.index('IDADD');
+      PROJGD.prefix(_idadd);
+      {? PROJGD.first()
+      || _found:=1;
+         _loop:=0;
+         _ret:=exec('serialize_projgd','mwa_projgd',_par)
+      || _loop:=_NAMES.next()
+      ?}
+   !};
+   PROJGD.cntx_pop();
+   {? ~_found
+   || _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['<idadd>',_idadd])
+   ?}
+|| _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['<idadd>',_idadd])
+?};
+
+{? _wsenv.has_errors()
+||
+   _resp:=_wsenv.to_json();
+   _ret:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_ret
+
+
+\set_fields_projgd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Ustawia pola dla rozliczenie godzin dla projektu.
+::   WE: _a [STRING] - Parametry rozliczenia godzin dla projektu.
+::   WY: ~~
+::----------------------------------------------------------------------------------------------------------------------
+exec('set_fields','mwapi',_a);
+
+:: #DESCRIPTION Niektóre pola podawane są zamiennie: PROJEKT - KH, OSOBA - P.
+:: Opisy pól
+:: #IDADD Identyfikator systemowy zapisu
+:: #FIRMA Wskazanie firmy [domyślnie: bieżąca]
+:: #DATA Data wykonania prac [domyślnie: bieżąca]
+:: #PROJEKTY Wskazanie projektu
+:: #KH Wskazanie kontrahenta
+:: #OSOBA Wskazanie osoby
+:: #P Wskazanie pracownika
+:: #WSK1 Wskaźnik nr 1 (wskazanie)
+:: #WSK2 Wskaźnik nr 2 (wskazanie)
+:: #WSK3 Wskaźnik nr 3 (wskazanie)
+:: #WSK4 Wskaźnik nr 4 (wskazanie)
+:: #WSK5 Wskaźnik nr 5 (wskazanie)
+:: #WSK6 Wskaźnik nr 6 (wskazanie)
+:: #ILOSC Liczba godzin pracy
+:: #HAN Wskazanie handlowca
+:: #JO_ZLEC Wskazanie komórki zlecającej
+:: #JO_SWIAD Wskazanie komórki świadczącej
+:: #OPIS Dodatkowy opis
+::
+:: Wartości niektórych pól nie powinny byc ustawiana przez webservice.
+PROJGD.BLOKADA:='N';
+PROJGD.IMPORT:='T';
+~~
+
+
+\create_projgd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Dodaje informacje o rozliczenie godzin dla projektu.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_option:=exec('get_option','mwapi',_par,'Projgd.IDADD');
+_ds:=exec('get_option','mwapi',_par,'Projgd.DATA').value;
+_idadd:=_option.value;
+_fields_projgd:='PROJGD'+_option.fields;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+::_ds:=exec('get_option','#webservice',_b,'DATA');
+_dt:=exec('str2date','#convert',_ds);
+{? _dt=date(0,0,0)
+|| _dt:=date()
+?};
+
+PROJGD.cntx_psh();
+PROJGD.use('pj_g%1' [$(_dt~1)+4]);
+PROJGD.prefix();
+PROJGD.blank();
+exec('set_fields_projgd','mwa_projgd',_fields_projgd);
+
+{? (_chk:=exec('projgd_ae','projekty_ref',1))<>''
+|| _wsenv.add_error(_chk)
+|? PROJGD.add()
+||
+   _ret:=exec('read_projgd_idadd_row','mwa_projgd',_par,PROJGD.IDADD)
+|| _wsenv.add_error('Dodanie informacji o godzinach projektowych nie powiodło się.'@)
+?};
+
+PROJGD.cntx_pop();
+
+{? _wsenv.has_errors()
+||
+   _resp:=_wsenv.to_json();
+   _ret:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_ret
+
+
+\update_projgd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Aktualizuje informacje o rozliczeniu godzin dla projektu na podstawie wartości pola IDADD.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_option:=exec('get_option','mwapi',_par,'Projgd.IDADD');
+_idadd:=_option.value;
+_fields_projgd:='PROJGD'+_option.fields;
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_idadd=31 & idtime_valid(_idadd)
+|| _found:=0;
+   PROJGD.cntx_psh();
+   _NAMES:=PROJGD.names();
+   _loop:=_NAMES.first();
+   {!
+   |? _loop
+   |! PROJGD.use(_NAMES.NAME);
+      PROJGD.index('IDADD');
+      PROJGD.prefix(_idadd);
+      {? PROJGD.first()
+      || _found:=1;
+         _loop:=0;
+         {? PROJGD.BLOKADA='T'
+         || _wsenv.add_error('Zapis został zablokowany przed modyfikacjami. Aktualizacja niemożliwa.'@)
+         || exec('set_fields_projgd','mwa_projgd',_fields_projgd);
+            {? (_chk:=exec('projgd_ae','projekty_ref',1))<>''
+            || _wsenv.add_error(_chk)
+            |? ~_wsenv.has_errors() & PROJGD.put()
+            ||
+               _ret:=exec('read_projgd_idadd_row','mwa_projgd',_par,PROJGD.IDADD)
+            || _wsenv.add_error('Poprawienie informacji o godzinach projektowych nie powiodło się.'@)
+            ?}
+         ?}
+      || _loop:=_NAMES.next()
+      ?}
+   !};
+   PROJGD.cntx_pop();
+   {? ~_found
+   || _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['<idadd>',_idadd])
+   ?}
+|| _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['<idadd>',_idadd])
+?};
+
+{? _wsenv.has_errors()
+||
+   _resp:=_wsenv.to_json();
+   _ret:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_ret
+
+
+\delete_projgd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Usuwa informacje o rozliczeniu godzin dla projektu na podstawie wartości pola IDADD.
+::   WE: _a [FILE]   - Obiekt plikowy przeznaczony do zapisu wynikowego JSONa.
+::       _b [STRING] - Opcje wywołania.
+::   WY: STRING - JSON z błędami w przypadku niepowodzenia
+::       0 / 1 - czy udało się wygenerować wynikowego JSONa do pliku
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+_idadd:=exec('get_option','mwapi',_par,'IDADD').value;
+
+::_idadd:=exec('get_option','#webservice',_b,'value');
+
+_wsenv:=exec('wsenv','#mwapi');
+_wsenv.erase();
+
+{? +_idadd=31 & idtime_valid(_idadd)
+|| _found:=0;
+   PROJGD.cntx_psh();
+   _NAMES:=PROJGD.names();
+   _loop:=_NAMES.first();
+   {!
+   |? _loop
+   |! PROJGD.use(_NAMES.NAME);
+      PROJGD.index('IDADD');
+      PROJGD.prefix(_idadd);
+      {? PROJGD.first()
+      || _found:=1;
+         _loop:=0;
+         {? PROJGD.BLOKADA='T'
+         || _wsenv.add_error('Zapis został zablokowany przed modyfikacjami. Aktualizacja niemożliwa.'@)
+         |? PROJGD.del(,1)>0
+         || _wsenv.add_info('Informacja o rozliczeniu godzin została usunięta.'@)
+         || _wsenv.add_error('Usunięcie informacji o rozliczeniu godzin nie powiodła się.'@)
+         ?}
+      || _loop:=_NAMES.next()
+      ?}
+   !};
+   PROJGD.cntx_pop();
+   {? ~_found
+   || _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['<idadd>',_idadd])
+   ?}
+|| _wsenv.add_error('Nieprawidłowa wartość parametru %1 [%2].'@ ['<idadd>',_idadd])
+?};
+
+::_wsenv.to_json()
+
+{? ~_wsenv.has_errors()
+||
+   _wsenv.erase();
+   _wsenv.add_info('Informacja o rozliczeniu godzin została usunięta.'@);
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp,1)
+||
+   _resp:=_wsenv.to_json();
+   _result:=exec('serialize_res','mwapi',_par,_resp)
+?};
+
+_result
+
+
+\read_projgd_idadd_row
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Markus [19.22]
+:: OPIS: Odczytuje informacje o rozliczeniu godzin dla projektu na podstawie wartości pola IDADD.
+::   WE: _a - par
+::       _b - idadd
+::----------------------------------------------------------------------------------------------------------------------
+_par:=_a;
+_idadd:=_b;
+
+{? +_idadd=31 & idtime_valid(_idadd)
+|| _found:=0;
+   PROJGD.cntx_psh();
+   _NAMES:=PROJGD.names();
+   _loop:=_NAMES.first();
+   {!
+   |? _loop
+   |! PROJGD.use(_NAMES.NAME);
+      PROJGD.index('IDADD');
+      PROJGD.prefix(_idadd);
+      {? PROJGD.first()
+      || _found:=1;
+         _loop:=0;
+         _ret:=exec('serialize_projgd','mwa_projgd',_par)
+      || _loop:=_NAMES.next()
+      ?}
+   !};
+   PROJGD.cntx_pop()
+?};
+
+_ret
+
+
+\prolog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Formuła startowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+_par:=params_get();
+exec('prolog','mwapi',_par);
+~~
+
+
+\epilog
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.22]
+:: OPIS: Fomuła końcowa usługi sieciowej
+::----------------------------------------------------------------------------------------------------------------------
+exec('epilog','mwapi');
+~~
+
+:Sign Version 2.0 jowisz:1045 2023/09/06 12:34:10 b19304def0a9931e448cb28457dc671d7c8af51e9112ac864630c107f799f5ef0fd2b60d173c490889c340e32ae3d26c88484bafff5067442266f9c471f27652cc471254c5ed31cfd9d8ab95241fafa0dffb8010bcedaf954dbcaaee593d6db7a74fb8b70f0e79f9862041911101b5cde9069e0a23771d2c8f057f1c8baf2260

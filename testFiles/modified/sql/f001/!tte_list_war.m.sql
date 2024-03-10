@@ -1,0 +1,14 @@
+﻿:!UTF-8
+q00004_nuco@4@4@0@N@@
+q00004_nuco@5@4@0@N@@
+q00004a_nuco@12@5@0@N@@
+q00004a_nuco@3@0@5@N@@
+q00004a_nuco@11@5@0@N@@
+q00004a_nuco@13@3@0@N@@
+q00004a_nuco@5@0@20@N@@
+q00004b_nuco@7@4@0@N@@
+q00004b_nuco@8@5@0@N@@
+q00004b_nuco@9@5@0@N@@
+qtmat_nuco1@14@5@0@N@@
+qtmat_nuco1@11@5@0@N@@
+qtmat_nuco1@12@5@0@N@@

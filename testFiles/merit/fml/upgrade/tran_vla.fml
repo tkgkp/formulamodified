@@ -1,0 +1,741 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: tran_vla.fml
+:: Utworzony: 10.09.2018
+:: Autor: PJ
+::======================================================================================================================
+:: Zawartość: Funkcje do obsługi transferu danych - walidacja danych po imporcie w systemie Merit
+::======================================================================================================================
+
+
+\start_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [18.42]
+:: OPIS: Uruchomienie formuł walidacyjnych po transferze danych z Xpertis
+:: ~OST: INFILECHOOSER,INFOPEN
+::----------------------------------------------------------------------------------------------------------------------
+__WALID:=0;
+popup(0,'Walidacja danych po transferze',
+        'Formuły walidacyjne',
+        'Uruchomienie formuł walidacyjnych',
+        "__WALID:=1",
+        'Mechanizm manualnej weryfikacji środków trwałych',
+        'Uruchomienie mechanizmu manualnej weryfikacji środków trwałych',
+        "exec('fst_select','tran_vla')"
+     );
+
+{? __WALID=0 || return() ?};
+
+exec('KOMM','#object');
+KOMM.init(150,200,'Uwagi dotyczące poprawności danych w systemie Merit.'@);
+
+:: walidacja - środki trwałe
+exec('es_kontrola','tran_vla');
+
+:: wynik walidacji, jeżeli znaleziono problemy
+_save:="_filter:='*.log';
+        _name:='tran_vla.log';
+        ctr_set('!application','filechooser','reset');
+        ctr_set('!application','filechooser','setDialogTitle','Zapisz jako'@);
+        ctr_set('!application','filechooser','addDefaultFilter',_filter,'log');
+        ctr_set('!application', 'filechooser','setAcceptAllFileFilterUsed',1);
+        ctr_set('!application','filechooser','setMultiSelectionEnabled',0);
+        ctr_set('!application','filechooser','setFileSelectionMode','FILES_ONLY');
+        ctr_set('!application','filechooser','setSelectedFile',_name);
+        _txt:={? ctr_call('!application','filechooser','showSaveDialog')
+               || ctr_call('!application','filechooser','getSelectedFile')
+               || ''
+               ?};
+        {? _txt<>''
+        || _f:=fopen('@'+_txt,'uw');
+           {? _f
+           || .save(_f);
+              fclose(_f)
+           ?}
+        ?};
+        1
+       ";
+{? ~KOMM.empty()
+|| KOMM.select(,'Dziedzina / Znalezione problemy',_save)
+|| FUN.info('Nie znaleziono problemów.')
+?}
+
+
+\es_kontrola
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [18.42]
+:: OPIS: Formuła kontrolna po zakończeniu importu danych środków trwałych z plików tekstowych.
+::       Kontroluje wypełnienie pól z metodami amortyzacji, kontami kosztowymi, ciągłość rejestru stanów, ciągłość
+::       zamknięcia okresów dzidziny FST
+::----------------------------------------------------------------------------------------------------------------------
+SRSR.cntx_psh();
+_metody:=_konta:=_stany:=_okresy:=0;
+exec('maski','srodobj');
+
+:: metody
+SRSR.index('RNRI');
+SRSR.prefix();
+{? SRSR.first()
+|| {! |?
+      {? SRSR.MP=null | SRSR.MF=null | (FINFO.TOR_D='T' & SRSR.MD=null)
+      || _metody:=1
+      ?};
+      _metody=0 & SRSR.next()
+   !}
+||
+:: Nie znaleziono środków trwałych w bieżącym systemie
+   SRSR.cntx_pop();
+   return(0)
+?};
+
+SRST.cntx_psh(); OKR_OBSZ.cntx_psh(); OKRO_F.cntx_psh();
+
+:: konta kosztów
+SRSR.index('RNRI');
+SRSR.prefix();
+{? SRSR.first()
+|| {! |?
+      {? SRSR.KONPOD=null | SRSR.KONFIN=null | (FINFO.TOR_D='T' & SRSR.KONDOD=null)
+      || _konta:=1
+      ?};
+      _konta=0 & SRSR.next()
+   !}
+?};
+
+:: metody w rejestrze stanów
+{? _metody=0
+|| SRSR.first();
+   {! |?
+      SRST.index('PODAT');
+      SRST.prefix(SRSR.ref());
+      {? SRST.first()
+      || {! |?
+            {? SRST.MP=null | SRST.MF=null | (FINFO.TOR_D='T' & SRST.MD=null)
+            || _metody:=1
+            ?};
+            _metody=0 & SRST.next()
+         !}
+      ?};
+      _metody=0 & SRSR.next()
+   !}
+?};
+
+:: konta kosztów w rejestrze stanów
+{? _konta=0
+|| SRSR.first();
+   {! |?
+      SRST.index('PODAT');
+      SRST.prefix(SRSR.ref());
+      {? SRST.first()
+      || {! |?
+            {? SRST.KONPOD=null | SRST.KONFIN=null | (FINFO.TOR_D='T' & SRST.KONDOD=null)
+            || _konta:=1
+            ?};
+            _konta=0 & SRST.next()
+         !}
+      ?};
+      _konta=0 & SRSR.next()
+   !}
+?};
+
+:: konta kosztów w dokumentach zmiany miejsca
+SRDO.cntx_psh(); SRDT.cntx_psh();
+_konsrdo:=0;
+SRDT.index('TYP'); SRDT.prefix('MT');
+{? SRDT.first()
+|| _dtref:=SRDT.ref();
+   _ndxsrdo:=SRDO.ndx_tmp(,1,'TYP',,);
+   SRDO.index(_ndxsrdo); SRDO.prefix(_dtref);
+   {? SRDO.first()
+   || {! |?
+         {? SRDO.KONFIN=null | SRDO.KONPOD=null || _konsrdo:=1 ?};
+         _konsrdo=0 & SRDO.next()
+      !}
+   ?};
+   SRDO.ndx_drop(_ndxsrdo)
+?};
+SRDO.cntx_pop(); SRDT.cntx_pop();
+
+:: ciągłość rejestru stanów
+SRSR.first();
+_info:='';
+{! |?
+   SRST.index('PODAT');
+   SRST.prefix(SRSR.ref());
+   {? SRST.first()
+   || _start_r:=SRST.ROK_F().POCZ_ROK;
+      _start_o:=SRST.OKRO_F().NR;
+      {? SRST.next()
+      || {! |?
+            {? SRST.ROK_F().POCZ_ROK=_start_r & SRST.OKRO_F().NR-_start_o=1
+            || _start_r:=SRST.ROK_F().POCZ_ROK;
+               _start_o:=SRST.OKRO_F().NR
+            |? SRST.ROK_F().POCZ_ROK>_start_r & SRST.OKRO_F().NR=0
+            || _start_r:=SRST.ROK_F().POCZ_ROK;
+               _start_o:=SRST.OKRO_F().NR
+            |? _start_r=SRST.ROK_F().POCZ_ROK & _start_o=SRST.OKRO_F().NR
+            || _stany:=0
+            || _stany:=1; _info:='(braki w rejestrze: '+SRST.NRI+')'
+            ?};
+            _stany=0 & SRST.next()
+         !}
+      ?}
+   || _stany:=1; _info:='(brak stanów: '+SRSR.NRI+')'
+   ?};
+   _stany=0 & SRSR.next()
+!};
+
+:: ciągłość zamknięcia okresów dziedziny FST w bieżącej firmie - wykrywa sytuacje gdy po okresie
+:: otwartym następuje okres zamknięty - co nie jest możliwe dla poprawnie działającego programu.
+_dom_fst:=exec('szuk_b_dom','parses','FST');
+OKRO_F.prefix();
+OKR_OBSZ.index('OBS_ROK');
+OKR_OBSZ.prefix(REF.FIRMA,_dom_fst);
+{? OKR_OBSZ.first()
+|| {? OKR_OBSZ.OKRO_F().OES=0 || OKR_OBSZ.next() ?};
+   _zam:=OKR_OBSZ.OKRO_F().AMOR;
+   {! |?
+      {? OKR_OBSZ.OKRO_F().OES>0 & OKR_OBSZ.OKRO_F().OES<=12
+      || {? _zam='N' & OKR_OBSZ.OKRO_F().AMOR='T'
+         || _okresy:=1
+         || _zam:=OKR_OBSZ.OKRO_F().AMOR
+         ?}
+      ?};
+      _okresy=0 & OKR_OBSZ.next()
+   !}
+|| FUN.emsg('Brak okresów dla dziedziny FST.'@)
+?};
+
+SRST.cntx_pop(); OKRO_F.cntx_pop(); OKR_OBSZ.cntx_pop();
+SRSR.cntx_pop();
+_return:=~(_metody | _konta | _stany | _okresy | _konsrdo);
+{? ~_return
+|| KOMM.sect_beg('Środki trwałe');
+   {? _metody || KOMM.add('Nie uzupełnione metody amortyzacji dla środków.'@) ?};
+   {? _konta || KOMM.add('Nie uzupełnione konta kosztów dla środków.'@) ?};
+   {? _stany || KOMM.add('Niepoprawnie utworzony rejestr stanów środków - niezachowana ciągłość okresów %1.'@[_info]) ?};
+   {? _okresy || KOMM.add('Brak ciągłości zamknięcia/otwarcia okresów dziedziny FST.'@) ?};
+   {? _konsrdo || KOMM.add('Nie uzupełnione konta kosztów dla dokumentów zmiany miejsca.'@) ?};
+   KOMM.sect_end()
+?}
+
+
+:: START pomocniczy mechanizm weryfikacji danych wartościowych środków trwałych po transferze
+\fst_select
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Weryfikacja zaimportowanych danych z danymi z plików tekstowych z Xpertis
+::----------------------------------------------------------------------------------------------------------------------
+_txt:='Mechanizm manualnej weryfikacji i korekty danych środków trwałych.\n'
+      'Pozwala na modyfikację danych także w zamkniętych okresch, należy zachować ostrożność.\n Uruchomić?'@;
+{? ~FUN.ask(_txt) || return(0) ?};
+
+exec('maski','srodobj');
+_ndx:=SRSR.ndx_tmp(,,'NRI',,);
+SRSR.index(_ndx);
+SRSR.prefix();
+SRST.index('PODAT');
+SRST.prefix();
+
+exec('es_srsr_import','tran_vla');
+exec('es_srst_import','tran_vla');
+
+{? var_pres('__SRSR')<=0 | var_pres('__SRST')<=0 | ~(__SRSR.size()>0 & __SRST.size()>0)
+|| FUN.emsg('Brak danych do wyświetlenia.');
+   return(0)
+?};
+
+exec('weryfikacja','tran_vla');
+
+_win:=__SRSR.mk_sel(,,0,'__srsr',4,4,24,,'U');
+__SRSR.win_act(_win,,'Formuła','Stany',,,,"__SRST.prefix(__SRSR.ID);
+                                           {? __SRST.first()
+                                           || __SRST.hdr_sel();
+                                              __SRST.hdr_sel(__SRST.NRI+' - '+__SRST.NST);
+                                              __SRST.select();
+                                              exec('refresh_srsr','tran_vla')
+                                           ?}"
+               ,1,);
+__SRSR.win_act(_win,,'Rekord',,,,"{? __SRSR.OK='N' || '230:47:90' || '' ?}");
+__SRSR.win_fld(_win,,'NRI',,,18);
+__SRSR.win_fld(_win,,'NST',,,20);
+__SRSR.win_fld(_win,,'DZ',,,10);
+__SRSR.win_fld(_win,,'DE',,,10);
+__SRSR.win_fld(_win,,'GR',,,15);
+__SRSR.win_fld(_win,,'STAP',,,6,2);
+__SRSR.win_fld(_win,,'OK',,,2);
+__SRSR.win_sel(_win);
+
+_stwin:=__SRST.mk_sel(,,0,'__srst',5,5,24,,'U');
+__SRST.win_fld(_stwin,,'OK',,,2);
+__SRST.win_fld(_stwin,,'ROK',,,4);
+__SRST.win_fld(_stwin,,'OKRES',,,4);
+__SRST.win_fld(_stwin,,'WARP',,,9,2,,'X.WARP',,'Xpertis - wartość podatkowa');
+__SRST.win_fld(_stwin,,'AMOP',,,9,2,,'X.AMOP',,'Xpertis - amortyzacja podatkowa');
+__SRST.win_fld(_stwin,,'UMOP',,,9,2,,'X.UMOP',,'Xpertis - umorzenie podatkowe');
+__SRST.win_fld(_stwin,,'NETP',,,9,2,,'X.NETP',,'Xpertis - netto podatkowe');
+__SRST.win_fld(_stwin,,'MWARP',,,9,2,,'M.WARP',,'Merit - wartość podatkowa');
+__SRST.win_fld(_stwin,,'MAMOP',,,9,2,,'M.AMOP',,'Merit - amortyzacja podatkowa');
+__SRST.win_fld(_stwin,,'MUMOP',,,9,2,,'M.UMOP',,'Merit - umorzenie podatkowe');
+__SRST.win_fld(_stwin,,'MNETP',,,9,2,,'M.NETP',,'Merit - netto podatkowe');
+
+__SRST.win_fld(_stwin,,'WARF',,,9,2,,'X.WARF',,'Xpertis - wartość bilansowa');
+__SRST.win_fld(_stwin,,'AMOF',,,9,2,,'X.AMOF',,'Xpertis - amortyzacja bilansowa');
+__SRST.win_fld(_stwin,,'UMOF',,,9,2,,'X.UMOF',,'Xpertis - umorzenie bilansowe');
+__SRST.win_fld(_stwin,,'NETF',,,9,2,,'X.NETF',,'Xpertis - netto bilansowe');
+__SRST.win_fld(_stwin,,'MWARF',,,9,2,,'M.WARF',,'Merit - wartość bilansowa');
+__SRST.win_fld(_stwin,,'MAMOF',,,9,2,,'M.AMOF',,'Merit - amortyzacja bilansowa');
+__SRST.win_fld(_stwin,,'MUMOF',,,9,2,,'M.UMOF',,'Merit - umorzenie bilansowe');
+__SRST.win_fld(_stwin,,'MNETF',,,9,2,,'M.NETF',,'Merit - netto bilansowe');
+
+__SRST.win_act(_stwin,,'Formuła','Uzgodnij',,,,"exec('uzgodnij','tran_vla')",1,1,"","",'U');
+__SRST.win_act(_stwin,,'Popraw',,,,"exec('pre_popraw','tran_vla')","exec('po_popraw','tran_vla')");
+
+__SRST.fld_fml('WARP','BEFORE_DISPLAY',"exec('zgodne','tran_vla',__SRST.WARP,__SRST.MWARP)");
+__SRST.fld_fml('AMOP','BEFORE_DISPLAY',"exec('zgodne','tran_vla',__SRST.AMOP,__SRST.MAMOP)");
+__SRST.fld_fml('UMOP','BEFORE_DISPLAY',"exec('zgodne','tran_vla',__SRST.UMOP,__SRST.MUMOP)");
+__SRST.fld_fml('NETP','BEFORE_DISPLAY',"exec('zgodne','tran_vla',__SRST.NETP,__SRST.MNETP)");
+__SRST.fld_fml('MWARP','BEFORE_DISPLAY',"exec('zgodne_m','tran_vla',__SRST.WARP,__SRST.MWARP)");
+__SRST.fld_fml('MAMOP','BEFORE_DISPLAY',"exec('zgodne_m','tran_vla',__SRST.AMOP,__SRST.MAMOP)");
+__SRST.fld_fml('MUMOP','BEFORE_DISPLAY',"exec('zgodne_m','tran_vla',__SRST.UMOP,__SRST.MUMOP)");
+__SRST.fld_fml('MNETP','BEFORE_DISPLAY',"exec('zgodne_m','tran_vla',__SRST.NETP,__SRST.MNETP)");
+
+__SRST.fld_fml('WARF','BEFORE_DISPLAY',"exec('zgodne','tran_vla',__SRST.WARF,__SRST.MWARF)");
+__SRST.fld_fml('AMOF','BEFORE_DISPLAY',"exec('zgodne','tran_vla',__SRST.AMOF,__SRST.MAMOF)");
+__SRST.fld_fml('UMOF','BEFORE_DISPLAY',"exec('zgodne','tran_vla',__SRST.UMOF,__SRST.MUMOF)");
+__SRST.fld_fml('NETF','BEFORE_DISPLAY',"exec('zgodne','tran_vla',__SRST.NETF,__SRST.MNETF)");
+__SRST.fld_fml('MWARF','BEFORE_DISPLAY',"exec('zgodne_m','tran_vla',__SRST.WARF,__SRST.MWARF)");
+__SRST.fld_fml('MAMOF','BEFORE_DISPLAY',"exec('zgodne_m','tran_vla',__SRST.AMOF,__SRST.MAMOF)");
+__SRST.fld_fml('MUMOF','BEFORE_DISPLAY',"exec('zgodne_m','tran_vla',__SRST.UMOF,__SRST.MUMOF)");
+__SRST.fld_fml('MNETF','BEFORE_DISPLAY',"exec('zgodne_m','tran_vla',__SRST.NETF,__SRST.MNETF)");
+
+
+__SRST.fld_fml('OK','BEFORE_EDIT',"0");
+__SRST.fld_fml('ROK','BEFORE_EDIT',"0");
+__SRST.fld_fml('OKRES','BEFORE_EDIT',"0");
+
+__SRST.fld_fml('WARP','BEFORE_EDIT',"0");
+__SRST.fld_fml('AMOP','BEFORE_EDIT',"0");
+__SRST.fld_fml('UMOP','BEFORE_EDIT',"0");
+__SRST.fld_fml('NETP','BEFORE_EDIT',"0");
+__SRST.fld_fml('MWARP','BEFORE_EDIT',"1");
+__SRST.fld_fml('MAMOP','BEFORE_EDIT',"1");
+__SRST.fld_fml('MUMOP','BEFORE_EDIT',"1");
+__SRST.fld_fml('MNETP','BEFORE_EDIT',"1");
+
+__SRST.fld_fml('WARF','BEFORE_EDIT',"0");
+__SRST.fld_fml('AMOF','BEFORE_EDIT',"0");
+__SRST.fld_fml('UMOF','BEFORE_EDIT',"0");
+__SRST.fld_fml('NETF','BEFORE_EDIT',"0");
+__SRST.fld_fml('MWARF','BEFORE_EDIT',"1");
+__SRST.fld_fml('MAMOF','BEFORE_EDIT',"1");
+__SRST.fld_fml('MUMOF','BEFORE_EDIT',"1");
+__SRST.fld_fml('MNETF','BEFORE_EDIT',"1");
+
+__SRST.win_sel(_stwin);
+
+__SRSR.select()
+
+
+\pre_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Formuła przed ręczną edycją wartości
+::----------------------------------------------------------------------------------------------------------------------
+{? __SRST.OK='T'
+|| FUN.emsg('Dane zgodne, edycja niemożliwa.');
+   0
+|| 1
+?}
+
+
+\po_popraw
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Formuła po ręcznej edycji wartości
+::----------------------------------------------------------------------------------------------------------------------
+SRSR.prefix(__SRST.NRI,);
+{? SRSR.first() & (SRSR.NRI=__SRST.NRI)
+|| SRST.index('PODAT');
+   SRST.prefix(SRSR.ref(),__SRST.ROK,__SRST.OKRES);
+   {? SRST.first()
+   || _zmiana:=0;
+      {? __SRST.MWARP<>SRST.WARP || SRST.WARP:=__SRST.MWARP; _zmiana:=1 ?};
+      {? __SRST.MAMOP<>SRST.AMOP || SRST.AMOP:=__SRST.MAMOP; _zmiana:=1 ?};
+      {? __SRST.MUMOP<>SRST.UMOP || SRST.UMOP:=__SRST.MUMOP; _zmiana:=1 ?};
+      {? __SRST.MNETP<>SRST.NETP || SRST.NETP:=__SRST.MNETP; _zmiana:=1 ?};
+      {? __SRST.MWARF<>SRST.WARF || SRST.WARF:=__SRST.MWARF; _zmiana:=1 ?};
+      {? __SRST.MAMOF<>SRST.AMOF || SRST.AMOF:=__SRST.MAMOF; _zmiana:=1 ?};
+      {? __SRST.MUMOF<>SRST.UMOF || SRST.UMOF:=__SRST.MUMOF; _zmiana:=1 ?};
+      {? __SRST.MNETF<>SRST.NETF || SRST.NETF:=__SRST.MNETF; _zmiana:=1 ?};
+      {? _zmiana
+      || _wy:=SRST.put();
+         {? _wy
+         || _diff:=0;
+            {? __SRST.WARP<>__SRST.MWARP || _diff:=1 ?};
+            {? __SRST.AMOP<>__SRST.MAMOP || _diff:=1 ?};
+            {? __SRST.UMOP<>__SRST.MUMOP || _diff:=1 ?};
+            {? __SRST.NETP<>__SRST.MNETP || _diff:=1 ?};
+            {? __SRST.WARF<>__SRST.MWARF || _diff:=1 ?};
+            {? __SRST.AMOF<>__SRST.MAMOF || _diff:=1 ?};
+            {? __SRST.UMOF<>__SRST.MUMOF || _diff:=1 ?};
+            {? __SRST.NETF<>__SRST.MNETF || _diff:=1 ?};
+            {? _diff || __SRST.OK:='N' ?};
+            __SRST.put();
+            {? SRST.GRP='T'
+            || _ref:=SRST.ref(); _r:=SRST.R; _okro_f:=SRST.OKRO_F; _odd:=SRST.ODD;
+               SRST.cntx_psh();
+               SRST.index('TREE');
+               SRST.prefix(_r,_okro_f,_odd,_ref);
+               {? SRST.first()
+               || _zmiana:=0;
+                  {! |?
+                     {? SRST.NRI+2='/Z'
+                     || {? __SRST.MWARP<>SRST.WARP || SRST.WARP:=__SRST.MWARP; _zmiana:=1 ?};
+                        {? __SRST.MAMOP<>SRST.AMOP || SRST.AMOP:=__SRST.MAMOP; _zmiana:=1 ?};
+                        {? __SRST.MUMOP<>SRST.UMOP || SRST.UMOP:=__SRST.MUMOP; _zmiana:=1 ?};
+                        {? __SRST.MNETP<>SRST.NETP || SRST.NETP:=__SRST.MNETP; _zmiana:=1 ?};
+                        {? __SRST.MWARF<>SRST.WARF || SRST.WARF:=__SRST.MWARF; _zmiana:=1 ?};
+                        {? __SRST.MAMOF<>SRST.AMOF || SRST.AMOF:=__SRST.MAMOF; _zmiana:=1 ?};
+                        {? __SRST.MUMOF<>SRST.UMOF || SRST.UMOF:=__SRST.MUMOF; _zmiana:=1 ?};
+                        {? __SRST.MNETF<>SRST.NETF || SRST.NETF:=__SRST.MNETF; _zmiana:=1 ?};
+                        {? _zmiana || _wy:=SRST.put() ?}
+                     ?};
+                     _zmiana=0 & SRST.next()
+                  !}
+               ?};
+               SRST.cntx_pop()
+            ?}
+         ?}
+      ?}
+   ?}
+?}
+
+
+\zgodne
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Formuła porównuje pola i zwraca kolor
+::----------------------------------------------------------------------------------------------------------------------
+{? _a=_b || '' || '255:0:0,255:255:0' ?}
+
+
+\zgodne_m
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Formuła porównuje pola i zwraca kolor
+::----------------------------------------------------------------------------------------------------------------------
+{? _a=_b || '' || '255:0:0,255:170:66' ?}
+
+
+\refresh_srsr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Formuła odświeża pole __SRSR.OK
+::----------------------------------------------------------------------------------------------------------------------
+__SRST.prefix(__SRSR.ID);
+{? __SRST.first()
+|| _zmiana:=0;
+   {! |?
+      {? __SRST.OK<>'T' || _zmiana:=1 ?};
+         __SRST.next()
+   !};
+   {? _zmiana || __SRSR.OK:='N' || __SRSR.OK:='T' ?};
+   __SRSR.put()
+?}
+
+
+\weryfikacja
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Formuła wstępnie weryfikująca dane po imporcie z pliku tekstowego z tabelą rejestru stanów SRST
+::----------------------------------------------------------------------------------------------------------------------
+__SRSR.cntx_psh();
+__SRST.cntx_psh();
+{? __SRSR.first()
+|| {! |?
+      __SRST.prefix(__SRSR.ID);
+      {? __SRST.first()
+      || _zmiana:=0;
+         {! |?
+            {? __SRST.OK<>'T' || _zmiana:=1 ?};
+            __SRST.next()
+         !};
+         {? _zmiana || __SRSR.OK:='N' || __SRSR.OK:='T' ?};
+         __SRSR.put()
+      ?};
+      __SRSR.next()
+   !}
+?};
+__SRSR.cntx_pop();
+__SRST.cntx_pop()
+
+
+\uzgodnij
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Formuła nakładająca dane z pliku tekstowego na tabelę rejestru stanów SRST
+::----------------------------------------------------------------------------------------------------------------------
+_wy:=0;
+{? __SRST.OK<>'T'
+|| SRSR.prefix(__SRST.NRI,);
+   {? SRSR.first() & (SRSR.NRI=__SRST.NRI)
+   || SRST.index('PODAT');
+      SRST.prefix(SRSR.ref(),__SRST.ROK,__SRST.OKRES);
+      {? SRST.first()
+      || _zmiana:=0;
+         {? __SRST.WARP<>SRST.WARP || SRST.WARP:=__SRST.MWARP:=__SRST.WARP; _zmiana:=1 ?};
+         {? __SRST.AMOP<>SRST.AMOP || SRST.AMOP:=__SRST.MAMOP:=__SRST.AMOP; _zmiana:=1 ?};
+         {? __SRST.UMOP<>SRST.UMOP || SRST.UMOP:=__SRST.MUMOP:=__SRST.UMOP; _zmiana:=1 ?};
+         {? __SRST.NETP<>SRST.NETP || SRST.NETP:=__SRST.MNETP:=__SRST.NETP; _zmiana:=1 ?};
+         {? __SRST.WARF<>SRST.WARF || SRST.WARF:=__SRST.MWARF:=__SRST.WARF; _zmiana:=1 ?};
+         {? __SRST.AMOF<>SRST.AMOF || SRST.AMOF:=__SRST.MAMOF:=__SRST.AMOF; _zmiana:=1 ?};
+         {? __SRST.UMOF<>SRST.UMOF || SRST.UMOF:=__SRST.MUMOF:=__SRST.UMOF; _zmiana:=1 ?};
+         {? __SRST.NETF<>SRST.NETF || SRST.NETF:=__SRST.MNETF:=__SRST.NETF; _zmiana:=1 ?};
+         {? _zmiana
+         || _wy:=SRST.put();
+            {? _wy
+            || __SRST.OK:='T';
+               __SRST.put();
+               {? SRST.GRP='T'
+               || _ref:=SRST.ref(); _r:=SRST.R; _okro_f:=SRST.OKRO_F; _odd:=SRST.ODD;
+                  SRST.cntx_psh();
+                  SRST.index('TREE');
+                  SRST.prefix(_r,_okro_f,_odd,_ref);
+                  {? SRST.first()
+                  || _zmiana:=0;
+                     {! |?
+                        {? SRST.NRI+2='/Z'
+                        || {? __SRST.WARP<>SRST.WARP || SRST.WARP:=__SRST.MWARP:=__SRST.WARP; _zmiana:=1 ?};
+                           {? __SRST.AMOP<>SRST.AMOP || SRST.AMOP:=__SRST.MAMOP:=__SRST.AMOP; _zmiana:=1 ?};
+                           {? __SRST.UMOP<>SRST.UMOP || SRST.UMOP:=__SRST.MUMOP:=__SRST.UMOP; _zmiana:=1 ?};
+                           {? __SRST.NETP<>SRST.NETP || SRST.NETP:=__SRST.MNETP:=__SRST.NETP; _zmiana:=1 ?};
+                           {? __SRST.WARF<>SRST.WARF || SRST.WARF:=__SRST.MWARF:=__SRST.WARF; _zmiana:=1 ?};
+                           {? __SRST.AMOF<>SRST.AMOF || SRST.AMOF:=__SRST.MAMOF:=__SRST.AMOF; _zmiana:=1 ?};
+                           {? __SRST.UMOF<>SRST.UMOF || SRST.UMOF:=__SRST.MUMOF:=__SRST.UMOF; _zmiana:=1 ?};
+                           {? __SRST.NETF<>SRST.NETF || SRST.NETF:=__SRST.MNETF:=__SRST.NETF; _zmiana:=1 ?};
+                           {? _zmiana || _wy:=SRST.put() ?}
+                        ?};
+                        _zmiana=0 & SRST.next()
+                     !}
+                  ?};
+                  SRST.cntx_pop()
+               ?}
+            ?}
+         ?}
+      ?}
+   ?}
+|| {? __SRST.sel_size()=0
+   || FUN.emsg('Dane wyglądają na zgodne.')
+   ?}
+?};
+_wy
+
+
+\es_srst_import
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Import pliku z tabelą rejestru stanów środków do tabeli tymczasowej
+::----------------------------------------------------------------------------------------------------------------------
+_symbol:=REF.FIRMA().SYMBOL;
+_s:='@';
+_fn:='srst_'+_symbol+'.tra';
+{? ~fexists(_fn,1)
+|| pth_dir(_fn);
+   FUN.emsg('Brak pliku '+_fn+' w katalogu: '+pth_dir(_fn));
+   return(0)
+?};
+
+progress(,'Import pliku %1 do tabeli tymczasowej...'@[_fn],'Trwa import danych'@,1);
+
+VAR_DEL.delete('__SRST');
+__SRST:=tab_tmp(1,'ID','INTEGER','ID',
+                  'NRI','STRING[18]','NRI',
+                  'NST','STRING[20]','NST',
+                  'ROK','INTEGER','ROK',
+                  'OKRES','INTEGER','OKRES',
+
+                  'WARP','REAL','X.WARP',
+                  'UMOP','REAL','X.UMOP',
+                  'AMOP','REAL','X.AMOP',
+                  'NETP','REAL','X.NETP',
+                  'WARF','REAL','X.WARF',
+                  'UMOF','REAL','X.UMOF',
+                  'AMOF','REAL','X.AMOF',
+                  'NETF','REAL','X.NETF',
+                  'OK','STRING[1]','OK',
+
+                  'MWARP','REAL','M.WARP',
+                  'MUMOP','REAL','M.UMOP',
+                  'MAMOP','REAL','M.AMOP',
+                  'MNETP','REAL','M.NETP',
+                  'MWARF','REAL','M.WARF',
+                  'MUMOF','REAL','M.UMOF',
+                  'MAMOF','REAL','M.AMOF',
+                  'MNETF','REAL','M.NETF'
+                  );
+
+__SRSR.prefix();
+
+_f:=fopen(_fn,'Ur',1);
+{? _f
+|| {! |? (_wiersz:=fread(_f))<>'\n' |!
+      {? form(_wiersz)<>''
+      || _tmp:=spli_str(_wiersz,_s);
+         __SRST.blank(1);
+         __SRST.OK:='N';
+         __SRST.ID:=#_tmp[1];
+         {? __SRSR.find_key(__SRST.ID)
+         || _nri:=__SRSR.NRI;
+            _nst:=__SRSR.NST
+         || _nri:=''; _nst:=''
+         ?};
+         __SRST.NRI:=_nri;
+         __SRST.NST:=_nst;
+         __SRST.ROK:=#_tmp[2];
+         {? __SRSR.find_key(__SRST.ID)
+         || __SRST.OKRES:=#_tmp[3];
+            progress(,'Import rejestru stanów do tabeli tymczasowej, środek: %1.'@[_nri],'Trwa import danych'@,1);
+            __SRST.WARP:=#(gsub(_tmp[4],',','.'));
+            __SRST.UMOP:=#(gsub(_tmp[5],',','.'));
+            __SRST.AMOP:=#(gsub(_tmp[6],',','.'));
+            __SRST.NETP:=#(gsub(_tmp[7],',','.'));
+            __SRST.WARF:=#(gsub(_tmp[13],',','.'));
+            __SRST.UMOF:=#(gsub(_tmp[14],',','.'));
+            __SRST.AMOF:=#(gsub(_tmp[15],',','.'));
+            __SRST.NETF:=#(gsub(_tmp[16],',','.'));
+            SRSR.prefix(__SRST.NRI,);
+            {? SRSR.first() & (SRSR.NRI=__SRST.NRI)
+            || SRST.index('PODAT');
+               SRST.prefix(SRSR.ref(),__SRST.ROK,__SRST.OKRES);
+               {? SRST.first()
+               || _zmiana:=0;
+                  __SRST.MWARP:=SRST.WARP;
+                  __SRST.MAMOP:=SRST.AMOP;
+                  __SRST.MUMOP:=SRST.UMOP;
+                  __SRST.MNETP:=SRST.NETP;
+                  __SRST.MWARF:=SRST.WARF;
+                  __SRST.MAMOF:=SRST.AMOF;
+                  __SRST.MUMOF:=SRST.UMOF;
+                  __SRST.MNETF:=SRST.NETF;
+                  {? __SRST.WARP<>SRST.WARP || _zmiana:=1 ?};
+                  {? __SRST.AMOP<>SRST.AMOP || _zmiana:=1 ?};
+                  {? __SRST.UMOP<>SRST.UMOP || _zmiana:=1 ?};
+                  {? __SRST.NETP<>SRST.NETP || _zmiana:=1 ?};
+                  {? __SRST.WARF<>SRST.WARF || _zmiana:=1 ?};
+                  {? __SRST.AMOF<>SRST.AMOF || _zmiana:=1 ?};
+                  {? __SRST.UMOF<>SRST.UMOF || _zmiana:=1 ?};
+                  {? __SRST.NETF<>SRST.NETF || _zmiana:=1 ?};
+                  {? ~_zmiana || __SRST.OK:='T' ?}
+               ?}
+            ?};
+            __SRST.add()
+         ?}
+      ?};
+      obj_del(_tmp)
+   !};
+   fclose(_f)
+?};
+prgs_clr();
+1
+
+
+\es_srsr_import
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [19.02]
+:: OPIS: Import tabeli wartości pierwotnych środków do tabeli tymczasowej
+::----------------------------------------------------------------------------------------------------------------------
+_symbol:=REF.FIRMA().SYMBOL;
+_s:='@';
+_fn:='srsr_'+_symbol+'.tra';
+
+:: jeżeli brak pliku zwraca 0
+{? ~fexists(_fn,1)
+|| pth_dir(_fn);
+   FUN.emsg('Brak pliku '+_fn+' w katalogu: '+pth_dir(_fn));
+   return(0)
+?};
+
+progress(,'Import pliku %1 do tabeli tymczasowej...'@[_fn],'Trwa import danych'@,1);
+
+VAR_DEL.delete('__SRSR');
+:: tabela tymczasowa na wartości pierwotne:
+__SRSR:=tab_tmp(1,'ID','INTEGER','ID',
+                  'NRI','STRING[20]','NRI',
+                  'O_NRI','STRING[20]','O_NRI',
+                  'NST','STRING[100]','NST',
+                  'DZ','DATE','DZ',
+                  'DE','DATE','DE',
+                  'GR','STRING[15]','GR',
+                  'STAP','REAL','STAP',
+                  'ODD','STRING[8]','ODD',
+                  'OK','STRING[1]','OK'
+               );
+
+_f:=fopen(_fn,'Ur',1);
+{? _f
+|| {! |? (_wiersz:=fread(_f))<>'\n' |!
+      {? form(_wiersz)<>''
+      || _tmp:=spli_str(_wiersz,_s);
+         __SRSR.blank(1);
+         __SRSR.ID:=#_tmp[1];
+         __SRSR.NRI:=_tmp[2];
+         __SRSR.NST:=_tmp[3];
+         __SRSR.DZ:=exec('str2date','transfer',_tmp[8]);
+         __SRSR.DE:=exec('str2date','transfer',_tmp[9]);
+         __SRSR.GR:=_tmp[10];
+         __SRSR.ODD:=_tmp[13];
+         __SRSR.STAP:=#(gsub(_tmp[40],',','.'));
+         __SRSR.OK:='N';
+         {? __SRSR.DE<=date(2018,1,1)
+         || __SRSR.add()
+         ?};
+         obj_del(_tmp)
+      ?}
+   !};
+   fclose(_f)
+?};
+:: przenumerowanie powielonych NRI
+_tab1:=sql('select ODD, NRI, count(*) ILE from :_a group by ODD, NRI having count(*)>1', __SRSR);
+{? _tab1.first()
+||
+   __SRSR.cntx_psh();
+:: środek który ma najświeższą datę zakupu zostaje z oryginalnym numerem, starsze zostają przenumerowane
+   __SRSR.index(__SRSR.ndx_tmp(,, 'ODD',,, 'NRI',,, 'DZ',,));
+   {!|? __SRSR.prefix(_tab1.ODD, _tab1.NRI);
+        {? __SRSR.last()
+        || {? __SRSR.prev()
+           || _ii:=1;
+              {!|? __SRSR.cntx_psh();
+                   {? __SRSR.prev()
+                   || _nast:=__SRSR.ref
+                   || _nast:=null
+                   ?};
+                   __SRSR.cntx_pop();
+                   _nnri:={? __SRSR.NRI+1='.' || (__SRSR.NRI-1)+'/'+$_ii+'.' || __SRSR.NRI+'/'+$_ii ?};
+                   __SRSR.O_NRI:=__SRSR.NRI;
+                   __SRSR.NRI:=_nnri;
+                   __SRSR.cntx_psh();
+                   __SRSR.prefix();
+                   __SRSR.put();
+                   _ii+=1;
+                   __SRSR.cntx_pop();
+                   {? _nast<>null
+                   || __SRSR.seek(_nast)
+                   || 0
+                   ?}
+              !}
+           ?}
+        ?};
+        _tab1.next()
+   !};
+   __SRSR.cntx_pop()
+?};
+obj_del(_tab1);
+prgs_clr();
+1
+
+:: START mechanizm weryfikacji danych środków trwałych po transferze
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:16:36 ba70895b4f62837b342c0890d537dfb35a4ee8cd075731c1ea594d0ab32e51f592ce41d64137c8092265f9b55a03845cbe8358d0b7af06da65e1e5a8fb8faaead98f45071b4986689c7880a55c8a3e22799f27519f1874e8aafe8ca8505fe4e7046ecece856cdaefafe1efbc3fa1a0eb2a0c370920b5ab72745367e4ffec2d06

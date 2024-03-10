@@ -1,0 +1,684 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzezone
+::======================================================================================================================
+:: Nazwa pliku: b_proces.fml
+:: Utworzony: 09.07.2013 [17.00]
+:: Autor: AMK
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi procesowości
+::======================================================================================================================
+
+
+\start_proces
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Start systemu - procesowość
+::   WE: [_a] - czy uruchamiać pulpit: 1-tak (domyślnie), 0-nie, -1-nie przeładowanie do zakładki
+::----------------------------------------------------------------------------------------------------------------------
+{? +app_info('web_sesid') || return(1) ?};
+params_set(params_get());
+
+{? _>=1  || {? type_of(_a)<>1 || _a:=1 ?}  || _a:=1  ?};
+
+_czy_upgr:={? _a<0 || _a:=0; 1 || 0 ?};
+_czy_fork:=(type_of(params_get)>0);
+
+:: Obsługa linków
+_czy_fork:=(type_of(params_get)>0) & (var_pres('FORM_WYW',params_get())>0 | var_pres('UID_EXE',params_get())>0);
+_czy_link:=(type_of(params_get)>0) & var_pres('LINK',params_get())>0;
+{? _czy_link || _link:=params_get.LINK ?};
+{? (type_of(params_get)>0) & var_pres('PROJ_REF',params_get())>0 || _proj:=params_get.PROJ_REF || _proj:='' ?};
+
+_cli_ver:=exec('cli_ver','#system');
+:: statystyki użycia
+exec('stat_add','st_common','A_APPVERSION',exec('wersja','#system'));
+
+exec('VAR_DEL','#object');
+:: aktualizacja użytkowników - gdy nie znaleziono użytkownika zalogowanego
+{? cli_ver()<>'cgi'
+|| _usr_kod:=app_info('app_user');
+   USERS.cntx_psh();
+   USERS.index('USR_AKOD');
+   USERS.prefix('T',_usr_kod,_usr_kod);
+   {? ~USERS.first()
+   || exec('synchronize','users')
+   ?};
+   USERS.cntx_pop()
+?};
+
+:: rejestracja użytkownika
+_web_sesid:=app_info('web_sesid');
+OPERATOR.USER:={? _web_sesid=''
+               || exec('users','#users',exec('operatorKod','#users'))
+               || exec('users','#users',app_info('web_user'))
+               ?};
+OPERATOR.USR_KOD:={? _web_sesid=''
+                  || app_info('app_user')
+                  || app_info('web_user')
+                  ?};
+
+:: sprawdzenie zmiennej środowiskowej dla administratora
+__develop:=exec('is_develop','#var');
+
+:: obiekty standardowe - ustawienie niezależne od sposobu uruchomienia
+exec(,'#libfml');
+exec(,'class');
+exec(,'_declall');
+exec('__CHK','#object');
+exec('STR','#object');
+exec('BIT','#object');
+exec('MS','#object'); MS.conv:='UTF-8';
+exec('PROGRESS','#object');
+exec('FUN','#object');
+exec('KOMM','#object');
+exec('__FileLayer','#object');
+exec('Plugin','#object');
+
+{? _cli_ver*'term'>0 & cfg_info('layout_version')='jterm'
+|| _msg:='Nieprawidłowa konfiguracja systemu. Parametr %1 nie może mieć wartości: %2.\nProgram zostanie zakończony.'@['layout_version','jterm'];
+   FUN.info(_msg);
+   break()
+?};
+
+_app_ident:=app_info('app_ident');
+
+AppList:=obj_new('my','all');
+AppList.my:=obj_new('tab','ndx_app');
+   AppList.my.tab:=app_list(0);
+   AppList.my.ndx_app:=AppList.my.tab.ndx_tmp(,,'APP_IDEN',,);
+AppList.all:=obj_new('tab','ndx_par1_app_pth','ndx_par1_grp');
+   AppList.all.tab:=app_list(1);
+   AppList.all.ndx_par1_app_pth:=AppList.all.tab.ndx_tmp('',,'APP_PAR1',,,'APP_IDEN',,,'PTH_NAME',,);
+   AppList.all.ndx_par1_grp:=AppList.all.tab.ndx_tmp('',,'APP_PAR1',,,'GRP_IDEN',,);
+
+:: odczytanie parametrów przekazanych w cluster.cfg
+_ap:=AppList.my.tab;
+_ap.index(AppList.my.ndx_app);
+_ap.prefix(_app_ident,);
+{? _ap.first()
+|| _app_par1:=_ap.APP_PAR1;
+   _app_par2:=_ap.APP_PAR2;
+   _app_par3:=_ap.APP_PAR3;
+   _app_par4:=_ap.APP_PAR4;
+   _app_par5:=_ap.APP_PAR5
+|| _app_par1:='';
+   _app_par2:='';
+   _app_par3:='';
+   _app_par4:='';
+   _app_par5:=''
+?};
+
+:: sprawdzenie czy logujący się użytkownik ma uprawnienia do danej firmy
+{? app_info('init_param')='' & _app_par2<>'EKIOSK' & _app_par2<>'AUTOTEST'
+||
+   _app_lst:=exec('firmy_user_list','#firma');
+   _app_lst.prefix(_app_ident,exec('firma_symbol','#firma'),);
+   {? ~_app_lst.first()
+   ||
+      exec('firma','#firma',exec('firma_symbol','#firma'),_cli_ver);
+::    jeżeli firma nie jest aktywna, to bezwarunkowo żegnamy się z programem jTerm
+      {? REF.FIRMA().A='N' & _cli_ver*'term'>0
+      || msg('Firma %1 nie jest aktywna.\nProgram zostanie zakończony.'@[REF.FIRMA().SYMBOL],exec('nazwa','#system'));
+         _cntx_cnt:=BD_EXEC.tab_info('cntx_cnt');
+         {! _it:=1.._cntx_cnt |! BD_EXEC.cntx_pop() !};
+         break()
+      ?};
+::    odtworzenie ustawień z cluster - założenie że mógł zmienić się cluster.cfg
+      {? _cli_ver*'term'>0 & exec('firma_spr_grp','#firma')=0
+      ||
+         exec('firmy_odtw_grp','#firma');
+         obj_del(_app_lst);
+         _app_lst:=exec('firmy_user_list','#firma')
+      ?}
+   ?};
+
+   _app_lst.prefix(app_info('app_ident'),);
+   {? ~_app_lst.first()
+   ||
+::    ustawienie ostatnio używanej firmy
+      _app:=_app_lst.APP_IDEN;
+      _user:=exec('operatorKod','#users');
+      USERS.index('USR_AKOD');
+      {? USERS.find_key('T',_user,_user)
+      ||
+         {? USERS.APP_IDEN<>''
+         || _app_lst.prefix(USERS.APP_IDEN);
+            {? _app_lst.first()
+            ||
+               _app:=_app_lst.APP_IDEN
+            ||
+               exec('firma','#firma',exec('firma_symbol','#firma'));
+               _app:=app_info('app_ident')
+            ?}
+         ?}
+      ?};
+      {? _cli_ver='jterm'
+      || ctr_set('!application',,'run',exec('firma_reload_params','#firma',REF.FIRMA().SYMBOL,FIRMA.APP_IDEN).grp_iden,_app,'','reload',1)
+      ?};
+      ~~
+   ||
+      exec('user_app_ident','#users')
+   ?}
+?};
+
+:: Nadpisanie formuł dla pól na potrzeby wtyczek
+exec('fld_fml','plugins');
+
+:: ustalenie kontekstu pracy - firmy
+exec('firma','#firma',exec('firma_symbol','#firma'));
+
+:: ustawienia kolorów, legendy i tytułów
+{? _cli_ver*'term'>0
+|| exec('Color','#object');
+   exec('Legend','#object');
+   exec('init_kol_start','color');
+   exec('AreaTitle','#object');
+   exec('Icon','#object')
+?};
+
+:: ustawienie triggerów do tabel systemu
+exec('ustaw_trigger','#b_trig');
+
+:: ustawienia triggerów do obsługi zdarzeń warunkowych
+exec('trig','#b_econd');
+
+:: ustawienia uprawnień
+exec('Perm','#object');
+B_PERM.cntx_psh(); B_PERM.index('NAME'); B_PERM.prefix();
+{? ~B_PERM.first() || exec('init','b_perm') ?};
+B_PERM.cntx_pop();
+exec('trig','#b_perm');
+
+:: ustawienie parametrów synchronizacji
+exec('declobj','synchro');
+exec('ustaw_trigger','synchro');
+
+:: otwarcie tabel maskowalnych
+exec('open_all_tabele','open_tab');
+
+:: lista parametrów
+exec('PAR_SKID','object');
+
+:: definicje linków
+exec('definicje','link');
+
+:: obsługa SL_API (Portal, Businesslink, itp.)
+exec('SL_api','object');
+
+:: aktualizacja licencji portalowych
+exec('portal_lic_load','portal_engine');
+
+:: ustawienie wyzwalaczy dla uniwersalnych list wartości (elementy słowników portalowych)
+exec('ustaw_trigger','portal_slowniki');
+
+:: START ZEROWY - z założenia każda funkcja powinna sprawdzać obecność rekordów
+:: KAŻDY START - nie sprawdzamy obecności rekordów
+{? sec_superuser()>0
+||
+:: Aktualizacja dziedzin - start zerowy
+   {? ~B_DOMAIN.size()
+   || exec('add_domain','#b_action')
+   ?};
+
+   _b_port_fill:=0;
+
+:: Aktualizacja podstawowych danych modelera - start zerowy
+   {? ~B_TYPE.size() | ~B_GATE.size() | ~B_EVENT.size()
+   || exec('fill_all','#b_dane',0);
+      _b_port_fill:=1
+   ?};
+
+:: Aktualizacja czynności - start zerowy
+   {? ~B_ACTION.size()
+   || exec('imp_act','#b_action',0,,0,1);
+      exec('import_hash','#b_action',,1);
+      _b_port_fill:=1
+   ?};
+
+:: Aktualizacja własności czynności - start zerowy w danej firmie
+   B_ACTPRO.cntx_psh();
+   B_ACTPRO.index('FIRMA');
+   B_ACTPRO.prefix(REF.FIRMA);
+   {? ~B_ACTPRO.size()
+   || exec('update_b_actpro_all','#b_action')
+   ?};
+   B_ACTPRO.cntx_pop();
+
+:: procesowość statusy instancji - start zerowy
+   {? ~BI_STAT.size()
+   || exec('stat_list','#bi_stat')
+   ?};
+
+:: Aktualizacja portów - start zerowy
+   {? _b_port_fill>0
+   ||
+      {? var_pres('KOMM')<100
+      || exec('JCQ_decl','#message');
+         KOMM:=obj_new(@.CLASS.JCQ)
+      ?};
+      KOMM.init(200,,'Import elementów modelera'@);
+      exec('import','#b_port',0);
+      exec('import','#b_portgr',0)
+   ?};
+
+:: Aktualizacja zdefiniowanych warunków bram - start zerowy
+   {? ~B_COND.size()
+   || exec('import','#b_cond',0,,1)
+   ?};
+
+:: Tytuły obszarów - start zerowy
+   AREATIT.prefix();
+   {? ~AREATIT.first()
+   || exec('init','areatitle')
+   ?};
+
+:: Wtyczki wdrożeniowe - start zerowy
+   PLUGINS.prefix();
+   {? ~PLUGINS.first()
+   || exec('init','plugins')
+   ?};
+
+:: inicjowanie standardowych kolejek przetwarzania dla firmy - start zerowy
+   B_WORKER.index('KOD');
+   B_WORKER.prefix(REF.FIRMA);
+   {? ~B_WORKER.size()
+   || exec('init','#b_worker')
+   ?};
+
+:: parametry aplikacyjne i użytkownika - start zerowy
+   FO_DEF.prefix();
+   {? ~FO_DEF.size()
+   || exec('init','params')
+   ?};
+
+:: Zewnętrzne identyfikatory rekordów
+   exec('init','sync_id')
+?};
+
+{? sec_superuser()>0 | _cli_ver='cgi'
+||
+:: lista parametrów - każdy start
+   exec('init_param','parametr')
+?};
+
+:: formuly bufora planu dostaw
+exec('pd_buf_d_run','plan_dostaw');
+
+:: formuly analizy rezerwacji i sprzedaży utraconej
+exec('OnOffSPRLOG','faktury_wspolne','11');
+
+:: ustawienie wyzwalaczy dla PROD_REJ
+exec('ustaw_trigger','prod_rej');
+
+:: ustawienie wyzwalaczy dla R_OPCZYT
+exec('ustaw_trigger','prc_wewy');
+
+:: ustawienie wyzwalaczy dla TR_ZL
+exec('trig_log','transport_wspolne');
+
+:: ustawienie wyzwalaczy archiwizacji załączników
+exec('set_triggers','archiwum');
+
+:: Tymczasowe tłumaczenia
+exec('transtmp','tlumaczenia');
+:: Ustawienie wersji językowej użytkownika
+exec('user_lang_set','#users');
+
+:: Kontrola aktualizacji systemu
+exec('__UPG','#object');
+_upgrade:=1;
+_task:=_cli_ver='cgi' | exec('chk_role','#b__box',OPERATOR.USER,'ZWS_UPG_TASK');
+{? sec_superuser()>0 & ~exec('ctrlStruct','#upgrade')
+||
+:: Aktualizacja zadań potransferowych
+   exec('refresh','#upgrade')
+?};
+_noreal:=exec('noReal','#upgrade');
+_autopar:=exec('get_par','#parametr',11);
+_par503:=exec('get_par','#parametr',503);
+_par504:=exec('get_par','#parametr',504);
+_noctrl:=exec('get','#params',104102,2)='T';
+{? type_of(_par503)=type_of('')
+|| BPMN.MAX_EL:=#_par503
+?};
+{? type_of(_par504)=type_of('')
+|| BPMN.MAX_INS:=#_par504
+?};
+BPMN.REPEAT:=-1;
+BPMN.DELAY:=-1;
+
+{? _czy_fork
+|| _upgrade:=0
+|? (_ctrl:=__UPG.ctrl_run())<>0 | _noreal
+|| _kodus:=__UPG.who_run();
+   {? _kodus=''
+   || _kus:='\n'
+   || _kus:='Prawdopodobnie została ona uruchomiona podczas innej rejestracji w systemie użytkownika: %1.\n\n'@[_kodus]
+   ?};
+   {? sec_superuser()<=0 & ~_task & ~_noctrl
+   || {? _kodus=''
+      || _kus:='\n'
+      || _kus:='Aktualizacja uruchomiona przez użytkownika: %1.\n\n'@[_kodus]
+      ?};
+      {? _ctrl<>0
+      || FUN.emsg('Uruchomiono aktualizację zadań potransferowych.\n'
+                  '%1'
+                  'Uruchomienie systemu niemożliwe.'@[_kus])
+      || FUN.emsg('System wymaga uruchomienia aktualizacji zadań potransferowych.\n\n'
+                  'Uwaga. Nie masz uprawnień do wykonywania aktualizacji zadań potransferowych.\n'
+                  'Uruchomienie systemu niemożliwe.'@)
+      ?};
+      break()
+   |? ~_task
+   || {? ~_noctrl
+      || {? _ctrl>0
+         || FUN.emsg('Uruchomiono aktualizację zadań potransferowych.\n'
+                     '%1'
+                     'Uwaga. Nie masz uprawnień do wykonywania aktualizacji zadań potransferowych.\n\n'
+                     'Uwaga. Aktualizacja jest wymagana - zablokowano dostęp do systemu zwykłym użytkownikom.'@[_kus])
+         |? _ctrl<0
+         || FUN.emsg('Oczekiwanie na aktualizację zadań potransferowych w innych firmach.\n'
+                     '%1'
+                     'Uwaga. Nie masz uprawnień do wykonywania aktualizacji zadań potransferowych.\n\n'
+                     'Uwaga. Aktualizacja jest wymagana - zablokowano dostęp do systemu zwykłym użytkownikom.'@[_kus])
+         |? _autopar='N' | _noreal>=2
+         || FUN.emsg('System wymaga uruchomienia aktualizacji zadań potransferowych.\n\n'
+                     'Uwaga. Nie masz uprawnień do wykonywania aktualizacji zadań potransferowych.\n\n'
+                     'Uwaga. Aktualizacja jest wymagana - zablokowano dostęp do systemu zwykłym użytkownikom.'@)
+         ?}
+      ?};
+      _upgrade:=0
+   || {? ~_czy_upgr & ~_noctrl
+      || {? _ctrl>0
+         || FUN.emsg('Uruchomiono aktualizację zadań potransferowych.\n'
+                     '%1'
+                     'Automatyczna aktualizacja nie zostanie uruchomiona.\n\n'
+                     'Uwaga. Aktualizacja jest wymagana - zablokowano dostęp do systemu zwykłym użytkownikom.'@[_kus])
+         |? _ctrl<0
+         || FUN.emsg('Oczekiwanie na aktualizację zadań potransferowych w innych firmach.\n'
+                     '%1'
+                     'Automatyczna aktualizacja nie zostanie uruchomiona.\n\n'
+                     'Uwaga. Aktualizacja jest wymagana - zablokowano dostęp do systemu zwykłym użytkownikom.'@[_kus])
+         |? _autopar='N' | _noreal>=2
+         || FUN.emsg('System wymaga uruchomienia aktualizacji zadań potransferowych.\n\n'
+                     'Automatyczna aktualizacja nie zostanie uruchomiona.\n\n'
+                     'Uwaga. Aktualizacja jest wymagana - zablokowano dostęp do systemu zwykłym użytkownikom.'@)
+         ?}
+      ?};
+      _upgrade:=0
+   ?}
+?};
+_upgrade:=_upgrade & _task & _autopar='T';
+{? (sec_superuser()>0 | _task) & _upgrade
+||
+:: Aktualizacja zadań potransferowych
+   exec('run_upgrade','zws',1)
+?};
+
+:: Zapisanie danych o zalogowaniu się użytkownika
+{? _web_sesid='' & _cli_ver='jterm'
+|| exec('login','#users',OPERATOR.USER)
+?};
+
+:: wczytanie parametrów pracy
+exec('__PARSES','#object');
+exec('define','parses',__PARSES);
+
+_key:='PARSES'+$#REF.FIRMA;
+_val:=ctr_call('!application',,'getAppEnvVar',_key);
+
+:: Wyjątkowo nie jest badany rezultat metody __PARSES.setMode() aby zawsze (mimo błędów) móc uruchomić program.
+{? var_pres('_val')=type_of('') & _val<>''
+|| __PARSES.setMode('s',_val)
+|| __PARSES.setMode('U');
+   ctr_set('!application',,'setAppEnvVar',_key,__PARSES.getBID())
+?};
+
+:: procesowość triggery BI_PREL dotyczące TODO
+exec('triggerOn','#bi_todo');
+
+:: deklaracja klasy EMAIL i powołanie obiektu MAIL
+{? _cli_ver='cgi'
+|| exec('MAIL','#object');
+   exec('czytaj','#stalesys',,XINFO,'SKROT')
+?};
+
+:: wczytanie parametrów wydruków
+exec('set_parw','param_wydr');
+
+:: ewentualne utworzenie ustawień użytkownika
+exec('default','#profile','profile.dfg','profile.upf');
+exec('default','#profile','warphlp.dfg','warphlp.txt');
+exec('default','#profile','zk_uni.dfg','zk_uni.txt');
+
+:: statusy procesowości
+exec('bistat_status','#bi_stat');
+
+:: Ustawienia słownika osób zgodne z uprawnieniami do czynności
+{? ~exec('chk_role','#b__box',OPERATOR.USER,'ZWS_DOS_PPDO') &
+   ~exec('chk_role','#b__box',OPERATOR.USER,'ZWS_DOS_PRDO')
+|| OSOBA.fld_attr(,2);
+   OSOBA.fld_attr('NAZWISKO',3);
+   OSOBA.fld_attr('PIERWSZE',3);
+   OSOBA.fld_attr('DRUGIE',3);
+   OSOBA.fld_attr('IMEX',3)
+?};
+
+:: Ustawienia wyrównania pól zależnie od używanego klienta
+{? exec('interm','#system')
+|| _df:='DISPLAY_FORMAT';
+   P.fld_fml('T',_df);
+   H_UM.fld_fml('NUMER',_df);
+   ZC.fld_fml('NU',_df);
+   UMLOJN.fld_fml('NU',_df)
+?};
+
+:: Obsługa notyfikacji
+exec('__AbcNotify','object');
+
+:: Obsługa zadań w kolejkach specjalnych
+exec('__Worker','object');
+
+{? (app_info('init_param')='' | app_info('init_param')='reload' ) & _a=1
+|| {? _app_par2='EKIOSK'
+   || exec('tte_wyk','tte','T',_app_par3,_app_par4,_app_par5)
+   |? _czy_link & ~_czy_fork
+   || _res:=exec('rule_area','link',_link);
+      {? _res.status>0
+      ||
+         params_set('LINK',_res.link,'PROJ_REF',_proj);
+         {? _res.rule='BI_TODO'
+         || params_exec('todo','pulpit',0)
+         || params_exec('wybierz','#b_area',_res.rule,_res.area)
+         ?}
+      ?}
+   || {? ~_czy_fork || exec('start','pulpit') ?};
+      {? _czy_fork & var_pres('FORM_WYW',params_get())>0
+      || mb_exec(params_get.FORM_WYW)
+      ?}
+   ?}
+?}
+
+
+\param_proc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Redakcja indywidualnych parametrów pracy użytkownika.
+::----------------------------------------------------------------------------------------------------------------------
+__PARSES.setACF(0);
+_edit:=__PARSES.editAll();
+{? _edit>0
+|| AreaTitle.setTitle();
+   exec('parses_update','pulpit')
+?};
+__PARSES.setACF(1);
+~~
+
+
+\param_proc_action
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Redakcja parametrów pracy czynności.
+::----------------------------------------------------------------------------------------------------------------------
+B_PREL.cntx_psh();
+_dom:=exec('FindInSet','#table','B_ACTION','B_ELE',BI_TODO.B_PREL().B_ELE,,"B_ACTION.B_DOMAIN().SYMBOL",,,'');
+{? +BI_TODO.BI_PREL().PARSES<>48
+|| __PARSES.editDom(_dom)
+|| B_DOMAIN.cntx_psh();
+   __PARSES.setACF(0);
+   __PARSES.pushEnv();
+   {? __PARSES.setMode('C',BI_PREL.PARSES,BI_PREL.UID)
+   || {? BI_PREL.BI_STAT=exec('OCZEKUJACA','#bi_stat') &
+         exec('FindInSet','#table','B_ACTION','B_ELE',BI_TODO.B_PREL().B_ELE,,"B_ACTION.FPARSES",,,'')=''
+::       edycja
+      || __PARSES.editDom(_dom)
+::       podgląd
+      || __PARSES.displayDom(_dom)
+      ?}
+   ?};
+   __PARSES.popEnv();
+   __PARSES.setACF(1);
+   B_DOMAIN.cntx_pop()
+?};
+B_PREL.cntx_pop();
+~~
+
+
+\start_wt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [17.00]
+:: OPIS: Formuła startowa webTerm-a.
+::----------------------------------------------------------------------------------------------------------------------
+exec('start','#web_srv')
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [18.02]
+:: OPIS: Formuła sprzątająca rekordy w "tymczasowych" tabelach webTerma.
+::   WE: _a [INTEGER] - Moment wywołania:
+::                      1 - Start TOMCATA - kasowane są wszystkie rekordy związane z identyfikatorem serwera.
+::                      2 - Zakończenie sesji webTerma - kasowane są tylko rekordy związane z daną sesją.
+::                      3 - Zamknięcie zakładki - kasowane są tylko rekordy związane z daną zakładką.
+::   WY: 0 - Błąd wywołania;
+::       1 - Operacja przeprowadzona prawidłowo.
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(0) & (0<_a & _a<4)
+|| _tryb:=_a
+|| return(0)
+?};
+
+exec('clean','obiegi',_tryb);
+exec('clean','p_web',_tryb);
+exec('clean','pkw',_tryb);
+exec('HTML_fml_del','#web_srv',_tryb);
+exec('clean','wt_tree',_tryb);
+exec('clean','wt_group',_tryb);
+exec('clean','prc_gpdwl',_tryb);
+exec('wt_zcel_clean','poc',_tryb);
+exec('wt_pszk_clean','psz',_tryb);
+exec('wt_szkz_clean','psz',_tryb);
+
+1
+
+
+\stop_wt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła wykonywana na zakończenie sesji webTerm-a.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Ewentualne usunięcie rekordu parametrów zamykanej sesji.
+__PARSES.cleanWT();
+exec('clean','b_proces',2);
+~~
+
+
+\start_ws
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła wykonywana po uruchomieniu serwera WWW.
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+:: Jeżeli poprzednie zamknięcie serwera WWW nie było "czyste", to kolejny start jest dobrym momentem do ewentualnych
+:: porządków.
+__PARSES.cleanWS();
+exec('clean','b_proces',1);
+~~
+
+
+\env_wt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RWR [17.00]
+:: OPIS: Formuła odpowiedzialna za ustalenie środowiska pracy webTerm-a.
+::   WE: [_a] [STRING] - Komentarz.
+::   WY: Status operacji:
+::       0 - Środowiska nie udało się ustalić.
+::       1 - Środowisko ustalone.
+::----------------------------------------------------------------------------------------------------------------------
+exec('env_wt_core','#web_srv');
+{? __PARSES.setMode('W')
+|| OPERATOR.DEPT:={? PARSES.ODD_ZAK='W' || null || PARSES.ODD ?};
+   USRCONST.STANKAS:=exec('FindInSet','#table','KUSERUPR','KU_ST',PARSES.STANKAS,OPERATOR.USER);
+   exec('ustaw_zmienne','parses',__PARSES,PARSES.OKRO_R<>'W')
+|| FUN.emsg('Ustawienie środowiska nie było możliwe.'@);
+   return(0)
+?};
+:: na potrzeby webterma ustawiamy wartości pól zmiennej odpowiedzialnej za włączanie/wyłączanie triggerów
+TRIG_OFF.blank(1);
+1
+
+
+\bobs_bi_todo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [17.00]
+:: OPIS: Przed obsługą okienka wertowania tabeli BI_TODO
+::----------------------------------------------------------------------------------------------------------------------
+exec('maski','#b_proman');
+exec('env_wt','b_proces')
+
+
+\aods_bi_todo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [21.37]
+:: OPIS: Po odświeżeniu okienka wertowania tabeli BI_TODO
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+_wer:=web_top_win();
+_gr_ident:='';
+{? _wer='W_WEB_GR'
+|| _gr_ident:='W_WEB_GR_IDENT'
+?};
+_grayed:='';
+{? _a=0
+||
+   web_params_set(web_params_get());
+   exec('env_wt_core','#web_srv');
+:: Zwolnij zadanie
+   _ident:='aa5479443000000';
+   {? exec('FindAndGet','#table',BI_PREL,BI_TODO.BI_PREL,,"
+         exec('FindAndGet','#table',@.B_PREL,BI_PREL.B_PREL,,\"RELEASE<>'T'\",0)
+      ",0)
+   || BI_TODO.web_btn_opt(_wer,_gr_ident,_ident,'state=grayed');
+      _grayed:='Z'+_grayed
+   |? exec('can_release','#bi_todo')
+   || BI_TODO.web_btn_opt(_wer,_gr_ident,_ident,'state=normal')
+   || BI_TODO.web_btn_opt(_wer,_gr_ident,_ident,'state=grayed');
+      _grayed:='Z'+_grayed
+   ?};
+:: Pobierz zadanie
+   _ident:='aa5479430000000';
+   {? BI_TODO.BI_STAT=exec('TODO_MOJE','#bi_stat')
+   || BI_TODO.web_btn_opt(_wer,_gr_ident,_ident,'state=grayed');
+      _grayed:='O'+_grayed
+   || BI_TODO.web_btn_opt(_wer,_gr_ident,_ident,'state=normal')
+   ?};
+:: akcje
+   BI_TODO.web_win_opt(_wer,_gr_ident,'grayed=%1'[_grayed])
+?};
+~~
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:38 8ef424b0ed0b83547f46f27fcbb6b8b68b5feb9d99c8df2a1c94850d4b22f70fbafb17880989cc9e895230afed3a908692e00ed2710ae0d3f1d44c71ba17cc624653b3f8f5ac57866356280f7e106776233e04964181aa510eb097c5c6b0d01378d7df860a5eeb88d843eb4ca63af3f905fd116c1a405781b236a040e81e4975

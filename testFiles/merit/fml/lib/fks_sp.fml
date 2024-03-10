@@ -1,0 +1,1051 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: fks_sp.fml
+:: Utworzony: 06.04.2018
+:: Autor: MB
+::======================================================================================================================
+:: Zawartość: Formuły do obsługi podzielnej płatności (Split Payment)
+::======================================================================================================================
+
+
+\dok_vat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Zwraca vartość VAT pozycji VAT bieżącej faktury VAT na potrzeby podzielonej płatności
+::       (Pomijany VAT związany z odwrotnym obciążeniem)
+::----------------------------------------------------------------------------------------------------------------------
+_vat:=0;
+VPOZ.cntx_psh();
+VPOZ.index('VDOK'); VPOZ.prefix(DOK.ref());
+{? VPOZ.first()
+|| {!
+   |? _vat+={? ~( 'ZakOpod,ZakOpoZ'*VPOZ.RVAT().RVAT().KVAT().SYM & 1+VPOZ.GRVAT().GRVAT().KOD='Z')
+            || VPOZ.VAT
+            ?};
+      VPOZ.next()
+   !}
+?};
+VPOZ.cntx_pop();
+_vat
+
+
+\upd_dok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Aktualizacja pozycji dokumentu księgowego na podstawie pozycji VAT
+::   WE: [_a] - formuła dla pozycji dokumentu
+::----------------------------------------------------------------------------------------------------------------------
+{? DOK.RVAT
+|| _vat:=exec('dok_vat','fks_sp');
+   _bru:=exec('kwota_bru_przel','rozrach_przel');
+   _s_czy_z:=-DOK.RVAT().RVAT().RT;
+   _last:=null;
+   POZ.cntx_psh();
+   POZ.index('D_SP');
+   POZ.prefix(DOK.ref(),'T');
+   {? POZ.first()
+   || {? var_pres('RefSet')<=0
+      || RefSet:=exec('create_set','#array','INTEGER')
+      ?};
+      RefSet.clear();
+      _suma:=_svat:=0;
+      _all:=1;
+      POZ.prefix(DOK.ref(),'TT');
+      {? POZ.first()
+      || P_V.cntx_psh();
+         P_V.index('P_V');
+         {!
+         |? P_V.prefix(POZ.ref());
+            _all:=P_V.first();
+            _all & POZ.next()
+         !};
+         {? _all & POZ.first()
+         || {!
+            |? P_V.prefix(POZ.ref());
+               {? P_V.first()
+               || _spv:=0;
+                  _sum:=0;
+                  _sv:=0;
+                  {!
+                  |? _spv+=P_V.VPOZ().VAT;
+                     {? ~( 'ZakOpod,ZakOpoZ'*VPOZ.RVAT().RVAT().KVAT().SYM & 1+VPOZ.GRVAT().GRVAT().KOD='Z')
+                     || _sv+=VPOZ.VAT;
+                        _sum+=VPOZ.BRUTTO
+                     || _sum+=VPOZ.NETTO
+                     ?};
+                     P_V.next()
+                  !};
+                  {? POZ.SP_V<>_spv
+                  || POZ.SP_V:=_spv;
+                     POZ.put();
+                     {? var_press('_a')>0
+                     || _a()
+                     ?}
+                  ?};
+                  _last:=POZ.ref();
+                  {? POZ.SUM=_sum
+                  || RefSet.addIfNotExists(#POZ.ref());
+                     _vat-=_sv;
+                     _bru-=_sum
+                  || _all:=0
+                  ?}
+               || _all:=0
+               ?};
+               POZ.next()
+            !}
+         ?};
+         P_V.cntx_pop()
+      ?};
+      POZ.prefix(DOK.ref(),'T');
+      _prop_sp:={? _bru || _vat/_bru || 0 ?};
+      {? ~_all & ~_prop_sp & POZ.first()
+      || {!
+         |? {? ~RefSet.contains(#POZ.ref()) & POZ.WAL=null & (POZ.TID='ZOB' | POZ.TID='NAL') & exec('czy_wz_kh','fks_sp',POZ.KON)
+            || {? _s_czy_z='z'
+               || {? -POZ.STR='ma' || _suma+=POZ.SUM || _suma-=POZ.SUM ?}
+               || {? -POZ.STR='wn' || _suma+=POZ.SUM || _suma-=POZ.SUM ?}
+               ?}
+            ?};
+            POZ.next()
+         !}
+      ?};
+      {? ~_all
+      || POZ.prefix(DOK.ref(),'T');
+         POZ.first();
+         {!
+         |? {? ~RefSet.contains(#POZ.ref())
+            || {? (POZ.SP_KS='TT' | ((POZ.SP_KS='TN' & POZ.ID<>'')) & POZ.WAL=null & (POZ.TID='ZOB' | POZ.TID='NAL')
+                  & exec('czy_wz_kh','fks_sp',POZ.KON))
+               || _v:={? _prop_sp
+                      || (POZ.SUM*_prop_sp)$2
+                      |? _suma
+                      || ((POZ.SUM*_vat)/_suma)$2
+                      || 0
+                      ?};
+                  {? _v<>POZ.SP_V
+                  || POZ.SP_V:={? POZ.WAL=null | POZ.WAL=FINFO.NAROD
+                               || _v
+                               || 0
+                               ?};
+                     POZ.put();
+                     {? var_press('_a')>0
+                     || _a()
+                     ?}
+                  ?};
+                  {? _s_czy_z='z'
+                  || {? -POZ.STR='ma' || _svat+=POZ.SP_V || _svat-=POZ.SP_V ?}
+                  || {? -POZ.STR='wn' || _svat+=POZ.SP_V || _svat-=POZ.SP_V ?}
+                  ?};
+                  _last:=POZ.ref()
+               || {? POZ.SP_V<>0
+                  || POZ.SP_V:=0;
+                     POZ.put();
+                     {? var_press('_a')>0
+                     || _a()
+                     ?}
+                  ?}
+               ?}
+            ?};
+            POZ.next()
+         !}
+      ?};
+      {? _last & _vat<>_svat & fabs(_svat-_vat)<1 & POZ.seek(_last)
+      || POZ.SP_V+=_vat-_svat;
+         POZ.put();
+         {? var_press('_a')>0
+         || _a()
+         ?}
+      ?};
+      {? POZ.first || {! |? {? POZ.SP_KS<>'TT' || POZ.SP_V:=0; POZ.put ?}; POZ.next !} ?};
+      RefSet.clear()
+   ?};
+   POZ.cntx_pop()
+?}
+
+
+\upd_zap_op
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Ustawienie pól podzielnej płatności w pozycjach rozrachunku
+::----------------------------------------------------------------------------------------------------------------------
+DOK.cntx_psh();
+KS.cntx_psh();
+{? POZ.SP_KS='TT' & POZ.WAL=null
+|| {? POZ.DOK().RVAT
+   || ZAP_OP.SP_TYP:='TT'
+   |? POZ.DOK().DOK_REJ().SP_PRZEL='T'
+   || ZAP_OP.SP_TYP:='TZ'
+   || ZAP_OP.SP_TYP:='TN'
+   ?};
+   ZAP_OP.SP_V:=POZ.SP_V
+|| ZAP_OP.SP_TYP:='NN';
+   ZAP_OP.SP_V:=0
+?};
+KS.cntx_pop();
+DOK.cntx_pop();
+DOK.cntx_psh();
+ZAP_OP.SP_WYM:={? ZAP_OP.SP_TYP='TT' & (POZ.SP_WYM='Z' | POZ.DOK().SP_WYM='T') || POZ.SP_WYM || 1+ZAP_OP.SP_TYP ?};
+DOK.cntx_pop()
+
+
+\tb_zap_op
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Triger przed add i put dla zapisów rozrachunków
+::----------------------------------------------------------------------------------------------------------------------
+{? ZAP_OP.SP_V
+|| {? ZAP_OP.WN
+   || ZAP_OP.SP_V_WN:=ZAP_OP.SP_V;
+      ZAP_OP.SP_V_MA:=0
+   || ZAP_OP.SP_V_WN:=0;
+      ZAP_OP.SP_V_MA:=ZAP_OP.SP_V
+   ?}
+|| ZAP_OP.SP_V_WN:=ZAP_OP.SP_V_MA:=0
+?};
+1
+
+
+\ta_zap_op
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Triger po dla zapisów rozrachunków
+::   WE: _a - typ: 1-po add, 2-po put, 0-po del
+::----------------------------------------------------------------------------------------------------------------------
+D_RB.index('OP'); D_RB.prefix(ZAP_OP.OP);
+{? ~D_RB.first()
+|| _all:=0;
+   {? _a=1
+   || {? ZAP_OP.SP_TYP='TT'
+      || _typ:='NTZW'*ZAP_OP.OP().SP;
+         _ntyp:='NTZW'*ZAP_OP.SP_WYM;
+         {? _typ<_ntyp
+         || OP.SP:=ZAP_OP.SP_WYM;
+            OP.put()
+         ?}
+      ?}
+   |? _a=2
+   || {? bfld('SP_TYP')<>'' & bfld('SP_TYP')<>ZAP_OP.SP_TYP |
+         bfld('SP_WYM')<>'' & bfld('SP_WYM')<>ZAP_OP.SP_WYM
+      || _typ:='NTZW'*ZAP_OP.OP().SP;
+         _ntyp:='NTZW'*ZAP_OP.SP_WYM;
+         {? _typ<_ntyp
+         || OP.SP:=ZAP_OP.SP_WYM;
+            OP.put()
+         |? _typ>_ntyp
+         || _all:=1
+         ?}
+      ?}
+   ?};
+   {? _a=0 | _all
+   || _zn:=exec('zap_op_sp','fks_sp',ZAP_OP.OP);
+      {? ZAP_OP.OP().SP<>_zn
+      || OP.SP:=_zn;
+         OP.put()
+      ?}
+   ?}
+?};
+~~
+
+
+\rejvat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Zwraca tabelę z rejestrami księgowymi dotyczącymi VAT-u
+::----------------------------------------------------------------------------------------------------------------------
+_rejvat:=tab_tmp(1,'REF','INTEGER',);
+REJ.index('KOD'); REJ.prefix(ROK_F.ref());
+{? REJ.first()
+|| DOK_REJ.index('NAZ');
+   {!
+   |? _rvat:=0;
+      DOK_REJ.prefix(REJ.ref());
+      {? DOK_REJ.first()
+      || {!
+         |? _rvat:=DOK_REJ.SLO().KOD='VAT' | SLO.KOD='SAD';
+            _rvat=0 & DOK_REJ.next()
+         !}
+      ?};
+      {? _rvat
+      || _rejvat.REF:=REJ.ref();
+         _rejvat.add()
+      ?};
+      REJ.next()
+   !}
+?};
+_rejvat
+
+
+\update_ks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Aktualizuje dokumenty i rozrachunki z poziomu konta księgowego na potrzeby podzielnej płatności
+::   WE:  _a  - symbol konta księgowego
+::       [_b] - tabela z rejestrami
+::----------------------------------------------------------------------------------------------------------------------
+exec('PROGRESS','#object');
+_ar:=SSTALE.AR;
+_ao:=SSTALE.AO;
+OKRO_F.cntx_psh();
+OKRO_F.index('ROK');
+{? ROK_F.ZAM='N'
+|| _gr:=ROK_F.FIRMA=REF.GRUPA;
+   _rok:=ROK_F.ref();
+   ROK_F.cntx_psh();
+   FIRMA.cntx_psh();
+   _deltab:=0;
+   {? _gr & var_press('ttFirma')<0
+   || ttFirma:=sql('select REFERENCE as REF from FIRMA where FIRMA.TYP=\'S\' and FIRMA.Z=\'N\'');
+      _deltab:=1
+   ?};
+   {? ~_gr | exec('rok_first','fks_sp',_rok)
+   || {!
+      |? {? ~_gr | ROK_F.PLAN_GR='T'
+         || SSTALE.AR:=ROK_F.ref();
+            _rejvat:={? var_press('_b')>0 || _b || exec('rejvat','fks_sp') ?};
+            _max:=0;
+            OKRO_F.prefix(ROK_F.ref());
+            {? OKRO_F.first()
+            || {!
+               |? echo('Wyznaczanie zakresu danych ...'@);
+                  SSTALE.AO:=OKRO_F.ref();
+                  exec('open_tabele','open_tab','F');
+                  POZ.index('KON'); POZ.prefix(_a);
+                  _max+=POZ.size();
+                  {? _rejvat.first()
+                  || DOK.index('REJ');
+                     POZ.index('D_KON2');
+                     {!
+                     |? DOK.prefix(_rejvat.REF);
+                        _max+=DOK.size();
+                        _rejvat.next()
+                     !}
+                  ?};
+                  OKRO_F.next()
+               !};
+               echo()
+            ?};
+            PROGRESS.set(_max,'Aktualizacja na potrzeby split payment dla konta %1 ...'@[_a]);
+            {? OKRO_F.first()
+            || {!
+               |? SSTALE.AO:=OKRO_F.ref();
+                  exec('open_tabele','open_tab','F');
+                  POZ.index('KON'); POZ.prefix(_a);
+                  {? POZ.first()
+                  || {!
+                     |? POZ.put();
+                        PROGRESS.next();
+                        POZ.next()
+                     !}
+                  ?};
+                  {? _rejvat.first()
+                  || DOK.index('REJ');
+                     POZ.index('D_KON2');
+                     {!
+                     |? DOK.prefix(_rejvat.REF);
+                        {? DOK.first()
+                        || {!
+                           |? POZ.prefix(DOK.ref(),_a);
+                              {? POZ.first()
+                              || exec('upd_dok','fks_sp',"exec('update_ks1','fks_sp')")
+                              ?};
+                              PROGRESS.next();
+                              DOK.next()
+                           !}
+                        ?};
+                        _rejvat.next()
+                     !}
+                  ?};
+                  OKRO_F.next()
+               !}
+            ?};
+            &_rejvat;
+            PROGRESS.close()
+         ?};
+         _gr & exec('rok_next','fks_sp',_rok)
+      !}
+   ?};
+   {? _gr & _deltab
+   || VAR_DEL.delete('ttFirma')
+   ?};
+   FIRMA.cntx_pop();
+   ROK_F.cntx_pop()
+?};
+OKRO_F.cntx_pop();
+SSTALE.AR:=_ar;
+SSTALE.AO:=_ao;
+exec('open_tabele','open_tab','F')
+
+
+\update_ks1
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Aktualizuje dokumenty i rozrachunki z poziomu konta księgowego na potrzeby podzielnej płatności - pomocnicza
+::----------------------------------------------------------------------------------------------------------------------
+{? POZ.A='T'
+|| ROK_F.cntx_psh();
+   ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+   SSTALE.AR();
+   OP.cntx_psh();
+   ZAP_OP.cntx_psh();
+   {!
+   |? OP.use('operac'+ROK_F.KOD); OP.prefix();
+      ZAP_OP.use('rozzap'+ROK_F.KOD);
+      ZAP_OP.index('ZAP'); ZAP_OP.prefix(POZ.ref(),FINFO.NAROD,SSTALE.AO);
+      {? ZAP_OP.first()
+      || exec('upd_zap_op','fks_sp');
+         ZAP_OP.put()
+      ?};
+      ROK_F.next()
+   !};
+   ZAP_OP.cntx_pop();
+   OP.cntx_pop();
+   ROK_F.cntx_pop()
+?}
+
+
+\bv_poz_spv
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Ustawia dostępność pola POZ.SP_V
+::   WE: [_a] - prezentować wartość? 1-tak [0]-wg pól
+::----------------------------------------------------------------------------------------------------------------------
+{? var_press('_a')<=0 | _a=0
+|| {? cur_tab=POZ
+   || _enable:=POZ.SP_KS='TT' & DOK.DOK_REJ().SP_PRZEL='T' & POZ.ID<>'' & ~POZ.WAL & 'NAL,ZOB'*POZ.TID>0;
+      POZ.efld_opt(POZ.win_edit('?'),'enable='+$(_enable),POZ,'SP_V');
+      {? _enable
+      || {? ~POZ.SP_V & (2+DOK.DOKZRODL<>'pw' | -menu_txt()<>'popraw')
+         || POZ.SP_V:={? POZ.WAL=null | POZ.WAL=FINFO.NAROD
+                      || exec('poz_spv','fks_sp')
+                      || 0
+                      ?}
+         ?}
+      |? 2+DOK.DOKZRODL<>'pw'
+      || POZ.SP_V:=0
+      ?};
+      {? POZ.SP_WYM=''
+      || POZ.SP_WYM:={? POZ.SP_KS='TT' || 'T' || 'N' ?}
+      |? POZ.SP_WYM='N' & POZ.SP_KS='TT'
+      || POZ.SP_WYM:='T'
+      |? POZ.SP_WYM<>'N' & POZ.SP_KS<>'TT'
+      || POZ.SP_WYM:='N'
+      ?}
+   ?}
+|| {? _a=2 || POZ.DOK() ?};
+   {? POZ.win_edit('?')<>''
+   || _enable:=POZ.SP_KS='TT' & (DOK.DOK_REJ().SP_PRZEL='T' | DOK.RVAT) & POZ.ID<>'' & ~POZ.WAL & 'NAL,ZOB'*POZ.TID>0;
+      POZ.efld_opt(POZ.win_edit('?'),'enable='+$(_enable),POZ,'SP_V')
+   ?}
+?};
+~~
+
+
+\poz_spv
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Zwraca wartość VAT dla podzielnej płatności
+::----------------------------------------------------------------------------------------------------------------------
+{? POZ.SP_KS='TT' & POZ.ID<>''
+|| _vat:=0;
+   OP.cntx_psh();
+   _sym_rok:=exec('op_unik_sym','rozrach',POZ.ID,POZ.DO);
+   OP.index('KON_O'); OP.prefix(FINFO.NAROD,POZ.ODD,POZ.KON,POZ.ID,POZ.ID,_sym_rok,);
+   ZAP_OP.index('OP');
+   {? OP.first()
+   || _vat:=exec('vat','fks_sp',POZ.SUM)
+   ?};
+   OP.cntx_pop();
+   _vat
+?}
+
+
+\vat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Zwraca wartość VAT pozostałą do zapłacenia podzielną płatnością z rozrachunku
+::   WE: _a - wartość brutto
+::----------------------------------------------------------------------------------------------------------------------
+_f_brutto:=_f_vat:=0;
+_z_brutto:=_z_vat:=0;
+ZAP_OP.cntx_psh();
+ZAP_OP.prefix(OP.ref());
+{? ZAP_OP.first()
+|| {!
+   |? {? ZAP_OP.SP_TYP='TT'
+      || _f_brutto+={? ZAP_OP.WN || ZAP_OP.WN || ZAP_OP.MA ?};
+         _f_vat+=ZAP_OP.SP_V
+      |? ZAP_OP.SP_TYP='TZ'
+      || _z_brutto+={? ZAP_OP.WN || ZAP_OP.WN || ZAP_OP.MA ?};
+         _z_vat+=ZAP_OP.SP_V
+      ?};
+      ZAP_OP.next()
+   !}
+?};
+ZAP_OP.cntx_pop();
+{? _z_brutto+_a=_f_brutto
+|| _f_vat-_z_vat
+|? _f_brutto
+|| (_a*_f_vat/_f_brutto)$2
+?}
+
+
+\f_vat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PJ [18.22]
+:: OPIS: Zwraca wartość VAT z rozrachunku
+::   WE: [_a] - OP.ref()
+::       [_b] - 1, gdy zwraca VAT z uwzględnieniem kompensat
+::              0, dotychczasowe działanie
+::       [_c] - gdy podano, zwraca obiekt z wartością VAT i zapłaconym VAT
+::----------------------------------------------------------------------------------------------------------------------
+{? _=0 || _a:=OP.ref(); _b:=0 ?};
+ {? var_pres('_b')<=0 || _b:=0 ?};
+_ret_obj:={? var_pres('_c')>0 || _c ?};
+_f_vat:=_f_pla:=_f_kom:=_f_zap:=0;
+ZAP_OP.cntx_psh();
+ZAP_OP.index('OP');
+ZAP_OP.prefix(_a);
+{? ZAP_OP.first()
+|| OP.cntx_psh();
+   _typ:=ZAP_OP.OP().TYP;
+   OP.cntx_pop();
+   {!
+   |? {? ZAP_OP.SP_TYP='TT'
+      || _f_vat+={? 1+_typ='Z' || ZAP_OP.SP_V_MA-ZAP_OP.SP_V_WN || ZAP_OP.SP_V_WN-ZAP_OP.SP_V_MA ?};
+         _f_pla+={? 1+_typ='Z' || ZAP_OP.MA-ZAP_OP.WN || ZAP_OP.WN-ZAP_OP.MA ?}
+      |? ZAP_OP.SP_TYP='TN'
+      || _f_kom+={? 1+_typ='Z' || ZAP_OP.MA-ZAP_OP.WN || ZAP_OP.WN-ZAP_OP.MA ?}
+      ?};
+      {? ZAP_OP.SP_TYP='TZ'
+      || _f_zap+={? 1+_typ='Z' || ZAP_OP.SP_V_WN-ZAP_OP.SP_V_MA || ZAP_OP.SP_V_MA-ZAP_OP.SP_V_WN ?}
+      ?};
+      ZAP_OP.next()
+   !}
+?};
+ZAP_OP.cntx_pop();
+_nvat:={? _f_pla<>0 || (_f_kom*_f_vat/_f_pla)+_f_vat || _f_vat ?};
+_tmp:=cur_tab; _curtab:=var_pres('_tmp');
+{? _curtab & cur_tab=OPTMP & _nvat<>_f_vat || OPTMP.KW2:=_f_vat; OPTMP.put ?};
+VAR_EDIT.KW:=_f_vat<>_nvat;
+_ret:={? _b || _nvat || _f_vat ?};
+{? _ret_obj
+|| _obj:=obj_new('VAT','ZVAT');
+   _obj.VAT:=_ret;
+   _obj.ZVAT:=_f_zap;
+   _obj
+|| _ret
+?}
+
+
+\update
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [18.22]
+:: OPIS: Aktualizacja danych z obszaru administracji
+::   WE: _a - zadeklarowane i równe 1 -  odtwarzanie danych
+::----------------------------------------------------------------------------------------------------------------------
+{? ~_ || _a:=0 ?};
+{? ~_a
+|| _o:=ROK_F.mk_sel('Lata bilansowe'@);
+   ROK_F.win_fld(_o,,'NAZ',,,20,,,'Nazwa'@);
+   ROK_F.win_fld(_o,,'ZAM',,,,,,'Zamknięty'@,,,2,,"'T'","'N'");
+   ROK_F.win_act(_o,,'Formuła','Wybierz'@@,,,"
+      {? ROK_F.ZAM='T'
+      || FUN.info('Rok bilansowy %1 jest zamknięty.\nWybierz inny rok.'@[ROK_F.NAZ])
+      || sel_exit()
+      ?}
+   ",,1);
+   exec('czytaj','#stalesys',,FINFO,'NAROD');
+   ROK_F.index('KOD'); ROK_F.prefix(REF.FIRMA);
+   ROK_F.win_sel(_o)
+?};
+{? _a | ROK_F.select()
+|| _rejvat:=exec('rejvat','fks_sp');
+   {? ROK_F.FIRMA=REF.GRUPA
+   || ttFirma:=sql('select REFERENCE as REF from FIRMA where FIRMA.TYP=\'S\' and FIRMA.Z=\'N\'')
+   ?};
+   KS.index('SYM');
+   KS.prefix(ROK_F.ref());
+   {? KS.first()
+   || {!
+      |? {? KS.ROZR<>'Z'
+         || exec('update_ks','fks_sp',KS.SYM,_rejvat)
+         ?};
+         KS.next()
+      !}
+   ?};
+   VAR_DEL.delete('ttFirma')
+?};
+''
+
+
+\rok_first
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [12.51]
+:: OPIS: Pętla po latach grupy dla roku
+::   WE: _a - rok
+::  OLD: \rok_first/fks_sp.fml
+::----------------------------------------------------------------------------------------------------------------------
+FIRMA.prefix();
+_rok:=null;
+{? ttFirma.first()
+|| FIRMA.seek(BIT.sqlint(ttFirma.REF),);
+   _rok:=exec('rok_f_f','konsolidacja',_a,FIRMA.ref());
+   {? _rok=null
+   || {!
+      |? {? ttFirma.next()
+         || FIRMA.seek(BIT.sqlint(ttFirma.REF),);
+            _rok:=exec('rok_f_f','konsolidacja',_a,FIRMA.ref());
+            _rok=null
+         ?}
+      !}
+   ?}
+?};
+{? _rok
+|| ROK_F.prefix();
+   ROK_F.seek(_rok)
+?}
+
+
+\rok_next
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [12.51]
+:: OPIS: Pętla po latach grupy dla roku
+::   WE: _a - rok
+::  OLD: \rok_next/fks_sp.fml
+::----------------------------------------------------------------------------------------------------------------------
+_rok:=null;
+FIRMA.prefix();
+{!
+|? {? ttFirma.next()
+   || FIRMA.seek(BIT.sqlint(ttFirma.REF),);
+      _rok:=exec('rok_f_f','konsolidacja',_a,FIRMA.ref());
+      _rok=null
+   ?}
+!};
+{? _rok
+|| ROK_F.prefix();
+   ROK_F.seek(_rok)
+?}
+
+
+\czy_wz_kh
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [2006]
+:: OPIS: Sprawdza, czy w symbolu konta wystepuje słownik o wzorcu Kontrahent
+::   WE: _a - symbol konta, _b - ref roku (ROK_F) - opcja
+::   WY: 1 - konto opiera się na wzorcu Kontrahent, 0 - w przeciwnym wypadku
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_b')<=0 || _b:=ROK_F.ref() ?};
+_ret:=0;
+KS.cntx_psh();  KS.index('SYM');
+BUD.cntx_psh(); BUD.index('KS');
+SLO.cntx_psh(); SLO.index('SL'); SLO.prefix();
+ROK_F.cntx_psh(); ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+SLU.cntx_psh(); SLU.index('NAZ'); SLU.prefix();
+{? _b<>null
+|| _ok:=(ROK_F.seek(_b) & ((+(ROK_F.SYNT+_a))=ROK_F.SYNT));
+   {? _ok
+   || KS.prefix(ROK_F.ref(),ROK_F.SYNT+_a);
+      _synt:=ROK_F.SYNT; _sep:=ROK_F.SEP
+   ?}
+|| _ok:=((+(BILANSP.ASYNT+_a))=BILANSP.ASYNT);
+   {? _ok
+   || KS.prefix(SSTALE.AR,BILANSP.ASYNT+_a);
+     _synt:=BILANSP.ASYNT; _sep:=BILANSP.ASEP
+   ?}
+?};
+{? _ok & KS.first()
+|| BUD.prefix(KS.ref());
+   {? BUD.first()
+   || {!|? BUD.SLU().SLU();
+          {? SLU.WZ='Kontrahent' || _ret:=1;0 || BUD.next() ?}
+      !}
+   ?}
+?};
+SLU.cntx_pop(); SLO.cntx_pop(); BUD.cntx_pop(); KS.cntx_pop(); ROK_F.cntx_pop();
+_ret
+
+\bvdrsp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed redagowanie DOK_REJ.SP_WYM
+::  OLD: \bedrsp/fks_sp.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('bedrsp','fks_sp')
+
+
+\bedrsp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed redagowanie DOK_REJ.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+SLO.cntx_psh();
+_edit:='VAT,SAD'*DOK_REJ.SLO().KOD;
+SLO.cntx_pop();
+_edit
+
+
+\bldoksp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Wartość początkowa pola DOK.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+_sp_wym:='N';
+DOK_REJ.cntx_psh();
+{? DOK.DOK_REJ & 'VAT,SAD'*DOK.DOK_REJ().SLO().KOD>0
+|| _sp_wym:=DOK.DOK_REJ().SP_WYM
+?};
+DOK_REJ.cntx_pop();
+_sp_wym
+
+
+\bedoksp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed redagowaniem pola DOK.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+DOK_REJ.cntx_psh();
+_edit:=DOK.DOK_REJ & 'VAT,SAD'*DOK.DOK_REJ().SLO().KOD>0;
+DOK_REJ.cntx_pop();
+_edit
+
+
+\bvetypsp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed wyświetleniem pola ETYPY.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+exec('beetypsp','fks_sp')
+
+
+\beetypsp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed redakcją pola ETYPY.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+ETYPY.TYPVATPR=0
+
+
+\bvedoksp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed wyświetleniem pola EDOKUM.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+exec('beedoksp','fks_sp')
+
+
+\beedoksp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed redagowaniem pola EDOKUM.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+EDOKUM.TYP & EDOKUM.TYP().TYPVATPR=0
+
+
+\op_sp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Zwraca kwotę zapłaty za rozrachunek za pomocą podzielonej płatności (split payment)
+::   WE: _a - data
+::----------------------------------------------------------------------------------------------------------------------
+_zap:=0;
+ZAP_OP.cntx_psh();
+ZAP_OP.index('OP'); ZAP_OP.prefix(OP.ref());
+{? ZAP_OP.first()
+|| {!
+   |? {? ZAP_OP.DATA<=_a & ZAP_OP.SP_TYP='TZ'
+      || {? 1+OP.TYP='N'
+         || _zap+=ZAP_OP.MA-ZAP_OP.WN
+         || _zap+=ZAP_OP.WN-ZAP_OP.MA
+         ?}
+      ?};
+      ZAP_OP.next()
+   !}
+?};
+ZAP_OP.cntx_pop();
+_zap
+
+
+\obj_opsp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Zwraca tablicę na potrzeby wydruku zestawienia rozrachunków z wymaganym split payment
+::----------------------------------------------------------------------------------------------------------------------
+_obj:=obj_new('get','getAll','sp_wym','zap_sp','zap_std','do_zap','tab','first','next');
+_obj.get:="
+   OP.prefix();
+   {? OP.seek(BIT.sqlint(.tab.REF),)
+   || _ok:=0;
+      F.RObr(OP.ref(),UNPAR.P4);
+      {? OP.DO>=UNPAR.P4 & OP.DO<=UNPAR.P5 | F.rwn<>F.rma | exec('zap_typ','fks_sp')
+      || F.RObr(OP.ref(),UNPAR.P5);
+         _ok:=UNPAR.P3>2
+         | (UNPAR.P3=1 & ((1+OP.TYP='N' & F.rwn<=F.rma) | (1+OP.TYP='Z' & F.rma<=F.rwn)))
+         | (UNPAR.P3=2 & ((1+OP.TYP='N' & F.rwn>F.rma) | (1+OP.TYP='Z' & F.rma>F.rwn)))
+      ?};
+      {? _ok
+      || _zap:={? 1+OP.TYP='N' || F.rma || F.rwn ?};
+         _do_zap:={? 1+OP.TYP='N' || F.rwn || F.rma ?};
+         .zap_sp:=exec('op_sp','fks_sp',UNPAR.P5);
+         .sp_wym:=exec('wym','fks_sp','W',OP.ref());
+         .zap_std:=_zap-.zap_sp;
+         .do_zap:=_do_zap-_zap;
+         _ok:=.zap_sp<_zap | 1
+      ?};
+      {? _ok & PAR_WYDR.T_ROZ<>''
+      || _ok:=OP.TYP=PAR_WYDR.T_ROZ
+      ?};
+      _ok
+   ?}
+";
+_obj.getAll:="
+   _where:='';
+   {? UNPAR.P1=1 & KONTO.K1<>'' & KONTO.K1<>35*'?'
+   || _konto:=KONTO.K1;
+      {? _konto+1='?'
+      || {! |? _konto:=_konto-1; _konto+1='?' !};
+         {? +_konto<35 || _konto+='%' ?}
+      ?};
+      _konto:=STR.gsub(_konto,'?','_');
+      _konto:=STR.gsub(_konto,'*','%');
+      _where:='and OP.AN like \\''+_konto+'\\\''
+   |? UNPAR.P1=2 & KONTO.K2<>''
+   || _where:='and OP.AN like \\\''+KONTO.K2+'%\\\''
+   |? UNPAR.P1=3
+   || _k1:=KONTO.K3; _k1:=STR.gsub(_k1,'?','_'); _k1:=STR.gsub(_k1,'*','%');
+      _k2:=KONTO.K4; _k2:=STR.gsub(_k2,'?','_'); _k2:=STR.gsub(_k2,'*','%');
+      _where:='and (OP.AN between \\\''+_k1+'\\\' and \\\''+_k2+%255+'\\\') '
+   ?};
+   {? UNPAR.P3=3
+   || _where+='and OP.TZ<to_date(:_c) '
+   ?};
+   .tab:=sql(
+      'select OP.KH, OP.REFERENCE as REF '+
+      'from OP '+
+      'where OP.SP=\\\'W\\\' and OP.WAL=\\:_a\\ '+
+      {? OPERATOR.DEPT || 'and OP.ODD=:_b ' || '' ?}+_where+
+      'order by 1'
+      ,SSTALE.WAL,OPERATOR.DEPT,UNPAR.P5
+   )
+";
+_obj.first:="
+   .tab.prefix($KH.ref,);
+   .tab.first()
+";
+_obj.next:="
+   .tab.next()
+";
+_obj
+
+
+\wym_vat
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Zwraca kwotę wymaganego VAT-u podzielnej płatności dla rozrachunku
+::   WE:  _a  - typ
+::       [_b] - rozrachunek
+::----------------------------------------------------------------------------------------------------------------------
+_typ:=_a;
+_op:={? var_press('_b')>0 || _b || OP.ref() ?};
+_vat:=0;
+ZAP_OP.cntx_psh();
+ZAP_OP.index('SP_WYM'); ZAP_OP.prefix(_op,_typ);
+{? ZAP_OP.first()
+|| _op_typ:=ZAP_OP.OP().TYP;
+   {!
+   |? _vat+={? 1+_op_typ='Z' || ZAP_OP.SP_V_MA-ZAP_OP.SP_V_WN || ZAP_OP.SP_V_WN-ZAP_OP.SP_V_MA ?};
+      ZAP_OP.next()
+   !}
+?};
+ZAP_OP.cntx_pop();
+_vat
+
+
+\wym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Zwraca kwotę wymaganego do zapłaty podzielną płatnością
+::   WE:  _a  - typ
+::       [_b] - rozrachunek
+::----------------------------------------------------------------------------------------------------------------------
+_typ:=_a;
+_op:={? var_press('_b')>0 || _b || OP.ref() ?};
+_vat:=0;
+ZAP_OP.cntx_psh();
+ZAP_OP.index('SP_WYM'); ZAP_OP.prefix(_op,_typ);
+{? ZAP_OP.first()
+|| _op_typ:=ZAP_OP.OP().TYP;
+   {!
+   |? _vat+={? 1+_op_typ='Z' || ZAP_OP.MA-ZAP_OP.WN || ZAP_OP.WN-ZAP_OP.MA ?};
+      ZAP_OP.next()
+   !}
+?};
+ZAP_OP.cntx_pop();
+_vat
+
+
+\blspwym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Wartość początkowa pola POZ.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+{? POZ.SP_KS='TT' || 'T' || 'N' ?}
+
+
+\bespwym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed redagowaniem pola POZ.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+UNPAR.P10:=POZ.SP_WYM;
+_typ:=exec('sp_ks','fks_sp');
+{? _typ='TT' & POZ.DOK().DOK_REJ().SP_PRZEL<>'T'
+|| 1
+|| POZ.SP_WYM:={? _typ='TT' || 'T' || 'N' ?};
+   0
+?}
+
+
+\aespwym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Po redagowaniu pola POZ.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+{? ~(POZ.WAL=null | POZ.WAL=FINFO.NAROD)
+|| POZ.SP_WYM:='N'
+|? POZ.SP_WYM='N' & exec('sp_ks','fks_sp')='TT' & POZ.DOK().DOK_REJ().SP_PRZEL<>'T'
+|| POZ.SP_WYM:={? UNPAR.P10='T' || 'W' || 'T' ?}
+?};
+1
+
+
+\ikony
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Zwraca ikonę do wyświetlenia wymaganego split peyment
+::   WE: _a - wartość pola
+::----------------------------------------------------------------------------------------------------------------------
+{? _a='W'
+|| 'xwin16.png:230'
+|? _a='Z'
+|| 'xwin16.png:229'
+|? _a='T'
+|| 'xwin16.png:228';
+   'xwin16.png:228'
+|| 'xwin16.png:110'
+?}
+
+
+\bl_vpoz_spwym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Wartość początkowa pola VPOZ.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+{? DOK.SP_WYM='T' || 'W' || 'T' ?}
+
+
+\be_vpoz_spwym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Przed redagowaniem pola VPOZ.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+UNPAR.P10:=VPOZ.SP_WYM;
+exec('be_edok_fld','dok_fks1')
+
+
+\ae_vpoz_spwym
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Po redakcji pola VPOZ.SP_WYM
+::----------------------------------------------------------------------------------------------------------------------
+{? VPOZ.SP_WYM='Z' & VPOZ.RVAT().RVAT().RT<>'Z'
+|| VPOZ.SP_WYM:={? UNPAR.P10='W' || 'T' || 'W' ?}
+?};
+1
+
+
+\limit
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22]
+:: OPIS: Zwraca kwotę brutto faktury powyżej której split payment jest obowiązkowy dla grupy towarów i usług
+::----------------------------------------------------------------------------------------------------------------------
+exec('czytaj','#stalesys',,XINFO,'SP_KW');
+XINFO.SP_KW
+
+
+\sp_ks
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [19.22_03]
+:: OPIS: Zwraca wartość pola POZ.SP_KS
+::----------------------------------------------------------------------------------------------------------------------
+KOM.cntx_psh();
+KS.cntx_psh();
+_ret:={? POZ.KOM().KS().ROZR='Z' || 'NN'
+      |? KS.SP='T' || 'TT'
+      |? 'NAL,ZOB'*POZ.TID>0 || 'TN'
+      || 'NN'
+      ?};
+KS.cntx_pop();
+KOM.cntx_pop();
+_ret
+
+
+\zap_typ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: IFZ [19.42]
+:: OPIS: Szuka zapisu w zadanym przedziale zgodnego z typem rozrachunku
+::----------------------------------------------------------------------------------------------------------------------
+_druk:=0;
+ZAP_OP.cntx_psh();
+ZAP_OP.index('OP');
+ZAP_OP.prefix(OP.ref);
+{? ZAP_OP.first
+|| {! |? {? ZAP_OP.DATA>=UNPAR.P4 & ZAP_OP.DATA<=UNPAR.P5 & (1+OP.TYP='N' & ZAP_OP.WN | 1+OP.TYP='Z' & ZAP_OP.MA)
+         || _druk:=1
+         ?};
+         ZAP_OP.next & _druk=0
+   !}
+?};
+ZAP_OP.cntx_pop();
+_druk
+
+
+\zap_op_sp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [12.51]
+:: OPIS: Zwraca znacznik splitpayment na podstawie zapisów rozrachunku
+::   WE: _a - wskazanie na rozrachunek
+::----------------------------------------------------------------------------------------------------------------------
+_op:=_a;
+_sp:=0;
+_spw:=var_pres('SP_WYM',ZAP_OP)>0;
+ZAP_OP.cntx_psh();
+ZAP_OP.index('OP'); ZAP_OP.prefix(_op);
+{? ZAP_OP.first()
+|| _max:={? _spw || 3 || 1 ?};
+   {!
+   |? _val:={? _spw
+            || 'TZW'*ZAP_OP.SP_WYM
+            || ZAP_OP.SP_TYP='TT'
+            ?};
+      {? _val>_sp || _sp:=_val ?};
+      _sp<_max & ZAP_OP.next()
+   !}
+?};
+ZAP_OP.cntx_pop();
+{? _sp=1 || 'T' |? _sp=0 || 'N' |? _sp=2 || 'Z' || 'W' ?}
+
+
+\set_op_sp
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [12.51]
+:: OPIS: Ustawia znacznik splitpayment na rozrachunku na podstawie jego zapisów
+::----------------------------------------------------------------------------------------------------------------------
+_zn:=exec('zap_op_sp','fks_sp',OP.ref());
+{? OP.SP<>_zn
+|| OP.SP:=_zn;
+   OP.put()
+?}
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:36 203d5ec9d2c2cdfa36ce2e4767587509e6d1ecd908e5a0bab5584fee197862460fea738c747435f2addffda06fbc22e3197a4398afbf1f75f8db0cb87d3bfb9b422d7d018c9f6eeeb333de65601e3ee0bf3f9c8c052a0cc495da485dc3baae8ad4dc64970ce4fbaf2c675607ec34b0ed25b6a9ae13e729b8b766ef2d69feaf10

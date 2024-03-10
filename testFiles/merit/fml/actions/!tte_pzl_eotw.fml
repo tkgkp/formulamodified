@@ -1,0 +1,651 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_pzl_eotw.fml
+:: Utworzony: 08.08.2019
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_PZL_EOTW - Awaryjne otwarcie zlecenia
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.42]
+:: OPIS: Formuła główna czynności Awaryjne otwarcie zlecenia (TTE_PZL_EOTW)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::       context - [obj_new] obiekt służący do przekazywania kontekstu wywołania czynności
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+_uid:='TTE_PZL_EOTW';
+
+::# permissions=ODDZ
+::# condition=Czy zlecenie w przygotowaniu, act_uid=, auto=N, formula=exec('czy_zlecenie_nowe','%gate',_a.ZL)
+::# condition=Czy zlecenie otwarte, act_uid=, auto=N, formula=exec('czy_zlecenie_zaakceptowane','%gate',_a.ZL)
+::# condition=Czy zlecenie proste, act_uid=, auto=N, formula=exec('czy_zlecenie_proste','%gate',_a.ZL)
+::# condition=Czy zlecenie złożone, act_uid=, auto=N, formula=exec('czy_zlecenie_zlozone','%gate',_a.ZL)
+::# condition=Czy zlecenie niezależne, act_uid=, auto=N, formula=exec('czy_zlecenie_niezalezne','%gate',_a.ZL)
+::# condition=Czy zlecenie warsztatowe, act_uid=, auto=N, formula=exec('czy_zlecenie_warsztatowe','%gate',_a.ZL)
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N, keyref=T
+{? var_pres('ZL',_in)<>type_of(~~) & var_pres('ZL',_in)<>type_of(null())
+|| _msg:='Błędny parametr wejściowy \'%1\' dla czynności %2'@@['ZL',_uid];
+   FUN.error(_msg);
+   _mp.error(_msg);
+   return()
+?};
+{? var_pres('ZL',_in)=type_of(~~) || _in.ZL:=null() ?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=ZL, type=_ZL, name=Wskazanie na zlecenie, required=N
+{? var_pres('ZL',_out)<>type_of(~~) & var_pres('ZL',_out)<>type_of(null()) || return() ?};
+
+_result:=0;
+_can_continue:=1;
+
+ZL.cntx_psh(); ZL.clear();
+
+_clean_result:=params_exec('clean','!tte_pzl_eotw');
+_can_continue:=_clean_result.RESULT;
+_zl:=_clean_result.ZL;
+
+{? _can_continue>0
+||
+:: Jeśli nadal null to patrzę czy zlecenie przekazane kontekstem
+   {? _zl=null() & type_of(_context)>100 & var_pres('ZL',_context)=type_of(null())
+   || _zl:=_context.ZL
+   ?}
+?};
+{? _can_continue>0
+||
+:: Jeśli nadal null to pytam
+   {? _zl=null()
+   || _msg:='Błędna konfiguracja procesu — czynność %1 nie może być uruchamiana z pulpitu.'@@[_uid];
+      FUN.emsg(_msg);
+      _mp.error(_msg);
+      ZL.cntx_pop();
+      return()
+   ?}
+?};
+
+{? _can_continue>0 & _zl<>null()
+|| _can_continue:=ZL.seek(_zl)
+|| _can_continue:=0
+?};
+{? _can_continue>0
+||
+   _mp.keyRef(ZL.uidref());
+
+   _ask:=1;
+   _komm:=1;
+   {? _mp.isAutoRun()
+   || _ask:=0
+   ?};
+   {? _mp.isGroup()
+   || _ask:=0;
+      _komm:=0
+   ?};
+
+:: WSTĘPNA WALIDACJA
+:: Sprawdzane zamknięcia
+   {? ZL.STAN<>'Z'
+   || _can_continue:=0;
+      {? _komm || KOMM.init(250,,'Awaryjne otwarcie zlecenia'@) ?};
+      exec('komm_add','zl_common','Zlecenie nie jest zamknięte.'@);
+      {? _komm || KOMM.select() ?};
+      _mp.cancel()
+   ?}
+?};
+
+:: Przyczyna, o ile wynika z kontekstu wywołania
+{? _can_continue>0 & type_of(_context)>100 & var_pres('CAUSE',_context)=type_of('')
+|| _cause:=_context.CAUSE
+|| _cause:=''
+?};
+
+{? _can_continue>0
+||
+:: Faktyczne awaryjne otwarcie: automatycznie z procesu
+:: - w przypadku niezgodności wyświetla raport w KOMM i zostaje na TODO
+   {? _mp.isAutoRun()
+   || _result:=exec('zl_otworz','!tte_pzl_eotw',ZL.ref(),0,1,0,_cause)
+
+:: Faktyczne awaryjne otwarcie: przycisk w oknie TODO, funkcja w oknie selekcji zleceń
+   |? _mp.akcja()='OTWÓRZ' | _mp.pathProc()>0
+   || _result:=exec('zl_otworz','!tte_pzl_eotw',ZL.ref(),~_mp.isGroup(),~_mp.isGroup(),_cause)
+
+:: Obsługa z TODO - wyświetlam okno umożliwiające podglądy różnych rzeczy ze zlecenia
+:: Faktyczne otwarcie dopiero po uruchomieniu funkcji 'Otwórz awaryjnie' w tym oknie
+   |? _mp.pathTodo()
+   ||
+      {? _can_continue>0
+      ||
+         DK_C.cntx_psh();
+         _btn2:=exec('obj_ntab_set','#array',,
+            'txt','text=%1,align=end,display=1'['Otwórz awaryjnie'@],
+            'fml',"exec('action_restore','!tte_pzl_eotw')"
+         );
+         _red:=exec('zl_display_red_full','zl_head','Awaryjne otwarcie zlecenia %1'@[ZL.SYM],,,_btn2,1,1,1);
+         ZL.win_edit(_red);
+         exec('ustaw_pola','zl_head');
+         exec('procent','zl_head');
+         _mp.keep();
+         ZL.display();
+         DK_C.cntx_pop();
+         ~~
+      ?}
+   ?};
+
+   {? _result>0 | _mp.isMicro()
+   || _mp.save(exec('kind_out','#b_port'),'ZL',ZL.ref());
+      _mp.done()
+   || _mp.cancel()
+   ?}
+?};
+ZL.cntx_pop();
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.42]
+:: OPIS: Opis dla czynności awaryjnego otwarcia zlecenia (TTE_PZL_EOTW)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_desc:='';
+_keyRefs:=_mp.getRefs();
+
+:: jest rekord kluczowy to ustawiam odpowiednie ZL
+{? var_pres('[1]',_keyRefs)
+|| _tmp:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"SYM",'');
+   _desc:={? _tmp<>'' || 'Otwórz awaryjnie zlecenie %1'@@[_tmp] || '' ?}
+::|| _desc:=exec('FindAndGet','#table',ZL,_keyRefs[1],,"'Otwórz awaryjnie zlecenie %1'[SYM]",'')
+|| _desc:='Otwórz awaryjnie zlecenie'@@
+?};
+_desc
+
+
+\action_restore
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Akcja 'Otwórz awaryjnie' dla zlecenia z przycisków, menu
+::  OLD: \action_restore/!tte_pzl_ezam.fml
+::----------------------------------------------------------------------------------------------------------------------
+_params:=params_get();
+{? var_pres('_params')>100 & var_pres('env',_params)>100
+|| _cause:=params_get().env.CAUSE
+|| _cause:=''
+?};
+
+_args:=exec('mp_run_a','#b__box');
+_args.ACT_UID:='TTE_PZL_EOTW';
+_args.UIDREF:=ZL.uidref();
+_args.AKCJA:='OTWÓRZ';
+_args.PROC_START:='T';
+_args.CONTEXT:=obj_new('ZL','CAUSE');
+   _args.CONTEXT.ZL:=ZL.ref();
+   _args.CONTEXT.CAUSE:=_cause;
+{? ZL.sel_size()>0
+|| _args.GRUPA:='T'
+?};
+_args.PORTS_IN:=exec('portsIn','#b__box',_args.ACT_UID);
+exec('portsInSet','#b__box',_args.PORTS_IN,_args.ACT_UID,'ZL',ZL.ref());
+
+exec('mp_run','#b__box',_args);
+
+{? var_pres('_params')>100 & var_pres('env',_params)>100
+|| params_get().env.TECH_reload:=1
+?};
+
+'key:Esc'
+
+
+\action_restore_group_before
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Akcja grupa przed 'Otwórz awaryjnie' dla zlecenia z przycisków, menu
+::   WY: 0/1
+::  OLD: \action_restore_group_before/!tte_pzl_ezam.fml
+::----------------------------------------------------------------------------------------------------------------------
+_result:=0;
+
+_tab:=tab_tmp(1
+   ,'CAUSE','STRING[70]','Przyczyna'@
+   ,'DESC','SYS_MEMO','Opis'@
+);
+
+_red:=_tab.mk_edit('Awaryjne otwarcie zleceń'@,,'restoreedit');
+_tab.win_esep(_red,'Informacje'@);
+_tab.win_efld(_red,,'DESC',,,70,-2,1,,1);
+_tab.win_esep(_red,'Dane pozycji dziennika'@);
+_tab.win_efld(_red,,'CAUSE',,,70);
+exec('ok_esc','#window',_tab,_red);
+_tab.win_edit(_red);
+_tab.efld_opt(_red,'mark=1',_tab,'CAUSE');
+
+_tab.memo_set('Zaznaczono: %1 zleceń.\nCzy otworzyć je wszystkie awaryjnie?'@[$ZL.sel_size()]);
+
+_valid:="__CHK.record(cur_tab(1,1))";
+
+{? _tab.edit(_valid)
+|| _result:=1;
+   params_get().env.CAUSE:=_tab.CAUSE;
+   KOMM.init(200,,'Otworzenie awaryjne zleceń'@,'')
+?};
+sel_nchk();
+_result
+
+
+\action_restore_group_after
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [17.00]
+:: OPIS: Akcja grupa po 'Otwórz awaryjnie' dla zlecenia z przycisków, menu
+::  OLD: \action_restore_group_after/!tte_pzl_ezam.fml
+::----------------------------------------------------------------------------------------------------------------------
+params_get().env.CAUSE:='';
+KOMM.select();
+~~
+
+
+\zl_otworz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: JM [7.53]
+:: OPIS: Awaryjne otwarcie zlecenia (nie są otwierane zlecenia podrzędne do otwieranego)
+::   WE: [_a] - ZL.ref() / bieżące zlecenie
+::       [_b] - INTEGER - 0/[1] - czy wyświetlać pytania
+::       [_c] - INTEGER - 0/[1] - czy inicjować i wyświetlać KOMMa
+::       [_d] - STRING - przyczyna otwarcia zlecenia
+::   WY: 0 / 1
+::  OLD: \er_openzlec/zlec4.fml
+::  OLD: \zl_otworz/!tte_pzl_ezam.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')=type_of(null()) || _zl:=_a || _zl:=ZL.ref() ?};
+{? var_pres('_b')=type_of(0) || _ask:=_b || _ask:=1 ?};
+{? var_pres('_c')=type_of(0) || _komm:=_c || _komm:=1 ?};
+{? var_pres('_d')=type_of('') || _cause:=_d || _cause:='' ?};
+
+_result:=0;
+
+ZL.cntx_psh();
+ZL.clear();
+{? ZL.seek(_zl)
+|| {? _komm || KOMM.init(,,'Awaryjne otwarcie zlecenia'@,'') ?};
+
+:: Wstępna walidacja
+   {? ZL.STAN<>'Z'
+   || exec('komm_add','zl_common','Zlecenie nie jest zamknięte'@,3)
+
+:: Awaryjne otwarcie
+::   |? ~_ask | FUN.ask('Czy otworzyć awaryjnie zlecenie %1?'@[ZL.SYM])
+   ||
+::    Sprawdzana możliwość zablokowania zlecenia w każdym zakresie
+      _px_tex:=exec('get_tex_zl','px_tex',ZL.ref());
+      _tex_locked:=1;
+      _tex_obj:=~~;
+      {? _px_tex<>null()
+      || _tex_obj:=exec('lock','px_tex',_px_tex);
+         _tex_locked:=_tex_obj.LOCKED
+      ?};
+      {? exec('zl_lock','zl_common',,'N') &
+         exec('zl_lock','zl_common',,'T') &
+         exec('zl_lock','zl_common',,'P') &
+         exec('zl_lock','zl_common',,'L') &
+         exec('zl_lock','zl_common',,'I') &
+         exec('zl_lock','zl_common',,'R') &
+         _tex_locked>0
+      ||
+         {? _<1 || _a:=1 ?};
+         {? _<2 || _b:='' ?};
+
+         _rezerw:=exec('get','#params',500008,2)='T';
+
+::       Sprawdzam czy moge otworzyc zlecenie
+         _can_open:=1;
+
+::       Sprawdzenie czy istnieją niektywne indeksy materiałowe dla tego zlecenia
+         {? _can_open>0 & exec('czy_mat_zl_nakt','!tte_pzl_eotw',ZL.UNRZL)
+         || _can_open:=0
+         ?};
+
+::       Nie mogę otwierać podzlecenia zlecenia nadrzędnego, które jest zamknięte
+         {? _can_open>0 & ZL.NRNZL<>0
+         ||
+            _zl_top:=exec('top_level','zl_link',ZL.ref());
+            {? ZL.ref()<>_zl_top
+            ||
+::             Zwracam rodzaj i stan zlecenia nadrzędnego
+               _nad_rodzaj:='';
+               _nad_stan:='';
+               _nad_sym:='';
+               ZL.cntx_psh();
+               ZL.clear();
+               {? ZL.seek(_zl_top)
+               ||
+                  _nad_rodzaj:=ZL.RODZAJ;
+                  _nad_stan:=ZL.STAN;
+                  _nad_sym:=ZL.SYM
+               ?};
+               ZL.cntx_pop();
+
+               {? _nad_rodzaj='Z' & _nad_stan='Z'
+               ||
+::                Jeśli zlecenie nadrzędne jest zleceniem złożonym zamkniętym
+::                i próbuję otworzyć jego podzlecenie to zabraniam tego, ponieważ będą błędy
+                  _can_open:=0;
+                  _msg:='Nie można otworzyć podzlecenia ponieważ jego zlecenie nadrzędne jest zamknięte.'@;
+                  exec('komm_add','zl_common',_msg,1)
+               ?}
+            ?};
+            ~~
+         ?};
+
+         {? _can_open>0
+         ||
+            _ok:=1;
+            {? exec('surnakt','tech_common',3,ZL.ref(),ZL.MASKA) &
+               exec('add_zwar_pos','zl_common','ZO',_ask,_cause,ZL.ref())
+            || _cause:=ZWAR.CAUSE;
+               ZL.cntx_psh();
+               ZL.clear();
+               ZL.STAN:={? ZL.PSTAN='' || 'O' || ZL.PSTAN ?};
+               ZL.NSTAN:=ZL.STAN+'_';
+               ZL.STAT_K:='N';
+               exec('ust_znac','zl_head');
+               {? ZL.put()
+               || _result:=1;
+                  {? ZL.STAN='O' || exec('obl_prod','magazyn_stan',ZL.KTM,ZL.MG,2) ?};
+                  {? ZL.SCEAN<>'' || exec('aktdeazl','magazyn_mob',ZL.SCEAN,ZL.KTM,ZL.STAN) ?};
+::                Aktualizacja obiektu planowanego dotyczacego zlecenia
+                  exec('zl2obj','px_obj');
+
+::                Przywrócenie technologii zlecenia z archiwum
+                  {? ZL.RTKTL<>''
+                  ||
+                     _tktl:=exec('FindAndGet','#table',TKTL,ZL.RTKTL,,"ref()",null());
+
+                     {? _tktl<>null()
+                     || _args:=exec('args_copy','tech_arch');
+                        _args.TKTL_SRC:=_tktl;
+                        _args.DELETE:=1;
+                        _args.TRANS:=1;
+                        _args.DIR:='KARTOTEKA';
+                        _args.COPY_ACT:=0;
+                        _args.MASK_SRC:=ref_name(_tktl)+3;
+                        {? exec('tktl_copy','tech_arch',_args)=0
+                        || exec('komm_add','zl_common','Nie udało się przywrócić technologii zlecenia z archiwum.'@,1)
+                        ?}
+                     ?}
+                  ?}
+               ?};
+               _var:=VAR.A_ZLEC;
+
+               ZL.seek(_var);
+
+               ZLIM.cntx_psh();
+               ZLIM.index('ZN');
+               ZLIM.prefix(ZL.ref(),'T');
+               {? ZLIM.first()
+               ||
+::                Przywracanie zamówień wewnętrznych z archiwum
+                  exec('RestZK_fArch','!tte_pzl_eotw',ZL.ref());
+                  {? ZL.STAN='O' || exec('ZK_N_4_ZL_aKC','zamsiw_nag',ZL.ref(),'T') ?};
+                  VAR.A_ZLEC:=ZL.ref();
+                  {? _rezerw
+                  || {!
+                     |? {? ZLIM.SO='S' & ZLIM.KOR=0 & ZLIM.AKC='T'
+                        || ZLIM.cntx_psh();
+                           ZLIM.index('ZKK');
+                           ZLIM.prefix(ZLIM.ZLEC,ZLIM.LIMIT,ZLIM.NR);
+                           _kor:=0;
+                           {? ZLIM.first() || {! |? _kor+=ZLIM.LIL; ZLIM.next() !} ?};
+                           ZLIM.cntx_pop();
+                           VAR.ZLIM_KOR:=ZLIM.LIL+_kor;
+                           exec('rezerwuj','zamsiw_limit',-1)
+                        ?};
+                        ZLIM.next()
+                     !}
+                  ?}
+               ?};
+::             Oznaczenie surowców w otwartym zleceniu - przywrócenie do planu dostaw
+               ZLIM.prefix(ZL.ref());
+               {? ZLIM.first()
+               || {!
+                  |? {? ZLIM.LIMIT='T' & ZLIM.AKC='Z' | ZLIM.LIMIT='N'
+                     || ZLIM.AKC:='N';
+                        ZLIM.put()
+                     ?};
+                     ZLIM.next()
+                  !}
+               ?};
+               ZLIM.cntx_pop();
+               ZL.cntx_pop();
+               ZL.seek(_var)
+            ?}
+         ?}
+
+      ?};
+      exec('zl_unlock','zl_common',,'N');
+      exec('zl_unlock','zl_common',,'T');
+      exec('zl_unlock','zl_common',,'P');
+      exec('zl_unlock','zl_common',,'L');
+      exec('zl_unlock','zl_common',,'I');
+      exec('zl_unlock','zl_common',,'R');
+      {? _px_tex<>null()
+      || exec('unlock','px_tex',_tex_obj)
+      ?}
+   ?};
+
+   {? _komm || KOMM.select() ?}
+
+?};
+
+ZL.cntx_pop();
+_result
+
+
+\RestZK_fArch
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: jerry [2011]
+:: OPIS: Przywraca z archiwum zamówienia wewnętrzne do limitów zlecenia
+::   WE: _a - ZL.ref()
+::   WY: 0/1 (1-ok)
+::  OLD: \RestZK_fArch/zl_lim01.fml
+::  OLD: \RestZK_fArch/!tte_pzl_ezam.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zlec:={? _>0 & type_of(_a)=type_of(ZL.ref()) || _a || null() ?};
+_result:=0;
+ZK_N.cntx_psh();
+ZL.cntx_psh();
+ZL.clear();
+{? _zlec<>null() & ZL.seek(_zlec)
+|| _names:=ZK_N.names();
+   {? _names.size()>1
+   || _maska:=ZK_N.name();
+      _names.last();
+      {!
+      |? {? _names.NAME+2<>'__'
+         || exec('openz','open_tab',_names.NAME+3);
+            ZK_N.index('ZLALW');
+            ZK_N.prefix(ZL.ref(),'Z','T');
+            {? ZK_N.first()
+            || {!
+               |? exec('zam_arch','zamsiw_wspolne',0);
+                  ZK_N.next()
+               !}
+            ?}
+         ?};
+         _names.prev()
+      !};
+      exec('openz','open_tab',_maska+3)
+   ?}
+?};
+ZK_N.cntx_pop();
+ZL.cntx_pop();
+_result
+
+
+\czy_mat_zl_nakt
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RS [2009+]
+:: OPIS: weryfikacja czy wszystkie indeksy materiałów/półproduktów/produktu zlecenia są aktywne
+::   WE: _a - zlecenie ZL.UNRZL()
+::   WY: 1 - istnieją nieaktywne indeksy materiałowe dla tego zlecenia
+::       0 - brak nieaktywnych indeksów materiałowych dla tego zlecenia
+::  OLD: \czy_mat_zl_nakt/zlec5.fml
+::  OLD: \czy_mat_zl_nakt/!tte_pzl_ezam.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ttab:=sql('
+   select
+      KTMN, SYM, OPIS
+   from :_a
+   group by KTMN,SYM,OPIS',
+      sql('
+         select
+            ZL.UNRZL,
+            case
+               when M2.KTM<>\'\'
+               then M2.KTM || \' \' || \' \' || M2.N
+               else M.KTM || \' \' || M.N
+            end as KTMN,
+            case
+               when M2.A<>\'\'
+               then M2.A
+               else M.A
+            end as A,
+            ZL.SYM,
+            ZL.OPIS
+         from ZL
+            left join M using (ZL.KTM, M.REFERENCE)
+            left join TKTL using (ZL.TKTL, TKTL.REFERENCE)
+            left join TMAT using (TKTL.REFERENCE, TMAT.NRK)
+            left join M as M2 using (TMAT.PT, M2.REFERENCE)
+         where
+            (ZL.UNRZL=:_a or ZL.NRNZL=:_a or ZL.NRPZL=:_a)
+         and
+            ((M.A=\'N\') or (M2.A=\'N\'))
+
+         union all
+
+         select
+            ZL.UNRZL,
+            case
+               when M2.KTM<>\'\'
+               then M2.KTM || \' \' || \' \' || M2.N
+               else M.KTM || \' \' || M.N
+               end as KTMN,
+            case
+               when M2.A<>\'\'
+               then M2.A
+               else M.A
+            end as A,
+            ZL.SYM,
+            ZL.OPIS
+         from ZL
+            left join M using (ZL.KTM, M.REFERENCE)
+            left join ZLIM using (ZL.REFERENCE, ZLIM.ZLEC)
+            left join M as M2 using (ZLIM.KTM, M2.REFERENCE)
+         where
+            (ZL.UNRZL=:_a or ZL.NRNZL=:_a or ZL.NRPZL=:_a)
+         and
+            ((M.A=\'N\') or (M2.A=\'N\'))
+      ',_a));
+
+{? _ttab.first()
+|| KOMM.sect_beg('Nieaktywne indeksy materiałowe blokujące awaryjne otwarcie zlecenia:'@,,,1);
+   {!
+   |? KOMM.add(_ttab.KTMN,2);
+      _ttab.next()
+   !};
+::   KOMM.select();
+   return(1)
+|| return(0)
+?}
+
+
+\clean
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [19.42]
+:: OPIS: Funkcja czyszcząca czynności - w razie potrzeby jak nie ma rekordu kluczowego zrobi done albo cancel
+::       Dodatkowo może być wywoływana przez czynność czyszczącą zadania na TODO
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: obj_new() - obiekt wynikowy
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+_in:=params_get().in;
+_out:=params_get().out;
+
+_can_continue:=1;
+_obj:=obj_new('RESULT','ZL');
+_obj.RESULT:=0;
+_obj.ZL:=null();
+
+_keyRefs:=_mp.getRefs();
+
+{? obj_len(_keyRefs)>0
+||
+   {! _it:=1.. obj_len(_keyRefs)
+   |! _kref:=_keyRefs[_it];
+
+      {? type_of(_kref)>0
+      ||
+         {? ref_name(_kref)=ZL.name()
+         || _obj.ZL:=exec('FindAndGet','#table',ZL,_kref,,,null());
+
+            {? _obj.ZL=null()
+            ||
+::             Nie znaleziono rekordu kluczowego powiązanego ze zleceniem, więc robię error
+               _can_continue:=0;
+               exec('zl_deleted_in_proc','zl_common',_mp)
+            ||
+::             Sprawdzenie stanu zlecenia, jeżeli jest już otwarte, to done()
+               _komm:=1;
+               {? _mp.isGroup() | _mp.CLEANER
+               || _komm:=0
+               ?};
+               {? exec('FindAndGet','#table',ZL,_obj.ZL,,"STAN='O'",0)
+               || _can_continue:=0;
+                  {? _komm || KOMM.init(250,,'Awaryjne otwarcie zlecenia'@) ?};
+                  {? _mp.CLEANER=0 || exec('komm_add','zl_common','Zlecenie jest już otwarte.'@,1) ?};
+                  {? _komm || KOMM.select() ?};
+                  _mp.save(exec('kind_out','#b_port'),'ZL',_obj.ZL);
+                  _mp.done()
+               ?}
+            ?}
+         ?}
+      ?}
+   !}
+?};
+
+{? _can_continue>0
+||
+:: jest parametr wejściowy ZL
+   {? _obj.ZL=null() & var_pres('ZL',_in)=type_of(null())
+   || _obj.ZL:=_in.ZL
+   ?}
+?};
+
+{? _can_continue>0
+|| _obj.RESULT:=1
+?};
+
+_obj
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:38 884fdbe760fa3bbc9ca791074ff5dbb7004f764a7e8de9e6a5d0bd997baf597d5922101802f399dceeb376c998c006aac7ccd804b6a2cd107fcf74f2913a7be424db545c9671c29fbf45c11c830b650a6649beb1c63e8e32c309c7f8f0b6db365b5ea7153340c829ee53f1ade00e8ae273d4748bd45aadee33cc1fb0ac0081fc

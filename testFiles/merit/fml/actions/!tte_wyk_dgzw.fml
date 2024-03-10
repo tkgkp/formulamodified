@@ -1,0 +1,714 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: !tte_wyk_dgzw.fml
+:: Utworzony: 07.08.2017
+:: Autor: TS
+::======================================================================================================================
+:: Zawartość: Formuły czynności TTE_WYK_DGZW - Generowanie zwrotów surowca
+::                                             (Generowanie rozliczenia surowców zlecenia)
+::            UWAGA: w przypadku modyfikacji uwzględniać też czynności: TTE_WYK_DGRW, TTE_WYK_DGRO
+::======================================================================================================================
+
+
+\main
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Główna formuła czynności generowania rozliczenia odpadów zlecenia (TTE_WYK_DGZW)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+_int:=params_get().int;
+_out:=params_get().out;
+_mp:=params_get().mp;
+_context:=params_get().context;
+
+::# permissions=ODDZ,LMG
+::# parses=exec('parses','!tte_wyk_dgzw')
+::# properties=SERVICE,LOOP
+::# condition=Rejestracja dokumentu przyjęcia, act_uid=LMG_MAG_DAPZ, auto=T, formula=_a.ND<>~~ & _a.ND<>null()
+
+:: PARAMETRY WE:
+::# kind=WE, symbol=ZL, type=_ZL, name=Zlecenie, required=N, keyref=T
+::# kind=WE, symbol=TYPYDOK, type=_TYPYDOK, name=Typ dokumentu przychodowego, required=N, keyref=N, fml_val="exec('typ_dok','!tte_wyk_dgro')", fml_exp="exec('typydok_export','magdok_nag',_a)"
+::# kind=WE, symbol=GEN_DOK, type=STRING, name=Generacja dokumentów, required=N
+::# kind=WE, symbol=GROP, type=_GROP, name=Grupa operacji, required=N, keyref=T
+{? var_pres('ZL',_in)<>type_of(~~) & var_pres('ZL',_in)<>type_of(null())
+|| FUN.emsg('Nieprawidłowa definicja czynności %1 (brak parametru wejściowego %2).'@['TTE_WYK_DGZW','ZL']);
+   return()
+|? _in.ZL=~~
+|| _in.ZL:=null()
+::   {? _mp.akcja()='GENERUJ'
+::   || _in.ZL:=_context.ZL
+::   || _in.ZL:=null()
+::   ?}
+?};
+{? var_pres('TYPYDOK',_in)<>type_of(~~) & var_pres('TYPYDOK',_in)<>type_of(null())
+|| FUN.emsg('Nieprawidłowa definicja czynności %1 (brak parametru wejściowego %2).'@['TTE_WYK_DGZW','TYPYDOK']);
+   return()
+|? _in.TYPYDOK=~~
+|| _in.TYPYDOK:=null()
+?};
+{? var_pres('GEN_DOK',_in)<>type_of(~~) & var_pres('GEN_DOK',_in)<>type_of('')
+|| FUN.emsg('Nieprawidłowa definicja czynności %1 (brak parametru wejściowego %2).'@['TTE_WYK_DGZW','GEN_DOK']);
+   return()
+|? _in.GEN_DOK=~~
+|| _in.GEN_DOK:=''
+?};
+{? var_pres('GROP',_in)<>type_of(~~) & var_pres('GROP',_in)<>type_of(null())
+|| FUN.emsg('Nieprawidłowa definicja czynności %1 (brak parametru wejściowego %2).'@['TTE_WYK_DGRW','GROP']);
+   return()
+|? _in.GROP=~~
+|| _in.GROP:=null()
+?};
+
+:: PARAMETRY WEW:
+::# kind=WEW, symbol=ND, type=_ND, name=Dokument przychodowy, required=N
+{? var_pres('ND',_int)<>type_of(~~) & var_pres('ND',_int)<>type_of(null())
+|| FUN.emsg('Nieprawidłowa definicja czynności %1 (brak parametru wewnętrznego %2).'@['TTE_WYK_DGZW','ND']);
+   return()
+|? _int.ND=~~
+|| _int.ND:=null()
+?};
+
+:: PARAMETRY WY:
+::# kind=WY, symbol=ZL, type=_ZL, name=Zlecenie, required=N
+::# kind=WY, symbol=ND, type=_ND, name=Dokument przychodowy, required=N
+::# kind=WY, symbol=GEN_DOK, type=STRING, name=Generacja dokumentów, required=N
+::# kind=WY, symbol=RESULT, type=STRING, name="Wynik czynności (OK, BŁĄD)", required=N
+
+:: Ustawiam wartość domyślną argumentu LOOP żeby brama się nie zawiesiła
+_mp.save(exec('kind_out','#b_port'),'LOOP','N');
+
+:: Czy komunikaty walidacji na ekran
+_display:={? _mp.isService() || 0 || 1 ?};
+
+:: WSTĘPNE WALIDACJE
+_keyRefs:=_mp.getRefs();
+{? obj_len(_keyRefs)>0
+|| {! _it:=1..obj_len(_keyRefs)
+   |! _kref:=_keyRefs[_it];
+      {? type_of(_kref)>0
+      || {? ref_name(_kref)=ZL.name()
+         || _zl:=exec('FindAndGet','#table',ZL,_kref,,,null());
+            {? _zl=null()
+            ||
+::             Nie znaleziono rekordu kluczowego powiązanego ze zleceniem, więc robię error
+               _can_continue:=0;
+               exec('zl_deleted_in_proc','zl_common',_mp);
+               return()
+            ?}
+         |? ref_name(_kref)=GROP.name()
+         || _grop:=exec('FindAndGet','#table',GROP,_kref,,,null());
+            {? _grop=null()
+            ||
+::             Nie znaleziono rekordu kluczowego powiązanego z grupą, więc robię error
+               _can_continue:=0;
+               exec('grop_deleted_in_proc','zl_common',_mp);
+               return()
+            ?}
+         ?}
+      ?}
+   !}
+?};
+:: Zlecenie musi być produkcyjne
+::{? _in.ZL<>null() & exec('FindAndGet','#table',ZL,_in.ZL,,"TYP().WP='W'",1)
+::|| _msg:='Błędna konfiguracja procesu — zlecenie nie może być warsztatowe.'@@;
+::   {? _display || {? _mp.isGroup() || KOMM.add(_msg) || FUN.emsg(_msg) ?} ?};
+::   _mp.error(_msg);
+::   return()
+::?};
+:: Musi być conajmniej jeden parametr przekazany (chyba, że jest już coś wygenerowane, czyli _int.ND<>null())
+:: (chyba, że uruchomienie jako czynność startowa z pulpitu)
+{? _in.ZL=null() & _in.GROP=null() & _in.GEN_DOK='' & _int.ND=null() & ~_mp.pathProc()
+|| _msg:='Błędna konfiguracja procesu — brak parametru wejściowego (musi być określony %1, %2 albo %3).'@@
+      ['ZL','GROP','GEN_DOK'];
+   {? _display || {? _mp.isGroup() || KOMM.add(_msg) || FUN.emsg(_msg) ?} ?};
+   _mp.error(_msg);
+   return()
+?};
+:: Walidacja typu dokumentu
+{? _in.TYPYDOK
+|| _in_typ:=exec('FindAndGet','#table',TYPYDOK,_in.TYPYDOK,,"T",'');
+   {? (' '+exec('get','#params',500709,2))*(' '+_in_typ+' ')=0
+   || _msg:='Błędna konfiguracja procesu — przekazany typ dokumentu %1 nie jest wskazany w parametrze %2.'@@[_in_typ,'500709'];
+      {? _display || {? _mp.isGroup() || KOMM.add(_msg) || FUN.emsg(_msg) ?} ?};
+      _mp.error(_msg);
+      return()
+   ?}
+?};
+:: Czynność w trybie usługi musi dotyczyć konkretnego zlecenia/grupy
+{? _mp.isService() & ~_in.ZL & ~_in.GROP & _in.GEN_DOK=''
+|| _msg:='Błędna konfiguracja procesu — nie przekazano zlecenia lub grupy operacji.'@@;
+   _mp.error(_msg);
+   return()
+?};
+
+{? _in.ZL
+|| _mp.keyRef(exec('FindAndGet','#table',ZL,_in.ZL,,"uidref()",''))
+|? _in.GROP
+|| _mp.keyRef(exec('FindAndGet','#table',GROP,_in.GROP,,"uidref()",''))
+?};
+
+::_zl_sym:=exec('FindAndGet','#table',ZL,_in.ZL,,"SYM",'');
+
+:: Przekazany parametr _int.ND, czyli powstały już dokumenty, ale czynność się nie zakończyła
+:: (np. zamknięcie programu "krzyzykiem")
+{? _mp.loop()=0 & _int.ND
+|| _gen_dok:=exec('FindAndGet','#table',ND,_int.ND,,"GRP_KEY",'');
+:: Zapisanie parametru wyjściowego ND, wykluczenie kolejnej realizacji z pętli, zakończenie czynności
+   {? _gen_dok<>''
+   ||
+      ND.cntx_psh();
+      ND.prefix();
+      _grp_key:=_gen_dok-1;
+      _grp_key_on:=_grp_key+'1';
+      _grp_key_off:=_grp_key+'0';
+      {? _grp_key<>''
+      || ND.index('GRP_KEY');
+         ND.prefix(_grp_key_on);
+         {? ND.first()
+         || ND.cntx_psh();
+            ND.prefix();
+            ND.GRP_KEY:=_grp_key_off;
+            do();
+            ND.put();
+            _mp.save(exec('kind_out','#b_port'),'ND',ND.ref());
+            _mp.save(exec('kind_out','#b_port'),'GEN_DOK',_gen_dok);
+            _mp.save(exec('kind_out','#b_port'),'RESULT','OK');
+            end();
+            ND.cntx_pop();
+::          kontynuacja pętli
+            {? ND.first()
+            || _mp.loop_continue()
+            ?}
+         ?}
+      ?};
+      ND.cntx_pop();
+      _mp.done()
+   ?}
+
+:: Przekazany tylko parametr _in.ZL, wejscie z ToDo, czyli wyświetlenie panela do rozliczania
+|? _in.ZL & _mp.pathTodo()
+|| ZL.cntx_psh();
+   ZL.prefix();
+   {? ZL.seek(_in.ZL)
+   || __ENV_GEN:=exec('env_gen','zl_limit','ZWR');
+      {? ZL.STAN<>'O'
+      || FUN.emsg('Zlecenie do rozliczenia musi być otwarte.'@)
+      || KOMM.init(,,'Rozliczenie zwrotu surowców zlecenia'@);
+         _zlec:=VAR.A_ZLEC;
+         VAR.A_ZLEC:=ZL.ref();
+         exec('find_zl','zl_nlimit');
+         exec('select_gen','zl_limit');
+         VAR.A_ZLEC:=_zlec
+      ?};
+      VAR_DEL.delete('__ENV_GEN')
+   ?};
+   ZL.cntx_pop()
+:: Przekazany tylko parametr _in.GROP, wejscie z ToDo, czyli wyświetlenie panela do rozliczania
+|? _in.GROP & _mp.pathTodo()
+|| GROP.cntx_psh();
+   GROP.prefix();
+   {? GROP.seek(_in.GROP)
+   || __ENV_GEN:=exec('env_gen','zl_limit','ZWR_GROP');
+      {? GROP.STATUS<>'O'
+      || FUN.emsg('Grupa operacji do rozliczenia musi być otwarta.'@)
+      |? GROP.AKC<>'T'
+      || FUN.emsg('Grupa operacji do rozliczenia musi być zaakceptowana.'@)
+      || KOMM.init(,,'Rozliczenie zwrotu surowców grupy'@);
+         _grupa:=VAR.A_GROP;
+         VAR.A_GROP:=GROP.ref();
+         exec('find_grop','zl_grop');
+         exec('select_gen','zl_limit');
+         VAR.A_GROP:=_grupa
+      ?};
+      VAR_DEL.delete('__ENV_GEN')
+   ?};
+   GROP.cntx_pop()
+
+:: Przekazany parametr _in.ZL, czyli generowanie dokumentów rozliczających do zlecenia
+:: Przekazany parametr _in.GROP, czyli generowanie dokumentów rozliczających do grupy operacji
+:: Kolejny obrót pętli generatora, czyli wypychanie wygenerowanych dokumentów
+|? _in.ZL | _in.GROP | _mp.loop()>0
+||
+:: Wyzwalacz, który po dodaniu/aktualizacji/usunięciu nagłówka dokumentu rozliczającego
+:: dodaje/usuwa/aktualizuje parametr wewnętrzny _int.ND
+   _mp.trigRef('ND',,1,,exec('kind_internal','#b_port'),'ND');
+
+   _continue:=0;
+   _gen_dok:='';
+   _typydok:={? var_pres('TYPYDOK',_in)=type_of(null()) || _in.TYPYDOK || null() ?};
+
+:: pierwsze wywołanie dla zlecenia
+   {? _mp.loop()=0 & _in.ZL
+   ||
+      {? _mp.akcja()='GENERUJ'
+      || params_set('env_gen',_mp.context.ENV_GEN);
+         _tm_stamp:=exec('gen_ra','zl_nlimit',_in.TYPYDOK);
+
+         {? _tm_stamp='y'
+         || _continue:=-3
+         || _internal:=_mp.load(exec('kind_internal','#b_port'));
+            _continue:={? var_pres('ND',_internal)=type_of(null()) & _internal.ND || 1 || -1 ?};
+            {? _continue=1 || _gen_dok:=exec('FindAndGet','#table',ND,_internal.ND,,"GRP_KEY",'') ?}
+         ?}
+
+      |? _mp.isAutoRun()
+         | _mp.isService()
+         | _mp.pathTodo()
+      ||
+         KOMM.init(250,,'Generowanie zwrotów'@);
+         {? ~_in.TYPYDOK & _mp.pathTodo() & ~_mp.isService() & ~_mp.isAutoRun()
+         || _in.TYPYDOK:=exec('typ_dok','!tte_wyk_dgzw')
+         |?  ~_in.TYPYDOK &  (_mp.isService() | _mp.isAutoRun())
+         || _in.TYPYDOK:=exec('Get_TYPYDOK','magdok_wspolne','ZWR');
+            {? _in.TYPYDOK=null()
+            || _msg:='Brak określonego domyślnego typu dokumentu zwrotu surowców ze zlecenia (parametry %1, %2). '
+                        'Dokument przyjęcia zwracanych surowców nie został utworzony.'@['500709','500710'];
+               KOMM.add(_msg,7,,1)
+            ?}
+         ?};
+
+         {? ~_in.TYPYDOK
+         || _continue:=-1
+         ||
+            do();
+            _tm_stamp:='';
+            ZL.cntx_psh();
+            ZL.prefix();
+            {? ZL.seek(_in.ZL)
+            || __ENV_GEN:=exec('env_gen','zl_limit','ZWR');
+               {? ZL.STAN<>'O'
+               || _msg:='Zlecenie do rozliczenia musi być otwarte.'@;
+                  KOMM.add(_msg,7,,1)
+               || params_set('env_gen',__ENV_GEN);
+                  _zlec:=VAR.A_ZLEC;
+                  VAR.A_ZLEC:=ZL.ref();
+                  exec('find_zl','zl_nlimit');
+                  _tm_stamp:=_tm_stamp:=exec('gen_dok','zl_nlimit',_in.TYPYDOK);
+                  VAR.A_ZLEC:=_zlec
+               ?};
+               VAR_DEL.delete('__ENV_GEN')
+            ?};
+            ZL.cntx_pop();
+            {? _tm_stamp='' || undo() ?};
+            end();
+            {? _tm_stamp='y'
+            || _continue:=-3
+            || _internal:=_mp.load(exec('kind_internal','#b_port'));
+               _continue:={? var_pres('ND',_internal)=type_of(null()) & _internal.ND || 1 || -1 ?};
+               {? _continue=1 || _gen_dok:=exec('FindAndGet','#table',ND,_internal.ND,,"GRP_KEY",'') ?}
+            ?}
+         ?};
+         {? _mp.isAutoRun() || {? _continue<>1 || KOMM.select() ?}
+         |? _mp.pathTodo() || KOMM.select()
+         ?}
+      || _mp.error('Nieobsługiwana ścieżka wywołania czynności %1.'@@['TTE_WYK_DGZW/ZL'])
+      ?}
+:: pierwsze wywołanie dla grupy
+   |? _mp.loop()=0 & _in.GROP
+   ||
+      {? _mp.akcja()='GENERUJ'
+      || params_set('env_gen',_mp.context.ENV_GEN);
+         _tm_stamp:=exec('gen_ra','zl_nlimit',_in.TYPYDOK);
+
+         {? _tm_stamp='y'
+         || _continue:=-3
+         || _internal:=_mp.load(exec('kind_internal','#b_port'));
+            _continue:={? var_pres('ND',_internal)=type_of(null()) & _internal.ND || 1 || -1 ?};
+            {? _continue=1 || _gen_dok:=exec('FindAndGet','#table',ND,_internal.ND,,"GRP_KEY",'') ?}
+         ?}
+
+      |? _mp.isAutoRun()
+         | _mp.isService()
+         | _mp.pathTodo()
+      ||
+         KOMM.init(250,,'Generowanie zwrotów'@);
+         {? ~_in.TYPYDOK & _mp.pathTodo() & ~_mp.isService() & ~_mp.isAutoRun()
+         || _in.TYPYDOK:=exec('typ_dok','!tte_wyk_dgzw')
+         |?  ~_in.TYPYDOK &  (_mp.isService() | _mp.isAutoRun())
+         || _in.TYPYDOK:=exec('Get_TYPYDOK','magdok_wspolne','ZWR');
+            {? _in.TYPYDOK=null()
+            || _msg:='Brak określonego domyślnego typu dokumentu zwrotu surowców ze zlecenia (parametry %1, %2). '
+                        'Dokument przyjęcia zwracanych surowców nie został utworzony.'@['500709','500710'];
+               KOMM.add(_msg,7,,1)
+            ?}
+         ?};
+
+         {? ~_in.TYPYDOK
+         || _continue:=-1
+         ||
+            do();
+            _tm_stamp:='';
+            GROP.cntx_psh();
+            GROP.prefix();
+            {? GROP.seek(_in.GROP)
+            || __ENV_GEN:=exec('env_gen','zl_limit','ZWR_GROP');
+               {? GROP.STATUS<>'O'
+               || _msg:='Grupa operacji do rozliczenia musi być otwarta.'@;
+                  KOMM.add(_msg,7,,1)
+               |? GROP.AKC<>'T'
+               || _msg:='Grupa operacji do rozliczenia musi być zaakceptowana.'@;
+                  KOMM.add(_msg,7,,1)
+               || params_set('env_gen',__ENV_GEN);
+                  _grupa:=VAR.A_GROP;
+                  VAR.A_GROP:=GROP.ref();
+                  exec('find_grop','zl_grop');
+                  _tm_stamp:=exec('gen_dok','zl_nlimit',_in.TYPYDOK);
+                  VAR.A_GROP:=_grupa
+               ?};
+               VAR_DEL.delete('__ENV_GEN')
+            ?};
+            GROP.cntx_pop();
+            {? _tm_stamp='' || undo() ?};
+            end();
+            {? _tm_stamp='y'
+            || _continue:=-3
+            || _internal:=_mp.load(exec('kind_internal','#b_port'));
+               _continue:={? var_pres('ND',_internal)=type_of(null()) & _internal.ND || 1 || -1 ?};
+               {? _continue=1 || _gen_dok:=exec('FindAndGet','#table',ND,_internal.ND,,"GRP_KEY",'') ?}
+            ?}
+         ?};
+         {? _mp.isAutoRun() || {? _continue<>1 || KOMM.select() ?}
+         |? _mp.pathTodo() || KOMM.select()
+         ?}
+      || _mp.error('Nieobsługiwana ścieżka wywołania czynności %1.'@@['TTE_WYK_DGZW/GROP'])
+      ?}
+
+:: wywołanie w pętli
+   || _continue:=_in.GEN_DOK<>'';
+      {? _continue || _gen_dok:=_in.GEN_DOK ?}
+   ?};
+
+:: Wycofano się z wystawiania dokumentów / nie ustalono typu dokumentu
+   {? _continue=-1
+   || {? _mp.isService()
+      || _mp.save(exec('kind_out','#b_port'),'RESULT','BŁĄD');
+         _mp.done()
+      || _mp.cancel()
+      ?}
+
+:: Dokumenty rozliczające już wcześniej wystawione
+::   |? _continue=-2
+::   || {? _mp.isService()
+::      || _mp.save(exec('kind_out','#b_port'),'RESULT','BŁĄD');
+::         _mp.done()
+::      || _mp.done()
+::      ?}
+
+:: Nie potrzeba generować dokumentów (brak surowców, do których można wygenerować zwrot)
+   |? _continue=-3
+   || {? _mp.isService()
+      || _mp.save(exec('kind_out','#b_port'),'RESULT','OK');
+         _mp.done()
+      || _mp.done()
+      ?}
+
+:: Zapisanie parametru wyjściowego ND, wykluczenie kolejnej realizacji z pętli, zakończenie czynności
+   |? _continue=1 & _gen_dok<>''
+   ||
+      ND.cntx_psh();
+      ND.prefix();
+      _grp_key:=_gen_dok-1;
+      _grp_key_on:=_grp_key+'1';
+      _grp_key_off:=_grp_key+'0';
+      {? _grp_key<>''
+      || ND.index('GRP_KEY');
+         ND.prefix(_grp_key_on);
+         {? ND.first()
+         || ND.cntx_psh();
+            ND.prefix();
+            ND.GRP_KEY:=_grp_key_off;
+            do();
+            ND.put();
+            _mp.save(exec('kind_out','#b_port'),'ND',ND.ref());
+            _mp.save(exec('kind_out','#b_port'),'GEN_DOK',_gen_dok);
+            _mp.save(exec('kind_out','#b_port'),'RESULT','OK');
+            end();
+            ND.cntx_pop();
+::          kontynuacja pętli
+            {? ND.first()
+            || _mp.loop_continue()
+            ?}
+         ?}
+      ?};
+      ND.cntx_pop();
+      _mp.done()
+
+   || _mp.error('Brak oczekiwanego parametru %1.'@@['GEN_DOK'])
+   ?}
+
+:: Uruchomienie ze startu procesów
+|? _mp.pathProc()
+||
+   _choice:=FUN.choice('Generować zwroty do:'@,,'Zlecenia'@,'Grupy operacji'@);
+   {? _choice=1
+   || ZL.cntx_psh();
+      ZL.clear();
+      _join:='join ZTP left join ZL as ZLNAD using(ZL.NRNZL,ZLNAD.UNRZL)';
+      _where:=
+         'ZL.STAN=''O'' and '
+::      'ZTP.WP=''P'' and '
+         'ZL.RODZAJ=''P'' and '
+         '(ZL.LEVEL=0 or ZL.LEVEL=1) and '
+         '(ZL.NRNZL=0 or ZL.NR=1 or ZLNAD.RODZAJ=''N'') '
+      ;
+      ZL.f_set('SYM',_join,_where);
+      exec('icons_slo_sl','zl_head');
+      ZL.win_sel('SLO_SL');
+      ZL.actions('SLO_SL','XY','W');
+      {? ZL.select()
+      || exec('action_zw_generate','!tte_wyk_dgzw')
+      ?};
+      ZL.cntx_pop()
+   |? _choice=2
+   || GROP.cntx_psh();
+      GROP.clear();
+      _join:='';
+      _where:=
+         'GROP.STATUS=''O'' and '
+         'GROP.AKC=''T'' '
+      ;
+      GROP.f_set('KOD',_join,_where);
+      GROP.win_sel('SLO');
+      {? GROP.select()
+      || exec('action_zw_generate','!tte_wyk_dgzw',1)
+      ?};
+      GROP.cntx_pop()
+   ?}
+
+|| _mp.error('Nieobsługiwana ścieżka wywołania czynności %1.'@@['TTE_WYK_DGZW'])
+?};
+~~
+
+
+\desc
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Opis dla czynności generowania rozliczenia odpadów (TTE_WYK_DGRO)
+::       UWAGA: do pobrania parametrów stosować params_get() = tablica nazwana:
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: zwraca opis Zadania
+::----------------------------------------------------------------------------------------------------------------------
+_mp:=params_get().mp;
+
+_keyRefs:=_mp.getRefs();
+_in:=_mp.load(exec('kind_in','#b_port'));
+_int:=_mp.load(exec('kind_internal','#b_port'));
+
+_desc:='';
+_zl:=null();
+_grop:=null();
+_nd_int:=null();
+
+:: jest rekord kluczowy to ustawiam odpowiedniego ZL
+{? var_pres('[1]',_keyRefs)
+|| {? ref_name(_keyRefs[1])=ZL.name()
+   || _zl:=exec('FindAndGet','#table',ZL,_keyRefs[1])
+   |? ref_name(_keyRefs[1])=GROP.name()
+   || _grop:=exec('FindAndGet','#table',GROP,_keyRefs[1])
+   ?}
+:: jest parametr wejściowy to ustawiam odpowiedniego ZL
+|? var_pres('ZL',_in)=type_of(null())
+|| _zl:=_in.ZL
+|? var_pres('GROP',_in)=type_of(null())
+|| _grop:=_in.GROP
+?};
+
+:: jest parametr wewnętrzny to ustawiam odpowiedniego ND
+{? var_pres('ND',_int)=type_of(null())
+|| _nd_int:=_int.ND
+?};
+
+_desc:='';
+{? _nd_int<>null()
+|| {? _zl<>null()
+   || _desc:='Zakończ rozliczenie zwrotów do zlecenia %1'@@[exec('record','#to_string',_zl)]
+   |? _grop<>null()
+   || _desc:='Zakończ rozliczenie zwrotów do grupy operacji %1'@@[exec('record','#to_string',_grop)]
+   || _desc:='Zakończ rozliczenie zwrotów'@@
+   ?}
+|| {? _zl<>null()
+   || _desc:='Wygeneruj rozliczenie zwrotów do zlecenia %1'@@[exec('record','#to_string',_zl)]
+   |? _grop<>null()
+   || _desc:='Wygeneruj rozliczenie zwrotów do grupy operacji %1'@@[exec('record','#to_string',_grop)]
+   || _desc:='Wygeneruj rozliczenie zwrotów'@@
+   ?}
+?};
+_desc
+
+
+\action_zw_generate
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Wyświetla panel rozliczania zwrotu surowców dla zleceń
+::   WE: [_a] - INTEGER - miejsce uruchomienia: [0] - zlecenia (ZL), 1 - grupy operacji (GROP)
+::----------------------------------------------------------------------------------------------------------------------
+_where:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+_tab:={? _where=0 || ZL || GROP ?};
+{? _tab.sel_size()=0
+|| _f500709:=exec('get','#params',500709,2);
+   {? _f500709=''
+   || FUN.emsg('Nie ustawiono parametru %1.\nNależy uzupełnić konfigurację systemu.'@['500709']);
+      return()
+   ?};
+   VAR_DEL.delete('__ENV_GEN');
+   __ENV_GEN:=exec('env_gen','zl_limit',{? _where=0 || 'ZWR' || 'ZWR_GROP'?})
+?};
+
+{? _where=0 & ZL.STAN<>'O'
+|| {? _tab.sel_size()=0 || FUN.emsg('Zlecenie do rozliczenia musi być otwarte.'@) ?}
+|? _where=1 & GROP.STATUS<>'O'
+|| {? _tab.sel_size()=0 || FUN.emsg('Grupa operacji do rozliczenia musi być otwarta.'@) ?}
+|? _where=1 & GROP.AKC<>'T'
+|| {? _tab.sel_size()=0 || FUN.emsg('Grupa operacji musi być zaakceptowana.'@) ?}
+|| {? _tab.sel_size()=0
+   || _title:={? _where=0 || 'Rozliczenie zwrotu surowców zlecenia'@ || 'Rozliczenie zwrotu surowców grupy'@ ?};
+      KOMM.init(,,_title)
+   ?};
+   {? _where=0
+   || exec('find_zl','zl_nlimit')
+   || exec('find_grop','zl_grop')
+   ?};
+   {? _tab.sel_size()=0
+   || exec('select_gen','zl_limit');
+      VAR_DEL.delete('__ENV_GEN','__ZLIM4LIM')
+   ?}
+?};
+~~
+
+
+\action_zw_generate_group_before
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Przed akcją grupową - obsługa panela zwrotu surowców dla zlecenia
+::   WE: [_a] - INTEGER - miejsce uruchomienia: [0] - zlecenia (ZL), 1 - grupy operacji (GROP)
+::----------------------------------------------------------------------------------------------------------------------
+_where:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+_f500709:=exec('get','#params',500709,2);
+{? _f500709=''
+|| FUN.emsg('Nie ustawiono parametru %1.\nNależy uzupełnić konfigurację systemu.'@['500709']);
+   0
+|| KOMM.init(,,'Rozliczenie zwrotu surowców'@);
+   VAR_DEL.delete('__ENV_GEN');
+   __ENV_GEN:=exec('env_gen','zl_limit',{? _where=0 || 'ZWR' || 'ZWR_GROP' ?});
+   {? _where=0
+   ||
+::    Jeżeli zaznaczony nagłówek zlecenia złożonego, to odznaczam jego zlecenia podrzędne
+      _tabsel:=ZL.sel_aget();
+      ZL.cntx_psh();
+      ZL.prefix();
+      {? _tabsel.first()
+      || {!
+         |?
+            {? ZL.seek(_tabsel.REF)
+            || {? ZL.RODZAJ='Z'
+               || ZL.cntx_psh();
+                  ZL.index('NRNZL');
+                  ZL.prefix(ZL.UNRZL);
+                  {? ZL.first()
+                  || {!
+                     |?
+                        {? ZL.sel_mark()>0
+                        || ZL.sel_del()
+                        ?};
+                        ZL.next()
+                     !}
+                  ?};
+                  ZL.cntx_pop()
+               ?}
+            ?};
+            _tabsel.next()
+         !}
+      ?};
+      ZL.cntx_pop()
+   ?};
+   1
+?}
+
+
+\action_zw_generate_group_after
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Po akcji grupowej - obsługa panela zwrotu surowców dla zlecenia
+::   WE: [_a] - INTEGER - miejsce uruchomienia: [0] - zlecenia (ZL), 1 - grupy operacji (GROP)
+::----------------------------------------------------------------------------------------------------------------------
+_where:={? var_pres('_a')=type_of(0) || _a || 0 ?};
+exec('select_gen','zl_limit');
+VAR_DEL.delete('__ENV_GEN','__ZLIM4LIM');
+~~
+
+
+\typ_dok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Selekcja typów dokumentów magazynowych (dla parametru wejściowego czynności oraz wyboru typu w czynności)
+::----------------------------------------------------------------------------------------------------------------------
+_TypDok:=exec('get','#params',500709,2);
+{? _TypDok<>''
+|| _Typdok:=gsub(form(_TypDok),' ','\',\'');
+   _TypDok:='\''+_Typdok+'\'';
+   _warunek:='"TYPYDOK".T in ('+_TypDok+') '
+|| _warunek:='0=1'
+?};
+exec('typ_dok','lmg',_warunek,,,0,0,
+   'Nie ustawiono parametru %1.\nNależy uzupełnić konfigurację systemu.'@['500709'],,,,-1
+)
+
+
+\parses
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: TS [23.25]
+:: OPIS: Formuła ustala PARSES
+::   WE: UWAGA. Do pobrania parametrów stosować params_get() = tablica nazwana:
+::       in  - [obj_new] - parametry wejściowe czynności
+::       int - [obj_new] - parametry wewnętrzne czynności
+::       out - [obj_new] - parametry wyjściowe czynności
+::       mp  - obiekt odpowiedzialny za obsługę procesu
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_in:=params_get().in;
+
+_result:=0;
+
+:: Jeżeli jest zlecenie, to oddział wg niego, reszta dziedziczona
+{? var_pres('ZL',_in)=type_of(null()) & _in.ZL
+|| ZL.cntx_psh();
+   ZL.prefix();
+   {? ZL.seek(_in.ZL)
+   || __PARSES.setVal('OddzialLogProd',ZL.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LMG';
+      _args.AR:=date()~1;
+      _args.AM:=date()~2;
+      __PARSES.setVal('OkresRok',_args);
+      _result:=1
+   ?};
+   ZL.cntx_pop()
+:: Jeżeli jest grupa, to oddział wg niej, reszta dziedziczona
+|? var_pres('GROP',_in)=type_of(null()) & _in.GROP
+|| GROP.cntx_psh();
+   GROP.prefix();
+   {? GROP.seek(_in.GROP)
+   || __PARSES.setVal('OddzialLogProd',GROP.ODDZ);
+      _args:=__PARSES.args('OkresRok');
+      _args.OBSZAR:='LMG';
+      _args.AR:=date()~1;
+      _args.AM:=date()~2;
+      __PARSES.setVal('OkresRok',_args);
+      _result:=1
+   ?};
+   GROP.cntx_pop()
+
+:: Nic nie ustawiamy, ale zwracamy 1, w formule przy braku parametrów wejściowych zostanie zgłoszony błąd
+|| _result:=1
+?};
+
+_result
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:09:41 b8eeb63d54f1c7633749e19279d6292caf5040d97b68a98414cc03269e70f2e905b4c2fdce09240eaddd804de4069b9b8bb4d45490dc9d34ba17b9109cf16b0ab9937613b7f661f5a2f160bfed0807d5af022bc40be969e2f19f7c97e6f0c28553f98c136679769a68b87c2607192154a29041d7b223709b079a64388a12eb06

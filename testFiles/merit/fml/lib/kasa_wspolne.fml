@@ -1,0 +1,2256 @@
+﻿:!UTF-8
+:: (c) Macrologic S.A. Wszelkie prawa zastrzeżone
+::======================================================================================================================
+:: Nazwa pliku: kasa_wspolne.fml
+:: Utworzony: 08.02.2016
+:: Autor: AWI
+::======================================================================================================================
+:: Zawartość: Obsługa kasy - wspólne formuły
+::======================================================================================================================
+
+
+\list_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [--.--]
+:: OPIS: jak się uda zamienić widok pola STANKAS.CZY_KASA na checkbox to usunąć funkcję
+::   WE:
+::   WY:
+::  OLD: \list_wal/pom.fml
+::----------------------------------------------------------------------------------------------------------------------
+_z:=0; _w:='';
+{! _x:=1.._
+|! _z:=(fld=_[_x])|_z;
+   _w+=_[_x]+', '
+!};
+{? _z=0
+|| FUN.info('\nNiedozwolona wartość pola\n\nDozwolone wartości: %1.'@[_w-2]);
+   0
+|| 1
+?}
+
+
+\akt_bo
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [8.70]
+:: OPIS: Aktualizuje bilans otwarcia raportow kasowych stanowiska
+::   WE:  _a  - Pokazywać komunikaty? 1-tak 0-nie brak-~BO_KASY.sel_size()
+::       [_b] - Kwoty BO z bufora? 1-tak [0]-nie
+::   WY: 1  - aktualizacja zakonczona sukcesem
+::       0  - nie udana, ujemna saldo kasy
+::      -1  - zbedna aktualizacja
+::      -2  - blokowane raporty
+::  OLD: \akt_bo/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _=0 || _a:=~BO_KASY.sel_size(); _b:=0 |? _=1 || _b:=0 ?};
+{? _a & ~FUN.ask('Czy aktualizować bilans otwarcia raportów?'@) || return (0) ?};
+{? BO_KASY.sel_size=0 & ~exec('blokada','kasa_wspolne',1) ||
+   exec('blokada','kasa_wspolne',0);
+   {? _a
+   || FUN.info('Raporty są obsługiwane przez innych użytkowników.\nWstrzymano aktualizację.\n\n'@+
+               'Stanowisko %1: waluta %2.'@[STANKAS.NAZWA,WAL.SYM])
+   ?};
+   return(-2)
+?};
+BO_KASY.cntx_psh(); RAPORT.cntx_psh(); OBROTY.cntx_psh();
+WAL.cntx_psh(); WAL.index('WAL_SYM'); WAL.prefix();
+{? STANKAS.WALUTA || WAL.prefix(STANKAS.WALUTA().SYM) || WAL.prefix(BO_KASY.WAL().SYM) ?};
+ROK_F.cntx_psh(); ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+_maska:=APARAM.MASKA; _ost:='';
+{? WAL.first()
+|| {? ROK_F.first()
+   || _ok:=1;
+      {? _b
+      || BO.PLN:=BO_KASY.BO_PLN;
+         BO.WAL:=BO_KASY.BO_WAL
+      || exec('bo_kasy','kasa_wspolne',WAL.SYM)
+      ?};
+      _start:=0;
+      do();
+      {!
+      |? APARAM.MASKA:=form(STANKAS.KOD,-3)+(ROK_F.KOD+2);
+         {? _ost<>APARAM.MASKA
+         || _ost:=APARAM.MASKA;
+            ROK_F.cntx_psh();
+            exec('open_tabele','open_tab');
+            ROK_F.cntx_pop();
+            RAPORT.index('NUMER'); RAPORT.prefix();
+            OBROTY.index('RAPORTR'); OBROTY.prefix()
+         ?};
+         {? RAPORT.first()
+         || {? _start=0
+            || _start:=1;
+               {? OBROTY.find_key(RAPORT.ref(),WAL.SYM,'W')
+               || _pln:=BO.PLN-OBROTY.BO_PLN;
+                  _wal:=BO.WAL-OBROTY.BO_WAL
+               || _pln:=BO.PLN;
+                  _wal:=BO.WAL
+               ?}
+            ?};
+            {? _pln | _wal
+            || {! |?
+                  {? OBROTY.find_key(RAPORT.ref(),WAL.SYM,'W')
+                  || OBROTY.BO_PLN+=_pln;
+                     OBROTY.BO_WAL+=_wal;
+                     {? OBROTY.BO_WAL<0 & STANKAS.CZY_SMIN='N'
+                     || undo(); _ok:=0
+                     || OBROTY.put()
+                     ?}
+                  || OBROTY.blank();
+                     OBROTY.RAPORT:=RAPORT.ref();
+                     OBROTY.RODZAJ:='W';
+                     OBROTY.WALUTA:=WAL.ref();
+                     OBROTY.BO_PLN:=_pln;
+                     OBROTY.BO_WAL:=_wal;
+                     OBROTY.add()
+                  ?};
+                  {? _ok & _wal<0 ||
+                     DOKUMENT.cntx_psh(); DOKUMENT.index('WALUTA'); DOKUMENT.prefix(RAPORT.ref,WAL.SYM);
+                     _srodki:=exec('srodki','kasa_wspolne',WAL.SYM,ROK_F.ref());
+                     DOKUMENT.cntx_pop();
+                     {? _srodki<0 & STANKAS.CZY_SMIN='N' || undo(); _ok:=0 ?}
+                  ?};
+                  _ok & RAPORT.next()
+               !}
+            || _ok:=-1
+            ?}
+         ?};
+         _ok=1 & ROK_F.next()
+      !};
+      end()
+   ?}
+?};
+WAL.cntx_pop();
+APARAM.MASKA:=_maska;
+exec('open_tabele','open_tab');
+RAPORT.cntx_pop();
+OBROTY.cntx_pop();
+ROK_F.cntx_pop();
+BO_KASY.cntx_pop();
+{? _a
+|| {? _ok=1
+   || FUN.info('Wykonano aktualizację bilansu otwarcia raportów stanowiska.\n\n'@
+         +'Stanowisko %1: waluta %2.'@[STANKAS.NAZWA,WAL.SYM])
+   |? _ok=-1
+   || FUN.info('Aktualizacja bilansu otwarcia raportów stanowiska jest zbędna.\n\n'@
+         +'Stanowisko %1: waluta %2.'@[STANKAS.NAZWA,WAL.SYM])
+   || FUN.info('Podczas aktualizacji powstało ujemne saldo dla waluty.\nWstrzymano aktualizację.\n\n'@
+         +'Stanowisko %1: waluta %2.'@[STANKAS.NAZWA,WAL.SYM])
+   ?}
+?};
+{? BO_KASY.sel_size()
+|| {? _ok=1  || g_akt+=1
+   |? _ok=-1 || g_noakt+=1
+   || g_wal+=WAL.SYM+', '
+   ?}
+|| exec('blokada','kasa_wspolne',0)
+?};
+_ok
+
+
+\blokada
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [8.70]
+:: OPIS: Blokowanie/odblokowanie wszystkich raportów stanowiska kasowego
+::   WE: _a - 1-blokowanie 0-odblokowanie
+::   WY: czy zakonczone sukcesem 1-tak 0-nie
+::  OLD: \blokada/i_o.fml
+::----------------------------------------------------------------------------------------------------------------------
+_ok:=0;
+RAPORT.cntx_psh(); ROK_F.cntx_psh();
+ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+{? ROK_F.first() ||
+   {! |?
+      RAPORT.use('krp'+form(STANKAS.KOD,-3)+(ROK_F.KOD+2));
+      _ok:={? _a || RAPORT.lock(1,1) || RAPORT.unlock(); 1 ?};
+      _ok & ROK_F.next()
+   !}
+?};
+ROK_F.cntx_pop(); RAPORT.cntx_pop();
+_ok
+
+
+\bo_kasy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [8.70]
+:: OPIS: Przypisuje wartosci zmiennej BO z bilansu otwarcia stanowiska
+::       kasowego
+::   WE: _a - symbol waluty
+::  OLD: \bo_kasy/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+BO_KASY.index('STANKAS'); BO_KASY.prefix(STANKAS.ref(),_a,_a);
+{? BO_KASY.first()
+|| BO.PLN:=BO_KASY.BO_PLN;
+   BO.WAL:=BO_KASY.BO_WAL
+|| BO.PLN:=BO.WAL:=0
+?}
+
+
+\srodki
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: wylicza wolne środki dla danej waluty (parametr _a - string)
+::       od sumy wyliczonej z dok_suma odejmowana jest kwota bieżącej pozycji
+::       - przed redakcja jest ona zapamiętywana w zmiennej glob. BO.WAL (BO.PLN)
+::       kontekst zmiennych SUMA, BO, SALDO nie zmienia się
+::   WE: [_a] - symbol waluty
+::       [_b] - ref ROK_F, domyślnie null()
+::  OLD: \srodki/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_b')<>type_of(null()) || _b:=null() ?};
+
+_i:=SUMA.WAL_PLUS;
+_j:=SUMA.PLN_PLUS;
+_c:=SUMA.WAL_MIN;
+_d:=SUMA.PLN_MIN;
+_e:=BO.WAL;
+_f:=BO.PLN;
+_g:=SALDO.WAL;
+_h:=SALDO.PLN;
+WAL.cntx_psh();
+exec('bo_rap','kasa_wspolne',_a,_b);
+WAL.cntx_pop();
+exec('dok_suma','kasa_wspolne',_a);
+_x:=SALDO.WAL;
+SUMA.WAL_PLUS:=_i;
+SUMA.PLN_PLUS:=_j;
+SUMA.WAL_MIN:=_c;
+SUMA.PLN_MIN:=_d;
+BO.WAL:=_e;
+BO.PLN:=_f;
+SALDO.WAL:=_g;
+SALDO.PLN:=_h;
+_x+BO.PR_WAL
+
+
+\bo_rap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2011]
+:: OPIS: uaktualnienie pol BO dla walut w tabeli obrotow
+::       Po wykonaniu formuly w zmiennej BO znajduja sie wartosci dla biezacego raportu
+::   WE: [_a] - symbol waluty
+::       [_b] - ref ROK_F, domyślnie wg parametrów pracy
+::  OLD: \bo_rap/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_b')<>type_of(null()) || _b:=null() ?};
+
+_bo_wal:=_bo_pln:=0;
+_raport:=RAPORT.ref();
+
+POZOPER.first();
+OBROTY.cntx_psh();
+RAPORT.cntx_psh();
+RAPORT.index('NUMER');
+WAL.index('WAL_SYM');
+USRCONST.STANKAS();
+KUSERUPR.STANKAS();
+
+{? STANKAS.WALUTA<>0
+|| WAL.prefix(STANKAS.WALUTA().SYM)
+|? _=1
+|| WAL.prefix(_a)
+|| WAL.prefix()
+?};
+
+_prev:=RAPORT.prev();  _rap_nam:=RAPORT.name();
+{? ~_prev
+|| ROK_F.cntx_psh();
+   ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+   {? _b=null() || USRCONST.ROK() || ROK_F.seek(_b) ?};
+   {!
+   |? _ok:=exec('rap_prev','kasa_wspolne');
+      _last:=_ok & RAPORT.last();
+      ~_last & _ok
+   !};
+   {? _ok & _last
+   || _prev:=2; _nam_obr:=OBROTY.name();
+      OBROTY.use('kob'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2));
+      OBROTY.index('RAPORTR');
+      OBROTY.prefix()
+   || RAPORT.use(_rap_nam);
+      RAPORT.index('NUMER');
+      RAPORT.prefix()
+   ?};
+   ROK_F.cntx_pop()
+?};
+{? _prev
+|| {? WAL.first()
+   ||
+      {!
+      |?
+         OBROTY.index('RAPORTR');
+         OBROTY.prefix(RAPORT.ref(),WAL.SYM,'W');
+         {? OBROTY.first()
+         || BO.PLN:=OBROTY.BO_PLN+OBROTY.PLUS_PLN-OBROTY.MIN_PLN;
+            BO.WAL:=OBROTY.BO_WAL+OBROTY.PLUS_WAL-OBROTY.MIN_WAL
+         || BO.PLN:=BO.WAL:=0
+         ?};
+         _bo_wal+=BO.WAL; _bo_pln+=BO.PLN;
+         OBROTY.cntx_psh();
+         {? _prev=2 || OBROTY.use(_nam_obr); OBROTY.index('RAPORTR') ?};
+         OBROTY.prefix();
+         {? BO.WAL$2<>0
+         ||
+            {? ~OBROTY.find_key(_raport,WAL.SYM,'W')
+            || OBROTY.blank();
+               OBROTY.RAPORT:=_raport;
+               OBROTY.RODZAJ:='W';
+               OBROTY.POZOPER:=POZOPER.ref();
+               OBROTY.WALUTA:=WAL.ref();
+               OBROTY.add()
+            ?};
+            OBROTY.BO_WAL:=BO.WAL;
+            OBROTY.BO_PLN:=BO.PLN;
+            OBROTY.put()
+         || {? OBROTY.find_key(_raport,WAL.SYM,'W')
+            || OBROTY.BO_WAL:=BO.WAL;
+               OBROTY.BO_PLN:=BO.PLN;
+               OBROTY.put()
+            ?}
+         ?};
+         OBROTY.cntx_pop();
+         WAL.next()
+      !}
+   ?}
+||
+   OBROTY.index('RAPORTR');
+   OBROTY.prefix();
+   {? WAL.first()
+   ||
+      {!
+      |?
+         OBROTY.prefix(RAPORT.ref(),WAL.SYM,'W');
+         {? OBROTY.first()
+         || exec('bo_kasy','kasa_wspolne',WAL.SYM);
+            OBROTY.BO_PLN:=BO.PLN;
+            OBROTY.BO_WAL:=BO.WAL;
+            OBROTY.put
+         || exec('bo_kasy','kasa_wspolne',WAL.SYM);
+            OBROTY.blank();
+            OBROTY.RAPORT:=RAPORT.ref();
+            OBROTY.WALUTA:=WAL.ref();
+            OBROTY.RODZAJ:='W';
+            OBROTY.BO_PLN:=BO.PLN;
+            OBROTY.BO_WAL:=BO.WAL;
+            OBROTY.add()
+         ?};
+         _bo_wal+=BO.WAL; _bo_pln+=BO.PLN;
+         WAL.next()
+      !}
+   ?}
+?};
+RAPORT.cntx_pop();
+OBROTY.cntx_pop();
+exec('bo_obr','kasa_wspolne');
+BO.WAL:=_bo_wal; BO.PLN:=_bo_pln;
+''
+
+
+\rap_prev
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: otwarcie tabeli RAPORT z poprzedniego okresu (kasa ta sama)
+::   WE:
+::   WY:
+::  OLD: \rap_prev/i_o.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ROK_F.prev()
+|| RAPORT.use('krp'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2));
+   1
+|| 0
+?}
+
+
+\rap_biez
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: otwarcie tabeli RAPORT z biezacego okresu i kasy
+::  OLD: \rap_biez/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+RAPORT.use('krp'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2));
+''
+
+
+\rap_biez_maska
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: -- [--.--]
+:: OPIS: otwarcie tabeli RAPORT z bieżącego okresu i kasy
+::  OLD: \rap_biez/i_o.fml
+::----------------------------------------------------------------------------------------------------------------------
+RAPORT.use('krp'+APARAM.MASKA)
+
+
+\bo_obr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2011]
+:: OPIS: uaktualnienie pol BO dla pozycji operacji w tabeli obrotow
+::   WE: [_a] - ref ROK_F, domyślnie wg parametrów pracy
+::  OLD: \bo_obr/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('_a')<>type_of(null()) || _rok_f:=null() || _rok_f:=_a ?};
+
+OBROTY.cntx_psh();
+RAPORT.cntx_psh();
+RAPORT.index('NUMER');
+WAL.first();
+_a:=RAPORT.ref();
+_prev:=RAPORT.prev(); _rap_nam:=RAPORT.name();
+{? ~_prev
+|| ROK_F.cntx_psh();
+   ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+   {? _rok_f=null() || USRCONST.ROK() || ROK_F.seek(_rok_f) ?};
+   {!
+   |? _ok:=exec('rap_prev','kasa_wspolne');
+      _last:=_ok & RAPORT.last();
+      ~_last & _ok
+   !};
+   {? _ok & _last
+   || _prev:=2; _nam_obr:=OBROTY.name();
+      OBROTY.use('kob'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2));
+      OBROTY.index('RAPORTN');
+      OBROTY.prefix()
+   || RAPORT.use(_rap_nam);
+      RAPORT.index('NUMER');
+      RAPORT.prefix()
+   ?};
+   ROK_F.cntx_pop()
+?};
+{? _prev
+|| POZOPER.prefix();
+   {? POZOPER.first()
+   || {!
+      |?
+         {? POZOPER.ZM_OBR='T'
+         || OBROTY.index('RAPORTN');
+            OBROTY.prefix(RAPORT.ref(),POZOPER.ref(),'O');
+            {? OBROTY.first()
+            || BO.PLN:=OBROTY.BO_PLN+OBROTY.PLUS_PLN-OBROTY.MIN_PLN;
+               BO.WAL:=OBROTY.BO_WAL+OBROTY.PLUS_WAL-OBROTY.MIN_WAL
+            || BO.PLN:=BO.WAL:=0
+            ?};
+            OBROTY.cntx_psh;
+            {? _prev=2 || OBROTY.use(_nam_obr); OBROTY.index('RAPORTN') ?};
+            OBROTY.prefix();
+            {? BO.WAL$2<>0 | BO.PLN$2<>0
+            || {? ~OBROTY.find_key(_a,POZOPER.ref(),'O')
+               || OBROTY.blank();
+                  OBROTY.RAPORT:=_a;
+                  OBROTY.RODZAJ:='O';
+                  OBROTY.WALUTA:=WAL.ref();
+                  OBROTY.POZOPER:=POZOPER.ref();
+                  OBROTY.add()
+               ?};
+               OBROTY.BO_WAL:=BO.WAL;
+               OBROTY.BO_PLN:=BO.PLN;
+               OBROTY.put()
+            || {? OBROTY.find_key(_a,POZOPER.ref(),'O')
+               || OBROTY.BO_WAL:=BO.WAL;
+                  OBROTY.BO_PLN:=BO.PLN;
+                  OBROTY.put()
+               ?}
+            ?};
+            OBROTY.cntx_pop
+         ?};
+         POZOPER.next()
+      !}
+   ?}
+?};
+RAPORT.cntx_pop();
+OBROTY.cntx_pop();
+''
+
+
+\narod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2010]
+:: OPIS: ustawia walute narodowa
+::  OLD: \narod/wzorce.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? KINFO.NAROD
+|| SLOSLU.WAL_N:=KINFO.NAROD().KOD
+|| SLOSLU.TYT_NAR:=''
+?}
+
+
+\kupr_naz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: po edycji pola stanowisko w tabeli KUSERUPR - wypelnienie pola nazwa stanowiska
+::   WE:
+::   WY:
+::  OLD: \kupr_naz/okna.fml
+::----------------------------------------------------------------------------------------------------------------------
+STANKAS.cntx_psh();
+KUSERUPR.STANKASN:=KUSERUPR.STANKAS().NAZWA;
+STANKAS.cntx_pop();
+1
+
+
+\kusupr_lp_bl
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [2011]
+:: OPIS: wartosc poczatkowa KUSERUPR.LP
+::  OLD: \kusupr_lp_bl/okna.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=1;
+KUSERUPR.cntx_psh;
+{? KUSERUPR.last || _wyn:=KUSERUPR.LP+1 ?};
+KUSERUPR.cntx_pop;
+_wyn
+
+
+\po_buf
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Kolorowanie typów transakcji
+::   WE:
+::   WY: Kod schematu koloru
+::  OLD: \po_buf/ope_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+POZOPER.OPER();
+{? POZOPER.VAT='T'    || 'POZOPER#01#01'
+|? POZOPER.ZM_OBR='N' || 'POZOPER#01#02'
+|| ''
+?}
+
+
+\ope_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: walidacja rekordu OPER
+::   WE:
+::   WY:
+::  OLD: \ope_wal/ope_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? -menu_txt='popraw' & OPER.CZY_ZAL='N' & exec('ope_zal','kasa_wspolne',OPER.ref)
+|| FUN.info('Istnieją zaliczki związane z operacją.\nZmiana znacznika niedozwolona.'@); 'CZY_ZAL'
+|? OPER.CZY_ZAL='T' & OPER.DOTYCZY=null
+|| FUN.info('Operacja zaliczkowa.\nWymagane wypełnienie pola \'Dotyczy\'.'@); 'SLSLU'
+|| __CHK.record(OPER,,'KOD','NAZWA','TYP_DOK','PLUS_MIN','CZY_DOK','WYDRUK','CZY_1POZ')
+?}
+
+
+\ope_zal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [2009]
+:: OPIS: Sprawdzenie, czy operacja ma zaliczki
+::   WE: _a - wskazanie na operacje (OPER)
+::   WY: 1-tak 0-nie
+::  OLD: \ope_zal/skid_zal.fml
+::----------------------------------------------------------------------------------------------------------------------
+_zwrot:=0;
+EZALPOZ.cntx_psh(); EZALPOZ.index('ZRODLO'); EZALPOZ.prefix(REF.FIRMA,'kpd');
+{? EZALPOZ.first()
+|| POZDOK.cntx_psh();
+   {! |?
+      _ref:=BB.sqlint(EZALPOZ.POCH); _nam:=form(EZALPOZ.POCH-8);
+      {? _ref<>0 & _nam<>''
+      || POZDOK.cntx_psh(); POZDOK.use(_nam); POZDOK.prefix();
+         _zwrot:=(POZDOK.seek(_ref,_nam) & POZDOK.POZOPER().OPER=_a);
+         POZDOK.cntx_pop()
+      ?};
+      ~_zwrot & EZALPOZ.next()
+   !};
+   POZDOK.cntx_pop()
+?};
+EZALPOZ.cntx_pop();
+_zwrot
+
+
+\bekod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: RA [2010]
+:: OPIS: Przed Akcja Popraw
+::  OLD: \bekod/ope_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+SKID.KOD:=OPER.KOD;
+1
+
+
+\ae_kod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AMK [--.--]
+:: OPIS: Zmienia wartosc pol SKID_DEK.WYROZNIK jesli zmienia sie OPER.KOD lub POZOPER.KOD
+::   WE: _a=0 - OPER.KOD, 1 - POZOPER.KOD
+::   WY:
+::  OLD: \ae_kod/ope_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _a=1 || _operac:=POZOPER.OPER().KOD ?};
+1
+
+
+\be_kod
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [2010]
+:: OPIS: Przed popraw tabeli POZOPER
+::  OLD: \be_kod/ope_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+SKID.KOD:=POZOPER.KOD; 1
+
+
+\data_okr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: Zwraca datę początku lub końca roku wg OKRO_F
+::   WE: _a - ref roku dla ktorego jest liczony
+::       _b -  0 = poczatek roku
+::             1 = koniec roku
+::   WY:
+::  OLD: \data_okr/rap_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+OKRO_F.cntx_psh();
+_data:=date(0,0,0);
+OKRO_F.index('ROK'); OKRO_F.prefix(_a);
+{? _b
+|| {? OKRO_F.last() & OKRO_F.prev() || _data:=OKRO_F.KON ?}
+|| {? OKRO_F.first() & OKRO_F.next() || _data:=OKRO_F.POCZ ?}
+?};
+OKRO_F.cntx_pop();
+_data
+
+
+\dok_suma
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: wylicza przychody, rozchody i saldo bieżącego raportu
+::       sumy są liczone dla pln i walut zbiorczo, tak więc jeśli mamy kilka walut to
+::       suma walutowa nie ma sensu
+::
+::       po wykonaniu formuły w zmiennych SUMA i SALDO znajdują sie wartości dla
+::       bieżącego raportu, kontekst tabeli DOKUMENT nie zmienia się
+::
+::       zmiana: 14.04.98 - parametr string z kodem waluty (WAL.SYM) powoduje
+::       wyliczenie tylko dla tej waluty
+::   WE:
+::   WY:
+::  OLD: \dok_suma/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+SUMA.WAL_PLUS:=SUMA.PLN_PLUS:=0;
+SUMA.WAL_MIN:=SUMA.PLN_MIN:=0;
+DOKUMENT.cntx_psh;
+{? DOKUMENT.first()
+|| {! |?   ' jesli jest parametr to wyliczenie tylko dla danej waluty';
+      {? {? _=1 || DOKUMENT.WALUTA().SYM=_a || 1 ?}
+      || SUMA.WAL_PLUS+={?DOKUMENT.PLUS_MIN='+'||DOKUMENT.KW_WAL$2?};
+         SUMA.PLN_PLUS+={?DOKUMENT.PLUS_MIN='+'||DOKUMENT.KW_PLN$2?};
+          SUMA.WAL_MIN+={?DOKUMENT.PLUS_MIN='-'||DOKUMENT.KW_WAL$2?};
+          SUMA.PLN_MIN+={?DOKUMENT.PLUS_MIN='-'||DOKUMENT.KW_PLN$2?}
+      ?};
+      DOKUMENT.next()
+   !}
+?};
+DOKUMENT.cntx_pop;
+SALDO.PLN:=BO.PLN+SUMA.PLN_PLUS-SUMA.PLN_MIN;
+SALDO.WAL:=BO.WAL+SUMA.WAL_PLUS-SUMA.WAL_MIN;
+0
+
+
+\rap_suma
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: uaktualnienie obrotów w tabeli obrotów dla walut
+::   WE:
+::   WY:
+::  OLD: \rap_suma/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+DOKUMENT.cntx_psh;
+POZOPER.first();
+WAL.index('WAL_SYM');
+USRCONST.STANKAS();
+KUSERUPR.STANKAS();
+{? STANKAS.WALUTA<>0
+|| WAL.prefix(STANKAS.WALUTA().SYM)
+|| WAL.clear
+?};
+DOKUMENT.index('WALUTA');
+OBROTY.index('RAPORTR');
+OBROTY.clear();
+{? WAL.first()
+|| {!
+   |? DOKUMENT.prefix(RAPORT.ref(),WAL.SYM);
+      exec('dok_suma','kasa_wspolne');
+      {? SUMA.WAL_PLUS$2<>0 |SUMA.WAL_MIN$2<>0
+      || {? ~OBROTY.find_key(RAPORT.ref(),WAL.SYM,'W')
+         || OBROTY.blank();
+            OBROTY.RAPORT:=RAPORT.ref();
+            OBROTY.RODZAJ:='W';
+            OBROTY.POZOPER:=POZOPER.ref();
+            OBROTY.WALUTA:=WAL.ref();
+            OBROTY.add()
+         ?};
+         OBROTY.PLUS_WAL:=SUMA.WAL_PLUS;
+         OBROTY.PLUS_PLN:=SUMA.PLN_PLUS;
+         OBROTY.MIN_PLN:=SUMA.PLN_MIN;
+         OBROTY.MIN_WAL:=SUMA.WAL_MIN;
+         OBROTY.put()
+      || {? OBROTY.find_key(RAPORT.ref(),WAL.SYM,'W')
+         ||
+               OBROTY.PLUS_WAL:=SUMA.WAL_PLUS;
+               OBROTY.PLUS_PLN:=SUMA.PLN_PLUS;
+               OBROTY.MIN_PLN:=SUMA.PLN_MIN;
+               OBROTY.MIN_WAL:=SUMA.WAL_MIN;
+               OBROTY.put()
+         ?}
+      ?};
+      WAL.next()
+  !}
+?};
+exec('rap_obr','kasa_wspolne');
+DOKUMENT.cntx_pop
+
+
+\rap_obr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: uaktualnienie obrotów w tabeli obrotów dla pozycji operacji
+::   WE:
+::   WY:
+::  OLD: \rap_obr/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+DOKUMENT.cntx_psh(); OBROTY.cntx_psh(); POZOPER.cntx_psh(); WAL.cntx_psh();
+DOKUMENT.index('WALUTA');
+OBROTY.index('RAPORTN');
+OBROTY.clear();
+POZOPER.clear();
+WAL.first();
+{? POZOPER.first() ||
+   {! |?
+      {? POZOPER.ZM_OBR='T'
+      || DOKUMENT.prefix(RAPORT.ref());
+         POZDOK.cntx_psh();
+         POZDOK.index('DOK_OPER');
+         SUMA.WAL_PLUS:=SUMA.PLN_PLUS:=0;
+         SUMA.WAL_MIN:=SUMA.PLN_MIN:=0;
+         {? DOKUMENT.first() ||
+            {! |?
+               POZDOK.prefix(DOKUMENT.ref(),POZOPER.ref());
+               {? POZDOK.first() ||
+                  {! |? {? POZDOK.ZAKS<>'A' & POZDOK.KW_WAL=0 & POZDOK.KW_PLN<>0
+                         & exec('chksaldo','kasa_pozdok',POZDOK.KW_PLN)
+                        || POZDOK.KW_WAL:=POZDOK.KW_PLN;
+                           {? POZDOK.put(1)
+                           || {? POZDOK.PLUS_MIN='+'
+                              || DOKUMENT.KW_WAL+=POZDOK.KW_WAL
+                              || DOKUMENT.KW_WAL-=POZDOK.KW_WAL
+                              ?};
+                              DOKUMENT.put(1)
+                           ?}
+                        ?};
+:: Poczatek modyfikacji MacLex 02-11-2010 WS [1110]
+                     {? POZDOK.ZAKS<>'A'
+                     ||   SUMA.WAL_PLUS+={? POZDOK.PLUS_MIN='+' || POZDOK.KW_WAL$2 ?};
+                          SUMA.PLN_PLUS+={? POZDOK.PLUS_MIN='+' || POZDOK.KW_PLN$2 ?};
+                           SUMA.WAL_MIN+={? POZDOK.PLUS_MIN='-' || POZDOK.KW_WAL$2 ?};
+                           SUMA.PLN_MIN+={? POZDOK.PLUS_MIN='-' || POZDOK.KW_PLN$2 ?}
+                     ?};
+:: Koniec modyfikacji MacLex
+                     POZDOK.next()
+                  !}
+               ?};
+               DOKUMENT.next()
+            !}
+         ?};
+         POZDOK.cntx_pop();
+         {? SUMA.WAL_PLUS$2<>0 | SUMA.WAL_MIN$2<>0
+         || {? ~OBROTY.find_key(RAPORT.ref(),POZOPER.ref(),'O')
+            || OBROTY.blank();
+               OBROTY.RAPORT:=RAPORT.ref();
+               OBROTY.RODZAJ:='O';
+               OBROTY.WALUTA:=WAL.ref();
+               OBROTY.POZOPER:=POZOPER.ref();
+               OBROTY.add()
+            ?};
+            OBROTY.PLUS_WAL:=SUMA.WAL_PLUS;
+            OBROTY.PLUS_PLN:=SUMA.PLN_PLUS;
+            OBROTY.MIN_PLN:=SUMA.PLN_MIN;
+            OBROTY.MIN_WAL:=SUMA.WAL_MIN;
+            OBROTY.put()
+         ||
+::          sprawdzimy czy poprzednio były obroty - bo jesli były to trzeba wyzerować
+            {? OBROTY.find_key(RAPORT.ref(),POZOPER.ref(),'O')
+            || OBROTY.PLUS_WAL:=SUMA.WAL_PLUS;
+               OBROTY.PLUS_PLN:=SUMA.PLN_PLUS;
+               OBROTY.MIN_PLN:=SUMA.PLN_MIN;
+               OBROTY.MIN_WAL:=SUMA.WAL_MIN;
+               OBROTY.put()
+            ?}
+         ?}
+      ?};
+      POZOPER.next()
+   !}
+?};
+DOKUMENT.cntx_pop(); OBROTY.cntx_pop(); POZOPER.cntx_pop(); WAL.cntx_pop()
+
+
+\wal_nar
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: Waluta narodowa
+::   WE:
+::   WY:
+::  OLD: \wal_nar/slo_slu.fml
+::----------------------------------------------------------------------------------------------------------------------
+WAL.index('WAL_SYM');
+WAL.prefix;
+{? WAL.find_key(KINFO.NAROD().KOD)
+|| WAL.ref
+|| FUN.info('Waluta narodowa nie istnieje w słowniku walut.'@);
+   0
+?}
+
+
+\kparam
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: Edycja stałych dziedziny kasa
+::   WE:
+::   WY:
+::  OLD: \mf6_par/kasa.fml
+::  OLD: \stale/okna.fml
+::  OLD  \edit_kp/okna.fml
+::----------------------------------------------------------------------------------------------------------------------
+exec('edytuj','#stalesys',KPARAM,'KPARAM')<>date(0,0,0)
+
+
+\ae_kb
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WS [2011]
+:: OPIS: Po redakcji pola CZY_B w KPARAM - sprawdza parametry i informuje o koniecznych zmianach
+::  OLD: \ae_kb/ml_kasa.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? fld='T'
+|| STANKAS.cntx_psh();
+   _wyns:=sql('select count(SYM) as IL from STANKAS where SYM=\'\'');
+   {? _wyns.first & _wyns.IL>0
+   || FUN.info('W trybie budżetowym należy uzupełnić pole symbol na stanowiskach kasowych.'@)
+   ?};
+   STANKAS.cntx_pop()
+?};
+1
+
+
+\bw_p_bud
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WS [2011]
+:: OPIS: przed wyswietleniem parametru budzetowego w KPARAM
+::  OLD: \bw_p_bud/ml_kasa.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? KPARAM.CZY_B<>'T' || ~~ || 1 ?}
+
+
+\be_k_bud
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WS [2011]
+:: OPIS: przed edycja parametru budzetowego w KPARAM
+::  OLD: \be_k_bud/ml_kasa.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? KPARAM.CZY_B='T' || 1 || 0 ?}
+
+
+\br_tzn
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WS [2011]
+:: OPIS: Przed redakcja pola KPARAM.TZN - zmiana mozliwa tylko gdy nie ma zdefiniowanych znakow
+::  OLD: \br_tzn/ml_znaki.fml
+::----------------------------------------------------------------------------------------------------------------------
+1
+
+
+\be_kd_bud
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WS [2011]
+:: OPIS: przed edycja parametru budzetowego w KPARAM
+::  OLD: \be_kd_bud/ml_kasa.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? KPARAM.CZY_B='T'
+|| _licz:=sql('select count(FAK) IL from @DOKUMENT where FAK<>\'\'');
+   {? _licz.first & _licz.IL>0
+   || FUN.info('Są już wystawione faktury/rachunki. \n Zmiana parametrów niemożliwa.'@); 0
+   || 1
+   ?}
+|| 0
+?}
+
+
+\dom_typ
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [8.70]
+:: OPIS: Funkcja zwraca domyslny typ transakcji
+::   WE:  _a  - typ operacja
+::       [_b] - jesli brak domyslnego a jest tylko jeden typ to czy ten ?
+::              1-tak [0]-nie
+::  OLD: \dom_typ/poz_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _=1 || _b:=0 ?};
+POZOPER.cntx_psh();
+POZOPER.index('DOMTYP'); POZOPER.prefix(_a);
+_r:={? POZOPER.find_key('T') | (_b & POZOPER.first() & POZOPER.size()=1 )
+    || POZOPER.ref()
+    || null
+    ?};
+POZOPER.cntx_pop();
+_r
+
+
+\vvpozdok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MM [2006]
+:: OPIS: Akcja Przed wyswielt dla pol vatowskich tabel DOKUMENT, POZDOK
+::  OLD: \vvpozdok/dok_zrd.fml
+::----------------------------------------------------------------------------------------------------------------------
+1
+
+
+\tyt_min
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: WS [2011]
+:: OPIS: ustawia tytul stanu minimalnego
+::  OLD: \tyt_min/ml_kasa.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? STANKAS.WALUTA<>null
+|| MLKAS.TYT_MIN:=STANKAS.WALUTA().SYM
+|| MLKAS.TYT_MIN:={? KINFO.NAROD<>null || KINFO.NAROD().KOD || '' ?}
+?}
+
+
+\oper_wys
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: operacja - wypełnienie wolnego pola wartościa z pola oper
+::   WE:
+::   WY:
+::  OLD: \oper_wys/dok_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+DOKUMENT.OPER();
+::Poczatek modyfikacji dla Maclex 18.02.2009 AK [1040]
+{? KPARAM.OKD='T'
+||   DOKUMENT.PLUS_MIN:=OPER.PLUS_MIN;
+     DOKUMENT.TYP_DOK:=OPER.TYP_DOK;
+     {? DOKUMENT.DOTYCZY<>OPER.DOTYCZY
+     ||   DOKUMENT.DOTYCZY:=OPER.DOTYCZY;
+          DOKUMENT.DLA:=null; DOKUMENT.NAZWA:=''
+     ?}
+?};
+::Koniec modyfikacji dla Maclex
+SLOSLU.OPER:=form(OPER.KOD,9)+OPER.NAZWA
+
+
+\oper_bef
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: operacja - mozna edytować jeśli nie ma pozycji dokumentu
+::   WE:
+::   WY:
+::  OLD: \oper_bef/dok_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+~exec('is_poz','kasa_dokument')&KPARAM.OKD='N'
+
+
+\oper_f3
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [rr] [12.10]
+:: OPIS: klawisz F3 dla wyboru operacji kasowej
+::   WE: [_a] wplaty gotowkowe 0-nie (domyslnie) 1-tak
+::   WY: kod operacji + nazwa lub pusty string
+::  OLD: \oper_f3/dok_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>1 || _a:=0 ?} || _a:=0 ?};
+
+_wyn:='';
+KOPERKAS.win_sel('SLO');
+{? ~_a
+|| KOPERKAS.index('STANKAS1');
+   USRCONST.STANKAS();
+   KOPERKAS.prefix;
+   KOPERKAS.first;
+   {? DOKUMENT.win_edit('?')*'KWT'
+   ||
+      KOPERKAS.f_set(,'join OPER using(KOPERKAS.OPER,OPER.reference)','KOPERKAS.STANKAS=:_a and OPER.TYP_DOK=\'KWT\'',
+         STANKAS.ref)
+   ||
+      KOPERKAS.f_set(,'join OPER using(KOPERKAS.OPER,OPER.reference)','KOPERKAS.STANKAS=:_a and OPER.TYP_DOK<>\'KWT\'',
+         STANKAS.ref)
+   ?};
+   KOPERKAS.find_tab(
+      ,'STANKAS',,'=',STANKAS.ref
+      ,'OPER','KOD','=',form(8+SLOSLU.OPER));
+   KOPERKAS.f_seek(KOPERKAS.ref)
+|| KOPERKAS.index('MOB');
+   USRCONST.STANKAS();
+   KOPERKAS.prefix();
+   KOPERKAS.f_set(
+      ,'join OPER using(KOPERKAS.OPER,OPER.reference) join SLU using(OPER.DOTYCZY,SLU.reference)'
+      ,'KOPERKAS.STANKAS=:_a and OPER.PLUS_MIN=\'+\' and OPER.TYP_DOK=\'KP\' and SLU.WZ=\'Kontrahent\''
+      ,STANKAS.ref);
+   {? ~KOPERKAS.f_first()
+   || FUN.info('Brak operacji z parametrem "Dotyczy" o wzorcu "Kontrahent".'@);
+      return(_wyn)
+   ?}
+?};
+{? KOPERKAS.select(,1)
+|| KOPERKAS.OPER();
+   _wyn:=form(OPER.KOD,9)+OPER.NAZWA
+?};
+KOPERKAS.f_clear;
+_wyn
+
+
+\oper_aft
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: operacja po - sprawdzenie czy taka operacja istnieje
+::       wypełnienie pól dokumentu parametrami operacji
+::   WE:
+::   WY:
+::----------------------------------------------------------------------------------------------------------------------
+SLOSLU.OPER:=~-SLOSLU.OPER;
+{? form(SLOSLU.OPER)<>''
+||
+   _kwt:=DOKUMENT.win_edit('?')*'KWT';
+   KOPERKAS.index('STANKAS1');
+   USRCONST.STANKAS();
+   KOPERKAS.prefix(STANKAS.ref());
+   {? {? KOPERKAS.find_key(form(8+SLOSLU.OPER),form(8+SLOSLU.OPER)) & (_kwt=0 | _kwt & KOPERKAS.OPER().TYP_DOK='KWT')
+      || 1
+      || KOPERKAS.find_key(form(8+SLOSLU.OPER)) & (_kwt=0 | _kwt=1 & KOPERKAS.OPER().TYP_DOK='KWT')
+      ?}
+   || DOKUMENT.OPER:=KOPERKAS.OPER; DOKUMENT.OPER();
+      SLOSLU.OPER:=form(OPER.KOD,9)+OPER.NAZWA;
+      DOKUMENT.PLUS_MIN:=OPER.PLUS_MIN;
+      DOKUMENT.TYP_DOK:=OPER.TYP_DOK;
+      {? DOKUMENT.DOTYCZY<>OPER.DOTYCZY
+      || DOKUMENT.DOTYCZY:=OPER.DOTYCZY;
+         DOKUMENT.DLA:=null; DOKUMENT.NAZWA:=''
+      ?};
+      exec('set_efld_opt','kasa_dokument');
+      1
+   || FUN.info('\nBrak takiej operacji.\n'
+         '\nWprowadź kod ponownie lub skorzystaj ze słownika.'@); 0
+   ?}
+|| FUN.info('\nNależy wybrać operację.\n'
+      '\nWprowadź kod lub skorzystaj ze słownika.'@); 0
+?}
+
+
+\tmpdpom
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [AMK] [2006]
+:: OPIS: Tworzenie tabelki tymczasowej dla dokumentow sprzedazy z Logistyki
+::   WE: _a=1 - POZDOK, 2 - DOKUMENT
+::  OLD: \tmpdpom/poz_pola.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? var_pres('TMPDPOM')>0
+|| TMPDPOM.erase()
+|| TMPDPOM:=tab_tmp(4,'STS','STRING[8]','Stanowisko sprzedaży'@,
+                      'KH','STRING[10]','Kontrahent'@,
+                      'TYPYSP','STRING[8]','Typ dokumentu'@,
+                      'SYM','STRING[20]','Symbol dokumentu'@,
+                      'KH_NAZ','STRING[60]','Nazwa'@,
+                      'NR','INTEGER','Nr dokumentu'@,
+                      'WAR','REAL','Wartość'@,
+                      'WARW','REAL','Wartość w walucie'@,
+                      'DW','DATE','Data wystawienia'@,
+                      'D','DATE','Data sprzedaży'@,
+                      'G','STRING[1]','Gotówka'@,
+                      'FAKS_MAS','STRING[10]','Maska tabeli FAKS'@,
+                      'FAKS_REF','INTEGER','Ref tabeli FAKS'@
+                   );
+   _wer:=TMPDPOM.mk_sel('Dokumenty sprzedaży'@,,,'tmpdpom_dok_em',,,,,'U');
+   TMPDPOM.win_fld(_wer,,'STS');
+   TMPDPOM.win_fld(_wer,,'KH');
+   TMPDPOM.win_fld(_wer,,'KH_NAZ',,,20);
+   TMPDPOM.win_fld(_wer,,'SYM');
+   TMPDPOM.win_fld(_wer,,'NR',,,7);
+   TMPDPOM.win_fld(_wer,,'DW');
+   TMPDPOM.win_fld(_wer,,'D');
+   TMPDPOM.win_fld(_wer,,'WAR',,,16,2);
+   {? KPARAM.LSP_WSZ='T'
+   || TMPDPOM.win_fld(_wer,,'G')
+   ?};
+   TMPDPOM.win_act(_wer,0,'Formuła','&Wybierz'@@,,,,"sel_exit",1,,,,'W');
+   TMPDPOM.win_act(_wer,0,'Szukaj');
+   TMPDPOM.win_sel(_wer);
+   ROZNE.INDEX1:=TMPDPOM.index('?');
+   ROZNE.INDEX2:=TMPDPOM.ndx_tmp('',1,'SYM',,,'SYM',,,'FAKS_MAS',,,'FAKS_REF',,);
+   TMPDPOM.index(ROZNE.INDEX1)
+?};
+ROZNE.FAKS:=null; ROZNE.FAKSWART:=0;
+{? (-(6+menu_txt))='popraw' | _a=2
+|| _jestrek:=0;
+   {? _a=2
+   || POZDOK.cntx_psh();
+      POZDOK.index('DOKUMENT'); POZDOK.prefix(DOKUMENT.ref());
+      _jestrek:=POZDOK.first(); _ref:=POZDOK.ref();
+      POZDOK.cntx_pop()
+   ?};
+   {? _a=1 | (_a=2 & _jestrek & POZDOK.seek(_ref))
+   || POZDOK.cntx_psh();
+      {? POZDOK.get() & POZDOK.FAKS<>null
+      || ROZNE.FAKS:=POZDOK.FAKS;
+         ROZNE.FAKSWART:={? DOKUMENT.WALUTA=exec('wal_nar','kasa_wspolne')
+                         || POZDOK.KW_PLN
+                         || POZDOK.KW_WAL
+                         ?}
+      ?};
+      POZDOK.cntx_pop()
+   ?}
+?};
+1
+
+
+\get_puzy
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: pobierz parametry użytkownika (kasa i okres), wypełnij zmienną APARAM
+::   WE:
+::   WY:
+::  OLD: \get_puzy/kasa.fml
+::----------------------------------------------------------------------------------------------------------------------
+KUSERUPR.cntx_psh();
+USRCONST.get();
+OKRO_F.cntx_psh();
+   OKRO_F.index('ROK');    OKRO_F.prefix(USRCONST.ROK);
+   {? OKRO_F.first() & OKRO_F.next()
+   || APARAM.ROK:=OKRO_F.POCZ~1
+   || APARAM.ROK:=0
+   ?};
+OKRO_F.cntx_pop();
+"APARAM.ROK:=1900+#(USRCONST.ROK().NAZ)+{? #(USRCONST.ROK().NAZ)<90 || 100 ?}";
+APARAM.STANKAS:={? USRCONST.STANKAS=0
+         ||      0
+         ||      USRCONST.STANKAS();
+            KUSERUPR.STANKAS();
+            STANKAS.KOD
+      ?};
+APARAM.MASKA:={? APARAM.STANKAS=0
+         || USRCONST.ROK();'_____'
+         || form(APARAM.STANKAS,-3)+(form(USRCONST.ROK();ROK_F.KOD)+2)
+         ?};
+       'maska to stanowisko na trzech i kod roku na dwóch';
+KUSERUPR.cntx_pop()
+
+
+\suma_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: - [--.--]
+:: OPIS: petla dla jednej waluty (_a=W) lub pozoper (_a=O)
+::       ustawia zmienne BO, SUMA i SALDO
+::       zostawia w nich sumę dla raportów w zakresie dat _c - _d
+::       do obliczeń brane są tylko raporty wchodzące całym zakresem dat do przedziału
+::   WE: _a - petla dla jednej waluty (_a=W) lub pozoper (_a=O)
+::       _b - _b - symbol waluty lub POZOPER.ref()
+::       _c - od daty
+::       _d - do daty
+::  OLD: \suma_wal/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+_x:=0;
+BO.WAL:=0;
+BO.PLN:=0;
+SUMA.WAL_PLUS:=SUMA.PLN_PLUS:=0;
+SUMA.WAL_MIN:=SUMA.PLN_MIN:=0;
+{? _a='W'
+|| OBROTY.index('RAPORTR')
+|| OBROTY.index('RAPORTN')
+?};
+OBROTY.prefix();
+RAPORT.index('NUMER');
+{? RAPORT.first()
+||
+   {!
+   |?
+      {? RAPORT.DATA_OD>=_c & RAPORT.DATA_DO<=_d
+      ||
+         OBROTY.prefix(RAPORT.ref(),_b,_a);
+         {? OBROTY.first()
+         ||
+            {? _x=0
+            ||
+               BO.PLN:=OBROTY.BO_PLN;
+               BO.WAL:=OBROTY.BO_WAL;
+               _x:=1
+            ?};
+            SUMA.PLN_PLUS+=OBROTY.PLUS_PLN;
+            SUMA.WAL_PLUS+=OBROTY.PLUS_WAL;
+            SUMA.PLN_MIN+=OBROTY.MIN_PLN;
+            SUMA.WAL_MIN+=OBROTY.MIN_WAL
+         ?}
+      ?};
+      RAPORT.next()
+   !}
+?};
+{? _x=0
+||
+   ROK_F.cntx_psh;
+   ROK_F.index('ROKPOCZ'); ROK_F.prefix(REF.FIRMA);
+   {? ROK_F.seek(USRCONST.ROK)
+   ||
+      RAPORT.cntx_psh; OBROTY.cntx_psh;
+      {!
+      |?
+         RAPORT.use('krp'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2));
+         OBROTY.use('kob'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2));
+         RAPORT.index('NUMER'); RAPORT.prefix;
+         {? _a='W'
+         || OBROTY.index('RAPORTR')
+         || OBROTY.index('RAPORTN')
+         ?};
+         {? RAPORT.last
+         ||
+            {!
+            |?
+               OBROTY.prefix(RAPORT.ref(),_b,_a);
+               {? OBROTY.first()
+               ||
+                  BO.PLN:=OBROTY.BO_PLN+OBROTY.PLUS_PLN-OBROTY.MIN_PLN;
+                  BO.WAL:=OBROTY.BO_WAL+OBROTY.PLUS_WAL-OBROTY.MIN_WAL;
+                  _x:=1
+               ?};
+               _x=0 & RAPORT.prev
+            !}
+         ?};
+         _x=0 & ROK_F.prev
+      !};
+      RAPORT.cntx_pop; OBROTY.cntx_pop
+   ?};
+   ROK_F.cntx_pop
+?};
+SALDO.PLN:=BO.PLN+SUMA.PLN_PLUS-SUMA.PLN_MIN;
+SALDO.WAL:=BO.WAL+SUMA.WAL_PLUS-SUMA.WAL_MIN
+
+
+\addDok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Dodanie pozycji dokumentu kasowego
+::   WE: _a - ref raportu kasowego
+::       _b - waluta
+::       [_c] - czy wplata gotowkowa 0(domyslnie)-nie 1-tak
+::       [_d] - webserwis 0-nie(domyslnie) 1-tak
+::   WY: ref dodanego dokumentu (DOKUMENT.ref) lub null gdy nie dodano
+::  OLD: \addDok/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=3 || {? type_of(_c)<>1 || _c:=0 ?} || _c:=0 ?};
+{? _>=4 || {? type_of(_d)<>1 || _d:=0 ?} || _d:=0 ?};
+
+_wyn:=null;
+
+_wal:=null;
+WAL.cntx_psh();
+WAL.index('WAL_SYM');
+WAL.prefix();
+SLO.cntx_psh();
+SLO.prefix();
+{? SLO.seek(_b) || {? WAL.find_key(SLO.KOD) || _wal:=WAL.ref  ?} ?};
+SLO.cntx_pop();
+WAL.cntx_pop();
+
+RAPORT.cntx_psh();
+RAPORT.use(ref_name(_a));
+RAPORT.clear();
+{? RAPORT.seek(_a) & (ST.STANKAS().WALUTA=_wal | ST.STANKAS().WALUTA=null)
+|| DOKUMENT.use('kdo'+(ref_name(_a)+5));
+   DOKUMENT.index('RAPORT');
+   DOKUMENT.prefix(_a);
+   DOKUMENT.cntx_psh();
+   _lp:={? DOKUMENT.last() || DOKUMENT.LP ?} + 1;
+   DOKUMENT.cntx_pop();
+   DOKUMENT.blank();
+   DOKUMENT.RAPORT:=_a;
+   DOKUMENT.WALUTA:=_wal;
+   DOKUMENT.KURS:={? ~_c || FAKS.KRS || 1 ?};
+   DOKUMENT.LP:=_lp;
+   ST.POZOPER().OPER().KOD;
+   {? DOKUMENT.DOTYCZY<>OPER.DOTYCZY & OPER.DOTYCZY().WZ='Kontrahent' & ~_d
+   || DOKUMENT.DOTYCZY:=OPER.DOTYCZY;
+      _slown:=DOKUMENT.DOTYCZY().NAZ;
+      {? _slown=''
+      || _slown:=exec('get_slkh','dok_fks_aut_dok')
+      ?};
+      DOKUMENT.DLA  :=exec('slo_kh','dok_fks_aut_dok',_slown,{? ~_c || FAKS.KH().KOD || MBWPL.KH().KOD ?});
+      DOKUMENT.NAZWA:={? ~_c || FAKS.KH().NAZ_P || MBWPL.KH().NAZ_P ?}
+   ?};
+
+   DOKUMENT.OPER:=OPER.ref;
+   DOKUMENT.TYP_DOK:=DOKUMENT.OPER().TYP_DOK;
+   DOKUMENT.PLUS_MIN:=OPER.PLUS_MIN;
+:: tu mozna wpisac date z faktury - domyslnie blank z pola data oraz tz w przypadku gdy sie pokrywa
+   {? ~_c & FAKS.TZ >= RAPORT.DATA_OD  & FAKS.TZ <= RAPORT.DATA_DO
+   || DOKUMENT.DATA:=FAKS.TZ
+   ?};
+
+   _wyn:={? DOKUMENT.add(1) || DOKUMENT.ref() || null ?}
+|| FUN.info('Niezgodność waluty wybranego raportu kasowego z walutą dokumentu.'
+      '\nDodanie raportu kasowego niemożliwe.'@)
+?};
+RAPORT.cntx_pop();
+_wyn
+
+
+\addPoz
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Dodanie pozycji dokumentu kasowego
+::   WE: _a - ref naglowka dokumentu
+::       _b - ref transakcji
+::       _c - wartosc transakcji
+::       _d - wartosc transakcji w walucie narodowej
+::       [_e] - wplata gotowkowa 0-nie(domyslnie) 1-tak
+::       [_f] - webserwis 0-nie(domyslnie) 1-tak
+::       [_g] - MF_FIKS pozycji dokumentu
+::       [_h] - REJ pozycji dokumentu
+::       [_i] - DOK_REJ pozycji dokumentu
+::       [_j] - RVAT pozycji dokumentu
+::       [_k] - DATA1 pozycji dokumentu
+::       [_l] - TP pozycji dokumentu
+::       [_m] - KH kontrahent
+::       [_n] - NIP
+::   WY: ref dodanej pozycji (POZDOK.ref) lub null
+::  OLD: \addPoz/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=5 || {? type_of(_e)<>1 || _e:=0 ?} || _e:=0 ?};
+{? _>=6 || {? type_of(_f)<>1 || _f:=0 ?} || _f:=0 ?};
+{? _>=7 || {? type_of(_g)<>2 || _g:='' ?} || _g:='' ?};
+{? _>=8 || {? type_of(_h)<>7 || _h:=null() ?} || _h:=null() ?};
+{? _>=9 || {? type_of(_i)<>7 || _i:=null() ?} || _i:=null() ?};
+{? _>=10 || {? type_of(_j)<>7 || _j:=null() ?} || _j:=null() ?};
+{? _>=11 || {? type_of(_k)<>4 || _k:=date(0,0,0) ?} || _k:=date(0,0,0) ?};
+{? _>=12 || {? type_of(_l)<>4 || _l:=date(0,0,0) ?} || _l:=date(0,0,0) ?};
+{? _>=13 || {? type_of(_m)<>2 || _m:='' ?} || _m:='' ?};
+{? _>=14 || {? type_of(_n)<>2 || _n:='' ?} || _n:='' ?};
+
+_wyn:=0;
+POZOPER.cntx_psh();
+POZOPER.clear();
+POZOPER.seek(_b);
+DOKUMENT.use(ref_name(_a));
+DOKUMENT.clear();
+DOKUMENT.seek(_a);
+POZDOK.use('kpd'+(ref_name(_a)+5));
+POZDOK.cntx_psh();
+POZDOK.index('DOK_OPER');
+POZDOK.prefix(_a);
+POZDOK.blank();
+POZDOK.DOKUMENT:=_a;
+POZDOK.POZOPER:=_b;
+POZDOK.PLUS_MIN:=POZOPER.PLUS_MIN;
+POZDOK.KW_PLN:=fabs(_d);
+POZDOK.KW_WAL:=fabs(_c);
+
+{? ~_f
+||
+   POZDOK.FAKS:={? ~_e || FAKS.ref || null ?};
+   POZDOK.MF_FIKS:={? ~_e || FAKS.SYM || 'PTW/'+$MBWPL.NRPTW+'/'+$MBWPL.ROKPTW ?};
+   POZDOK.KH:={? ~_e || FAKS.KH().NAZ_P || MBWPL.KH().NAZ_P ?};
+   POZDOK.NIP:=KH.NIP;
+   POZDOK.ODD:={? ~_e || ST.ODDZ_REF().ODD || STANKAS.ODD ?};
+   POZDOK.LOG_OKR:={? ~_e || ST.OKR_REF || null ?}
+||
+   POZDOK.ODD:=STANKAS.ODD;
+   POZDOK.MF_FIKS:=_g;
+   POZDOK.REJ:=_h;
+   POZDOK.DOK_REJ:=_i;
+   POZDOK.RVAT:=_j;
+   POZDOK.DATA1:=_k;
+   POZDOK.TP:=_l;
+   POZDOK.KH:=_m;
+   POZDOK.NIP:=_n
+?};
+POZDOK.ZAKS:='N';
+{? POZDOK.POZOPER().ZM_OBR='T'
+|| {? (DOKUMENT.PLUS_MIN='+' & POZDOK.PLUS_MIN='-') |
+      (DOKUMENT.PLUS_MIN='-' & POZDOK.PLUS_MIN='+')
+   || DOKUMENT.KW_WAL-=POZDOK.KW_WAL$2;
+      DOKUMENT.KW_PLN-=POZDOK.KW_PLN$2
+   || DOKUMENT.KW_WAL+=POZDOK.KW_WAL$2;
+      DOKUMENT.KW_PLN+=POZDOK.KW_PLN$2
+   ?}
+?};
+_wyn:=POZDOK.add(1);
+{? _wyn
+|| DOKUMENT.put();
+   {? ~_f
+   ||
+      {? ~_e
+      || POZDOK.FAKS().PLATKAS+=POZDOK.KW_WAL;
+         FAKS.cntx_psh();
+         FAKS.clear();
+         FAKS.put();
+         FAKS.cntx_pop()
+      || MBWPL.STAN:='R';
+         MBWPL.RSQL:=$DOKUMENT.ref();
+         MBWPL.cntx_psh();
+         MBWPL.clear();
+         {? MBWPL.put() || DOKUMENT.STAT_REJ:='Z' ?};
+         MBWPL.cntx_pop()
+      ?}
+   ?};
+:: DRO: [rr] płatności
+::   exec('pozoper','skid_pla',INFO.NAROD().KOD,INFO.SLWAL().SLU);
+   _rAddPoz:=POZDOK.ref()
+?};
+POZOPER.cntx_pop();
+POZDOK.cntx_pop();
+_wyn
+
+
+\bo_przen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: -- [--.--]
+:: OPIS: propagacja sald BO na następne raporty
+::   WY: zwraca 1 jeśli operacja powiedzie się
+::  OLD: \bo_przen/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+:: propagacja sald bo od raportu zamykanego do ostatniego istniejącego raportu
+:: także w następnym roku
+_a:=0;
+RAPORT.cntx_psh();
+RAPORT.index('NUMER');
+USRCONST.STANKAS();
+KUSERUPR.STANKAS();
+{? STANKAS.WALUTA<>0
+   || WAL.prefix(STANKAS.WALUTA().SYM)
+   || WAL.clear
+?};
+DOKUMENT.index('WALUTA');
+OBROTY.index('RAPORTR');
+{? WAL.first()
+|| {! |?
+      RAPORT.cntx_psh();
+      _a+=exec('prop_wal','kasa_wspolne',WAL.SYM);
+      RAPORT.cntx_pop();
+      WAL.next() & _a=0
+   !}
+?};
+RAPORT.cntx_pop();
+RAPORT.cntx_psh();
+RAPORT.index('NUMER');
+OBROTY.index('RAPORTN');OBROTY.prefix(RAPORT.ref());
+{? OBROTY.first()
+|| {! |?
+     {? OBROTY.RODZAJ='O'
+     || OBROTY.cntx_psh();
+        _a+=exec('prop_ope','kasa_wspolne',OBROTY.POZOPER);
+        OBROTY.cntx_pop()
+     ?};
+     OBROTY.next()
+   !}
+?};
+RAPORT.cntx_pop();
+_a=0
+
+
+\prop_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: -- [--.--]
+:: OPIS: propagacja BO obrotów dla jednej waluty
+::       propagacja odbywa się tylko w ramach bieżącego i następnego roku
+::  OLD: \prop_wal/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+_b:=BO.PLN;
+_c:=BO.PLN;
+
+:: ustawiam wlasciwy kontekst tabeli OBROTY
+OBROTY.index('RAPORTR');
+OBROTY.prefix();
+:: jesli sa obroty dla tej waluty to podstawiamy odpowiednie bo dla nast. raportu
+:: wpp. podstawiamy 0
+BO.PLN:=0; BO.WAL:=0;
+RAPORT.cntx_psh();
+{? RAPORT.prev()
+|| RAPORT.cntx_pop();
+   {? OBROTY.find_key(RAPORT.ref(),_a,'W')
+   || BO.PLN:=OBROTY.BO_PLN+OBROTY.PLUS_PLN-OBROTY.MIN_PLN;
+      BO.WAL:=OBROTY.BO_WAL+OBROTY.PLUS_WAL-OBROTY.MIN_WAL
+   ?}
+|| OBROTY.cntx_psh();
+   USRCONST.ROK(); exec('rap_prev','kasa_wspolne'); RAPORT.last();
+   USRCONST.ROK();
+   {! |?
+      {? ROK_F.prev()
+      || OBROTY.use('kob'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2));
+         OBROTY.index('RAPORTR'); OBROTY.prefix();
+         {? OBROTY.find_key(RAPORT.ref(),_a,'W')
+         || BO.PLN:=OBROTY.BO_PLN+OBROTY.PLUS_PLN-OBROTY.MIN_PLN;
+            BO.WAL:=OBROTY.BO_WAL+OBROTY.PLUS_WAL-OBROTY.MIN_WAL;
+            0
+         || 1
+         ?}
+      || exec('bo_kasy','kasa_wspolne',_a); 0
+      ?}
+   !};
+   USRCONST.ROK();
+   RAPORT.cntx_pop();  OBROTY.cntx_pop();
+   exec('dla_wal','kasa_wspolne',_a)
+?};
+{? RAPORT.next() ||  exec('dla_wal','kasa_wspolne',_a) ?};
+USRCONST.ROK();
+{? exec('rap_next','kasa_wspolne')
+|| exec('open_obr','kasa_wspolne');
+   {? RAPORT.first()
+   || exec('dla_wal','kasa_wspolne',_a)
+   ?}; USRCONST.ROK(); exec('open_obr','kasa_wspolne'); exec('rap_biez_maska','kasa_wspolne')
+?};
+USRCONST.ROK();
+BO.PLN:=_b;
+BO.PLN:=_c;
+0
+
+
+\prop_ope
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: -- [--.--]
+:: OPIS: propagacja BO obrotów dla jednej pozycji operacji
+::       propagacja odbywa sie tylko w ramach bieżącego roku
+::  OLD: \prop_ope/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+_b:=BO.PLN;
+_c:=BO.PLN;
+
+OBROTY.index('RAPORTN');
+OBROTY.prefix();
+BO.PLN:=OBROTY.BO_PLN+OBROTY.PLUS_PLN-OBROTY.MIN_PLN;
+BO.WAL:=OBROTY.BO_WAL+OBROTY.PLUS_WAL-OBROTY.MIN_WAL;
+{? RAPORT.next()
+|| {! |?
+      {? OBROTY.find_key(RAPORT.ref(),_a,'O')
+      || OBROTY.BO_WAL:=BO.WAL;
+         OBROTY.BO_PLN:=BO.PLN;
+         OBROTY.put()
+      |? BO.WAL$2<>0 | BO.PLN$2<>0
+      || OBROTY.blank();
+         OBROTY.RAPORT:=RAPORT.ref();
+         OBROTY.RODZAJ:='O';
+         OBROTY.WALUTA:=WAL.ref();
+         OBROTY.POZOPER:=_a;
+         OBROTY.BO_WAL:=BO.WAL;
+         OBROTY.BO_PLN:=BO.PLN;
+         OBROTY.add()
+      ?};
+      BO.PLN:=OBROTY.BO_PLN+OBROTY.PLUS_PLN-OBROTY.MIN_PLN;
+      BO.WAL:=OBROTY.BO_WAL+OBROTY.PLUS_WAL-OBROTY.MIN_WAL;
+      RAPORT.next()
+   !}
+?};
+BO.PLN:=_b;
+BO.PLN:=_c;
+0
+
+
+\dla_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: -- [--.--]
+:: OPIS: pętla dla jednej waluty i jednego roku
+::  OLD: \prop_ope/sumy.fml
+::----------------------------------------------------------------------------------------------------------------------
+OBROTY.index('RAPORTR');
+OBROTY.prefix();
+::pętla dla jednej waluty i dla jednego roku
+{! |?
+   {? OBROTY.find_key(RAPORT.ref(),_a,'W')
+   || OBROTY.BO_WAL:=BO.WAL;
+      OBROTY.BO_PLN:=BO.PLN;
+      OBROTY.put()
+   |? BO.WAL$2<>0 | BO.PLN$2<>0
+   || OBROTY.blank();
+      OBROTY.RAPORT:=RAPORT.ref();
+      OBROTY.RODZAJ:='W';
+      OBROTY.WALUTA:=WAL.ref();
+      OBROTY.POZOPER:=POZOPER.ref();
+      OBROTY.BO_WAL:=BO.WAL;
+      OBROTY.BO_PLN:=BO.PLN;
+      OBROTY.add()
+   ?};
+   BO.PLN:=OBROTY.BO_PLN+OBROTY.PLUS_PLN-OBROTY.MIN_PLN;
+   BO.WAL:=OBROTY.BO_WAL+OBROTY.PLUS_WAL-OBROTY.MIN_WAL;
+   RAPORT.next()
+!}
+
+
+\rap_next
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: -- [--.--]
+:: OPIS: otwarcie tabeli RAPORT z następnego okresu (kasa ta sama)
+::  OLD: \rap_next/i_o.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ROK_F.next()
+|| RAPORT.use('krp'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2));
+   1
+|| 0
+?}
+
+
+\open_obr
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: -- [--.--]
+:: OPIS: otwarcie tabeli OBROTY z bieżącego okresu i kasy
+::  OLD: \open_obr/i_o.fml
+::----------------------------------------------------------------------------------------------------------------------
+OBROTY.use('kob'+form(APARAM.STANKAS,-3)+(form(ROK_F.KOD)+2))
+
+
+\kas_gen
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: generowanie zapisu kasowego dla biezacego dokumentu sprzedazy
+::   WE: [_a] - czy wyswietlac komunikaty o niepowodzeniu (N - domyslnie, T) oraz blokowac dokument sprzedazy
+::              (gdy zapis kasowy wystawiany jest z menu dla wystawionego juz dokumentu)
+::       [_b] - ref raportu kasowego domyślnie-null()
+::   WY: 1-utworzono 0-nie 2-już jest
+::  OLD: \kas_gen/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>2 || _a:='N' ?} || _a:='N' ?};
+{? _>=2 || {? type_of(_b)<>7 || _b:=null() ?} || _b:=null() ?};
+
+_wyn:=0;
+{? {? _a='T' || FAKS.r_lock(1,1,1) || 1 ?}
+||
+   FAKS.get();
+   {? FAKS.WHERE='K'
+   || FUN.info('Funkcja niedostępna dla korekt zbiorczych.'@)
+   |? FAKS.PLATKAS=0
+   ||
+::    sprawdzenie czy dokument nie jest wystawiany na podstawie paragonu
+      TYPYSP.cntx_psh();
+      {? 5+FAKS.SYMF<>'faktu' | FAKS.T().PAR<>'N'
+      ||
+         {? FAKS.STAT_REJ='T'
+         ||
+            _brutto:=exec('war_got','faktury_plat');
+            {? _brutto>0
+            ||
+               {? exec('dokKasa','kasa_wspolne',FAKS.ref,_brutto,FAKS.WAL
+                     ,{? INFO.NAROD<>FAKS.WAL || _brutto*{? FAKS.KRS<>0 || FAKS.KRS || 1 ?}  || _brutto ?},_b)=1
+               || _wyn:=1;
+                  {? _a='T' || FUN.info('Dodano zapis o płatności w raporcie kasowym.'@) ?}
+               ?}
+            || {? _a='T'
+               || FUN.info('Aby zarejestrować zapis kasowy\nwartość wpłaty gotówkowej musi być większa od 0.'@)
+               ?}
+            ?}
+         || {? _a='T' || FUN.info('Dokument nie jest zaakceptowany.\nUtworzenie zapisu kasowego niemożliwe.'@) ?}
+         ?}
+      || {? _a='T' || FUN.info('Dokument wystawiony na podstawie "Paragonu".\nGeneracja raportu niemożliwa.'@) ?}
+      ?};
+      TYPYSP.cntx_pop()
+   || _wyn:=2;
+      {? _a='T' || FUN.info('Utworzono już zapis w Kasie dla tego dokumentu.'@) ?}
+   ?};
+   {? _a='T' || FAKS.r_unlock() ?}
+|| {? FUN.ask('Dokument %1 obsługuje inny użytkownik.\nCzy chcesz zobaczyć kto?'@[FAKS.SYM]) & FAKS.r_lock(1,,1)
+   || FAKS.r_unlock()
+   ?}
+?};
+_wyn
+
+
+\dokKasa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Dodanie zapisu kasowego dla biezacego dokumentu sprzedazy
+::   WE: _b - wartosc transakcji
+::       _c - waluta
+::       _d - wartosc w walucie narodowej
+::       [_e] - ref raportu kasowego domyślnie-null()
+::   WY: czy dodanie powiodlo sie 1/0
+::  OLD: \dokKasa/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=5 || {? type_of(_e)<>7 || _e:=null() ?} || _e:=null() ?};
+_wyn:=0;
+{? _b>0
+|| {? exec('spr_gen_kas','kasa_wspolne')>0
+   ||
+      _stankas:=ST.STANKAS;
+      {? exec('wyb_par_kas','kasa_wspolne',_b,_c,_d)
+      ||
+         _rDok:=null();
+         _rap:={? _e<>null() & _stankas=ST.STANKAS
+               || _e
+               || _rap:=exec('find_raport','kasa_wspolne',ST.STANKAS().KOD,exec('data_got','faktury_plat'),'otwarty');
+                  {? _rap=null()
+                  || _rap:=exec('find_raport','kasa_wspolne',ST.STANKAS().KOD,exec('data_got','faktury_plat'),'zakończony')
+                  ?};
+                  _rap
+               ?};
+         {? _rap
+         || RAPORT.prefix();
+            {? RAPORT.seek(_rap)
+            || {? RAPORT.r_lock(1,1,1)
+               ||
+                  DOKUMENT.index('RAPORT');
+                  DOKUMENT.prefix(RAPORT.ref());
+                  exec('bo_rap','kasa_wspolne');
+                  exec('dok_suma','kasa_wspolne');
+                  {? ST.POZOPER<>null
+                  || {? POZOPER.OPER().CZY1_POZ='N'
+                        & (_rDok:=exec('fndDok','kasa_wspolne',_rap,POZOPER.OPER,FAKS.TZ,FAKS.KH().KOD))
+                     || _wyn:=exec('addPoz','kasa_wspolne',_rDok,ST.POZOPER,_b,_d)
+                     |? _rDok:=exec('addDok','kasa_wspolne',_rap,_c)
+                     || _wyn:=exec('addPoz','kasa_wspolne',_rDok,ST.POZOPER,_b,_d)
+                     ?}
+                  ?};
+                  {? _rDok & _wyn
+                  ||
+                     DOKUMENT.index('RAPORT');
+                     DOKUMENT.prefix(RAPORT.ref());
+                     exec('dok_suma','kasa_wspolne');
+                     OBROTY.index('RAPORTR'); OBROTY.prefix();
+                     {? SUMA.WAL_PLUS$2<>0 |SUMA.WAL_MIN$2<>0
+                     || {?~OBROTY.find_key(RAPORT.ref(),DOKUMENT.WALUTA().SYM,'W')
+                        || OBROTY.blank();
+                           OBROTY.RAPORT:=RAPORT.ref();
+                           OBROTY.RODZAJ:='W';
+                           OBROTY.POZOPER:=POZOPER.ref();
+                           OBROTY.WALUTA:=WAL.ref();
+                           OBROTY.add()
+                        ?};
+                        OBROTY.PLUS_WAL:=SUMA.WAL_PLUS;
+                        OBROTY.PLUS_PLN:=SUMA.PLN_PLUS;
+                        OBROTY.MIN_PLN:=SUMA.PLN_MIN;
+                        OBROTY.MIN_WAL:=SUMA.WAL_MIN;
+                        OBROTY.put()
+                     || {? OBROTY.find_key(RAPORT.ref(),DOKUMENT.WALUTA().SYM,'W')
+                        || OBROTY.PLUS_WAL:=SUMA.WAL_PLUS;
+                           OBROTY.PLUS_PLN:=SUMA.PLN_PLUS;
+                           OBROTY.MIN_PLN:=SUMA.PLN_MIN;
+                           OBROTY.MIN_WAL:=SUMA.WAL_MIN;
+                           OBROTY.put()
+                        ?}
+                     ?}
+                  ?};
+                  RAPORT.r_unlock()
+               ||
+                  FUN.info('Raport nr %1 do którego próbowano dodać dokument: %2'
+                           '\njest obsługiwany przez innego użytkownika.'@[$RAPORT.NUM_RAP,FAKS.SYM])
+               ?}
+            ?}
+         ?}
+      ?}
+   ?}
+?};
+_wyn
+
+
+\spr_gen_kas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Sprawdzenie czy mozna generowac dokument kasowy dla biezacego rekordu FAKS
+::   WY: 1/0
+::  OLD: \spr_gen_kas/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+:: informacje z dokumentu
+{? FAKS.STAT_REJ='T' & FAKS.SZ='S'
+|| _wyn:=1
+?};
+_wyn
+
+
+\wyb_par_kas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Wybor stanowiska kasowego oraz dokmentu
+::       _a - wartosc transakcji
+::       _b - waluta
+::       _c - wartosc w walucie narodowej
+::   WY: czy wybrano parametry kasowe 1/0
+::  OLD: \wyb_par_kas/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=0;
+
+SUMA.PLN_PLUS:=_c;
+SUMA.WAL:=_b;
+SUMA.WAL_PLUS:=_a;
+
+STANKAS.index('KOD');
+STANKAS.win_dict('WER2');
+POZOPER.win_sel('WER');
+POZOPER.win_dict(exec('pozoper_wd','kasa_wspolne'));
+ST.win_edit('KASA');
+
+:: pobranie domyślnego typu operacji
+_pozoper:=exec('get','#params',2011,2,OPERATOR.USER);
+_okn_kas:=exec('get','#params',2012,2,OPERATOR.USER);
+
+ST.POZOPER:={? +form(_pozoper)
+            || exec('FindInSet','#table','POZOPER','KSIEG',form(8-_pozoper),form(8+_pozoper))
+            || null
+            ?};
+
+ST.ROK_F:=exec('rok_find','edkonto',date(ST.AR,ST.AM,1));
+
+{? _okn_kas='T'
+|| {? ST.ROK_F<>null
+   ||
+      {? ST.edit("
+            _wyn:=chk_rec('STANKAS','POZOPER');
+            {? _wyn='' || _wyn:={? exec('chk_dok_kas','kasa_wspolne',ST.POZOPER)=0 || 'POZOPER' || '' ?} ?};
+            {? _wyn=''
+            || {? ST.STANKAS().WALUTA & ST.STANKAS().WALUTA().SYM<>SUMA.WAL().KOD
+               || FUN.info('Niezgodna waluta dokumentu z walutą kasy.'@);
+                  _wyn:='POZOPER'
+               ?}
+            ?};
+            _wyn
+            ")
+      ||
+         _wyn:=1
+      ?};
+
+      {? ST.ROK_F<>null & ST.STANKAS<>null & _wyn=1
+      || exec('kas_open','kasa_raport',ST.STANKAS().KOD,ST.ROK_F().KOD)
+      ?}
+   ||
+      FUN.info('Nie można utworzyć zapisu kasowego.\n'
+               '\nNależy zdefiniować okres obrachunkowy\n%1.'@[ST.OKR])
+   ?}
+|| {? ST.ROK_F<>null & ST.STANKAS<>null
+   || _wyn:=1;
+      exec('kas_open','kasa_raport',ST.STANKAS().KOD,ST.ROK_F().KOD)
+   || _wyn:=0;
+      FUN.info('Nieprawidłowe parametry kasowe w parametrach użytkownika.'@)
+   ?};
+   {? _wyn
+   || {? ST.STANKAS().WALUTA & ST.STANKAS().WALUTA().SYM<>INFO.NAROD().KOD
+      || FUN.info('Niezgodna waluta dokumentu z walutą kasy.'@);
+         _wyn:=0
+      ?}
+   ?}
+?};
+_wyn
+
+
+\find_raport
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Odnalezienie raportu, do ktorego mozna sie ewentualnie "dopisac" z akceptowanym dokumentem sprzedazy
+::   WE: _a - kod stanowiska kasowego
+::       _b - jakich raportow szukac (data)
+::              = przekazany - szukanie otwartego o konkretnej dacie
+::              = data zerowa/brak - dowolnego otwartego
+::       _c - jakich raportow szukac (string)
+::              = przekazany - szukanie o przekazanym statusie
+::              = ''/brak - o dowolnym statusie
+::   WY: ref znaleznionego raportu lub null gdy nie znaleziono
+::  OLd: \find_raport/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wyn:=null;
+RAPORT.use('krp'+form(_a,-3)+(form(ST.ROK_F().KOD)+2));
+{? var_pres('_b')<>4 || _b:=#0 ?};
+{? var_pres('_c')<>2 || _c:='' ?};
+_wyn:=exec('isRap','kasa_wspolne',_a,ST.ROK_F,_b,_c);
+_wyn
+
+
+\isRap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BL [2006]
+:: OPIS: Czy istnieje raport dla stanowiska kasowego, w danym roku
+::   WE: _a - kod stanowiska kasowego
+::       _b - okres (OKRO_F.ref)
+::       _c - jakich raportow szukac (data)
+::          = przekazany - szukanie otwartego o konkretnej dacie
+::          = data zerowa/brak - dowolnego otwartego
+::       _d - jakich raportow szukac (string)
+::          = przekazany - szukanie o przekazanym statusie
+::          = ''/brak - o dowolnym statusie
+::   WY: _rRap - wskazanie na otwarty raport
+::  OLd: \isRap/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+_rRap:=0;
+{? _ & ROK_F.seek(_b)
+|| {? var_pres('_c')<>4 || _c:=#0 ?};
+   {? var_pres('_d')<>2 || _d:='' ?};
+   RAPORT.use('krp'+form(_a,-3)+(form(ROK_F.KOD)+2));
+   RAPORT.cntx_psh();
+   ROK_F.cntx_psh();
+   ROK_F.clear();
+   {? #_c & _d<>''
+   || RAPORT.index('ODDO');
+      RAPORT.prefix(_d);
+      {? RAPORT.find_key(_c)
+      || _rRap:=RAPORT.ref()
+      |? RAPORT.find_le(_c) & RAPORT.DATA_DO>=_c
+      || _rRap:=RAPORT.ref()
+      ?}
+   |? _d<>''
+   || RAPORT.index('ODDO');
+      RAPORT.prefix(_d);
+      {? RAPORT.first() || _rRap:=RAPORT.ref() ?}
+   |? #_c
+   || RAPORT.index('NUMER');
+      RAPORT.clear();
+      {? RAPORT.first()
+      || {!
+         |? {? RAPORT.DATA_OD>=_c & RAPORT.DATA_DO<=_c
+            || _rRap:=RAPORT.ref()
+            ?};
+            ~_rRap & RAPORT.next()
+         !}
+      ?}
+   || {? RAPORT.first() || _rRap:=RAPORT.ref() ?}
+   ?};
+   ROK_F.cntx_pop();
+   RAPORT.cntx_pop()
+?};
+_rRap
+
+
+\fndDok
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: BL [2006]
+:: OPIS: Odnalezienie dokumentu, do ktorego mozna sie ewentualnie "dopisac"
+::       z akceptowanym dokumentem sprzedazy/zakupu
+::   WE: _a - ref raportu kasowego (RAPORT.ref)
+::       _b - ref operacji (OPER.ref)
+::       _c - data dokumentu
+::       _d - kod kontrahenta
+::   WY: _rRefDok = 1 - ref raportu kasowego
+::                = 0 - nie znaleziono wlasciwego dokumentu
+::  OLD: \fndDok/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+_rRefDok:=0;
+{? var_pres('_a')=7
+|| DOKUMENT.use('kdo'+(ref_name(_a)+5));
+   DOKUMENT.cntx_psh();
+   DOKUMENT.index('RAPORT');
+   DOKUMENT.prefix(_a);
+   {? DOKUMENT.first()
+   || {!
+      |? {? DOKUMENT.DOK_NUM=0 & DOKUMENT.OPER=_b & DOKUMENT.DATA=_c & DOKUMENT.DLA().KOD=_d
+         || _rRefDok:=DOKUMENT.ref
+         ?};
+         ~_rRefDok & DOKUMENT.next()
+      !}
+   ?};
+   DOKUMENT.cntx_pop()
+?};
+_rRefDok
+
+
+\pozoper_wd
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [12.10]
+:: OPIS: definiuje okno selekcji tabeli POZOPER
+::   WY: akronim okna
+::  OLD: \pozoper_wd/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wer:=POZOPER.mk_sel('Pozycje operacji kasowych'@,'P',0,'dacxcsafkkmcwxl',,,,,'U');
+POZOPER.win_fld(_wer,,'OPER','NAZWA',,20,,,'Operacja'@);
+POZOPER.win_fld(_wer,,'KOD',,,8);
+POZOPER.win_fld(_wer,,'NAZWA',,,30);
+POZOPER.win_act(_wer,0,'Szukaj');
+POZOPER.win_act(_wer,0,'Kolejność');
+_wer
+
+
+\chk_dok_kas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: Mario [2009]
+:: OPIS: Sprawdzenie na stanowisku kasowym sa dostepne wlasciwe transakcje
+::   WE: [_a] - jezeli podany ref to sprawdza czy jest w dziedzinie filtra
+::       [_b] - czy wyswietlac komunikat
+::   WY: 1 - tak (dodatkowo ustawia filtr na dostepne operacje), 0 - nie
+::  OLD: \chk_dok_kas/kasa_wsp.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? _>=1 || {? type_of(_a)<>7 || _a:=null ?} || _a:=null ?};
+{? _>=2 || {? type_of(_b)<>1 || _b:=1 ?} || _b:=1 ?};
+_wyn:=0;
+{? ST.STANKAS<>null
+||
+   KOPERKAS.cntx_psh();
+   POZOPER.cntx_psh();
+
+   _sort:='NAZWA';
+   _from:='join OPER using(POZOPER.OPER,"OPER".reference) join ODDZ
+      join KOPERKAS using("OPER".reference,"KOPERKAS".OPER)';
+   _where:='"KOPERKAS".STANKAS=:_a '+' and "ODDZ".KOD='':_b'' '+
+      ' and POZOPER.PLUS_MIN=''+'' and POZOPER.MF_TIP=''T'' ';
+   POZOPER.f_clear();
+   POZOPER.f_set(_sort,_from,_where,ST.STANKAS,ST.ODDZ);
+   POZOPER.cntx_pop();
+   KOPERKAS.cntx_pop();
+   {? _a<>null
+   || _wyn:=POZOPER.f_seek(#ST.POZOPER,)
+   || _wyn:=POZOPER.f_size;
+      {? _wyn=0
+      ||
+         {? _b=1
+         ||
+            FUN.info('Dla stanowiska kasowego brak odpowiednio\n'
+                     'zdefiniowanych pozycji operacji kasowych.\n\n'
+                     'Wybór stanowiska kasowego niemożliwy.'@)
+         ?}
+      ?};
+      {? ~POZOPER.f_seek(#ST.POZOPER,) || ST.POZOPER:=null ?}
+   ?}
+?};
+_wyn
+
+
+\dok_kas_i
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PS [17.00]
+:: OPIS: Formuła określająca ikony statusu dokumentu kasowego
+::----------------------------------------------------------------------------------------------------------------------
+"
+   {? DOKUMENT.STAT_REJ='Z'
+   || exec('zarejestrowany','icon')
+   || exec('pusta','#icon')
+   ?}
+"
+
+
+\mkasa_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.42]
+:: OPIS: MKASA - walidacja bufora
+::   WE: [_a] - 'add'/'put'
+::   WY: '' lub akronim pola
+::----------------------------------------------------------------------------------------------------------------------
+_akcja:=
+   {? var_pres('_a')=type_of('')
+   || {? _a='add' || 'dołącz' |? _a='put' || 'popraw' || _a ?}
+   || -menu_txt()
+   ?};
+
+{? MKASA.NAZ=''
+|| FUN.info('Uzupełnij nazwę.'@);
+   'NAZ'
+|? _akcja='dołącz' & exec('FindInSet','#table','MKASA','NAZ',MKASA.NAZ)
+   |
+   _akcja='popraw'
+   &
+   (  MKASA.cntx_psh();
+      _ref:=MKASA.ref();
+      _naz:=MKASA.NAZ;
+      MKASA.index('NAZ');
+      MKASA.prefix(MKASA.NAZ,);
+      _ret:=MKASA.first() & MKASA.ref()<>_ref;
+      MKASA.cntx_pop();
+      _ret
+   )
+|| FUN.info('Mulitkasa o nazwie %1 już istnieje.'@[MKASA.NAZ]);
+   'NAZ'
+|| ''
+?}
+
+
+\stankas_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.42]
+:: OPIS: STANKAS - walidacja bufora
+::   WE:
+::   WY: '' lub akronim pola
+::----------------------------------------------------------------------------------------------------------------------
+::_akcja:=
+::   {? var_pres('_a')=type_of('')
+::   || {? _a='add' || 'dołącz' |? _a='put' || 'popraw' || _a ?}
+::   || -menu_txt()
+::   ?};
+
+::_kod:=exec('sta_koda','!zws_par_fkst');
+::{? _kod
+::{? STANKAS.KOD <= 999 | STANKAS.KOD >= 0
+::||
+::   debug();
+   return(__CHK.record(STANKAS,
+         ,'KOD','NAZWA'
+         ,'CZY_KASA','CZY_KILK','CZY_KDNI','CZY_OTW','CZY_SMIN'
+         ,'CZY_KTIP'
+         ,'F_NUMER','F_KP','F_KW','F_INNY'
+         ,'ODD'))
+::   {? _ok='' & -menu_txt()='popraw' & stan_naz<>STANKAS.NAZWA
+::   || exec('akt_stan','!zws_par_fkst',stan_naz,STANKAS.NAZWA);
+::      KUSERUPR.cntx_psh(); STANKAS.cntx_psh();
+::      {? USRCONST.STANKAS().STANKAS=STANKAS.ref() || exec('titlebar','kas',STANKAS.NAZWA) ?};
+::      KUSERUPR.cntx_pop(); STANKAS.cntx_pop()
+::   ?}; _ok
+::||
+::   'KOD'
+::?}
+
+
+\kuserupr_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.42]
+:: OPIS: STANKAS - walidacja bufora
+::   WE:
+::   WY: '' lub akronim pola
+::----------------------------------------------------------------------------------------------------------------------
+::exec('chk_fldmk','!zws_par_fkmk')
+return(__CHK.record(KUSERUPR,,'STANKAS'))
+
+
+\poz_wal
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [17.00]
+:: OPIS: walidacja rekordu POZOPER
+::   WE: _a - 'add'/'put'
+::   WY:
+::  OLD: \poz_wal/ope_pola.fml
+::  OLD: \poz_wal/!zws_par_fktt.fml
+::----------------------------------------------------------------------------------------------------------------------
+_akcja:=
+   {? var_pres('_a')=type_of('')
+   || {? _a='add' || 'dołącz' |? _a='put' || 'popraw' || _a ?}
+   || -menu_txt()
+   ?};
+
+_zwrot:=__CHK.record(POZOPER,,'KOD','NAZWA','PLUS_MIN','MF_TIP','FIKS_TIP');
+{? _zwrot='' & POZOPER.DOMTYP='T' &
+   (_r:=exec('dom_typ','kasa_wspolne',POZOPER.OPER); _r &
+    ((_akcja='popraw' & _r<>POZOPER.ref()) | _akcja<>'popraw'))
+|| FUN.info('Istnieje już domyślny typ dla operacji %1.'@[POZOPER.OPER().KOD]); _zwrot:='DOMTYP'
+?};
+{? _zwrot='' & POZOPER.MF_TIP='T' & POZOPER.ODDZ=null
+|| FUN.info('Nie wybrano oddziału dla dziedziny Sprzedaż.'@); _zwrot:='ODDZ'
+?};
+{? POZOPER.FIKS_TIP='N' & POZOPER.ZMDOMODD='T'
+|| POZOPER.ZMDOMODD:='N'; win_disp()
+?};
+_zwrot
+
+
+\bo_kasy_chk
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: AWI [18.42]
+:: OPIS: STANKAS - walidacja bufora
+::   WE:
+::   WY: '' lub akronim pola
+::----------------------------------------------------------------------------------------------------------------------
+return(params_exec('ar_bokas','kasa_wspolne'))
+
+
+\ar_bokas
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [8.70]
+:: OPIS: Po akcji rekord okna WER tabeli BO_KASY
+::  OLD: \ar_bokas/sta_pola.fml
+::       \ar_bokas/!zws_par_fkst.fml
+::----------------------------------------------------------------------------------------------------------------------
+{? ~exec('be_bopln','kasa_wspolne') || BO_KASY.BO_PLN:=BO_KASY.BO_WAL ?};
+_r:=__CHK.record(BO_KASY);
+{? _r='' & exec('is_rap','kasa_wspolne',STANKAS.KOD) & ~exec('akt_bo','kasa_wspolne',0,1)
+|| FUN.info('Podczas aktualizacji powstało ujemne saldo dla waluty'@
+           +'.\nWstrzymano aktualizację.\n\nStanowisko %1: waluta %2.'@[STANKAS.NAZWA,WAL.SYM]);
+   0
+|| _r
+?}
+
+
+\be_bopln
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MB [8.70]
+:: OPIS: Przed redakcja pola BO_KASY.BO_PLN
+::  OLD: \be_bopln/sta_pola.fml
+::       \be_bopln/!zws_par_fkst.fml
+::----------------------------------------------------------------------------------------------------------------------
+_wal_nar:=exec('wal_nar','kasa_wspolne');
+STANKAS.WALUTA<>_wal_nar & BO_KASY.WAL<>_wal_nar
+
+
+\is_rap
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: [MB] [8.70]
+:: OPIS: Czy istnieje raport dla stanowiska kasowego
+::   WE: _a - kod stanowiska kasowego
+::  OLD: \is_rap/rap_pola.fml
+::       \is_rap/!zws_par_fkst.fml
+::----------------------------------------------------------------------------------------------------------------------
+_is_rap:=0;
+RAPORT.cntx_psh();
+ROK_F.cntx_psh();
+{? ROK_F.first()
+|| {! |?
+      RAPORT.use('krp'+form(_a,-3)+(form(ROK_F.KOD)+2));
+      RAPORT.prefix();
+      _is_rap:=RAPORT.first();
+      ~_is_rap & ROK_F.next()
+   !}
+?};
+ROK_F.cntx_pop();
+RAPORT.cntx_pop();
+_is_rap
+
+
+\addpoz_mwa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Dodaje pozycje dokumentu kasowego - używana w webserwisie
+::   WE: _a - pozycje - tablica "buforów" tabeli POZDOK
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_poz:=_a;
+STANKAS.cntx_psh();
+STANKAS.prefix();
+STANKAS.seek(__PARSES.getVal('StKasowe').REF);
+
+{! _it:=1.. obj_len(_poz)
+|! exec('addPoz','kasa_wspolne',
+      _b,
+      _poz[_it].POZOPER,
+      _poz[_it].KW_PLN,
+      _poz[_it].KW_PLN,
+      ,
+      1,
+      _poz[_it].MF_FIKS,
+      _poz[_it].REJ,
+      _poz[_it].DOK_REJ,
+      _poz[_it].RVAT,
+      _poz[_it].DATA1,
+      _poz[_it].TP,
+      _poz[_it].KH,
+      _poz[_it].NIP
+   )
+!};
+STANKAS.cntx_pop();
+
+1
+
+
+\addDok_mwa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: PD [20.14]
+:: OPIS: Dodaje nagłówek dokumentu kasowego - używana w webserwisie
+::   WE: _a - pozycje - tablica "buforów" tabeli DOKUMENT
+::   WY: 0/1
+::----------------------------------------------------------------------------------------------------------------------
+_buffers:=_a;
+
+_raport:= _buffers.DOKUMENT.RAPORT;
+_stKasowe:=$__PARSES.getVal('StKasowe').REF;
+_wal:=exec('FindAndGet','#table',STANKAS,_stKasowe,,"STANKAS.WALUTA().SYM");
+SLO.cntx_psh();
+SLO.index('KOD');
+SLO.prefix(_wal);
+{? SLO.first()
+||
+   _wal_slo:=SLO.ref()
+||
+   _wsenv.add_error('Nie odnaleziono waluty.'@)
+?};
+SLO.cntx_pop();
+
+OPER.cntx_psh();
+OPER.prefix();
+OPER.seek(_buffers.DOKUMENT.OPER);
+_ref:=exec('addDok','kasa_wspolne',_raport,_wal_slo,1);
+OPER.cntx_pop();
+DOKUMENT.cntx_psh();
+{? _ref<>null() & DOKUMENT.seek(_ref, ref_name(_ref))
+||
+   DOKUMENT.DATA:=_buffers.DOKUMENT.DATA;
+   DOKUMENT.prefix();
+   DOKUMENT.put()
+?};
+DOKUMENT.cntx_pop();
+_ref
+
+
+\biq_kasa
+::----------------------------------------------------------------------------------------------------------------------
+::  UTW: MW [21.14]
+:: OPIS: Analiza BI w obszarze "Raporty kasowe"
+::----------------------------------------------------------------------------------------------------------------------
+exec('np_run','#b__box','BIQ_KAS_DOKA')
+
+:Sign Version 2.0 jowisz:1048 2023/06/23 14:14:36 9cdae83c33a610c453ec8cfa67cad8b9d582d862311c26a328c06a6a3d3badaacf8c0599e060a938a1ebcfe430563a1d93e00b8c5a0e673e69d8225b094d31629c04d2be1b89978b9e60cc6d38827258049147f46c7062fac28166217dfeae4717c5d02a5b4184c11f0cfb4c750f7c4d94aa7de46ad2db53e1253d28714c2fb4
