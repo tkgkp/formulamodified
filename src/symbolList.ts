@@ -1,10 +1,24 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
+import * as fs from 'fs';
+import * as fileUtils from './modifiedFileUtil';
 
 export class SymbolListProvider implements vscode.TreeDataProvider<string> {
 
     private _onDidChangeTreeData: vscode.EventEmitter<string | null> = new vscode.EventEmitter<string | null>();
     readonly onDidChangeTreeData: vscode.Event<string | null> = this._onDidChangeTreeData.event;
+    private decorationType: vscode.TextEditorDecorationType;
+
+    constructor() {
+        const config = vscode.workspace.getConfiguration('formulamodified');
+        const sidebarHighlightColor = config.get('sidebarHighlightColor') as string | undefined;
+        this.decorationType = vscode.window.createTextEditorDecorationType({
+            backgroundColor: sidebarHighlightColor,
+            border: 'none',
+            isWholeLine: true,
+            overviewRulerColor: 'darkred',
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        });
+    }
 
     refresh(): void {
         this._onDidChangeTreeData.fire(null);
@@ -27,12 +41,24 @@ export class SymbolListProvider implements vscode.TreeDataProvider<string> {
     async getLineOfSymbol(symbol: string): Promise<number> {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
-            const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', editor.document.uri);
-            if (symbols) {
-                for (let docSymbol of symbols) {
-                    if (docSymbol.name === symbol) {
-                        return docSymbol.range.start.line;
-                    }
+            const text = editor.document.getText();
+            const regex = editor.document.languageId === 'prc' ? /^proc\s+([a-zA-Z0-9_]+)/gm : /^\\([a-zA-Z0-9_]+)$/gm;
+            let match;
+            const symbols = [];
+
+            while ((match = regex.exec(text)) !== null) {
+                symbols.push({
+                    name: match[1],
+                    range: new vscode.Range(
+                        editor.document.positionAt(match.index),
+                        editor.document.positionAt(match.index + match[0].length),
+                    )
+                });
+            }
+
+            for (let docSymbol of symbols) {
+                if (docSymbol.name === symbol) {
+                    return docSymbol.range.start.line;
                 }
             }
         }
@@ -59,42 +85,56 @@ export class SymbolListProvider implements vscode.TreeDataProvider<string> {
             const funkcje: string[] = [];
             const decorations: vscode.DecorationOptions[] = [];
             const editor = vscode.window.activeTextEditor;
-            if (editor) {
-                const document = editor.document;
-                const correspondingFilePath = this.getCorrespondingFilePath(document.uri.fsPath);
+            const modifiedFilePath = editor ? fileUtils.formulaPath(editor.document.uri.fsPath) : undefined;
 
-                 if (correspondingFilePath) {
-                    vscode.workspace.openTextDocument(correspondingFilePath)
+            if (editor) {
+                const FilePath =  modifiedFilePath?.modifiedFilePath;
+
+                if (FilePath && fs.existsSync(FilePath)) {
+                    vscode.workspace.openTextDocument(FilePath)
                         .then(correspondingDocument => {
                             const fileContent = correspondingDocument.getText();
-                            const functionPattern = /\\([a-zA-Z0-9_]+)$/gm;
+                            const functionPattern = editor.document.languageId === 'prc' ? /^proc\s+([a-zA-Z0-9_]+)/gm : /^\\([a-zA-Z0-9_]+)$/gm;
                             let match;
                             while (match = functionPattern.exec(fileContent)) {
                                 funkcje.push(match[1]);
                             }
-// kolorowanie paska bocznego
-                            const decorationType = vscode.window.createTextEditorDecorationType({
-                                  backgroundColor: 'rgba(255, 165, 0, 0.10)', // pomarańczowy kolor z 15% przezroczystości
-                                  border: 'none',
-                                  isWholeLine: true,
-                                  overviewRulerColor: 'darkred',
-                                  overviewRulerLane: vscode.OverviewRulerLane.Right,
-                            });
 
-                            const currentFileContent = editor.document.getText();
-                            vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', editor.document.uri)
-                            .then(symbols => {
-                                if (symbols) {
-                                    symbols.forEach(symbol => {
-                                        if (funkcje.includes(symbol.name)) {
-                                            // Dodaj zakres symbolu do tablicy dekoracji
-                                            decorations.push({ range: symbol.range, hoverMessage: symbol.name });
-                                        }
+                           if (editor) {
+                                const text = editor.document.getText();
+                                const regex =editor.document.languageId === 'prc' ? /^proc\s+([a-zA-Z0-9_]+)/gm : /^\\([a-zA-Z0-9_]+)$/gm;
+                                let match;
+                                const symbols = [];
+
+                                while ((match = regex.exec(text)) !== null) {
+                                    symbols.push({
+                                        name: match[1],
+                                        range: new vscode.Range(
+                                            editor.document.positionAt(match.index),
+                                            editor.document.positionAt(match.index + match[0].length)
+                                        )
                                     });
-
-                                    editor.setDecorations(decorationType, decorations);
                                 }
-                            });
+
+                                for (let i = 0; i < symbols.length; i++) {
+                                    let docSymbol = symbols[i];
+                                    if (funkcje.includes(docSymbol.name)) {
+                                        let endPosition;
+                                        if (i < symbols.length - 1) {
+                                            endPosition = symbols[i + 1].range.start.translate(-1,0);
+                                        } else {
+                                            endPosition = editor.document.positionAt(text.length);
+                                        }
+                                        let decoration = {
+                                            range: new vscode.Range(docSymbol.range.start, endPosition),
+                                            hoverMessage: docSymbol.name
+                                        };
+                                        decorations.push(decoration);
+                                    }
+                                }
+
+                                editor.setDecorations(this.decorationType, decorations);
+                            }
 
                             resolve(funkcje);
                         }, error => {
@@ -108,18 +148,5 @@ export class SymbolListProvider implements vscode.TreeDataProvider<string> {
                 resolve(funkcje);
             }
         });
-    }
-
-    getCorrespondingFilePath(currentFilePath: string): string | null {
-    // Jeśli nazwa pliku zawiera zapis '.m.', zwróć null
-    const fileName = path.basename(currentFilePath);
-
-    // Jeśli nazwa pliku zawiera zapis '.m.' lub 'cli', zwróć null
-    if (fileName.includes('.m.') || !currentFilePath.includes('.fml')) {
-        return null;
-    }
-    // Tutaj wprowadź logikę do znalezienia ścieżki do pliku korespondującego z aktualnie otwartym plikiem
-    // Na przykład, jeśli chcesz odczytać plik .test.ts dla pliku .ts, możesz to zrobić tak:
-    return currentFilePath.replace('\\merit\\', '\\modified\\').replace('.fml','.m.fml');
     }
 }

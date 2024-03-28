@@ -25,10 +25,23 @@ var __importStar = (this && this.__importStar) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SymbolListProvider = void 0;
 const vscode = __importStar(require("vscode"));
-const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const fileUtils = __importStar(require("./modifiedFileUtil"));
 class SymbolListProvider {
     _onDidChangeTreeData = new vscode.EventEmitter();
     onDidChangeTreeData = this._onDidChangeTreeData.event;
+    decorationType;
+    constructor() {
+        const config = vscode.workspace.getConfiguration('formulamodified');
+        const sidebarHighlightColor = config.get('sidebarHighlightColor');
+        this.decorationType = vscode.window.createTextEditorDecorationType({
+            backgroundColor: sidebarHighlightColor,
+            border: 'none',
+            isWholeLine: true,
+            overviewRulerColor: 'darkred',
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        });
+    }
     refresh() {
         this._onDidChangeTreeData.fire(null);
     }
@@ -48,12 +61,19 @@ class SymbolListProvider {
     async getLineOfSymbol(symbol) {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
-            const symbols = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', editor.document.uri);
-            if (symbols) {
-                for (let docSymbol of symbols) {
-                    if (docSymbol.name === symbol) {
-                        return docSymbol.range.start.line;
-                    }
+            const text = editor.document.getText();
+            const regex = editor.document.languageId === 'prc' ? /^proc\s+([a-zA-Z0-9_]+)/gm : /^\\([a-zA-Z0-9_]+)$/gm;
+            let match;
+            const symbols = [];
+            while ((match = regex.exec(text)) !== null) {
+                symbols.push({
+                    name: match[1],
+                    range: new vscode.Range(editor.document.positionAt(match.index), editor.document.positionAt(match.index + match[0].length))
+                });
+            }
+            for (let docSymbol of symbols) {
+                if (docSymbol.name === symbol) {
+                    return docSymbol.range.start.line;
                 }
             }
         }
@@ -79,39 +99,48 @@ class SymbolListProvider {
             const funkcje = [];
             const decorations = [];
             const editor = vscode.window.activeTextEditor;
+            const modifiedFilePath = editor ? fileUtils.formulaPath(editor.document.uri.fsPath) : undefined;
             if (editor) {
-                const document = editor.document;
-                const correspondingFilePath = this.getCorrespondingFilePath(document.uri.fsPath);
-                if (correspondingFilePath) {
-                    vscode.workspace.openTextDocument(correspondingFilePath)
+                const FilePath = modifiedFilePath?.modifiedFilePath;
+                if (FilePath && fs.existsSync(FilePath)) {
+                    vscode.workspace.openTextDocument(FilePath)
                         .then(correspondingDocument => {
                         const fileContent = correspondingDocument.getText();
-                        const functionPattern = /\\([a-zA-Z0-9_]+)$/gm;
+                        const functionPattern = editor.document.languageId === 'prc' ? /^proc\s+([a-zA-Z0-9_]+)/gm : /^\\([a-zA-Z0-9_]+)$/gm;
                         let match;
                         while (match = functionPattern.exec(fileContent)) {
                             funkcje.push(match[1]);
                         }
-                        // kolorowanie paska bocznego
-                        const decorationType = vscode.window.createTextEditorDecorationType({
-                            backgroundColor: 'rgba(255, 165, 0, 0.10)', // pomarańczowy kolor z 15% przezroczystości
-                            border: 'none',
-                            isWholeLine: true,
-                            overviewRulerColor: 'darkred',
-                            overviewRulerLane: vscode.OverviewRulerLane.Right,
-                        });
-                        const currentFileContent = editor.document.getText();
-                        vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', editor.document.uri)
-                            .then(symbols => {
-                            if (symbols) {
-                                symbols.forEach(symbol => {
-                                    if (funkcje.includes(symbol.name)) {
-                                        // Dodaj zakres symbolu do tablicy dekoracji
-                                        decorations.push({ range: symbol.range, hoverMessage: symbol.name });
-                                    }
+                        if (editor) {
+                            const text = editor.document.getText();
+                            const regex = editor.document.languageId === 'prc' ? /^proc\s+([a-zA-Z0-9_]+)/gm : /^\\([a-zA-Z0-9_]+)$/gm;
+                            let match;
+                            const symbols = [];
+                            while ((match = regex.exec(text)) !== null) {
+                                symbols.push({
+                                    name: match[1],
+                                    range: new vscode.Range(editor.document.positionAt(match.index), editor.document.positionAt(match.index + match[0].length))
                                 });
-                                editor.setDecorations(decorationType, decorations);
                             }
-                        });
+                            for (let i = 0; i < symbols.length; i++) {
+                                let docSymbol = symbols[i];
+                                if (funkcje.includes(docSymbol.name)) {
+                                    let endPosition;
+                                    if (i < symbols.length - 1) {
+                                        endPosition = symbols[i + 1].range.start.translate(-1, 0);
+                                    }
+                                    else {
+                                        endPosition = editor.document.positionAt(text.length);
+                                    }
+                                    let decoration = {
+                                        range: new vscode.Range(docSymbol.range.start, endPosition),
+                                        hoverMessage: docSymbol.name
+                                    };
+                                    decorations.push(decoration);
+                                }
+                            }
+                            editor.setDecorations(this.decorationType, decorations);
+                        }
                         resolve(funkcje);
                     }, error => {
                         console.error('Błąd podczas otwierania dokumentu:', error);
@@ -126,17 +155,6 @@ class SymbolListProvider {
                 resolve(funkcje);
             }
         });
-    }
-    getCorrespondingFilePath(currentFilePath) {
-        // Jeśli nazwa pliku zawiera zapis '.m.', zwróć null
-        const fileName = path.basename(currentFilePath);
-        // Jeśli nazwa pliku zawiera zapis '.m.' lub 'cli', zwróć null
-        if (fileName.includes('.m.') || !currentFilePath.includes('.fml')) {
-            return null;
-        }
-        // Tutaj wprowadź logikę do znalezienia ścieżki do pliku korespondującego z aktualnie otwartym plikiem
-        // Na przykład, jeśli chcesz odczytać plik .test.ts dla pliku .ts, możesz to zrobić tak:
-        return currentFilePath.replace('\\merit\\', '\\modified\\').replace('.fml', '.m.fml');
     }
 }
 exports.SymbolListProvider = SymbolListProvider;

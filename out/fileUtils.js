@@ -132,14 +132,22 @@ async function markFile(filePath) {
 function filePathModified(editor) {
     const currentFilePath = editor.document.fileName;
     const currentFileName = path.basename(currentFilePath);
-    let modifiedFileName = currentFileName;
+    const config = vscode.workspace.getConfiguration('formulamodified');
+    const normalizePath = (path) => path.replace(/\\\\/g, "\\").toLowerCase();
+    const depozytPath = normalizePath(config.get('depozytPath') || "");
+    const workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : "";
+    let let, modifiedFileName = currentFileName;
     let modifiedFilePath = currentFilePath;
     let baseFileName = currentFileName;
     let baseFilePath = currentFilePath;
+    let depozytFileName = currentFileName;
+    let depozytFilePath = currentFilePath;
     if (currentFileName.includes('.m.')) {
         baseFileName = currentFileName.replace('.m.', '.');
         baseFilePath = currentFilePath.replace('\\modified\\', '\\merit\\');
         baseFilePath = baseFilePath.replace(currentFileName, baseFileName);
+        depozytFileName = baseFileName;
+        let depozytDirPath = depozytPath + '\\' + depozytFileName;
     }
     else {
         modifiedFileName = currentFileName.replace('.', '.m.');

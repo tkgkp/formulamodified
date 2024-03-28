@@ -5,10 +5,13 @@ Rozszerzenie do porównania plików zmodyfikowanych w trakcie wdrożenia dla ję
 ## Funkcje
 
 1. **Porównanie plików**: Rozszerzenie umożliwia porównanie plików m.fml i fml, co pozwala na łatwe zidentyfikowanie zmian wprowadzonych w trakcie wdrożenia.
-
 2. **Podgląd zmian**: Rozszerzenie oferuje podgląd zmian w plikach, co pozwala na szybkie zrozumienie, co zostało zmienione bez konieczności otwierania obu plików.
-
 3. **Nawigacja po symbolach**: Rozszerzenie umożliwia nawigację po zmodyfikowanych symbolach w plikach, co ułatwia zrozumienie struktury kodu.
+4. **Przejście do zmodyfikowanego pliku i symbolu**: Rozszerzenie umożliwia bezpośrednie przejście do pliku modified z listy symboli zmodyfikowanych
+5. **Porównanie definicji z wersją zmodyfikowaną**: Porównanie definicji z wersją zmodyfikowaną
+6. **Porównywanie definicji z wersją depozytową**: Porównanie definicji z wersją depozytową
+   v.0.4.0
+7. **Obsługa plików prc**: Funkcjonalność podziału na procedury, porównywanie procedur, wyróżnianie bloków kodu i kolorowanie kodu.
 
 ## Instalacja
 
@@ -31,10 +34,10 @@ Możesz przypisać funkcje rozszerzenia do skrótów klawiszowych dla szybszego 
 
 Funkcje dostępne do przypisania
 
-### "formulamodified.CompareModified",
+- "formulamodified.CompareModified",
 
-     Porównaj z plikiem modified lub dodaj plik modified do projektu
+  Porównaj z plikiem modified lub dodaj plik modified do projektu
 
-### "formulamodified.OpenModified",
+- "formulamodified.OpenModified",
 
-     Otwórz plik korespondujący z aktualnym (modified/std)
+  Otwórz plik korespondujący z aktualnym (modified/std)

@@ -24,47 +24,98 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FileExplorerProvider = void 0;
-const path = __importStar(require("path"));
-const fs = __importStar(require("fs"));
 const vscode = __importStar(require("vscode"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
 class FileExplorerProvider {
-    directoryPath1;
-    directoryPath2;
-    constructor(directoryPath1, directoryPath2) {
-        this.directoryPath1 = directoryPath1;
-        this.directoryPath2 = directoryPath2;
+    workspaceRoot;
+    _onDidChangeTreeData = new vscode.EventEmitter();
+    onDidChangeTreeData = this._onDidChangeTreeData.event;
+    constructor(workspaceRoot) {
+        this.workspaceRoot = workspaceRoot;
     }
-    getChildren(_) {
-        return Promise.resolve(this.getMatchingFiles());
+    refresh() {
+        this._onDidChangeTreeData.fire(undefined);
     }
     getTreeItem(element) {
-        return new vscode.TreeItem(element);
+        return element;
     }
-    getMatchingFiles() {
-        const matchingFiles = [];
-        const filesInDir1 = this.getFilesInDirectory(this.directoryPath1);
-        const filesInDir2 = this.getFilesInDirectory(this.directoryPath2);
-        for (const file of filesInDir1) {
-            if (filesInDir2.includes(file.replace('.', '.m.'))) {
-                matchingFiles.push(`* ${file}`);
+    getFilesInDirectory(dir) {
+        const config = vscode.workspace.getConfiguration('formulamodified');
+        const depozytPath = config.get('depozytPath');
+        function hasModifiedFilesInDirectory(directory, compareDirectory) {
+            const files = fs.readdirSync(directory);
+            for (const file of files) {
+                const filePath = path.join(directory, file);
+                const compareFilePath = path.join(compareDirectory, file);
+                const stat = fs.statSync(filePath);
+                if (stat && stat.isDirectory()) {
+                    if (hasModifiedFilesInDirectory(filePath, compareFilePath)) {
+                        return true;
+                    }
+                }
+                else {
+                    let fileContent1 = fs.readFileSync(filePath, 'utf-8');
+                    let fileContent2 = fs.existsSync(compareFilePath) ? fs.readFileSync(compareFilePath, 'utf-8') : null;
+                    if (fileContent1 !== fileContent2) {
+                        return true;
+                    }
+                }
             }
+            return false;
         }
-        return matchingFiles;
-    }
-    getFilesInDirectory(directoryPath) {
-        const files = [];
-        const directoryContents = fs.readdirSync(directoryPath);
-        for (const item of directoryContents) {
-            const itemPath = path.join(directoryPath, item);
-            const stats = fs.statSync(itemPath);
-            if (stats.isDirectory()) {
-                files.push(...this.getFilesInDirectory(itemPath)); // Rekurencyjnie odczytaj pliki z podkatalogu
+        if (depozytPath) {
+            let results = [];
+            let workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+            if (!workspaceFolder) {
+                return results;
             }
             else {
-                files.push(item);
+                fs.readdirSync(dir).forEach(file => {
+                    const filePath = path.join(dir, file);
+                    const normalizePath = (path) => path.replace(/\\\\/g, "\\").toLowerCase();
+                    const dirNormalized = normalizePath(dir);
+                    const depozytPathNormalized = depozytPath ? normalizePath(depozytPath) : "";
+                    const workspaceFolderNormalized = workspaceFolder ? normalizePath(workspaceFolder) : "";
+                    const compareDir = workspaceFolder ? dirNormalized.replace(depozytPathNormalized, workspaceFolderNormalized) : dir;
+                    const comparePath = path.join(compareDir, file);
+                    const stat = fs.statSync(filePath);
+                    const ext = path.extname(filePath);
+                    const extWer = ['.fml', '.rpm', '.rpi', '.sql', '.xml', '.prc', '.html', '.css', '.js', '.ts', '.py', '.dsc'];
+                    if (stat && stat.isDirectory() && (filePath.includes('merit') || filePath.includes('xpertis'))) {
+                        if (hasModifiedFilesInDirectory(filePath, comparePath)) {
+                            results.push(new vscode.TreeItem(vscode.Uri.file(filePath), vscode.TreeItemCollapsibleState.Collapsed));
+                        }
+                    }
+                    else if (stat && !stat.isDirectory()) {
+                        if (extWer.includes(ext)) {
+                            let fileContent1 = fs.readFileSync(filePath, 'utf-8');
+                            let fileContent2 = fs.existsSync(comparePath) ? fs.readFileSync(comparePath, 'utf-8') : null;
+                            if (fileContent1 !== fileContent2 || !fileContent2) {
+                                results.push(new vscode.TreeItem(vscode.Uri.file(filePath), vscode.TreeItemCollapsibleState.None));
+                            }
+                        }
+                    }
+                });
+                return results;
             }
         }
-        return files;
+        else {
+            vscode.window.showInformationMessage('Brak ścieżki do depozytu w konfiguracji rozszerzenia.');
+            return [];
+        }
+    }
+    async getChildren(element) {
+        if (!this.workspaceRoot) {
+            vscode.window.showInformationMessage('No files in empty workspace');
+            return Promise.resolve([]);
+        }
+        if (element && element.resourceUri) {
+            return this.getFilesInDirectory(element.resourceUri.fsPath);
+        }
+        else {
+            return this.getFilesInDirectory(this.workspaceRoot);
+        }
     }
 }
 exports.FileExplorerProvider = FileExplorerProvider;
